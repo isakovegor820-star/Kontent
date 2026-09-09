@@ -2,8 +2,8 @@ import assert from "node:assert/strict";
 import http from "node:http";
 import net from "node:net";
 import { resolveE2eBrowserServiceFixture } from "./e2e-chromium-offline-profile.mjs";
+import { resolveOwnedE2eBrowserOrigins } from "./e2e-browser-origin.mjs";
 
-const LOOPBACK_HOSTS = new Set(["127.0.0.1", "localhost", "[::1]"]);
 const HOP_HEADERS = ["connection", "keep-alive", "proxy-authenticate", "proxy-authorization", "proxy-connection", "te", "trailer", "transfer-encoding", "upgrade"];
 
 function transportHeaders(headers) {
@@ -14,12 +14,10 @@ function transportHeaders(headers) {
 }
 
 /** A transport boundary also sees redirects and requests bypassing Playwright routes. */
-export async function createE2eBrowserProxy({ baseUrl, serviceFixture, onBlocked = () => {} }) {
+export async function createE2eBrowserProxy({ baseUrl, browserOrigin = baseUrl, serviceFixture, onBlocked = () => {} }) {
   assert(!process.env.PLAYWRIGHT_DISABLE_FORCED_CHROMIUM_PROXIED_LOOPBACK,
     "Chromium loopback proxying must remain enabled");
-  const base = new URL(baseUrl);
-  assert(["http:", "https:"].includes(base.protocol) && LOOPBACK_HOSTS.has(base.hostname)
-    && !base.username && !base.password, "explicit loopback browser origin required");
+  const { base, browser: browserBase } = resolveOwnedE2eBrowserOrigins(baseUrl, browserOrigin);
   const targetHost = base.hostname === "[::1]" ? "::1" : "127.0.0.1";
   const targetPort = Number(base.port || (base.protocol === "https:" ? 443 : 80));
   const serviceTarget = serviceFixture ? resolveE2eBrowserServiceFixture(serviceFixture, baseUrl) : null;
@@ -59,7 +57,7 @@ export async function createE2eBrowserProxy({ baseUrl, serviceFixture, onBlocked
       if (url.origin === serviceTarget?.origin) {
         // Recheck liveness so a stopped fixture's port can never admit another service.
         resolveE2eBrowserServiceFixture(serviceFixture, baseUrl);
-      } else if (url.origin !== base.origin) return null;
+      } else if (url.origin !== browserBase.origin) return null;
       if (connect && (url.pathname !== "/" || url.search || url.hash)) return null;
       if (!connect && url.protocol !== "http:") return null;
       return url;
@@ -76,15 +74,30 @@ export async function createE2eBrowserProxy({ baseUrl, serviceFixture, onBlocked
     const upstream = http.request({ host: targetHost, port: targetPort, agent,
       method: incoming.method, path: `${url.pathname}${url.search}`,
       headers: { ...transportHeaders(incoming.headers), host: base.host } }, (response) => {
-      outgoing.writeHead(response.statusCode || 502, transportHeaders(response.headers));
+      const status = response.statusCode || 502;
+      const locations = [];
+      for (let index = 0; index < response.rawHeaders.length; index += 2) {
+        if (response.rawHeaders[index].toLowerCase() === "location") locations.push(response.rawHeaders[index + 1]);
+      }
+      if (status >= 300 && status < 400 && locations.length) {
+        let redirect;
+        try { if (locations.length === 1) redirect = new URL(locations[0], url); } catch { /* Invalid redirects are denied. */ }
+        if (!redirect || redirect.origin !== browserBase.origin || redirect.username || redirect.password) {
+          recordBlocked(incoming, redirect?.protocol ?? "invalid", "redirect");
+          response.destroy();
+          outgoing.destroy();
+          return;
+        }
+      }
+      outgoing.writeHead(status, transportHeaders(response.headers));
       response.on("error", () => outgoing.destroy());
       response.pipe(outgoing);
     });
     upstream.on("socket", track);
-    upstream.on("error", () => {
-      if (!outgoing.headersSent) outgoing.writeHead(502, { "content-type": "text/plain" });
-      outgoing.end("Isolated browser upstream unavailable");
-    });
+    // A missing/reset owned upstream is a transport failure. Converting it to
+    // an HTTP success path can make browser code treat a denied redirect as a
+    // completed fetch, so preserve the native failure by closing the response.
+    upstream.on("error", () => outgoing.destroy());
     incoming.on("aborted", () => upstream.destroy());
     outgoing.on("close", () => { if (!outgoing.writableEnded) upstream.destroy(); });
     incoming.pipe(upstream);
@@ -141,7 +154,7 @@ export async function createE2eBrowserProxy({ baseUrl, serviceFixture, onBlocked
   };
   return {
     // Pinned Playwright forces Chromium loopback proxying when bypass is omitted.
-    // Passing Chromium's <-loopback> token to WebKit instead bypasses loopback.
+    // WebKit's macOS loopback bypass is avoided by the reserved browser origin.
     proxyOptions: { server: `http://127.0.0.1:${server.address().port}` },
     attach(context) {
       assert(!attachedContext || attachedContext === context, "one browser proxy belongs to one context");
@@ -154,7 +167,7 @@ export async function createE2eBrowserProxy({ baseUrl, serviceFixture, onBlocked
     expectedDeniedSnapshot: () => expectedDenied.map((record) => ({ ...record })),
     async withExpectedDeniedConnect({ origin }, action) {
       const fixture = new URL(origin);
-      assert(fixture.protocol === "https:" && fixture.origin === origin && fixture.origin !== base.origin
+      assert(fixture.protocol === "https:" && fixture.origin === origin && fixture.origin !== browserBase.origin
         && !fixture.username && !fixture.password && typeof action === "function",
       "an exact external HTTPS fixture origin and awaited action are required");
       assert(!expectedConnect, "fixture CONNECT scopes cannot overlap");

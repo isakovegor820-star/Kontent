@@ -1,11 +1,9 @@
 import assert from "node:assert/strict";
+import { parseOwnedE2eBrowserOrigin } from "./e2e-browser-origin.mjs";
 
 /** Install on a fresh context before registering fixtures or opening pages. */
 export async function installE2eBrowserRouteGuard(context, { baseUrl, onBlocked = () => {} }) {
-  const base = new URL(baseUrl);
-  assert(["http:", "https:"].includes(base.protocol)
-    && ["127.0.0.1", "localhost", "[::1]"].includes(base.hostname)
-    && !base.username && !base.password, "explicit loopback browser origin required");
+  const base = parseOwnedE2eBrowserOrigin(baseUrl);
   const blocked = [];
   const originalUrls = new WeakMap();
   const patched = new Map();

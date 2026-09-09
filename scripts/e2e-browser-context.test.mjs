@@ -19,7 +19,7 @@ it("establishes a non-overridable proxy before creating the context", async () =
   const result = await createE2eBrowserContext(browser, { baseUrl: "https://127.0.0.1:444", onBlocked,
     viewport: { width: 390, height: 844 }, proxy: { server: "http://unsafe.invalid" }, baseURL: "http://unsafe.invalid", serviceWorkers: "allow" });
   expect(result.context).toBe(context); expect(result.transport.proxyOptions).toBe(transport.proxyOptions);
-  expect(createProxy).toHaveBeenCalledWith({ baseUrl: "https://127.0.0.1:444", onBlocked, serviceFixture: undefined });
+  expect(createProxy).toHaveBeenCalledWith({ baseUrl: "https://127.0.0.1:444", browserOrigin: "https://127.0.0.1:444", onBlocked, serviceFixture: undefined });
   expect(createProxy.mock.invocationCallOrder[0]).toBeLessThan(browser.newContext.mock.invocationCallOrder[0]);
   expect(browser.newContext).toHaveBeenCalledWith({ baseURL: "https://127.0.0.1:444", proxy: transport.proxyOptions,
     viewport: { width: 390, height: 844 }, serviceWorkers: "block" });
@@ -34,9 +34,20 @@ it("passes an owned service fixture only to the transport and keeps app routing 
   const { browser } = setup();
   const serviceFixture = Object.freeze({ kind: "aurora-owned-chromium-service-fixture", origin: "https://127.0.0.1:555" });
   await createE2eBrowserContext(browser, { baseUrl: "https://localhost:444", serviceFixture });
-  expect(createProxy).toHaveBeenCalledWith({ baseUrl: "https://localhost:444", onBlocked: undefined, serviceFixture });
+  expect(createProxy).toHaveBeenCalledWith({ baseUrl: "https://localhost:444", browserOrigin: "https://localhost:444", onBlocked: undefined, serviceFixture });
   expect(browser.newContext.mock.calls[0][0]).not.toHaveProperty("serviceFixture");
   expect(installGuard.mock.calls[0][1]).toEqual({ baseUrl: "https://localhost:444", onBlocked: undefined });
+});
+it("maps a reserved browser origin through the owned loopback proxy", async () => {
+  const { browser, context, transport } = setup();
+  const result = await createE2eBrowserContext(browser, { baseUrl: "https://127.0.0.1:444",
+    browserOrigin: "https://aurora-e2e.invalid:444" });
+  expect(result.context).toBe(context);
+  expect(createProxy).toHaveBeenCalledWith({ baseUrl: "https://127.0.0.1:444",
+    browserOrigin: "https://aurora-e2e.invalid:444", onBlocked: undefined, serviceFixture: undefined });
+  expect(browser.newContext).toHaveBeenCalledWith({ baseURL: "https://aurora-e2e.invalid:444",
+    proxy: transport.proxyOptions, serviceWorkers: "block" });
+  expect(installGuard).toHaveBeenCalledWith(context, { baseUrl: "https://aurora-e2e.invalid:444", onBlocked: undefined });
 });
 it("closes the proxy when context creation fails", async () => {
   const { browser, transport } = setup(); browser.newContext.mockRejectedValue(new Error("browser failure"));

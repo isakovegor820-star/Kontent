@@ -3,8 +3,8 @@ import { installE2eBrowserRouteGuard } from "./e2e-browser-route-guard.mjs";
 import { finalizeE2eBrowserLifecycle } from "./e2e-browser-lifecycle.mjs";
 
 /** Install transport and route boundaries before callers can create requests. */
-export async function createE2eBrowserContext(browser, { baseUrl, onBlocked, serviceFixture, ...options }) {
-  const proxy = await createE2eBrowserProxy({ baseUrl, onBlocked, serviceFixture });
+export async function createE2eBrowserContext(browser, { baseUrl, browserOrigin = baseUrl, onBlocked, serviceFixture, ...options }) {
+  const proxy = await createE2eBrowserProxy({ baseUrl, browserOrigin, onBlocked, serviceFixture });
   let context; let guard;
   const transport = {
     ...proxy,
@@ -28,10 +28,10 @@ export async function createE2eBrowserContext(browser, { baseUrl, onBlocked, ser
     },
   };
   try {
-    context = await browser.newContext({ ...options, baseURL: baseUrl,
+    context = await browser.newContext({ ...options, baseURL: browserOrigin,
       proxy: proxy.proxyOptions, serviceWorkers: "block" });
     proxy.attach(context);
-    guard = await installE2eBrowserRouteGuard(context, { baseUrl, onBlocked });
+    guard = await installE2eBrowserRouteGuard(context, { baseUrl: browserOrigin, onBlocked });
     return { context, transport };
   } catch (error) {
     await finalizeE2eBrowserLifecycle({ context, transport, error });

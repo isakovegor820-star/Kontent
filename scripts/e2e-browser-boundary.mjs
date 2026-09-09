@@ -1,11 +1,9 @@
 import assert from "node:assert/strict";
+import { parseOwnedE2eBrowserOrigin } from "./e2e-browser-origin.mjs";
 
 /** Browser HTTP routing is per context; new contexts never inherit another one's guard. */
 export async function installE2eBrowserBoundary(context, { baseUrl, onBlocked = () => {} }) {
-  const base = new URL(baseUrl);
-  assert(["http:", "https:"].includes(base.protocol)
-    && ["127.0.0.1", "localhost", "[::1]"].includes(base.hostname)
-    && !base.username && !base.password, "explicit loopback browser origin required");
+  const base = parseOwnedE2eBrowserOrigin(baseUrl);
   const blocked = [];
   const handler = async (route) => {
     const request = route.request();

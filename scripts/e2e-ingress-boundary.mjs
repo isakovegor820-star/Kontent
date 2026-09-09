@@ -1,11 +1,9 @@
 import assert from "node:assert/strict";
+import { parseOwnedE2eBrowserOrigin } from "./e2e-browser-origin.mjs";
 
 /** Guard response redirects before a browser receives the local TLS response. */
 export function createE2eIngressBoundary({ baseUrl, onBlocked = () => {} }) {
-  const base = new URL(baseUrl);
-  assert(["http:", "https:"].includes(base.protocol)
-    && ["127.0.0.1", "localhost", "[::1]"].includes(base.hostname)
-    && !base.username && !base.password, "explicit loopback ingress origin required");
+  const base = parseOwnedE2eBrowserOrigin(baseUrl);
   const blocked = [];
   return {
     accept({ requestUrl, status, headers }) {

@@ -107,6 +107,35 @@ describe("isolated browser transport proxy", () => {
     expect(observed[0].headers["proxy-authorization"]).toBeUndefined(); guard.assertClean();
   });
 
+  it("maps only the reserved browser origin to the owned loopback listener", async () => {
+    const observed = [];
+    const baseUrl = await listen(http.createServer((req, res) => { observed.push(req.headers.host); res.end("owned"); }));
+    const port = new URL(baseUrl).port; const browserOrigin = `http://aurora-e2e.invalid:${port}`;
+    const guard = await proxy({ baseUrl, browserOrigin });
+    expect(await request(guard.proxyOptions.server, `${browserOrigin}/path`)).toMatchObject({ status: 200, body: "owned" });
+    expect(observed).toEqual([new URL(baseUrl).host]); guard.assertClean();
+    expect((await request(guard.proxyOptions.server, `http://another.invalid:${port}/path`)).status).toBe(403);
+    expect(() => guard.assertClean()).toThrow("unexpected external request");
+  });
+
+  it.each(["http://another.invalid:12345", "https://aurora-e2e.invalid:12345", "http://aurora-e2e.invalid:12346"])("rejects an unowned browser-origin mapping: %s", async browserOrigin => {
+    await expect(createE2eBrowserProxy({ baseUrl: "http://127.0.0.1:12345", browserOrigin })).rejects.toThrow("reserved browser origin");
+  });
+
+  it("denies an upstream external redirect before any browser can bypass route interception", async () => {
+    const foreignEffect = vi.fn((_req, res) => res.end("must not happen"));
+    const foreign = await listen(http.createServer(foreignEffect));
+    const baseUrl = await listen(http.createServer((_req, res) => {
+      res.writeHead(302, { location: `${foreign}/credential-canary` }); res.end();
+    }));
+    const guard = await proxy({ baseUrl });
+    await expect(request(guard.proxyOptions.server, `${baseUrl}/redirect`)).rejects.toThrow();
+    expect(foreignEffect).not.toHaveBeenCalled();
+    expect(guard.snapshot()).toMatchObject([{ method: "GET", protocol: "http:", transport: "redirect" }]);
+    expect(JSON.stringify(guard.snapshot())).not.toMatch(/credential|127\.0\.0\.1/u);
+    expect(() => guard.assertClean()).toThrow("unexpected external request");
+  });
+
   it("denies a foreign actual listener, userinfo, aliases and malformed destinations before connection", async () => {
     const effect = vi.fn((_req, res) => res.end("must not happen"));
     const foreign = await listen(http.createServer(effect));
