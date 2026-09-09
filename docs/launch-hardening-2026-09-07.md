@@ -1,6 +1,6 @@
 # Устранение рисков запуска: 7 сентября 2026
 
-Пункты A0–A7 реализованы и проверены для Telegram-релиза. Итоговый снимок прошёл 3276 unit-тестов, 114 миграций, все 17 отдельных проверок и полный stability gate: 90 journeys в Chromium, Firefox и WebKit без ошибок. Новые Studio/Автопилот изменения исходного репозитория сохранены. Точный снимок и финальные доказательства приведены в конце отчёта.
+Пункты A0–A7 реализованы и проверены для Telegram-релиза. Базовый hardening-снимок прошёл 3276 unit-тестов, 114 миграций, все 17 отдельных проверок и полный stability gate: 90 journeys в Chromium, Firefox и WebKit без ошибок. После объединения с последующими изменениями `main` актуальный production-кандидат проверен отдельным финальным набором; граница между этими доказательствами явно указана в конце отчёта.
 
 ## A0 — исходное состояние и границы
 
@@ -191,3 +191,24 @@ Store не загружает всю историю на экране кален
 Перенос в основной checkout выполняется только после повторного сравнения его HEAD и всех 1994 файлов с сохранённым manifest. Интеграция создаёт отдельную локальную ветку и сравнивает полученное дерево с проверенным кандидатом. Итоговый commit и результат переноса записываются в `a7-integration/review.json`.
 
 Граница готовности: Telegram-релиз. VK не выставлен live-ready; неподтверждённые live-операции закрыты с сохранением существующих данных и заданий. Все отправки в проверках направлены в loopback fake API. Production deploy и реальный sandbox smoke остаются отдельным этапом по разрешению пользователя.
+
+## Production-кандидат после объединения с `main`: 9 сентября 2026
+
+Проверенный кодовый снимок: `0f3a9e861c5befdba51743c40c981e787042f217`. На момент проверки он включал `origin/main` `6214cf38f6a083d85bbeae2b0d1da510ca95df25`; `main` являлся предком кандидата. SHA256 входов приложения, production runtime и E2E fixtures: `fc21e17a8ae991fcfe80d6410851a6a3ba85d583b93e93c91991ea52a77aa52c`. Документация не входит в этот digest. Машиночитаемый манифест `release0f3-manifest.json` содержит 28 успешных проверок и 107 evidence-файлов; SHA256 манифеста: `cf8de0f7ceafa73e6f186360c313bcb3ee91e5e7d9ae963a57ecd0617eba84bb`.
+
+Кандидат сохраняет новые функции Library, Sites, landing и Studio из актуального `main`. При объединении Library reading feed получил захваченный `useProjectFetch()`, поэтому фоновое обновление продолжает передавать обязательный project selector. Одноразовый экран подключения Telegram получил `prefetch={false}` у ссылки входа; полный E2E отдельно подтвердил, что сценарий не делает speculative RSC-запрос к `/login`, но выполняет явный переход пользователя.
+
+Зависимости обновлены до Next.js `16.3.4`, `eslint-config-next` `16.3.4` и Sharp `0.35.4`. Локальный повтор `npm audit` после обновления не выполнялся: автоматический review отклонил передачу lockfile metadata в registry. Обязательный `npm audit --omit=dev --audit-level=high` остаётся fail-closed этапом GitHub CI и должен пройти до merge и deploy.
+
+Все 28 проверок привязаны к одному коду и digest; runner проверил неизменность входов до и после каждой команды:
+
+- Unit: 622 файла / 3432 теста. Строгий lint с `--max-warnings=0`, TypeScript, запрет focused/skipped tests, contract tests и policy 115 аддитивных транзакционных миграций прошли.
+- PostgreSQL/Redis gates: знания, bot publication и project isolation — 43/43; публикация, lifecycle и collaboration — 19/19; аудитория — 6/6; календарь, VK, мониторинг и Autopilot editor — 26/26; AI orchestration — 7/7; password recovery — 3/3; tracking — 5/5; site tenant isolation — 3/3; Studio/Sites — 12/12. Применение 115/115 миграций, schema readiness, Autopilot CAS, semantic publication, quarantine и DB pool overload прошли.
+- Первая попытка migration integration безопасно отказалась использовать уже заполненную БД `aurora_migration_test`. После явной очистки только этой именованной одноразовой БД тот же gate прошёл 115/115. Неуспешный preflight сохранён в evidence и не засчитан как успешная проверка.
+- Fault injection — 6/6: commit при недоступном Redis, потерянный ответ провайдера, неполный album response, прерванная запись receipt, kill/restart/replay и конкурентные cancel/reschedule. Все HTTP-отправки направлены в локальный fake Telegram API.
+- Backup/restore: совпали fingerprints 162 таблиц и 123 последовательностей, проверены 437 внешних ключей и 115 миграций. Отдельный ключ, отсутствие ключа, неверная AAD identity и отсутствие plaintext token/master key в dump проверены. Это лабораторный fixture, а не production RPO/RTO.
+- Отдельная production-сборка и production direct-open Trends прошли. Полный journey на свежей сборке прошёл в Chromium за 164,05 с, на том же артефакте в Firefox за 88,27 с и WebKit за 98,99 с; во всех трёх `browserRuntimeErrors=0`, Library desktop/mobile navigation и Telegram connection boundary проверены.
+
+Stability gate 90/90 относится к базовому hardening-снимку `bf4eb1c5f1de64b8326f9cf4d70149526ec892c6` с digest `9b9e4d55e5276fef27c9391268fd2e30fe151e5a199e7d1dafc9f46609ff38bf`. Для объединённого production-кандидата выполнен один полный journey в каждом из трёх движков и весь 28-gate набор; 90 journeys для нового digest не заявляются. GitHub CI повторяет обязательные проверки после push.
+
+Во время подготовки объединённого кандидата попытка заменить нативный переход Studio → Composer на `router.push` оставила Library `/api/library/state` в pending-состоянии. Нативный одноразовый document handoff восстановлен и закреплён тестом; после исправления все три браузера прошли. Последующее объединение reading feed разрешило единственный конфликт через project-scoped fetch, после чего весь финальный набор был выполнен заново.
