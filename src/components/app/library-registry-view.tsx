@@ -2,29 +2,20 @@
 import { useProjectFetch, useProjectCall } from "@/lib/use-project-transport";
 
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import {
   ArrowDownAZ,
-  Bookmark,
-  Check,
   Download,
-  ExternalLink,
-  Eye,
-  EyeOff,
   Filter,
-  Gauge,
-  Heart,
-  MessageSquareText,
   RefreshCw,
   Search,
-  Sparkles,
-  Star,
   X,
 } from "lucide-react";
 
-import { LibraryCardText, libraryCardContentId, toggleExpandedCardId } from "@/components/app/library-card-text";
+import { LibraryReadingFeed } from "./library-reading-feed";
+import { useLibraryFeed } from "./use-library-feed";
 import { Button } from "@/components/ui/button";
 import { Badge, Card, EmptyState, Input } from "@/components/ui/primitives";
 import { appDraftActionHref, type DraftBackedAppAction } from "@/lib/app-routes";
@@ -40,7 +31,7 @@ import type {
   LibraryViewedFilter,
 } from "@/lib/library-filters";
 import { useStore } from "@/lib/store";
-import { cn, fmtAgo, fmtNum } from "@/lib/utils";
+import { fmtAgo } from "@/lib/utils";
 
 type Filters = {
   q: string;
@@ -67,15 +58,6 @@ type Filters = {
   hitOnly: boolean;
 };
 
-type RegistryResponse = {
-  ok?: boolean;
-  items?: LibraryRegistryItem[];
-  formulaVersion?: string;
-  exportedAt?: string;
-  diagnostics?: LibraryRegistryDiagnostics;
-  error?: string;
-};
-
 type ExportLink = { format: "csv" | "xlsx" | "json" | "pdf" | "html" | "markdown"; href: string };
 
 const DEFAULT_FILTERS: Filters = {
@@ -98,14 +80,15 @@ const DEFAULT_FILTERS: Filters = {
   scoreMax: "",
   qualities: [],
   maturities: [],
-  sort: "score",
+  sort: "published",
   direction: "desc",
   hitOnly: false,
 };
 
 const FORMAT_LABELS: Record<LibraryFormat, string> = { text: "Текст", photo: "Фото", video: "Видео" };
 const SORT_LABELS: Record<LibrarySort, string> = {
-  score: "Оценка",
+  published: "Сначала свежие",
+  score: "По оценке Авроры",
   freshness: "Свежесть",
   views: "Просмотры",
   reactions: "Реакции",
@@ -121,24 +104,9 @@ const EXPORT_LABELS: Record<ExportLink["format"], string> = {
   html: "Веб-страница",
   markdown: "Текстовый файл",
 };
-const QUALITY_LABELS: Record<string, string> = {
-  low: "низкое качество",
-  medium: "среднее качество",
-  high: "высокое качество",
-};
-const MATURITY_LABELS: Record<string, string> = {
-  collecting: "данные накапливаются",
-  mature: "данных достаточно",
-};
-
 function finite(value: string) {
   const number = Number(value);
   return value.trim() && Number.isFinite(number) ? number : undefined;
-}
-
-function versionLabel(value: string | null | undefined) {
-  const version = value?.match(/\d+(?:\.\d+)*/u)?.[0];
-  return version || "текущая";
 }
 
 export function libraryRegistryEmptyState(
@@ -218,10 +186,6 @@ function toggleValue<T extends string>(values: T[], value: T) {
   return values.includes(value) ? values.filter((item) => item !== value) : [...values, value];
 }
 
-function metric(value: number | null, digits = 1) {
-  return value == null || !Number.isFinite(value) ? "—" : value.toFixed(digits);
-}
-
 function itemIdentity(item: LibraryRegistryItem) {
   const [kind, id] = item.id.split(":");
   const numericId = Number(id);
@@ -265,52 +229,25 @@ export function LibraryRegistryView({ channelId, channelName }: { channelId: num
   const router = useRouter();
   const store = useStore();
   const [filters, setFilters] = useState<Filters>(DEFAULT_FILTERS);
-  const [items, setItems] = useState<LibraryRegistryItem[]>([]);
   const [sourceOptions, setSourceOptions] = useState<Array<{ id: string; title: string }>>([]);
-  const [formulaVersion, setFormulaVersion] = useState<string | null>(null);
-  const [diagnostics, setDiagnostics] = useState<LibraryRegistryDiagnostics | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState(false);
-  const [expanded, setExpanded] = useState<Set<string>>(() => new Set());
   const [stateBusy, setStateBusy] = useState<string | null>(null);
   const [draftBusy, setDraftBusy] = useState<string | null>(null);
   const [exportBusy, setExportBusy] = useState(false);
   const [exportLinks, setExportLinks] = useState<ExportLink[]>([]);
   const [exportCount, setExportCount] = useState<number | null>(null);
-  const requestSequence = useRef(0);
   const draftKeys = useRef(new Map<string, string>());
   const exportKey = useRef<string | null>(null);
 
-  const load = useCallback(async (active: Filters) => {
-    const sequence = ++requestSequence.current;
-    setLoading(true);
-    try {
-      const response = await fetch(`/api/library/registry?${libraryRegistryQuery(channelId, active)}`, { cache: "no-store" });
-      const body = await response.json() as RegistryResponse;
-      if (!response.ok || !body.ok || !Array.isArray(body.items)) throw new Error(body.error || "registry_failed");
-      if (sequence !== requestSequence.current) return;
-      setItems(body.items);
-      setFormulaVersion(body.formulaVersion || null);
-      setDiagnostics(body.diagnostics ?? null);
-      setSourceOptions((current) => {
-        const options = new Map(current.map((item) => [item.id, item.title]));
-        for (const item of body.items || []) {
-          if (item.sourceId) options.set(item.sourceId, item.sourceTitle);
-        }
-        return [...options].map(([id, title]) => ({ id, title })).sort((a, b) => a.title.localeCompare(b.title, "ru"));
-      });
-      setError(false);
-    } catch {
-      if (sequence === requestSequence.current) setError(true);
-    } finally {
-      if (sequence === requestSequence.current) setLoading(false);
-    }
-  }, [channelId, fetch]);
-
+  const query = libraryRegistryQuery(channelId, filters).toString();
+  const { items, diagnostics, loading, error, refreshing, refreshError, newCount, refresh, showNew, patchItem } = useLibraryFeed(query, Boolean(stateBusy || draftBusy), fetch);
   useEffect(() => {
-    const timer = window.setTimeout(() => void load(filters), 250);
+    const timer = window.setTimeout(() => setSourceOptions((current) => {
+      const options = new Map(current.map((item) => [item.id, item.title]));
+      for (const item of items) if (item.sourceId) options.set(item.sourceId, item.sourceTitle);
+      return [...options].map(([id, title]) => ({ id, title })).sort((a, b) => a.title.localeCompare(b.title, "ru"));
+    }), 0);
     return () => window.clearTimeout(timer);
-  }, [filters, load]);
+  }, [items]);
 
   const update = <K extends keyof Filters>(key: K, value: Filters[K]) => {
     setFilters((current) => ({ ...current, [key]: value }));
@@ -337,23 +274,15 @@ export function LibraryRegistryView({ channelId, channelName }: { channelId: num
         }),
       });
       if (!response.ok) throw new Error("state_failed");
-      setItems((current) => current.map((candidate) => candidate.id === item.id
-        ? {
-            ...candidate,
-            ...(state.rating !== undefined ? { userRating: state.rating } : {}),
-            ...(state.viewed !== undefined ? { viewedAt: state.viewed ? (candidate.viewedAt || new Date().toISOString()) : null } : {}),
-          }
-        : candidate));
+      patchItem(item.id, {
+        ...(state.rating !== undefined ? { userRating: state.rating } : {}),
+        ...(state.viewed !== undefined ? { viewedAt: state.viewed ? (item.viewedAt || new Date().toISOString()) : null } : {}),
+      });
     } catch {
-      store.toast({ kind: "danger", title: "Оценка не сохранена", body: "Данные карточки не изменены." });
+      store.toast({ kind: "danger", title: "Отметка не сохранена", body: "Попробуй ещё раз." });
     } finally {
       setStateBusy(null);
     }
-  };
-
-  const toggleCard = (item: LibraryRegistryItem) => {
-    setExpanded((current) => toggleExpandedCardId(current, item.id));
-    if (!item.viewedAt) void setItemState(item, { viewed: true });
   };
 
   const saveReference = async (item: LibraryRegistryItem) => {
@@ -367,7 +296,7 @@ export function LibraryRegistryView({ channelId, channelName }: { channelId: num
         body: JSON.stringify({ channelId, kind: "reference", sourcePostId: identity.id }),
       });
       if (!response.ok) throw new Error("save_failed");
-      setItems((current) => current.map((candidate) => candidate.id === item.id ? { ...candidate, saved: true } : candidate));
+      patchItem(item.id, { saved: true });
       store.toast({ kind: "success", title: "Референс сохранён", body: `Добавлен в коллекцию «${channelName}».` });
     } catch {
       store.toast({ kind: "danger", title: "Не удалось сохранить референс" });
@@ -429,24 +358,15 @@ export function LibraryRegistryView({ channelId, channelName }: { channelId: num
     return plain + filters.formats.length + filters.qualities.length + filters.maturities.length
       + (filters.saved !== "all" ? 1 : 0) + (filters.viewed !== "all" ? 1 : 0) + (filters.hitOnly ? 1 : 0);
   }, [filters]);
-  const emptyState = libraryRegistryEmptyState(diagnostics, activeFilterCount);
+  const emptyState = libraryRegistryEmptyState(diagnostics ?? null, activeFilterCount);
 
   return (
-    <div className="mt-5 min-w-0 space-y-4">
-      <div>
-        <div>
-          <h2 className="text-[18px] font-extrabold text-text">Аналитический реестр</h2>
-          <p className="mt-1 max-w-3xl text-[13px] leading-relaxed text-text-3">
-            Сравнение идёт только внутри одного источника, формата и временного окна. Ваша оценка 1–5 не влияет на аналитическую оценку 0–100.
-          </p>
-        </div>
-      </div>
-
-      <Card className="min-w-0 overflow-hidden">
+    <div className="mt-5 min-w-0 space-y-5">
+      <Card className="min-w-0 overflow-hidden shadow-none!">
         <div className="border-b border-line px-4 py-4 sm:px-5">
           <div className="grid min-w-0 grid-cols-[minmax(0,1fr)] gap-3 md:grid-cols-[minmax(0,1fr)_220px_190px]">
             <label className="relative min-w-0">
-              <span className="sr-only">Поиск по реестру</span>
+              <span className="sr-only">Поиск материалов</span>
               <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-text-3" aria-hidden />
               <Input value={filters.q} onChange={(event) => update("q", event.target.value)} placeholder="Поиск по тексту, источнику или каналу…" className="pl-9" />
             </label>
@@ -562,11 +482,27 @@ export function LibraryRegistryView({ channelId, channelName }: { channelId: num
         </details>
       </Card>
 
+      <div className="flex min-h-11 items-center justify-between gap-2 px-1">
+        <div className="min-w-0 flex-1 text-[12px] text-text-3" role="status">
+          {newCount > 0 ? <Button variant="ghost" size="sm" onClick={showNew} className="text-info-text">Показать новые · {newCount}</Button> :
+            <p>{refreshError ? "Не удалось обновить. Показываем загруженные материалы." :
+              diagnostics?.lastCollectedAt ? `Последний сбор источников: ${fmtAgo(diagnostics.lastCollectedAt)}` :
+              "Ожидаем первый сбор источников"}</p>}
+        </div>
+        <Button variant="ghost" size="sm" aria-label="Обновить ленту" onClick={() => void refresh()} loading={refreshing} disabled={loading || Boolean(stateBusy || draftBusy)}>
+          <RefreshCw className="h-3.5 w-3.5" aria-hidden /> <span className="hidden sm:inline">Обновить ленту</span>
+        </Button>
+      </div>
+      {Boolean(diagnostics?.failedSourceCount) && (
+        <p className="px-1 text-[12px] text-text-3">
+          Не все источники удалось проверить. <Link href={`/app/competitors?channel=${channelId}`} className="text-info-text underline underline-offset-4">Проверить источники</Link>
+        </p>
+      )}
       {error ? (
         <Card className="p-5">
           <div className="flex flex-wrap items-center gap-3">
-            <p role="alert" className="min-w-0 flex-1 text-[13px] text-text">Не удалось загрузить аналитический реестр.</p>
-            <Button variant="outline" size="sm" onClick={() => void load(filters)}><RefreshCw className="h-4 w-4" aria-hidden /> Повторить</Button>
+            <p role="alert" className="min-w-0 flex-1 text-[13px] text-text">Не удалось загрузить материалы.</p>
+            <Button variant="outline" size="sm" onClick={() => void refresh()}><RefreshCw className="h-4 w-4" aria-hidden /> Повторить</Button>
           </div>
         </Card>
       ) : loading ? (
@@ -590,105 +526,16 @@ export function LibraryRegistryView({ channelId, channelName }: { channelId: num
           />
         </Card>
       ) : (
-        <div className="grid min-w-0 grid-cols-[minmax(0,1fr)] gap-3 lg:grid-cols-2">
-          {items.map((item) => {
-            const isExpanded = expanded.has(item.id);
-            const primaryAction: DraftBackedAppAction = item.kind === "saved" ? "editor" : "create";
-            const primaryKey = `${primaryAction}:${item.id}:channel:${channelId}`;
-            const discussKey = `discuss:${item.id}:channel:${channelId}`;
-            return (
-              <Card key={item.id} className="min-w-0 flex flex-col p-4 transition-[border-color,box-shadow] hover:border-line-strong hover:shadow-soft">
-                <div className="flex flex-wrap items-center gap-2 text-[11px]">
-                  <Badge tone={item.kind === "reference" ? "fire" : item.kind === "idea" ? "brand" : "neutral"}>
-                    {item.kind === "reference" ? "Референс" : item.kind === "idea" ? "Идея" : "Коллекция"}
-                  </Badge>
-                  <span className="min-w-0 flex-1 truncate font-bold text-text-2">{item.sourceTitle}</span>
-                  <span className="text-text-3">{fmtAgo(item.postedAt)}</span>
-                  {!item.viewedAt && <Badge tone="brand">Новое</Badge>}
-                  {item.isHit && <Badge tone="fire">Лучшие 10% · прирост ≥ 5</Badge>}
-                </div>
-
-                <LibraryCardText
-                  className="mt-3"
-                  contentId={libraryCardContentId("registry", item.id)}
-                  text={item.text}
-                  expanded={isExpanded}
-                  onToggle={() => toggleCard(item)}
-                />
-
-                <div className="mt-3 grid grid-cols-3 gap-2 sm:grid-cols-4">
-                  <div className="rounded-xs bg-surface-inset p-2.5"><p className="text-[10px] text-text-3">Оценка 0–100</p><p className="nums mt-0.5 text-[15px] font-black text-text">{metric(item.analyticsScore, 1)}</p></div>
-                  <div className="rounded-xs bg-surface-inset p-2.5"><p className="text-[10px] text-text-3">Прирост</p><p className="nums mt-0.5 text-[15px] font-black text-text">{item.lift == null ? "—" : `×${metric(item.lift, 2)}`}</p></div>
-                  <div className="rounded-xs bg-surface-inset p-2.5"><p className="text-[10px] text-text-3">Скорость</p><p className="nums mt-0.5 text-[15px] font-black text-text">{metric(item.velocity, 1)}</p></div>
-                  <div className="rounded-xs bg-surface-inset p-2.5"><p className="text-[10px] text-text-3">Вовлечённость</p><p className="nums mt-0.5 text-[15px] font-black text-text">{item.erBayes == null ? "—" : `${(item.erBayes * 100).toFixed(2)}%`}</p></div>
-                </div>
-                <div className="mt-2 flex flex-wrap items-center gap-3 text-[11px] text-text-3">
-                  {item.views != null && <span className="flex items-center gap-1"><Eye className="h-3.5 w-3.5" aria-hidden /> {fmtNum(item.views)}</span>}
-                  {item.reactions != null && <span className="flex items-center gap-1"><Heart className="h-3.5 w-3.5" aria-hidden /> {fmtNum(item.reactions)}</span>}
-                  <span className="flex items-center gap-1"><Gauge className="h-3.5 w-3.5" aria-hidden /> Отклонение {metric(item.velocityZ, 2)}</span>
-                  <span>{QUALITY_LABELS[item.dataQuality || ""] || "качество не определено"} · {MATURITY_LABELS[item.dataMaturity || ""] || "зрелость не определена"}</span>
-                  <span>{FORMAT_LABELS[item.format]}</span>
-                </div>
-
-                <details className="mt-3 rounded-xs border border-line bg-surface-2 px-3 py-2">
-                  <summary className="cursor-pointer text-[11px] font-bold text-text-2">Как рассчитана оценка</summary>
-                  <p className="mt-2 text-[11px] leading-relaxed text-text-3">{item.explanation || "Недостаточно сопоставимых данных."}</p>
-                  <p className="mt-1 text-[10px] text-text-3">Версия формулы: {versionLabel(item.formulaVersion || formulaVersion)}</p>
-                </details>
-
-                <fieldset className="mt-3">
-                  <legend className="text-[11px] font-bold text-text-2">Ваша оценка, отдельно от аналитической</legend>
-                  <div className="mt-1 flex flex-wrap items-center gap-1" aria-label="Оценка от 1 до 5">
-                    {[1, 2, 3, 4, 5].map((rating) => (
-                      <button
-                        key={rating}
-                        type="button"
-                        aria-label={`Поставить оценку ${rating} из 5`}
-                        aria-pressed={item.userRating === rating}
-                        disabled={Boolean(stateBusy)}
-                        onClick={() => void setItemState(item, { rating: item.userRating === rating ? null : rating })}
-                        className="grid h-10 w-10 place-items-center rounded-sm text-text-3 hover:bg-fire-soft hover:text-fire focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-brand/15 disabled:opacity-50"
-                      >
-                        <Star className={cn("h-4 w-4", item.userRating != null && rating <= item.userRating && "fill-current text-fire")} aria-hidden />
-                      </button>
-                    ))}
-                    <button
-                      type="button"
-                      disabled={Boolean(stateBusy)}
-                      onClick={() => void setItemState(item, { viewed: !item.viewedAt })}
-                      className="inline-flex min-h-10 basis-full items-center gap-1.5 rounded-sm px-2 text-[11px] font-semibold text-text-2 hover:bg-surface-inset sm:ml-auto sm:basis-auto"
-                    >
-                      {item.viewedAt ? <EyeOff className="h-3.5 w-3.5" aria-hidden /> : <Check className="h-3.5 w-3.5" aria-hidden />}
-                      {item.viewedAt ? "Сделать новым" : "Просмотрено"}
-                    </button>
-                  </div>
-                </fieldset>
-
-                <div className="mt-3 flex flex-wrap items-center gap-1.5 border-t border-line pt-3">
-                  {item.kind === "reference" && (
-                    <Button variant={item.saved ? "ghost" : "solid"} size="sm" disabled={item.saved || Boolean(stateBusy)} loading={stateBusy === `save:${item.id}`} onClick={() => void saveReference(item)}>
-                      {stateBusy !== `save:${item.id}` && <Bookmark className={cn("h-3.5 w-3.5", item.saved && "fill-current")} aria-hidden />}
-                      {item.saved ? "Сохранено" : "Сохранить"}
-                    </Button>
-                  )}
-                  <Button variant="soft" size="sm" loading={draftBusy === primaryKey} disabled={Boolean(draftBusy) && draftBusy !== primaryKey} onClick={() => void openDraft(primaryAction, item)}>
-                    {draftBusy !== primaryKey && <Sparkles className="h-3.5 w-3.5" aria-hidden />}
-                    {item.kind === "saved" ? "Открыть в редакторе" : "Создать публикацию"}
-                  </Button>
-                  <Button variant="ghost" size="sm" loading={draftBusy === discussKey} disabled={Boolean(draftBusy) && draftBusy !== discussKey} onClick={() => void openDraft("discuss", item)}>
-                    {draftBusy !== discussKey && <MessageSquareText className="h-3.5 w-3.5" aria-hidden />}
-                    Обсудить с Авророй
-                  </Button>
-                  {item.sourceUrl && (
-                    <a href={item.sourceUrl} target="_blank" rel="noopener noreferrer" className="inline-flex min-h-10 items-center gap-1.5 rounded-sm px-2.5 text-[12px] font-semibold text-text-2 hover:bg-surface-inset hover:text-text">
-                      <ExternalLink className="h-3.5 w-3.5" aria-hidden /> Открыть оригинал
-                    </a>
-                  )}
-                </div>
-              </Card>
-            );
-          })}
-        </div>
+        <LibraryReadingFeed
+          key={query}
+          items={items}
+          channelId={channelId}
+          stateBusy={stateBusy}
+          draftBusy={draftBusy}
+          onSave={(item) => void saveReference(item)}
+          onStateChange={(item, state) => void setItemState(item, state)}
+          onDraft={(action, item) => void openDraft(action, item)}
+        />
       )}
     </div>
   );

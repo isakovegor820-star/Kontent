@@ -2669,20 +2669,18 @@ try {
 
   const libraryContentId = `library-registry-text-reference-${libraryReferenceId}`;
   const libraryText = page.locator(`#${libraryContentId}`);
-  const libraryReferenceCard = libraryText.locator(
-    "xpath=ancestor::div[contains(concat(' ', normalize-space(@class), ' '), ' card-plain ')][1]",
-  );
+  const libraryReferenceCard = libraryText.locator("xpath=ancestor::article[1]");
   await libraryText.waitFor({ timeout: UI_WAIT_TIMEOUT_MS });
-  const expand = page.locator(`button[aria-controls="${libraryContentId}"]`);
+  const expand = libraryReferenceCard.getByRole("button", { name: "Читать полностью", exact: true });
   const libraryUrlBeforeExpand = page.url();
-  assert(await expand.getAttribute("aria-expanded") === "false", "closed Library card has wrong aria-expanded");
-  assert((await libraryText.getAttribute("class"))?.includes("line-clamp-4"), "closed Library card is not clamped");
+  assert(await expand.getAttribute("aria-haspopup") === "dialog", "Library reader trigger is not announced as a dialog");
   await expand.click();
   assert(page.url() === libraryUrlBeforeExpand, "Library expansion navigated away from the card");
-  assert(await expand.getAttribute("aria-expanded") === "true", "expanded Library card has wrong aria-expanded");
-  assert(!(await libraryText.getAttribute("class"))?.includes("line-clamp-4"), "expanded Library card stayed clamped");
-  await expand.click();
-  assert(await expand.getAttribute("aria-expanded") === "false", "Library card did not collapse independently");
+  const libraryReader = page.getByRole("dialog");
+  await libraryReader.waitFor();
+  assert((await page.locator(`#${libraryContentId}-full`).textContent()) === libraryReferenceText, "Library reader lost the full source text");
+  await libraryReader.getByRole("button", { name: "Закрыть материал", exact: true }).click();
+  await libraryReader.waitFor({ state: "hidden" });
 
   const registrySearch = page.getByPlaceholder("Поиск по тексту, источнику или каналу…");
   await registrySearch.fill("E2E_LIBRARY_REFERENCE");
@@ -2731,11 +2729,12 @@ try {
   assert(exportSnapshot?.items?.length === 1, "snapshot was rebuilt with a different registry");
   assert(exportSnapshot.items[0].id === `reference:${libraryReferenceId}`, "snapshot exported another Library item");
 
-  const originalLink = page.getByRole("link", { name: "Открыть оригинал", exact: true });
+  await libraryReferenceCard.getByRole("button", { name: "Читать полностью", exact: true }).click();
+  const originalLink = libraryReader.getByRole("link", { name: "Открыть оригинал", exact: true });
   assert((await originalLink.getAttribute("href")) === "https://t.me/qa_competitor_a/91001", "original action lost source URL");
   assert(await originalLink.getAttribute("target") === "_blank", "original action does not stay external");
 
-  await page.getByRole("button", { name: "Создать публикацию", exact: true }).click();
+  await libraryReader.getByRole("button", { name: "Создать пост", exact: true }).click();
   await page.waitForURL((url) => url.pathname === "/app/studio"
     && /^\d+$/u.test(url.searchParams.get("draft") || "")
     && url.searchParams.get("intent") === "create");
@@ -2853,7 +2852,8 @@ try {
   await waitForFirstPartyNetworkIdle(page, "restored Studio before Library history");
   await page.evaluate(() => globalThis.history.back());
   await waitForRestoredLibrary(page, channels[0]);
-  const discussReference = libraryReferenceCard.getByRole("button", { name: "Обсудить с Авророй", exact: true });
+  await libraryReferenceCard.getByRole("button", { name: "Читать полностью", exact: true }).click();
+  const discussReference = page.getByRole("dialog").getByRole("button", { name: "Обсудить с Авророй", exact: true });
   await discussReference.waitFor();
   await desktopSidebar
     .locator('a[aria-current="page"]')
