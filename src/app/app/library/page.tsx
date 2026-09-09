@@ -18,7 +18,6 @@ import {
   Link2,
   MessageSquareText,
   Plus,
-  Radio,
   RefreshCw,
   Search,
   Sparkles,
@@ -407,23 +406,14 @@ function LibraryInner() {
   return (
     <div className="mx-auto min-w-0 w-full max-w-[1180px]">
       {/* Контекст един для всех разделов: переключили канал — заменились все данные. */}
-      <section className="flex min-w-0 flex-col gap-4 rounded-md border border-line bg-surface px-4 py-4 shadow-soft sm:flex-row sm:items-center sm:justify-between sm:px-5">
-        <div className="min-w-0">
-          <p className="flex items-center gap-2 text-[12px] font-bold tracking-wide text-text-3 uppercase">
-            <Radio className="h-4 w-4 text-success-text" aria-hidden />
-            Память канала
-          </p>
-          <p className="mt-1 truncate text-[18px] font-extrabold text-text">{selectedChannelName}</p>
-          <p className="mt-0.5 text-[12px] text-text-3">
-            {networkLabel(selectedChannel)} · референсы и тексты не смешиваются с другими каналами
-          </p>
-        </div>
-        <label className="min-w-0 sm:w-[280px]">
-          <span className="sr-only">Выбранный канал</span>
+      <section className="flex min-w-0 flex-wrap items-center justify-between gap-3">
+        <label className="flex min-w-0 w-full items-center gap-3 sm:w-auto">
+          <span className="shrink-0 text-[13px] text-text-3">Для канала</span>
           <select
+            aria-label="Выбранный канал"
             value={channelId ?? ""}
             onChange={(event) => replaceContext({ channelId: Number(event.target.value) })}
-            className="min-h-11 w-full rounded-sm border border-line bg-surface-inset px-3 text-[14px] font-semibold text-text outline-none transition-colors hover:border-line-strong focus:border-brand"
+            className="min-h-11 min-w-0 w-full rounded-sm border border-line bg-surface px-3 text-[14px] font-medium text-text outline-none transition-colors hover:border-line-strong focus:border-brand sm:max-w-[320px]"
           >
             {activeChannels.map((channel) => (
               <option key={channel.id} value={channel.id}>
@@ -826,7 +816,7 @@ function LibraryInner() {
 
 export default function LibraryPage() {
   return (
-    <AppShell title="Идеи и примеры" subtitle="Храни удачные тексты и используй их механику в новых публикациях.">
+    <AppShell title="Идеи и примеры" subtitle="Найди тему, прочитай материал и создай свой пост.">
       <Suspense fallback={<div className="skeleton h-64" />}>
         <LibraryInner />
       </Suspense>
