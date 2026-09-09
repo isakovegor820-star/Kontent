@@ -101,19 +101,16 @@ const editorCapabilities: Feature[] = [
 
 const accessCards = [
   {
-    status: "Доступно",
     title: "Редактор и контент-план",
     note: "Основной рабочий контур для подготовки юридического контента.",
     features: ["Черновики и календарь", "Источники и доказательства", "Настройки тона, включая необязательный мат"],
   },
   {
-    status: "Работает",
     title: "Telegram",
     note: "Подключение канала, расписание и серверная публикация.",
     features: ["Публикация по расписанию", "Статусы и история операций", "Повторная попытка без дублей"],
   },
   {
-    status: "После настройки",
     title: "ВКонтакте",
     note: "Доступность зависит от настроенного приложения и тестового сообщества.",
     features: ["Подключение сообщества", "Проверка разрешений", "Статус готовности внутри проекта"],
@@ -122,18 +119,15 @@ const accessCards = [
 
 function SectionHeading({
   id,
-  eyebrow,
   title,
   description,
 }: {
   id: string;
-  eyebrow: string;
   title: string;
   description?: string;
 }) {
   return (
     <div className={styles.sectionHeading}>
-      <p className={styles.eyebrow}>{eyebrow}</p>
       <h2 id={id}>{title}</h2>
       {description ? <p>{description}</p> : null}
     </div>
@@ -177,7 +171,6 @@ export function ReferenceLanding() {
           <div className={styles.heroGlow} aria-hidden="true" />
           <div className={styles.heroInner}>
             <div className={styles.heroCopy}>
-              <p className={styles.eyebrow}>SMM-платформа для юридического контента</p>
               <h1 id="hero-title">Юридический контент с проверкой рисков и доказательств</h1>
               <p className={styles.heroLead}>
                 Планируйте публикации, фиксируйте источники, согласовывайте формулировки
@@ -217,7 +210,6 @@ export function ReferenceLanding() {
           <div className={styles.container}>
             <SectionHeading
               id="features-title"
-              eyebrow="Возможности"
               title="Рабочий контур для юридической редакции"
               description="От темы и доказательств до согласованной версии и контролируемой публикации."
             />
@@ -239,7 +231,6 @@ export function ReferenceLanding() {
           <div className={styles.container}>
             <SectionHeading
               id="how-title"
-              eyebrow="Как это работает"
               title="От идеи до согласованной публикации"
               description="Четыре шага сохраняют смысл, источники и ответственность за финальную версию."
             />
@@ -261,7 +252,6 @@ export function ReferenceLanding() {
         <section className={styles.analyticsSection} id="product" aria-labelledby="product-title">
           <div className={`${styles.container} ${styles.analyticsShell}`}>
             <div className={styles.analyticsIntro}>
-              <p className={styles.eyebrow}>Юридический контроль</p>
               <h2 id="product-title">Проверяйте риски и доказательства до публикации</h2>
               <p>
                 Аврора связывает значимые утверждения с источниками, датами актуальности
@@ -321,9 +311,8 @@ export function ReferenceLanding() {
           </div>
         </section>
 
-        <section className={styles.socialSection} id="integrations" aria-labelledby="integrations-title">
+        <section className={styles.socialSection} id="integrations" aria-label="Интеграции">
           <div className={styles.container}>
-            <p className={styles.eyebrow} id="integrations-title">Статус интеграций</p>
             <div className={styles.socialList}>
               <span>
                 <i className={styles.telegramIcon}>➤</i>
@@ -345,7 +334,6 @@ export function ReferenceLanding() {
           <div className={styles.container}>
             <SectionHeading
               id="evidence-title"
-              eyebrow="Основа продукта"
               title="Что уже есть для юридического редактора"
               description="Три контура, которые формируют проверяемый материал вместо безымянного текста от ИИ."
             />
@@ -365,14 +353,12 @@ export function ReferenceLanding() {
           <div className={styles.container}>
             <SectionHeading
               id="access-title"
-              eyebrow="Доступность"
               title="Фактический статус рабочих контуров"
               description="Доступность каждого контура обозначена прямо и соответствует текущей конфигурации продукта."
             />
             <div className={`${styles.pricingGrid} ${styles.accessGrid}`}>
               {accessCards.map((card) => (
                 <article className={`${styles.priceCard} ${styles.accessCard}`} key={card.title}>
-                  <span className={styles.accessStatus}>{card.status}</span>
                   <h3>{card.title}</h3>
                   <p className={styles.planNote}>{card.note}</p>
                   <ul>
