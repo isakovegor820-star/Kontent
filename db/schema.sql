@@ -1027,8 +1027,7 @@ create table if not exists rss_feeds (
                               check (source_kind in ('manual', 'legal_opportunity')),
   max_per_day     int         not null default 3,
   last_fetched_at timestamptz,
-  created_at      timestamptz not null default now(),
-  unique (user_id, url)
+  created_at      timestamptz not null default now()
 );
 create index if not exists rss_feeds_user_idx on rss_feeds (user_id);
 create index if not exists rss_feeds_user_source_kind_idx
@@ -2406,6 +2405,7 @@ create index if not exists radar_public_sources_domain_seen_idx
   on radar_public_sources (domain, last_seen_at desc);
 
 create table if not exists radar_search_runs (
+  project_id        bigint references projects (id) on delete cascade,
   id                bigint generated always as identity primary key,
   user_id           bigint not null references users (id) on delete cascade,
   channel_id        bigint references channels (id) on delete cascade,
@@ -2425,7 +2425,6 @@ create table if not exists radar_search_runs (
   created_at        timestamptz not null default now(),
   updated_at        timestamptz not null default now(),
   completed_at      timestamptz,
-  constraint radar_search_runs_user_request_key unique (user_id, request_key),
   constraint radar_search_runs_query_check check (length(btrim(normalized_query)) between 2 and 200),
   constraint radar_search_runs_status_check check (status in ('queued','running','ready','partial','failed')),
   constraint radar_search_runs_stage_check check (stage in ('queued','discovering','verifying','ranking','ready','failed')),
@@ -6504,6 +6503,21 @@ create index if not exists site_reports_interpretation_pending_idx
   on site_reports (interpretation_status, created_at) where interpretation_status = 'pending';
 
 
+create table if not exists studio_project_chat_sessions (
+  project_id bigint not null references projects (id) on delete cascade,
+  user_id bigint not null references users (id) on delete cascade,
+  payload jsonb not null,
+  revision bigint not null default 1,
+  updated_at timestamptz not null default now(),
+  primary key (project_id, user_id),
+  constraint studio_project_chat_sessions_payload_check check (jsonb_typeof(payload) = 'object'),
+  constraint studio_project_chat_sessions_revision_check check (revision > 0)
+);
+
+create unique index if not exists rss_feeds_actor_channel_url_uidx on rss_feeds (user_id, channel_id, url);
+
+create unique index if not exists radar_search_runs_project_request_uidx on radar_search_runs (project_id, user_id, request_key);
+
 -- Studio / Sites background ownership; mirror of 20261011_studio_sites_worker_leases.sql
 -- Additive ownership fences for recoverable Studio / Sites background work.
 -- Old releases ignore these nullable columns; no existing content is changed.
@@ -6516,3 +6530,6 @@ alter table site_profiles add column if not exists worker_heartbeat_at timestamp
 alter table site_reports add column if not exists worker_lease_token uuid;
 alter table site_reports add column if not exists worker_heartbeat_at timestamptz;
 alter table site_reports add column if not exists interpretation_revision integer not null default 1;
+
+-- Calendar ranges are selected in the project timezone before cursor traversal.
+create index if not exists drafts_project_schedule_idx on drafts (project_id, scheduled_at, id);

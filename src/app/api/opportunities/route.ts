@@ -1,3 +1,4 @@
+import { withProjectRoute } from "@/lib/project-route";
 import { NextRequest, NextResponse } from "next/server";
 
 import { isContentIntelligenceError, listOpportunitySnapshots, refreshOpportunitySnapshots } from "@/lib/content-intelligence";
@@ -30,8 +31,11 @@ async function respond(req: NextRequest, refresh: boolean) {
   }
 }
 
-export async function GET(req: NextRequest) { return respond(req, false); }
-export async function POST(req: NextRequest) {
+async function handleGET(req: NextRequest) { return respond(req, false); }
+async function handlePOST(req: NextRequest) {
   if (!hasTrustedMutationOrigin(req)) return NextResponse.json({ error: "forbidden_origin" }, { status: 403 });
   return respond(req, true);
 }
+
+export const GET = withProjectRoute(handleGET);
+export const POST = withProjectRoute(handlePOST);

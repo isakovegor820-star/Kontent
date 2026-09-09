@@ -1,10 +1,13 @@
 // @vitest-environment jsdom
 import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ArticlesPanel } from "./articles-panel";
+import { setProjectTransport } from "@/lib/project-transport";
+import { projectJson } from "@/test/project-response";
 
 const row = { id: 4, title: "Тестовый материал", typeLabel: "Новость", status: "generating", version: 1, updatedAt: "2026-09-08T10:00Z", bodyMarkdown: "Текст статьи", quality: null as { issues: Array<{ code: string; severity: string; message: string }> } | null };
-afterEach(() => { cleanup(); vi.useRealTimers(); vi.unstubAllGlobals(); });
+beforeEach(() => setProjectTransport(7, true, 1));
+afterEach(() => { cleanup(); setProjectTransport(null); vi.useRealTimers(); vi.unstubAllGlobals(); });
 const flush = async () => { await act(async () => { await Promise.resolve(); }); };
 
 describe("article detail recovery", () => {
@@ -24,8 +27,8 @@ describe("article detail recovery", () => {
     let article = { ...row };
     let detailRequests = 0;
     vi.stubGlobal("fetch", vi.fn(async (url: string) => {
-      if (url.endsWith("/4")) { detailRequests++; return Response.json({ article }); }
-      return Response.json({ articles: [article] });
+      if (url.endsWith("/4")) { detailRequests++; return projectJson(7, { article }); }
+      return projectJson(7, { articles: [article] });
     }));
     render(<ArticlesPanel siteId={5} verified={false} hasDestinations={false} destinationsLoaded hasProfile onSiteChanged={vi.fn()} />);
     await flush();
@@ -42,8 +45,8 @@ describe("article detail recovery", () => {
   it("does not repeatedly reload a newer detail while the list is older", async () => {
     let detailRequests = 0;
     vi.stubGlobal("fetch", vi.fn(async (url: string) => {
-      if (url.endsWith("/4")) { detailRequests++; return Response.json({ article: { ...row, status: "needs_review" } }); }
-      return Response.json({ articles: [row] });
+      if (url.endsWith("/4")) { detailRequests++; return projectJson(7, { article: { ...row, status: "needs_review" } }); }
+      return projectJson(7, { articles: [row] });
     }));
     render(<ArticlesPanel siteId={5} verified={false} hasDestinations={false} destinationsLoaded hasProfile onSiteChanged={vi.fn()} />);
     await flush();

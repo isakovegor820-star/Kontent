@@ -1,3 +1,5 @@
+import { ProjectAccessError, requireSelectedProjectPermission } from "@/lib/project-permissions";
+import { withProjectRoute } from "@/lib/project-route";
 // Генерация контента ИИ (ТЗ Д.8). Стримит ответ по мере генерации. Перед генерацией:
 // проверяем дневной лимит, подкладываем прошлые посты пользователя как образец стиля.
 // Движок скрыт за переходником ai-provider — этот роут не знает, Ollama там или облако.
@@ -1180,7 +1182,7 @@ function studioStreamResponse(
   });
 }
 
-export async function POST(req: NextRequest) {
+async function handlePOST(req: NextRequest) {
   const requestId = crypto.randomUUID();
   if (!hasTrustedMutationOrigin(req)) {
     logAiRequest("warn", requestId, "forbidden_origin", { status: 403 });
@@ -1326,10 +1328,17 @@ export async function POST(req: NextRequest) {
       return aiJson(requestId, { error: "input_draft_conflict", retryable: false }, { status: 409 });
     }
   }
+  try {
+    await requireSelectedProjectPermission(getPool(), user.id, "content.create");
+  } catch (error) {
+    if (error instanceof ProjectAccessError) return aiJson(requestId, { error: "access_denied", retryable: false }, { status: 403 });
+    return prerequisiteUnavailable(requestId, error, "context");
+  }
   const usageKey = `web:${requestKey}`;
   const fingerprintKind: AiKind = KINDS.includes(body.command as AiKind) ? (body.command as AiKind) : "write";
   const requestFingerprint = aiRequestFingerprint({
     ...body,
+    channelId,
     ...(hasReferenceDraft
       ? { input: undefined, history: undefined, referenceText: undefined, referenceSource: undefined }
       : {}),
@@ -1688,3 +1697,5 @@ export async function POST(req: NextRequest) {
     { providerEngine: chosen, providerModel: runtime.model, channelId, startedAt },
   );
 }
+
+export const POST = withProjectRoute(handlePOST);

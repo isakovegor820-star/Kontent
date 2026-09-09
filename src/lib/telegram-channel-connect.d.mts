@@ -20,7 +20,7 @@ export interface TelegramChannelMembership {
 export interface TelegramChannelConnectionClient {
   query(sql: string, values?: readonly unknown[]): Promise<{
     rows: Array<Record<string, unknown>>;
-    rowCount?: number;
+    rowCount?: number | null;
   }>;
   release(): void;
 }
@@ -73,3 +73,10 @@ export function markTelegramChannelUnavailable(
       errorCode: string;
     }
 >;
+
+/** Explicit project confirmation after Telegram proves both administrator identities. */
+export function confirmTelegramChannelProject(
+  pool: TelegramChannelConnectionPool & Pick<TelegramChannelConnectionClient, "query">,
+  input: { userId: number; projectId: number; actorId: number; botId: number; chatId: number; requestId?: string },
+  api: (method: string, payload: { chat_id: number; user_id?: number }) => Promise<{ ok: boolean; result?: Record<string, unknown> }>,
+): Promise<TelegramChannelConnectionResult | { state: "telegram_access_denied" }>;

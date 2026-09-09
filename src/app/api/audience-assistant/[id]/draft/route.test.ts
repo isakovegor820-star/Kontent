@@ -11,7 +11,7 @@ import { DELETE } from "./route";
 const context = { params: Promise.resolve({ id: "41" }) };
 function request(body: unknown = { expectedVersion: 2 }, origin = "http://localhost") {
   return new NextRequest("http://localhost/api/audience-assistant/41/draft", {
-    method: "DELETE", headers: { "content-type": "application/json", origin }, body: JSON.stringify(body),
+    method: "DELETE", headers: { "content-type": "application/json", "x-aurora-project-id": "11", origin }, body: JSON.stringify(body),
   });
 }
 beforeEach(() => {

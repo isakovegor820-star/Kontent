@@ -1,4 +1,6 @@
 "use client";
+import { useProjectFetch } from "@/lib/use-project-transport";
+
 
 import { useEffect, useId, useState } from "react";
 import { FileText, Pencil, Plus, RotateCcw } from "lucide-react";
@@ -37,6 +39,7 @@ function blockLabel(kind: PublicationBlockKind) {
 }
 
 export function PublicationBlocksSection() {
+  const fetch = useProjectFetch();
   const projects = useProjects();
   const statusId = useId();
   const errorId = useId();
@@ -87,7 +90,7 @@ export function PublicationBlocksSection() {
         if (!controller.signal.aborted) setLoading(false);
       });
     return () => controller.abort();
-  }, [current, reloadKey]);
+  }, [current, fetch, reloadKey]);
 
   const beginCreate = () => {
     setEditingId(null);

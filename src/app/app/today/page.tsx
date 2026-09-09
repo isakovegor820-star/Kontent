@@ -1,4 +1,6 @@
 "use client";
+import { useProjectFetch } from "@/lib/use-project-transport";
+
 
 import { Suspense, useCallback, useEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from "react";
 import Link from "next/link";
@@ -552,6 +554,7 @@ function ChannelSelector({ board, id, onChange }: { board: TodayBoard; id: strin
 }
 
 function TodayPageContent() {
+  const fetch = useProjectFetch();
   const router = useRouter();
   const pathname = usePathname();
   const searchParams = useSearchParams();
@@ -647,7 +650,7 @@ function TodayPageContent() {
     } finally {
       if (sequence === requestSequence.current) setRefreshing(false);
     }
-  }, [commitBoard, requestedChannelId, syncChannelUrl]);
+  }, [commitBoard, fetch, requestedChannelId, syncChannelUrl]);
 
   useEffect(() => {
     const timer = window.setTimeout(() => void load({ clear: true }), 0);
@@ -685,7 +688,7 @@ function TodayPageContent() {
       body: JSON.stringify({ channelId, fingerprint: item.fingerprint, state }), signal,
     });
     if (!response.ok) throw new Error("state_unavailable");
-  }, []);
+  }, [fetch]);
 
   const changeState = useCallback(async (item: TodayItem, nextState: ItemState) => {
     if (busy) return;
@@ -795,7 +798,7 @@ function TodayPageContent() {
       if (controller.signal.aborted || sequence !== stateSequence.current) return;
       setItemErrors((errors) => ({ ...errors, [notice.item.fingerprint]: "Не удалось вернуть решение. Проверьте соединение и повторите." }));
     } finally { if (sequence === stateSequence.current) setBusy(null); }
-  }, [busy, commitBoard, load, postState, quickMode, undo]);
+  }, [busy, commitBoard, fetch, load, postState, quickMode, undo]);
 
   const runPrimary = useCallback(async (item: TodayItem) => {
     if (busy) return;
@@ -864,7 +867,7 @@ function TodayPageContent() {
       setItemErrors((errors) => ({ ...errors, [item.fingerprint]: message }));
       setAnnouncement(`Не удалось подготовить следующий шаг для «${item.title}».`);
     } finally { if (sequence === actionSequence.current) setBusy(null); }
-  }, [busy, load, router]);
+  }, [busy, fetch, load, router]);
 
   const hideRecommendation = useCallback(async (item: TodayItem) => {
     if (busy || !item.recommendationKind) return;
@@ -904,7 +907,7 @@ function TodayPageContent() {
       setItemErrors((errors) => ({ ...errors, [item.fingerprint]: "Не удалось скрыть тип рекомендаций. Карточка возвращена — попробуйте ещё раз." }));
       setAnnouncement("Не удалось сохранить предпочтение. Карточка возвращена.");
     } finally { if (sequence === feedbackSequence.current) setBusy(null); }
-  }, [busy, commitBoard, load, quickMode, quickTotal]);
+  }, [busy, commitBoard, fetch, load, quickMode, quickTotal]);
 
   const refreshSources = useCallback(async () => {
     if (busy) return;
@@ -943,7 +946,7 @@ function TodayPageContent() {
       setRefreshNotice("");
       setRefreshError("Не удалось обновить источники. Последние успешные данные сохранены — повторите попытку.");
     } finally { if (sequence === mutationSequence.current) setRefreshing(false); }
-  }, [busy, load]);
+  }, [busy, fetch, load]);
 
   const handleChannelChange = (value: string) => {
     const channelId = safeChannelId(value); if (channelId == null) return;

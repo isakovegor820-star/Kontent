@@ -1,3 +1,4 @@
+import { withProjectRoute } from "@/lib/project-route";
 import { randomUUID } from "node:crypto";
 import { NextRequest } from "next/server";
 
@@ -11,7 +12,7 @@ export const runtime = "nodejs";
 
 type Params = { params: Promise<{ projectId: string; invitationId: string }> };
 
-export async function DELETE(req: NextRequest, { params }: Params) {
+async function handleDELETE(req: NextRequest, { params }: Params) {
   if (!hasTrustedMutationOrigin(req)) {
     return projectJson({ ok: false, error: "forbidden_origin" }, 403);
   }
@@ -33,3 +34,5 @@ export async function DELETE(req: NextRequest, { params }: Params) {
     return projectApiError(error, requestId);
   }
 }
+
+export const DELETE = withProjectRoute(handleDELETE, { projectInPath: true });

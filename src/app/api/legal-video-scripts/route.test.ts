@@ -1,4 +1,4 @@
-import { NextRequest } from "next/server";
+import { ProjectRequest } from "@/test/project-request";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
@@ -25,7 +25,7 @@ import { LegalVideoScriptServiceError } from "@/lib/legal-video-script-service";
 import { GET, POST } from "./route";
 
 function request(method: "GET" | "POST", body?: Record<string, unknown>) {
-  return new NextRequest("http://localhost/api/legal-video-scripts", {
+  return new ProjectRequest(99, "http://localhost/api/legal-video-scripts", {
     method,
     headers: {
       origin: "http://localhost",
@@ -44,7 +44,7 @@ describe("legal video collection route", () => {
   });
 
   it("rejects unsupported media and unknown create fields before service work", async () => {
-    const unsupported = await POST(new NextRequest("http://localhost/api/legal-video-scripts", {
+    const unsupported = await POST(new ProjectRequest(99, "http://localhost/api/legal-video-scripts", {
       method: "POST",
       headers: { origin: "http://localhost", "content-type": "text/plain" },
       body: "{}",

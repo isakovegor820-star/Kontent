@@ -1,5 +1,5 @@
+import { ProjectRequest } from "@/test/project-request";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { NextRequest } from "next/server";
 
 const mocks = vi.hoisted(() => ({
   getSessionUser: vi.fn(),
@@ -32,7 +32,7 @@ describe("GET /api/posts project isolation", () => {
         rowCount: 1,
       });
 
-    const response = await GET(new NextRequest("http://localhost/api/posts"));
+    const response = await GET(new ProjectRequest(44, "http://localhost/api/posts"));
 
     expect(response.status).toBe(200);
     await expect(response.json()).resolves.toMatchObject({
@@ -51,7 +51,7 @@ describe("GET /api/posts project isolation", () => {
     expect(normalizedSql).toContain("operation.draft_id as publication_draft_id");
     expect(normalizedSql).toContain("post_author.id = p.user_id");
     expect(normalizedSql).toContain("author_user_id");
-    expect(dataParams).toEqual([44]);
+    expect(dataParams).toEqual([44, 201]);
   });
 
   it("normalizes PostgreSQL bigint identities for strict client-side channel matching", async () => {
@@ -71,7 +71,7 @@ describe("GET /api/posts project isolation", () => {
         rowCount: 1,
       });
 
-    const response = await GET(new NextRequest("http://localhost/api/posts"));
+    const response = await GET(new ProjectRequest(44, "http://localhost/api/posts"));
 
     await expect(response.json()).resolves.toMatchObject({
       posts: [{
@@ -90,7 +90,7 @@ describe("GET /api/posts project isolation", () => {
   it("never runs the post query for a user outside the selected project", async () => {
     mocks.query.mockResolvedValueOnce({ rows: [], rowCount: 0 });
 
-    const response = await GET(new NextRequest("http://localhost/api/posts"));
+    const response = await GET(new ProjectRequest(44, "http://localhost/api/posts"));
 
     expect(response.status).toBe(403);
     await expect(response.json()).resolves.toEqual({ error: "access_denied" });
@@ -100,7 +100,7 @@ describe("GET /api/posts project isolation", () => {
   it("returns 401 before project authorization when the session is missing", async () => {
     mocks.getSessionUser.mockResolvedValueOnce(null);
 
-    const response = await GET(new NextRequest("http://localhost/api/posts"));
+    const response = await GET(new ProjectRequest(44, "http://localhost/api/posts"));
 
     expect(response.status).toBe(401);
     expect(mocks.query).not.toHaveBeenCalled();

@@ -1,3 +1,4 @@
+import { withProjectRoute } from "@/lib/project-route";
 import { readJsonBodyValue } from "@/lib/bounded-request-body";
 import { NextRequest, NextResponse } from "next/server";
 
@@ -13,7 +14,7 @@ const ACTIONS = new Set<TodaySmartAction["kind"]>([
   "create_opportunity_draft", "fill_calendar_gap", "continue_post", "improve_post",
 ]);
 
-export async function POST(req: NextRequest) {
+async function handlePOST(req: NextRequest) {
   if (!hasTrustedMutationOrigin(req)) return NextResponse.json({ error: "forbidden_origin" }, { status: 403 });
   const user = await getSessionUser(req);
   if (!user) return NextResponse.json({ error: "unauthorized" }, { status: 401 });
@@ -45,3 +46,5 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "action_unavailable" }, { status: 503 });
   }
 }
+
+export const POST = withProjectRoute(handlePOST);

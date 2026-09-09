@@ -1,4 +1,6 @@
 "use client";
+import { useProjectFetch } from "@/lib/use-project-transport";
+
 
 // Гибридный поиск: локальная база отвечает сразу, внешний discovery работает в фоне.
 // OSINT-досье отделено от первичных источников и всегда показывает уверенность.
@@ -283,6 +285,7 @@ function ResultCard({
 }
 
 export function RadarInner() {
+  const fetch = useProjectFetch();
   const store = useStore();
   const [query, setQuery] = useState("");
   const [submittedQuery, setSubmittedQuery] = useState("");
@@ -314,7 +317,7 @@ export function RadarInner() {
     }
     if (data.results?.length) setResults((current) => mergeResults(current, data.results ?? []));
     return data.run;
-  }, []);
+  }, [fetch]);
 
   const activeRunId = run && (run.status === "queued" || run.status === "running") ? run.id : null;
   useEffect(() => {
@@ -365,7 +368,7 @@ export function RadarInner() {
     } catch {
       setSearchError("Не удалось расширить поиск. Локальные результаты остаются доступны.");
     }
-  }, [channelId]);
+  }, [channelId, fetch]);
 
   const doSearch = async (event?: React.FormEvent<HTMLFormElement>) => {
     event?.preventDefault();

@@ -26,7 +26,9 @@ import {
   classifyE2eExpectedSessionExpiryWebKitPageError,
   classifyE2eKnownBrowserObservation,
   classifyE2eKnownWebKitDocumentNavigationCancellation,
+  classifyE2eKnownWebKitProvisionalWorkspacePoll,
   classifyE2eKnownWebKitRequestCancellation,
+  performE2eBrowserAuthenticatedRequest,
   resolveE2eAdvanceSchedule,
   resolveE2eBuildMode,
   resolveE2eBuildTimeoutMs,
@@ -379,6 +381,7 @@ async function installBrowserDiagnostics(context, label) {
     const deferredKnownWebKitPageErrors = new Map();
     const pendingWebKitDocumentCancellations = [];
     let recentDocumentRequest = null;
+    let provisionalDocumentRequest = null;
     browserPendingRequests.set(targetPage, pendingRequests);
     const queueDeferredWebKitPageError = (observation) => {
       const queued = deferredKnownWebKitPageErrors.get(observation.message) || [];
@@ -409,6 +412,14 @@ async function installBrowserDiagnostics(context, label) {
       }
     };
     targetPage.on("request", (request) => {
+      if (request.isNavigationRequest() && request.frame() === targetPage.mainFrame()) {
+        provisionalDocumentRequest = {
+          request,
+          url: request.url(),
+          sourceUrl: targetPage.url(),
+          at: Date.now(),
+        };
+      }
       if (request.resourceType() === "document") {
         const documentAt = Date.now();
         recentDocumentRequest = { at: documentAt, url: request.url() };
@@ -437,9 +448,13 @@ async function installBrowserDiagnostics(context, label) {
       }
     });
     const settleRequest = (request) => pendingRequests.delete(request);
+    targetPage.on("framenavigated", (frame) => {
+      if (frame === targetPage.mainFrame()) provisionalDocumentRequest = null;
+    });
     targetPage.on("requestfinished", settleRequest);
     targetPage.on("requestfailed", settleRequest);
     targetPage.on("requestfailed", (request) => {
+      if (request === provisionalDocumentRequest?.request) provisionalDocumentRequest = null;
       const failure = String(request.failure()?.errorText || "request_failed");
       const knownCancellation = classifyE2eKnownWebKitRequestCancellation({
         engine: browserEngine,
@@ -577,7 +592,17 @@ async function installBrowserDiagnostics(context, label) {
         baseUrl,
         webPort,
       });
-      const knownObservation = deferredObservation || expectedSessionExpiry || classifyE2eKnownBrowserObservation({
+      const provisionalWorkspacePoll = classifyE2eKnownWebKitProvisionalWorkspacePoll({
+        engine: browserEngine,
+        errorName: error?.name,
+        message: rawMessage,
+        navigationPending: provisionalDocumentRequest !== null,
+        sourceUrl: provisionalDocumentRequest?.sourceUrl,
+        documentRequestUrl: provisionalDocumentRequest?.url,
+        elapsedMs: provisionalDocumentRequest ? now - provisionalDocumentRequest.at : Infinity,
+        baseUrl,
+      });
+      const knownObservation = deferredObservation || expectedSessionExpiry || provisionalWorkspacePoll || classifyE2eKnownBrowserObservation({
         engine: browserEngine,
         eventKind: "pageerror",
         message: rawMessage,
@@ -1903,7 +1928,9 @@ const releaseE2eBuildLock = acquireBuildLock({ token: e2eBuildLockToken });
 try {
   pool = new pg.Pool({ connectionString: databaseUrl, ssl: false, max: 12 });
   redis = new IORedis(redisUrl, { maxRetriesPerRequest: null });
+  console.log(`[e2e] ${browserEngine}: build ${buildMode}, input ${e2eInputSnapshot.digest}`);
   await buildProductionRuntime();
+  console.log("[e2e] production build ready");
 
   await pool.query("drop schema public cascade");
   await pool.query("create schema public");
@@ -2253,34 +2280,19 @@ try {
   }
 
   const authenticatedRequestFrom = (targetPage, path, { method = "GET", headers = {}, data } = {}) => targetPage.evaluate(
-    async ({ path, method, headers, data }) => {
-      const response = await fetch(path, {
-        method,
-        headers: { ...headers, ...(data === undefined ? {} : { "content-type": "application/json" }) },
-        body: data === undefined ? undefined : JSON.stringify(data),
-        cache: "no-store",
-      });
-      let text = "";
-      try { text = await response.text(); } catch {}
-      return {
-        status: response.status,
-        ok: response.ok,
-        text,
-        headers: {
-          contentType: response.headers.get("content-type"),
-          requestId: response.headers.get("x-ai-request-id") || response.headers.get("x-request-id"),
-          replayed: response.headers.get("x-ai-replayed"),
-          acknowledged: response.headers.get("x-ai-acknowledged"),
-        },
-      };
-    },
-    { path, method, headers, data },
+    performE2eBrowserAuthenticatedRequest,
+    { path, method, headers, data, timeoutMs: API_REQUEST_TIMEOUT_MS },
   );
   const authenticatedRequest = (path, options) => authenticatedRequestFrom(page, path, options);
   const authenticatedRequestViaContext = async (requestContext, path, { method = "GET", headers = {}, data } = {}) => {
+    const capturedHeaders = { ...headers };
+    if (!capturedHeaders["x-aurora-project-id"] && path !== "/api/projects/current") {
+      const current = await requestContext.get("/api/projects/current").then((response) => response.json());
+      if (current.project?.id) capturedHeaders["x-aurora-project-id"] = String(current.project.id);
+    }
     const response = await requestContext.fetch(path, {
       method,
-      headers,
+      headers: capturedHeaders,
       data,
       failOnStatusCode: false,
       timeout: API_REQUEST_TIMEOUT_MS,
@@ -2412,6 +2424,7 @@ try {
   await waitFor(async () => (await pool.query("select text from drafts where id = $1", [draftId])).rows[0]?.text === "Локальная несинхронизированная версия E2E", "pending draft did not synchronize", 12_000);
   expectedBrowserConsoleScopes.delete("main");
   assert(Number((await pool.query("select count(*)::int as n from drafts where id = $1", [draftId])).rows[0].n) === 1, "draft sync created a duplicate");
+  console.log("[e2e] durable draft recovered after offline reload");
   const composerProtection = await openComposerSection(page, "composer-protection");
   const composerSaveButton = composerProtection.getByRole("button", { name: /^(Сохранено|Сохранить сейчас)$/u });
   await composerSaveButton.waitFor();
@@ -2433,6 +2446,7 @@ try {
 
   interfaceEvidence.todayUi = await runTodayWorkspacePass(page, channels, draftId);
 
+  console.log("[e2e] mobile navigation and Today passed");
   const mediaRequestKey = "e2e_media_terminal_1";
   const mediaCountBefore = Number((await pool.query(
     "select count(*)::int as n from media_generations where user_id = $1",
@@ -2614,25 +2628,23 @@ try {
     [userId, `media:${mediaRequestKey}`],
   )).rows[0].n) === 1, "media replay duplicated or released the committed quota row");
 
+  console.log("[e2e] media generation and idempotent replay passed");
   const competitorIds = (await pool.query(
     `insert into competitors (user_id, channel_id, network, handle, title, status, collected_at)
      values ($1, $2, 'tg', 'qa_competitor_a', 'QA A', 'ready', now()),
             ($1, $3, 'tg', 'qa_competitor_b', 'QA B', 'ready', now()) returning id`,
     [userId, channels[0], channels[1]],
   )).rows.map((row) => Number(row.id)).sort((a, b) => a - b);
-  const [refreshA, refreshB] = await page.evaluate(async ({ channelId }) => Promise.all(
-    [0, 1].map(async () => {
-      const response = await fetch(`/api/trends?scope=niche&channel=${channelId}`, {
-        method: "POST",
-        headers: { "idempotency-key": "e2e_trend_refresh_1" },
-      });
-      return response.status;
-    }),
-  ), { channelId: channels[0] });
-  assert([200, 202].includes(refreshA) && [200, 202].includes(refreshB), "parallel Trends refresh returned an unexpected status");
+  const [refreshA, refreshB] = await Promise.all([0, 1].map(() => authenticatedRequest(
+    `/api/trends?scope=niche&channel=${channels[0]}`,
+    { method: "POST", headers: { "idempotency-key": "e2e_trend_refresh_1" } },
+  )));
+  assert([200, 202].includes(refreshA.status) && [200, 202].includes(refreshB.status),
+    `parallel Trends refresh returned an unexpected status: ${refreshA.status}:${refreshA.text}; ${refreshB.status}:${refreshB.text}`);
   assert(Number((await pool.query("select count(*)::int as n from trend_refresh_operations where user_id = $1", [userId])).rows[0].n) === 1, "double Trends refresh created multiple operations");
   assert((await pool.query("select status from competitors where id = $1", [competitorIds[1]])).rows[0].status === "ready", "channel A refresh mutated channel B");
 
+  console.log("[e2e] parallel Trends refresh passed");
   const libraryReferenceText =
     `E2E_LIBRARY_REFERENCE: договор и проверяемые условия. ${"Полный абзац нужен для независимого раскрытия карточки. ".repeat(18)}`;
   const libraryReferenceTopic = "Договор и проверяемые условия";
@@ -2813,6 +2825,7 @@ try {
     "trusted validation receipt did not restore publication controls",
   );
 
+  await waitForFirstPartyNetworkIdle(page, "Composer before restoring Studio history");
   const studioBackBefore = await page.evaluate(() => ({
     url: globalThis.location.href,
     length: globalThis.history.length,
@@ -2835,6 +2848,7 @@ try {
     });
   }
   assert(!new URL(page.url()).searchParams.has("intent"), "browser Back restarted the completed paid generation");
+  console.log("[e2e] Studio browser Back restored URL");
   const activeStudioLink = desktopSidebar
     .locator('a[aria-current="page"]')
     .filter({ hasText: "Студия контента" });
@@ -2843,6 +2857,7 @@ try {
     await activeStudioLink.count() === 1,
     "restored Studio is not active in desktop navigation",
   );
+  await waitForFirstPartyNetworkIdle(page, "restored Studio before Library history");
   await page.evaluate(() => globalThis.history.back());
   await waitForRestoredLibrary(page, channels[0]);
   await libraryReferenceCard.getByRole("button", { name: "Читать полностью", exact: true }).click();
@@ -2870,6 +2885,7 @@ try {
     await activeStudioLink.count() === 1,
     "Studio action did not activate the restored desktop navigation item",
   );
+  await waitForFirstPartyNetworkIdle(page, "discuss Studio before Library history");
   await page.evaluate(() => globalThis.history.back());
   await waitForRestoredLibrary(page, channels[0]);
 
@@ -3519,10 +3535,9 @@ try {
   assert(parts.length === 2 && parts.every((part) => part.send_status === "sent"), "multipart external IDs were not both persisted");
   assert(fakeState.telegram.photoCalls === 1 && fakeState.telegram.textCalls === 2, "multipart retry duplicated media or skipped text retry");
 
-  // One multi-destination text publication proves capability routing rather than
-  // pretending every network supports every follow-up: VK closes comments, while
-  // Telegram performs the pin. The inverse unsupported operations stay terminal and
-  // never reach either provider.
+  // Telegram release boundary: publication and pin run through the real runtime;
+  // unsupported comments and unverified VK authorization never reach a provider.
+  console.log("[e2e] multipart Telegram publication and retry passed");
   const commentsProjectId = Number((await pool.query(
     "select selected_project_id from user_project_preferences where user_id = $1",
     [userId],
@@ -3531,10 +3546,19 @@ try {
   const commentsVkChannelId = Number((await pool.query(
     `insert into channels
        (project_id, user_id, network, vk_group_id, vk_token, title, handle, is_active, status)
-     values ($1, $2, 'vk', $3, $4, 'Поддержанный VK-канал QA', 'aurora_vk_supported_qa', true, 'active')
+     values ($1, $2, 'vk', $3, $4, 'Сохранённый VK-канал QA', 'aurora_vk_unverified_qa', true, 'active')
      returning id`,
     [commentsProjectId, userId, commentsVkGroupId, encryptE2eVkToken(userId)],
   )).rows[0].id);
+  const vkStoredBefore = (await pool.query("select * from channels where id = $1", [commentsVkChannelId])).rows[0];
+  const vkConnectResponse = await authenticatedRequestViaContext(context.request, "/api/channels/connect-vk", {
+    headers: { origin: baseUrl, "x-aurora-project-id": String(commentsProjectId) },
+    method: "POST", data: { groupId: commentsVkGroupId, token: "fake-vk-unverified" },
+  });
+  assert(vkConnectResponse.status === 409 && JSON.parse(vkConnectResponse.text).error === "vk_auth_flow_unverified",
+    `unverified VK connection was not closed: ${vkConnectResponse.status}:${vkConnectResponse.text}`);
+  assert(JSON.stringify((await pool.query("select * from channels where id = $1", [commentsVkChannelId])).rows[0]) === JSON.stringify(vkStoredBefore),
+    "blocked VK connection changed existing channel data");
   const commentsPublicationInstant = new Date();
   commentsPublicationInstant.setUTCSeconds(0, 0);
   const commentsDraftResponse = await authenticatedRequest("/api/drafts", {
@@ -3553,7 +3577,7 @@ try {
       },
       origin: "manual",
       sourceRef: null,
-      channelIds: [channels[0], commentsVkChannelId],
+      channelIds: [channels[0]],
       aiValidation: null,
     },
   });
@@ -3649,9 +3673,9 @@ try {
   const commentsDestinationIds = commentsOperation.destinations.map((destination) => Number(destination.postId));
   assert(
     Number.isSafeInteger(commentsOperationId)
-      && commentsDestinationIds.length === 2
-      && new Set(commentsDestinationIds).size === 2,
-    "multi-provider comments publication did not create two distinct destinations",
+      && commentsDestinationIds.length === 1
+      && new Set(commentsDestinationIds).size === 1,
+    "Telegram comments publication did not create exactly one destination",
   );
   const commentsDestinationRows = await waitFor(async () => {
     const rows = (await pool.query(
@@ -3662,8 +3686,8 @@ try {
         order by channel.network`,
       [commentsOperationId],
     )).rows;
-    return rows.length === 2 && rows.every((row) => row.status === "published") ? rows : null;
-  }, "Telegram and VK destinations did not both reach published", 30_000);
+    return rows.length === 1 && rows.every((row) => row.status === "published") ? rows : null;
+  }, "Telegram destination did not reach published", 30_000);
   const commentsExtraRows = await waitFor(async () => {
     const rows = (await pool.query(
       `select channel.network, extra.kind, extra.status, extra.attempts, extra.request_snapshot,
@@ -3683,7 +3707,7 @@ try {
         })}`,
       );
     }
-    return rows.length === 4
+    return rows.length === 2
       && rows.every((row) => ["succeeded", "unsupported"].includes(row.status))
       ? rows
       : null;
@@ -3692,30 +3716,14 @@ try {
     (row) => row.network === network && row.kind === kind,
   );
   assert(
-    terminalExtra("vk", "configure_comments")?.status === "succeeded"
-      && Number(terminalExtra("vk", "configure_comments")?.attempts) === 1
-      && terminalExtra("vk", "configure_comments")?.request_snapshot?.commentsEnabled === false
-      && terminalExtra("vk", "pin")?.status === "unsupported"
-      && Number(terminalExtra("vk", "pin")?.attempts) === 0
-      && terminalExtra("tg", "configure_comments")?.status === "unsupported"
+    terminalExtra("tg", "configure_comments")?.status === "unsupported"
       && Number(terminalExtra("tg", "configure_comments")?.attempts) === 0
       && terminalExtra("tg", "pin")?.status === "succeeded"
       && Number(terminalExtra("tg", "pin")?.attempts) === 1,
     "provider capability routing invented support or lost a supported terminal operation",
   );
-  const vkPostRequest = fakeState.vk.requests.find((request) => request.method === "wall.post");
-  const vkCloseCommentsRequest = fakeState.vk.requests.find((request) => request.method === "wall.closeComments");
-  assert(
-    fakeState.vk.wallPostCalls === 1
-      && fakeState.vk.closeCommentsCalls === 1
-      && vkPostRequest?.params?.owner_id === `-${commentsVkGroupId}`
-      && /^[0-9a-f]{32}$/u.test(String(vkPostRequest?.params?.guid))
-      && vkCloseCommentsRequest?.params?.owner_id === `-${commentsVkGroupId}`
-      && vkCloseCommentsRequest?.params?.post_id === "8801"
-      && !("access_token" in (vkPostRequest?.params || {}))
-      && !("access_token" in (vkCloseCommentsRequest?.params || {})),
-    "fake VK evidence does not prove one credential-safe wall.post followed by wall.closeComments",
-  );
+  assert(fakeState.vk.wallPostCalls === 0 && fakeState.vk.closeCommentsCalls === 0 && fakeState.vk.requests.length === 0,
+    "unverified VK operation reached a provider");
   assert(
     fakeState.telegram.textCalls === telegramTextBeforeCommentsPublication + 1
       && fakeState.telegram.pinCalls === telegramPinBeforeCommentsPublication + 1
@@ -3728,15 +3736,18 @@ try {
     limit: 10,
   });
   assert(
-    fakeState.vk.closeCommentsCalls === 1
+    fakeState.vk.closeCommentsCalls === 0
       && fakeState.telegram.pinCalls === telegramPinBeforeCommentsPublication + 1,
     "replaying publication-extra reconciliation duplicated a terminal provider action",
   );
+  console.log("[e2e] Telegram pin and reconciliation passed");
   const pinCallsBeforeCriticalPublication = fakeState.telegram.pinCalls;
 
   // Critical release journey. UI is used wherever the product exposes an interface;
   // API calls below are limited to deterministic setup and workflows that have no UI.
+  console.log("[e2e] provider release boundary and Telegram extras passed");
   const criticalProjectName = "Критический проект QA";
+  console.log("[e2e] starting project collaboration journey");
   const reviewerEmail = "qa-approver@aurora.test";
   const reviewerName = "QA Approver";
   const legacyProjectId = Number((await pool.query(
@@ -3756,7 +3767,10 @@ try {
   await assertTouch(page.getByRole("button", { name: "Создать проект", exact: true }), "create project");
   await projectNameInput.focus();
   await page.keyboard.press("Enter");
-  await page.getByText(`Проект «${criticalProjectName}» создан и выбран.`, { exact: true }).waitFor({ timeout: UI_WAIT_TIMEOUT_MS });
+  await waitFor(async () => page.locator("#sidebar-project-switcher").evaluate(
+    (select, name) => !select.disabled && select.selectedOptions[0]?.textContent === name,
+    criticalProjectName,
+  ), "the created project was not adopted by the visible project switcher", UI_WAIT_TIMEOUT_MS);
   const sharedProjectId = Number((await pool.query(
     "select selected_project_id from user_project_preferences where user_id = $1",
     [userId],
@@ -3765,8 +3779,8 @@ try {
   await waitFor(async () => {
     const response = await authenticatedRequest("/api/projects/current");
     const current = response.status === 200 ? JSON.parse(response.text).project : null;
-    return Number(current?.projectId) === sharedProjectId;
-  }, "project creation toast appeared before the client adopted the selected project", 12_000);
+    return Number(current?.id) === sharedProjectId;
+  }, "project creation did not persist the selected project", 12_000);
   const sharedMembership = (await pool.query(
     "select role, status from project_members where project_id = $1 and user_id = $2",
     [sharedProjectId, userId],
@@ -5933,10 +5947,10 @@ try {
         status: row.status,
       })),
       commentsMode: commentsPreferences.commentsMode,
-      vkConfigureComments: terminalExtra("vk", "configure_comments")?.status,
+      vkConnection: "vk_auth_flow_unverified",
+      existingVkChannelPreserved: true,
       telegramPin: terminalExtra("tg", "pin")?.status,
       unsupportedNotCalled: [
-        `vk:${terminalExtra("vk", "pin")?.status}`,
         `tg:${terminalExtra("tg", "configure_comments")?.status}`,
       ],
       providerCalls: {

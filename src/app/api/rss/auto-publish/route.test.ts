@@ -1,5 +1,5 @@
+import { ProjectRequest } from "@/test/project-request";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { NextRequest } from "next/server";
 
 const mocks = vi.hoisted(() => {
   const client = {
@@ -36,7 +36,7 @@ vi.mock("@/lib/queue", () => ({
 import { PATCH } from "./route";
 
 function request(enabled: boolean) {
-  return new NextRequest("http://localhost/api/rss/auto-publish", {
+  return new ProjectRequest(17, "http://localhost/api/rss/auto-publish", {
     method: "PATCH",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ channelId: 7, enabled }),
@@ -55,6 +55,7 @@ beforeEach(() => {
 describe("PATCH /api/rss/auto-publish", () => {
   it("enables only future legal opportunities after baselining collected items", async () => {
     mocks.client.query.mockImplementation(async (sql: string) => {
+      if (sql.includes("from project_members member")) return { rows: [{project_id: 17, user_id: 5, role: "owner", version: 1}], rowCount: 1 };
       if (sql.includes("from rss_feeds") && sql.includes("for update")) {
         return { rows: [{ id: "1" }, { id: "2" }], rowCount: 2 };
       }
@@ -82,6 +83,7 @@ describe("PATCH /api/rss/auto-publish", () => {
 
   it("disables publication and cancels every not-yet-delivered RSS post", async () => {
     mocks.client.query.mockImplementation(async (sql: string) => {
+      if (sql.includes("from project_members member")) return { rows: [{project_id: 17, user_id: 5, role: "owner", version: 1}], rowCount: 1 };
       if (sql.includes("from rss_feeds") && sql.includes("for update")) {
         return { rows: [{ id: "1" }], rowCount: 1 };
       }
@@ -107,7 +109,7 @@ describe("PATCH /api/rss/auto-publish", () => {
     });
     expect(mocks.client.query).toHaveBeenCalledWith(
       expect.stringContaining("set auto_publish_enabled = false"),
-      [5, 7],
+      [7],
     );
     expect(mocks.client.query).toHaveBeenCalledWith(
       expect.stringContaining("status = 'cancelled'"),

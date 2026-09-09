@@ -1,4 +1,6 @@
 "use client";
+import { useProjectFetch } from "@/lib/use-project-transport";
+
 
 // База знаний канала (РАГ). ОТКУДА автопилот берёт факты для постов.
 //
@@ -76,6 +78,7 @@ const PROFILE_SOURCE_LABEL: Record<ProfileSourceKind, string> = {
 };
 
 export default function KnowledgePage() {
+  const fetch = useProjectFetch();
   const store = useStore();
   // Сюда приводит ссылка «Добавить материалы» с автопилота: без чтения ?channel человек
   // попадал на другой канал и добавлял материалы не туда, где не собрался план.
@@ -116,7 +119,7 @@ export default function KnowledgePage() {
     } finally {
       if (seq === loadSeq.current) setLoading(false);
     }
-  }, [channelId]);
+  }, [channelId, fetch]);
 
   useEffect(() => {
     // eslint-disable-next-line react-hooks/set-state-in-effect -- загрузка при монтировании/смене канала
@@ -295,6 +298,7 @@ function AddPanel({
   onDone: () => void;
   store: ReturnType<typeof useStore>;
 }) {
+  const fetch = useProjectFetch();
   const [title, setTitle] = useState("");
   const [text, setText] = useState("");
   const [busy, setBusy] = useState(false);
@@ -558,6 +562,7 @@ function SourceList({
   onDelete: () => void;
   store: ReturnType<typeof useStore>;
 }) {
+  const fetch = useProjectFetch();
   const [deletingId, setDeletingId] = useState<number | null>(null);
   const del = async (id: number, title: string) => {
     if (deletingId != null) return;

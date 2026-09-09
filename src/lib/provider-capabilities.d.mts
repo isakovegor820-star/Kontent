@@ -137,3 +137,5 @@ export function assertProviderOperationAvailable(
   readiness?: ProviderReadinessInput,
 ): ProviderOperationReadiness;
 export function providerCapabilityCatalog(): readonly ProviderCapability[];
+
+export const VK_AUTH_FLOW_UNVERIFIED: string;

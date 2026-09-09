@@ -1,5 +1,5 @@
+import { ProjectRequest } from "@/test/project-request";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { NextRequest } from "next/server";
 
 const mocks = vi.hoisted(() => ({
   query: vi.fn(),
@@ -8,6 +8,10 @@ const mocks = vi.hoisted(() => ({
   trusted: vi.fn(),
 }));
 
+vi.mock("@/lib/project-permissions", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/lib/project-permissions")>();
+  return { ...actual, requireSelectedProjectPermission: vi.fn(async () => ({ projectId: 1, userId: 7, role: "owner", version: 1 })) };
+});
 vi.mock("@/lib/db", () => ({ getPool: () => ({ query: mocks.query }) }));
 vi.mock("@/lib/session", () => ({ getSessionUser: mocks.session }));
 vi.mock("@/lib/queue", () => ({ getStatsQueue: () => ({ add: mocks.queueAdd }) }));
@@ -17,7 +21,7 @@ import { PATCH } from "./route";
 
 const ctx = { params: Promise.resolve({ id: "41" }) };
 function request(action: string) {
-  return new NextRequest("http://localhost/api/competitors/41", {
+  return new ProjectRequest(1, "http://localhost/api/competitors/41", {
     method: "PATCH",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ action }),
@@ -40,7 +44,7 @@ describe("competitor source lifecycle", () => {
     const response = await PATCH(request("pause"), ctx);
     expect(response.status).toBe(200);
     await expect(response.json()).resolves.toMatchObject({ ok: true, status: "paused", isActive: false });
-    expect(mocks.query).toHaveBeenCalledWith(expect.stringContaining("is_active = false"), [41, 7]);
+    expect(mocks.query).toHaveBeenCalledWith(expect.stringContaining("is_active = false"), [41, 1]);
     expect(mocks.queueAdd).not.toHaveBeenCalled();
   });
 
@@ -48,7 +52,7 @@ describe("competitor source lifecycle", () => {
     const response = await PATCH(request("resume"), ctx);
     expect(response.status).toBe(200);
     await expect(response.json()).resolves.toMatchObject({ ok: true, status: "refreshing", isActive: true });
-    expect(mocks.query).toHaveBeenCalledWith(expect.stringContaining("status = 'refreshing'"), [41, 7]);
+    expect(mocks.query).toHaveBeenCalledWith(expect.stringContaining("status = 'refreshing'"), [41, 1]);
     expect(mocks.queueAdd).toHaveBeenCalledWith("competitor", { id: 41 }, expect.any(Object));
   });
 

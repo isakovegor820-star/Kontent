@@ -1,5 +1,5 @@
+import { ProjectRequest } from "@/test/project-request";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { NextRequest } from "next/server";
 
 const mocks = vi.hoisted(() => ({
   getSessionUser: vi.fn(),
@@ -16,7 +16,7 @@ vi.mock("@/lib/db", () => ({ getPool: () => ({ query: mocks.query }) }));
 import { POST } from "./route";
 
 function request(body: unknown) {
-  return new NextRequest("http://localhost/api/library/state", {
+  return new ProjectRequest(1, "http://localhost/api/library/state", {
     method: "POST",
     headers: { "content-type": "application/json", origin: "http://localhost" },
     body: JSON.stringify(body),

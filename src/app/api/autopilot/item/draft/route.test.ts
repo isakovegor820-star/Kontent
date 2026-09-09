@@ -11,7 +11,7 @@ vi.mock("@/lib/autopilot-quality.mjs", () => ({ assessAutopilotDraft: mock.asses
 vi.mock("@/lib/editorial-approval", () => ({ recordDraftRevisionInTransaction: vi.fn() }));
 import { PATCH, POST } from "./route";
 
-const request = (body: unknown, method = "PATCH") => new NextRequest("http://localhost/api/autopilot/item/draft", { method, headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
+const request = (body: unknown, method = "PATCH") => new NextRequest("http://localhost/api/autopilot/item/draft", { method, headers: { "content-type": "application/json", "x-aurora-project-id": "11" }, body: JSON.stringify(body) });
 const result = (rows: unknown[]) => ({ rows, rowCount: rows.length });
 let staleDraft: boolean;
 let stalePlan: boolean;

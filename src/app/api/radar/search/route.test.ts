@@ -1,5 +1,5 @@
+import { ProjectRequest } from "@/test/project-request";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { NextRequest } from "next/server";
 
 const mocks = vi.hoisted(() => ({
   query: vi.fn(),
@@ -9,6 +9,10 @@ const mocks = vi.hoisted(() => ({
   trusted: vi.fn(),
 }));
 
+vi.mock("@/lib/project-permissions", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/lib/project-permissions")>();
+  return { ...actual, requireSelectedProjectPermission: vi.fn(async () => ({ projectId: 1, userId: 7, role: "owner", version: 1 })) };
+});
 vi.mock("@/lib/db", () => ({ getPool: () => ({ query: mocks.query }) }));
 vi.mock("@/lib/session", () => ({ getSessionUser: mocks.session }));
 vi.mock("@/lib/autopilot", () => ({ resolveChannel: mocks.resolveChannel }));
@@ -50,7 +54,7 @@ describe("hybrid radar search route", () => {
   });
 
   it("returns local results without requiring an external provider", async () => {
-    const response = await GET(new NextRequest("http://localhost/api/radar/search?q=рыбалка&channel=11"));
+    const response = await GET(new ProjectRequest(1, "http://localhost/api/radar/search?q=рыбалка&channel=11"));
     expect(response.status).toBe(200);
     await expect(response.json()).resolves.toMatchObject({
       channelId: 11,
@@ -84,7 +88,7 @@ describe("hybrid radar search route", () => {
       }
       return { rowCount: 0, rows: [] };
     });
-    const response = await GET(new NextRequest("http://localhost/api/radar/search?q=строительство&channel=11"));
+    const response = await GET(new ProjectRequest(1, "http://localhost/api/radar/search?q=строительство&channel=11"));
     expect(response.status).toBe(200);
     await expect(response.json()).resolves.toMatchObject({
       results: [{
@@ -126,7 +130,7 @@ describe("hybrid radar search route", () => {
       }
       return { rowCount: 0, rows: [] };
     });
-    const response = await GET(new NextRequest("http://localhost/api/radar/search?q=строительство&channel=11"));
+    const response = await GET(new ProjectRequest(1, "http://localhost/api/radar/search?q=строительство&channel=11"));
     expect(response.status).toBe(200);
     await expect(response.json()).resolves.toMatchObject({
       run: { status: "ready", externalCount: 1 },
@@ -182,7 +186,7 @@ describe("hybrid radar search route", () => {
       }
       return { rowCount: 0, rows: [] };
     });
-    const response = await GET(new NextRequest("http://localhost/api/radar/search?run=91"));
+    const response = await GET(new ProjectRequest(1, "http://localhost/api/radar/search?run=91"));
     expect(response.status).toBe(200);
     await expect(response.json()).resolves.toMatchObject({
       results: [
@@ -193,7 +197,7 @@ describe("hybrid radar search route", () => {
   });
 
   it("creates a user-scoped background run and returns immediately", async () => {
-    const response = await POST(new NextRequest("http://localhost/api/radar/search", {
+    const response = await POST(new ProjectRequest(1, "http://localhost/api/radar/search", {
       method: "POST",
       headers: { "content-type": "application/json", "idempotency-key": "radar_garden_1234" },
       body: JSON.stringify({ q: "Садоводство", channelId: 11 }),
@@ -207,7 +211,7 @@ describe("hybrid radar search route", () => {
     expect(mocks.enqueue).toHaveBeenCalledWith({ runId: 91, userId: 7 });
     expect(mocks.query).toHaveBeenCalledWith(
       expect.stringContaining("insert into radar_search_runs"),
-      [7, 11, "radar_garden_1234", "Садоводство", "садоводство", 0],
+      [7, 11, "radar_garden_1234", "Садоводство", "садоводство", 0, 1],
     );
   });
 
@@ -220,7 +224,7 @@ describe("hybrid radar search route", () => {
       }
       return { rowCount: 0, rows: [] };
     });
-    const response = await POST(new NextRequest("http://localhost/api/radar/search", {
+    const response = await POST(new ProjectRequest(1, "http://localhost/api/radar/search", {
       method: "POST",
       headers: { "content-type": "application/json", "idempotency-key": "radar_garden_5678" },
       body: JSON.stringify({ q: "садоводство", channelId: 11 }),
@@ -235,9 +239,9 @@ describe("hybrid radar search route", () => {
 
   it("never exposes a run owned by another user", async () => {
     mocks.query.mockResolvedValue({ rowCount: 0, rows: [] });
-    const response = await GET(new NextRequest("http://localhost/api/radar/search?run=999"));
+    const response = await GET(new ProjectRequest(1, "http://localhost/api/radar/search?run=999"));
     expect(response.status).toBe(404);
-    expect(mocks.query).toHaveBeenCalledWith(expect.stringContaining("user_id = $2"), [999, 7]);
+    expect(mocks.query).toHaveBeenCalledWith(expect.stringContaining("user_id = $2"), [999, 7, 1]);
   });
 
   it("shows a popular publication once, preferring its trend classification", async () => {
@@ -273,7 +277,7 @@ describe("hybrid radar search route", () => {
       }
       return { rowCount: 0, rows: [] };
     });
-    const response = await GET(new NextRequest("http://localhost/api/radar/search?run=91"));
+    const response = await GET(new ProjectRequest(1, "http://localhost/api/radar/search?run=91"));
     expect(response.status).toBe(200);
     await expect(response.json()).resolves.toMatchObject({
       results: [{ kind: "trend", url: "https://t.me/sea_fishing/42" }],
@@ -309,7 +313,7 @@ describe("hybrid radar search route", () => {
       return { rowCount: 0, rows: [] };
     });
 
-    const response = await GET(new NextRequest("http://localhost/api/radar/search?run=91"));
+    const response = await GET(new ProjectRequest(1, "http://localhost/api/radar/search?run=91"));
     expect(response.status).toBe(200);
     const payload = await response.json();
     expect(payload.results).toHaveLength(85);

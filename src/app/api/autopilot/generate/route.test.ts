@@ -1,5 +1,5 @@
+import { ProjectRequest } from "@/test/project-request";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { NextRequest } from "next/server";
 
 const mocks = vi.hoisted(() => ({
   getSessionUser: vi.fn(),
@@ -55,7 +55,7 @@ vi.mock("@/lib/growth", () => ({
 import { DELETE, POST } from "./route";
 
 function request(body: Record<string, unknown>, method = "POST") {
-  return new NextRequest("http://localhost/api/autopilot/generate", {
+  return new ProjectRequest(88, "http://localhost/api/autopilot/generate", {
     method,
     headers: { "content-type": "application/json" },
     body: JSON.stringify(body),

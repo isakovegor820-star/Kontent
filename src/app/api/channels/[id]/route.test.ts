@@ -1,5 +1,5 @@
+import { ProjectRequest } from "@/test/project-request";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { NextRequest } from "next/server";
 
 const mocks = vi.hoisted(() => ({
   getSessionUser: vi.fn(),
@@ -19,7 +19,7 @@ vi.mock("@/lib/db", () => ({ getPool: () => ({ connect: mocks.connect }) }));
 import { DELETE } from "./route";
 
 function request() {
-  return new NextRequest("http://localhost/api/channels/41", {
+  return new ProjectRequest(12, "http://localhost/api/channels/41", {
     method: "DELETE",
     headers: {
       origin: "http://localhost",

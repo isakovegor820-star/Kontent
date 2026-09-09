@@ -1,3 +1,4 @@
+import { withProjectRoute } from "@/lib/project-route";
 import { NextRequest, NextResponse } from "next/server";
 
 import { parseLibraryFilters } from "@/lib/library-filters";
@@ -6,7 +7,7 @@ import { getSessionUser } from "@/lib/session";
 
 export const runtime = "nodejs";
 
-export async function GET(req: NextRequest) {
+async function handleGET(req: NextRequest) {
   const user = await getSessionUser(req);
   if (!user) return NextResponse.json({ ok: false, error: "unauthorized" }, { status: 401 });
   try {
@@ -18,3 +19,5 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ ok: false, error: "server" }, { status: 500 });
   }
 }
+
+export const GET = withProjectRoute(handleGET);

@@ -1,4 +1,6 @@
 "use client";
+import { useProjectFetch, useProjectCall } from "@/lib/use-project-transport";
+
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
@@ -17,7 +19,7 @@ import { useLibraryFeed } from "./use-library-feed";
 import { Button } from "@/components/ui/button";
 import { Badge, Card, EmptyState, Input } from "@/components/ui/primitives";
 import { appDraftActionHref, type DraftBackedAppAction } from "@/lib/app-routes";
-import { createDraftClientKey, createLibraryServerDraft, libraryDraftErrorMessage } from "@/lib/draft-client";
+import { createDraftClientKey, createLibraryServerDraft as unscopedCreateLibraryServerDraft, libraryDraftErrorMessage } from "@/lib/draft-client";
 import type {
   LibraryFormat,
   LibraryMaturity,
@@ -222,6 +224,8 @@ function NumberRange({
 }
 
 export function LibraryRegistryView({ channelId, channelName }: { channelId: number; channelName: string }) {
+  const createLibraryServerDraft = useProjectCall(unscopedCreateLibraryServerDraft);
+  const fetch = useProjectFetch();
   const router = useRouter();
   const store = useStore();
   const [filters, setFilters] = useState<Filters>(DEFAULT_FILTERS);
@@ -235,7 +239,7 @@ export function LibraryRegistryView({ channelId, channelName }: { channelId: num
   const exportKey = useRef<string | null>(null);
 
   const query = libraryRegistryQuery(channelId, filters).toString();
-  const { items, diagnostics, loading, error, refreshing, refreshError, newCount, refresh, showNew, patchItem } = useLibraryFeed(query, Boolean(stateBusy || draftBusy));
+  const { items, diagnostics, loading, error, refreshing, refreshError, newCount, refresh, showNew, patchItem } = useLibraryFeed(query, Boolean(stateBusy || draftBusy), fetch);
   useEffect(() => {
     const timer = window.setTimeout(() => setSourceOptions((current) => {
       const options = new Map(current.map((item) => [item.id, item.title]));

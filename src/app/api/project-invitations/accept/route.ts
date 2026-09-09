@@ -6,6 +6,8 @@ import { checkRateLimit, clientIp, rateLimitResponse } from "@/lib/rate-limit";
 import { hasTrustedMutationOrigin } from "@/lib/request-origin";
 import { getSessionUser } from "@/lib/session";
 import { acceptProjectInvitation } from "@/lib/project-team";
+import { getSelectedProjectContext } from "@/lib/project-context";
+import { selectedProjectDto } from "@/lib/project-dto";
 import { projectApiError, projectBodyFailure, projectJson, readProjectBody } from "@/app/api/projects/_shared";
 
 export const runtime = "nodejs";
@@ -32,7 +34,8 @@ export async function POST(req: NextRequest) {
     const membership = await acceptProjectInvitation({
       pool: getPool(), actorUserId: user.id, token: body.token, requestId,
     });
-    return projectJson({ ok: true, membership }, 200, requestId);
+    const project = selectedProjectDto(await getSelectedProjectContext(getPool(), user.id));
+    return projectJson({ ok: true, membership, project }, 200, requestId);
   } catch (error) {
     return projectApiError(error, requestId);
   }

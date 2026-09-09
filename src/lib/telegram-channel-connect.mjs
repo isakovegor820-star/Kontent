@@ -48,9 +48,36 @@ function channelUsername(value) {
   return String(value || "").replace(/^@/u, "").trim().slice(0, 64) || null;
 }
 
+/** Callback selectors are untrusted: recheck both Telegram identities before saving. */
+export async function confirmTelegramChannelProject(pool, input, api) {
+  const userId = positiveId(input.userId, "user_id");
+  const projectId = positiveId(input.projectId, "project_id");
+  const actorId = positiveId(input.actorId, "telegram_actor_id");
+  const botId = positiveId(input.botId, "telegram_bot_id");
+  const chatId = telegramChatId(input.chatId);
+  const membership = (await pool.query(
+    `select member.role from project_members member
+       join projects project on project.id = member.project_id and project.is_archived = false
+      where member.project_id = $1 and member.user_id = $2 and member.status = 'active'`,
+    [projectId, userId],
+  )).rows[0];
+  if (membership?.role !== "owner") return { state: "access_denied" };
+  const [chat, actor, bot] = await Promise.all([
+    api("getChat", { chat_id: chatId }),
+    api("getChatMember", { chat_id: chatId, user_id: actorId }),
+    api("getChatMember", { chat_id: chatId, user_id: botId }),
+  ]);
+  if (chat?.ok !== true || chat.result?.type !== "channel" || Number(chat.result?.id) !== chatId
+    || actor?.ok !== true || !["creator", "administrator"].includes(actor.result?.status)
+    || bot?.ok !== true || bot.result?.status !== "administrator" || bot.result?.can_post_messages !== true) {
+    return { state: "telegram_access_denied" };
+  }
+  return saveVerifiedTelegramChannel(pool, { userId, projectId, chat: chat.result, requestId: input.requestId });
+}
+
 /**
  * Persists a channel only after Telegram has proved that the bot can publish there.
- * The selected project and the global one-channel/one-project invariant are rechecked
+ * The explicit project and the global one-channel/one-project invariant are rechecked
  * inside the same transaction so a delayed Telegram update cannot cross workspaces.
  */
 export async function saveVerifiedTelegramChannel(pool, input) {

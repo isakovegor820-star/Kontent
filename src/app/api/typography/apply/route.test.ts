@@ -1,5 +1,5 @@
+import { ProjectRequest } from "@/test/project-request";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { NextRequest } from "next/server";
 
 const mocks = vi.hoisted(() => ({
   apply: vi.fn(),
@@ -21,7 +21,7 @@ vi.mock("@/lib/rate-limit", async (original) => ({
 import { POST } from "./route";
 
 function request(origin = "http://localhost") {
-  return new NextRequest("http://localhost/api/typography/apply", {
+  return new ProjectRequest(999, "http://localhost/api/typography/apply", {
     method: "POST",
     headers: { origin, "content-type": "application/json" },
     body: JSON.stringify({
@@ -79,7 +79,7 @@ describe("POST /api/typography/apply", () => {
   });
 
   it("rejects unknown JSON fields instead of silently expanding authority", async () => {
-    const malicious = new NextRequest("http://localhost/api/typography/apply", {
+    const malicious = new ProjectRequest(999, "http://localhost/api/typography/apply", {
       method: "POST",
       headers: { origin: "http://localhost", "content-type": "application/json" },
       body: JSON.stringify({ text: "Текст", projectId: 999 }),

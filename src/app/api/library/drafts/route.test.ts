@@ -1,3 +1,4 @@
+import { ProjectRequest } from "@/test/project-request";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
@@ -27,7 +28,7 @@ vi.mock("@/lib/server-drafts", () => ({
 import { POST } from "./route";
 
 function request(body: Record<string, unknown>) {
-  return new Request("https://aurora.test/api/library/drafts", {
+  return new ProjectRequest(3, "https://aurora.test/api/library/drafts", {
     method: "POST",
     headers: { "content-type": "application/json", origin: "https://aurora.test" },
     body: JSON.stringify(body),

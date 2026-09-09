@@ -99,6 +99,7 @@ import {
   KNOWLEDGE_INDEX_JOB,
   reconcilePendingKnowledgeSources,
 } from "./src/lib/knowledge-index-queue.mjs";
+import { scheduleBotDraftPublication, BotPublicationError } from "./worker/bot-draft-publication.mjs";
 import { ensureDraftEditorialBootstrap } from "./worker/draft-editorial-bootstrap.mjs";
 import {
   expireProjectExportArtifacts,
@@ -345,7 +346,7 @@ import {
 } from "./src/lib/bot-connection.mjs";
 import {
   markTelegramChannelUnavailable,
-  saveVerifiedTelegramChannel,
+  confirmTelegramChannelProject,
   telegramChannelAdminUrl,
   telegramChannelMembershipChange,
 } from "./src/lib/telegram-channel-connect.mjs";
@@ -370,7 +371,6 @@ import {
   BOT_PUBLISH_ROLES,
   botIntakeMode,
   botLinkCandidate,
-  botQuickSchedule,
   buildBotAudienceReplyPrompt,
   botResultLift,
   botReplyAction,
@@ -1196,7 +1196,7 @@ async function tg(method, body, timeoutMs = 20_000) {
       signal: AbortSignal.timeout(timeoutMs), // без таймаута зависший запрос блокирует очередь (ревью)
       body: JSON.stringify(body),
     });
-    const parsed = await r.json().catch(() => ({ ok: false, description: `HTTP ${r.status}` }));
+    const parsed = await r.json().catch(() => ({ ok: false, deliveryUnknown: true, description: `HTTP ${r.status}` }));
     const result = parsed?.ok !== true
       && !Number.isInteger(Number(parsed?.error_code))
       && r.status >= 400
@@ -1980,8 +1980,8 @@ const worker = AUTOPILOT_ONLY || MEDIA_ONLY ? null : new Worker(
     const channel = ch.rows[0];
 
     // Product/API support is checked before any credential lookup or provider-call
-    // marker. TenChat is export-only until written official access and an authorized
-    // adapter exist, so this is a durable terminal outcome with no automatic retry.
+    // marker. Unsupported destinations produce a durable failure with no automatic
+    // retry; the post and its approved content remain available for user action.
     const terminalProviderFailure = providerTerminalFailure(channel?.network);
     if (terminalProviderFailure) {
       const failed = await pool.query(
@@ -2022,7 +2022,7 @@ const worker = AUTOPILOT_ONLY || MEDIA_ONLY ? null : new Worker(
         });
         const blockedNotice = terminalProviderFailure.providerId === "tenchat"
           ? "TenChat не получил публикацию: для автопостинга нужен официальный доступ. В Композиторе можно скачать пакет для ручной публикации."
-          : `Площадка ${terminalProviderFailure.providerId || "назначения"} не получила публикацию: live-операция не поддерживается.`;
+          : terminalProviderFailure.reason;
         await notifyUser(
           post.user_id,
           blockedNotice,
@@ -2928,7 +2928,7 @@ async function handleTelegramChannelMembership(update) {
   }
 
   // Telegram identifies the administrator who added the bot. A channel is connected
-  // automatically only when that person has already linked this private chat to Aurora.
+  // only when that person has already linked this private chat to Aurora.
   if (!botUser) {
     console.warn("[bot] channel add ignored: Telegram actor is not linked", { chatId });
     return true;
@@ -2938,29 +2938,42 @@ async function handleTelegramChannelMembership(update) {
     return true;
   }
 
-  const project = await botProject(userId);
-  if (!project) {
-    const projects = await botProjects(userId);
-    await tgSend(actorChatId, "Канал пока не подключён: сначала выбери проект для команд Telegram.", projects.buttons);
-    return true;
-  }
-  if (project.role !== "owner") {
-    await tgSend(
-      actorChatId,
-      `Канал пока не подключён к проекту «${project.name}». Подключать каналы может только владелец проекта.`,
-      [[{ text: "Выбрать другой проект", data: "connection:projects" }]],
-    );
-    return true;
-  }
+  // startchannel carries no project payload. Only an explicit project button may
+  // bind this channel; a later change of the account preference cannot redirect it.
+  const projects = (await pool.query(
+    `select project.id, project.name from project_members member
+       join projects project on project.id = member.project_id and project.is_archived = false
+       left join bot_project_controls control on control.project_id = project.id
+      where member.user_id = $1 and member.status = 'active' and member.role = 'owner'
+        and coalesce(control.enabled, true) = true
+      order by lower(project.name), project.id limit 50`, [userId],
+  )).rows;
+  await tgSend(actorChatId,
+    projects.length
+      ? `Канал «${membership.chat?.title || "Telegram"}» готов к подключению. Выбери проект, к которому его привязать:`
+      : "Канал пока не подключён: подключать каналы может владелец проекта. Проверь права в Авроре.",
+    projects.map((project) => [{
+      text: `Подключить к «${String(project.name).slice(0, 40)}»`,
+      data: `connection:channel:${chatId}:${project.id}`,
+    }]),
+  );
+  return true;
+}
 
-  const verified = await tg("getChat", { chat_id: chatId }, 8_000).catch(() => null);
-  const chat = verified?.ok === true ? verified.result : membership.chat;
-  const saved = await saveVerifiedTelegramChannel(pool, {
-    userId,
-    projectId: Number(project.id),
-    chat,
-    requestId,
-  });
+async function botConfirmChannelProject(userId, actorChatId, channelChatId, projectId, requestId) {
+  const project = await botProject(userId, projectId);
+  if (!project || project.role !== "owner") {
+    await tgSend(actorChatId, "Права в проекте изменились, поэтому канал не подключён. Проверь права в Авроре.");
+    return;
+  }
+  const saved = await confirmTelegramChannelProject(pool, {
+    userId, projectId, actorId: actorChatId, chatId: channelChatId,
+    botId: Number(TOKEN?.split(":")[0]), requestId,
+  }, (method, payload) => tg(method, payload, 8_000));
+  if (saved.state === "telegram_access_denied") {
+    await tgSend(actorChatId, "Не удалось подтвердить права администратора канала и право бота публиковать. Проверь их в Telegram и повтори подключение.");
+    return;
+  }
 
   if (saved.state === "taken") {
     await tgSend(
@@ -4473,11 +4486,28 @@ async function runRadarSearch(runId, userId) {
           set status = 'running', stage = 'discovering', progress = 8,
               error_code = null, error_message = null, updated_at = now()
         where id = $1 and user_id = $2 and status = 'queued'
+          and exists (select 1 from project_members member
+            join projects project on project.id = member.project_id and project.is_archived = false
+            where member.project_id = radar_search_runs.project_id and member.user_id = $2
+              and member.status = 'active' and member.role in ('owner','author','approver'))
       returning id, query, normalized_query, local_count`,
       [runId, userId],
     )
   ).rows[0];
-  if (!claimed) return;
+  if (!claimed) {
+    await pool.query(
+      `update radar_search_runs set status = 'failed', stage = 'failed',
+          error_code = 'project_access_changed', error_message = 'Права в проекте изменились. Запусти поиск заново.',
+          completed_at = now(), updated_at = now()
+        where id = $1 and user_id = $2 and status = 'queued'
+          and not exists (select 1 from project_members member
+            join projects project on project.id = member.project_id and project.is_archived = false
+            where member.project_id = radar_search_runs.project_id and member.user_id = $2
+              and member.status = 'active' and member.role in ('owner','author','approver'))`,
+      [runId, userId],
+    );
+    return;
+  }
 
   const rawQuery = String(claimed.query || claimed.normalized_query).trim();
   const query = claimed.normalized_query;
@@ -7865,13 +7895,14 @@ async function enqueuePublishJob(postId, scheduledAt, scheduleRevision = 1, expl
   );
 }
 
-// Вставить scheduled-пост и положить задачу в очередь публикации (для полного режима автопилота).
+// RSS: основание публикации — включённая политика ленты и конкретный новый RSS-item.
 async function enqueuePost(userId, channelId, text, scheduledAt, rssContext = null) {
   const rssItemId = Number(rssContext?.rssItemId);
   const feedId = Number(rssContext?.feedId);
   const rssAiUsageReservationId = Number(rssContext?.aiUsageReservationId);
   const hasRssAiUsage = Number.isSafeInteger(rssAiUsageReservationId) && rssAiUsageReservationId > 0;
   const isRss = Number.isInteger(rssItemId) && rssItemId > 0 && Number.isInteger(feedId) && feedId > 0;
+  if (!isRss) throw new Error("RSS publication requires an enabled feed and item");
   let effectiveScheduledAt = scheduledAt;
   let postId;
   let scheduleRevision = 1;
@@ -7885,9 +7916,12 @@ async function enqueuePost(userId, channelId, text, scheduledAt, rssContext = nu
     try {
       await tx.query("begin");
       const feed = await tx.query(
-        `select f.id
+        `select f.id, f.project_id
            from rss_feeds f
            join rss_items i on i.feed_id = f.id
+           join channels c on c.id=f.channel_id and c.project_id=f.project_id
+             and c.network='tg' and c.is_active=true
+           join projects p on p.id=f.project_id and p.is_archived=false
           where f.id = $1 and i.id = $2 and f.user_id = $3 and f.channel_id = $4
             and f.is_active = true
             and (f.source_kind <> 'legal_opportunity' or f.auto_publish_enabled = true)
@@ -7900,15 +7934,15 @@ async function enqueuePost(userId, channelId, text, scheduledAt, rssContext = nu
       // Все RSS-ленты канала используют одну временную полосу. Блокировка канала
       // сериализует даже параллельные cron/manual jobs и не даёт двум источникам выбрать
       // одну минуту. Уже ожидающие RSS-посты также учитываются после рестартов.
-      await tx.query(`select id from channels where id = $1 and user_id = $2 for update`, [channelId, userId]);
+      await tx.query(`select id from channels where id = $1 and project_id = $2 for update`, [channelId, feed.rows[0].project_id]);
       const latest = (
         await tx.query(
           `select max(p.scheduled_at) as scheduled_at
              from posts p
              join rss_items i on i.post_id = p.id
              join rss_feeds f on f.id = i.feed_id
-            where p.user_id = $1 and p.channel_id = $2 and p.status = 'scheduled'`,
-          [userId, channelId],
+            where p.project_id = $1 and p.channel_id = $2 and p.status = 'scheduled'`,
+          [feed.rows[0].project_id, channelId],
         )
       ).rows[0]?.scheduled_at;
       if (latest) {
@@ -7919,9 +7953,9 @@ async function enqueuePost(userId, channelId, text, scheduledAt, rssContext = nu
       }
 
       const ins = await tx.query(
-        `insert into posts (user_id, channel_id, text, scheduled_at, status, publication_origin)
-         values ($1, $2, $3, $4, 'scheduled', 'rss') returning id, schedule_revision`,
-        [userId, channelId, text, effectiveScheduledAt],
+        `insert into posts (user_id, channel_id, text, scheduled_at, status, publication_origin, project_id)
+         values ($1, $2, $3, $4, 'scheduled', 'rss', $5) returning id, schedule_revision`,
+        [userId, channelId, text, effectiveScheduledAt, feed.rows[0].project_id],
       );
       postId = ins.rows[0].id;
       scheduleRevision = Number(ins.rows[0].schedule_revision || 1);
@@ -7946,49 +7980,13 @@ async function enqueuePost(userId, channelId, text, scheduledAt, rssContext = nu
     } finally {
       tx.release();
     }
-  } else {
-    const ins = await pool.query(
-      `insert into posts (user_id, channel_id, text, scheduled_at, status, publication_origin)
-       values ($1, $2, $3, $4, 'scheduled', 'autopilot') returning id, schedule_revision`,
-      [userId, channelId, text, scheduledAt],
-    );
-    postId = ins.rows[0].id;
-    scheduleRevision = Number(ins.rows[0].schedule_revision || 1);
   }
 
   try {
     await enqueuePublishJob(postId, effectiveScheduledAt, scheduleRevision);
-  } catch (err) {
-    if (isRss && aiUsageCommitted) {
-      // The scheduled post and its charge are already one durable DB outcome. A minute
-      // reconciler restores the deterministic publish job; deleting the post here would
-      // leave a committed charge without a visible result.
-      console.error(`[rss] post ${postId}: очередь временно недоступна, подберёт reconciler`);
-      return { postId, rssLinked: true, aiUsageCommitted: true, queuePendingReconciliation: true };
-    }
-    // Не оставляем в БД scheduled-пост без BullMQ job: вызывающий сможет безопасно повторить.
-    const cleanup = await pool.connect().catch(() => null);
-    if (cleanup) {
-      try {
-        await cleanup.query("begin");
-        const deleted = await cleanup.query(
-          `delete from posts where id = $1 and status = 'scheduled' returning id`,
-          [postId],
-        );
-        if (isRss && deleted.rowCount) {
-          await cleanup.query(
-            `update rss_items set status = 'new', skip_reason = null, post_id = null where id = $1`,
-            [rssItemId],
-          );
-        }
-        await cleanup.query("commit");
-      } catch {
-        await cleanup.query("rollback").catch(() => {});
-      } finally {
-        cleanup.release();
-      }
-    }
-    throw err;
+  } catch {
+    console.error(`[rss] post ${postId}: очередь временно недоступна, подберёт reconciler`);
+    return { postId, rssLinked: true, aiUsageCommitted, queuePendingReconciliation: true };
   }
   return isRss ? { postId, rssLinked: true, aiUsageCommitted } : postId;
 }
@@ -8643,7 +8641,7 @@ async function botStoreDraftText(userId, text, metadata = {}) {
        values ($1, $2) on conflict do nothing`,
       [draft.id, conversation.channel_id],
     );
-    await ensureDraftEditorialBootstrap(tx, {
+    const editorial = await ensureDraftEditorialBootstrap(tx, {
       draftId: Number(draft.id),
       actorUserId: userId,
       projectId: Number(conversation.project_id),
@@ -8654,10 +8652,11 @@ async function botStoreDraftText(userId, text, metadata = {}) {
     await tx.query(
       `update bot_conversations
           set draft_id = $2, state = 'preview',
-              data = data || jsonb_build_object('draftVersion', $3::bigint, 'sourceMode', $4::text),
+              data = data || jsonb_build_object('draftVersion', $3::bigint, 'sourceMode', $4::text,
+                'revisionId', $5::bigint, 'contentHash', $6::text),
               expires_at = now() + interval '24 hours', updated_at = now()
         where id = $1`,
-      [conversation.id, draft.id, draft.version, prepared.mode],
+      [conversation.id, draft.id, draft.version, prepared.mode, editorial.revisionId, editorial.contentHash],
     );
     await tx.query(
       `insert into audit_events (
@@ -9328,204 +9327,36 @@ async function botCancelActiveConversation(userId) {
 }
 
 async function botPublishDraft(userId, action, token) {
-  if (!new Set(["now", "hour", "tomorrow"]).has(action)) {
-    return { text: "Время публикации не распознано. Открой превью ещё раз." };
-  }
-  const tx = await pool.connect();
-  let created = false;
-  let postId = null;
-  let projectId = null;
-  let schedule = null;
-  let scheduleRevision = 1;
   try {
-    await tx.query("begin");
-    const conversation = (
-      await tx.query(
-        `select conversation.id, conversation.project_id, conversation.channel_id,
-                conversation.draft_id, conversation.state, conversation.data,
-                project.timezone, project.name, member.role,
-                channel.title, channel.handle, draft.text, draft.version
-           from bot_conversations conversation
-           join projects project on project.id = conversation.project_id and project.is_archived = false
-           join project_members member
-             on member.project_id = conversation.project_id and member.user_id = conversation.user_id
-            and member.status = 'active' and member.role in ('owner','publisher')
-           join channels channel
-             on channel.id = conversation.channel_id and channel.project_id = conversation.project_id
-            and channel.network = 'tg' and channel.is_active = true and channel.status = 'active'
-           join drafts draft
-             on draft.id = conversation.draft_id and draft.project_id = conversation.project_id
-          where conversation.user_id = $1 and conversation.token = $2
-            and conversation.expires_at > now()
-          for update of conversation, draft`,
-        [userId, token],
-      )
-    ).rows[0];
-    if (!conversation) {
-      await tx.query("rollback");
-      return { text: "Превью устарело или у роли нет права публикации. Нажми «Создать пост» и проверь доступ." };
-    }
-    if (conversation.state === "completed" && conversation.data?.postId) {
-      await tx.query("commit");
-      return { text: "Эта публикация уже поставлена в очередь. Повтор не создаю." };
-    }
-    if (conversation.state !== "preview") {
-      await tx.query("rollback");
-      return { text: "Превью уже обрабатывается или было закрыто. Повтор не создаю." };
-    }
-    projectId = Number(conversation.project_id);
-    schedule = botQuickSchedule(action, String(conversation.timezone || "UTC"));
-    const idempotencyKey = `bot:publish:${conversation.id}:${token}:${action}`;
-    const fingerprint = createHash("sha256")
-      .update(JSON.stringify([
-        projectId,
-        userId,
-        Number(conversation.channel_id),
-        conversation.text,
-        schedule.scheduledAt,
-        schedule.timezone,
-      ]), "utf8")
-      .digest("hex");
-    await tx.query(
-      `update bot_conversations set state = 'publishing', updated_at = now() where id = $1`,
-      [conversation.id],
-    );
-    await tx.query(
-      `update drafts
-          set scheduled_at = $2, scheduled_timezone = $3, scheduled_local_date = $4,
-              scheduled_local_time = $5, scheduled_offset = $6,
-              scheduled_disambiguation = $7, human_reviewed_version = version,
-              human_reviewed_at = now(), updated_at = now()
-        where id = $1 and project_id = $8`,
-      [
-        conversation.draft_id,
-        schedule.scheduledAt,
-        schedule.timezone,
-        schedule.localDate,
-        schedule.localTime,
-        schedule.offset,
-        schedule.disambiguation,
-        projectId,
-      ],
-    );
-    const inserted = await tx.query(
-      `insert into posts (
-         project_id, user_id, channel_id, text, scheduled_at, status,
-         idempotency_key, request_fingerprint, publication_origin,
-         publication_draft_version, scheduled_timezone, scheduled_offset,
-         scheduled_disambiguation
-       ) values ($1, $2, $3, $4, $5, 'scheduled', $6, $7, 'manual', $8, $9, $10, $11)
-       on conflict do nothing returning id, schedule_revision`,
-      [
-        projectId,
-        userId,
-        conversation.channel_id,
-        conversation.text,
-        schedule.scheduledAt,
-        idempotencyKey,
-        fingerprint,
-        conversation.version,
-        schedule.timezone,
-        schedule.offset,
-        schedule.disambiguation,
-      ],
-    );
-    created = inserted.rowCount === 1;
-    if (created) {
-      postId = Number(inserted.rows[0].id);
-      scheduleRevision = Number(inserted.rows[0].schedule_revision || 1);
-    } else {
-      const existing = (
-        await tx.query(
-          `select id, schedule_revision, scheduled_at, status
-             from posts
-            where project_id = $1 and user_id = $2 and idempotency_key = $3
-            limit 1`,
-          [projectId, userId, idempotencyKey],
-        )
-      ).rows[0];
-      if (!existing) throw new Error("bot publication idempotency conflict");
-      postId = Number(existing.id);
-      scheduleRevision = Number(existing.schedule_revision || 1);
-      schedule.scheduledAt = new Date(existing.scheduled_at).toISOString();
-      if (existing.status !== "scheduled") {
-        await tx.query(
-          `update bot_conversations
-              set state = 'completed', data = data || $2::jsonb, updated_at = now()
-            where id = $1`,
-          [conversation.id, JSON.stringify({ postId, scheduledAt: schedule.scheduledAt, action })],
-        );
-        await tx.query("commit");
-        return { text: "Эта публикация уже обработана. Повтор не создаю." };
-      }
-    }
-    await tx.query(
-      `insert into audit_events (
-         project_id, actor_user_id, action, entity_type, entity_id,
-         after_version, safe_data, idempotency_key
-       ) values ($1, $2, 'publication.scheduled_from_bot', 'post', $3, 1, $4::jsonb, $5)
-       on conflict (project_id, idempotency_key) where idempotency_key is not null do nothing`,
-      [
-        projectId,
-        userId,
-        String(postId),
-        JSON.stringify({
-          channelId: Number(conversation.channel_id),
-          draftId: Number(conversation.draft_id),
-          draftVersion: Number(conversation.version),
-          scheduledAt: schedule.scheduledAt,
-          timezone: schedule.timezone,
-          source: "telegram_bot",
-        }),
-        `bot:publication:${postId}`,
-      ],
-    );
-    await tx.query("commit");
-
-    let queuePending = false;
-    try {
-      await enqueuePublishJob(postId, schedule.scheduledAt, scheduleRevision, projectId);
-    } catch (error) {
-      // The durable scheduled row is the source of truth. The minute reconciler restores
-      // its revision-bound BullMQ job after Redis recovers, so deleting it here would turn
-      // a temporary queue outage into lost user intent.
-      queuePending = true;
-      console.error("[bot] очередь публикации временно недоступна", {
-        postId,
-        projectId,
-        errorName: error?.name || "Error",
-      });
-    }
-    await pool.query(
-      `update bot_conversations
-          set state = 'completed', data = data || $3::jsonb,
-              expires_at = now() + interval '24 hours', updated_at = now()
-        where user_id = $1 and token = $2 and state = 'publishing'`,
-      [userId, token, JSON.stringify({ postId, scheduledAt: schedule.scheduledAt, action, queuePending })],
-    );
-    const when = new Date(schedule.scheduledAt).toLocaleString("ru-RU", {
-      timeZone: schedule.timezone,
-      day: "numeric",
-      month: "long",
-      hour: "2-digit",
-      minute: "2-digit",
+    const result = await scheduleBotDraftPublication({
+      pool, userId, action, token,
+      enqueue: (postId, scheduledAt, revision, projectId) => enqueuePublishJob(postId, scheduledAt, revision, projectId),
+    });
+    if (result.replayed) return { text: "Эта публикация уже поставлена в очередь. Повтор не создаю." };
+    const when = new Date(result.scheduledAt).toLocaleString("ru-RU", {
+      timeZone: result.timezone, day: "numeric", month: "long", hour: "2-digit", minute: "2-digit",
     });
     return {
-      text: queuePending
-        ? `Пост сохранён на ${when} (${schedule.timezone}). Очередь временно недоступна; Аврора восстановит задачу автоматически, повторно нажимать кнопку не нужно.`
+      text: result.queuePending
+        ? `Пост сохранён на ${when} (${result.timezone}). Очередь временно недоступна; Аврора восстановит задачу автоматически, повторно нажимать кнопку не нужно.`
         : action === "now"
           ? "Поставил пост в очередь. Отправка начнётся сейчас; о результате напишу сюда."
-          : `Поставил пост в очередь на ${when} (${schedule.timezone}). О результате напишу сюда.`,
+          : `Поставил пост в очередь на ${when} (${result.timezone}). О результате напишу сюда.`,
       buttons: [[{ text: "Открыть календарь", data: "menu:calendar" }, { text: "Вернуться в меню", data: "menu:home" }]],
     };
   } catch (error) {
-    await tx.query("rollback").catch(() => {});
-    console.error("[bot] публикация из чата:", error?.message);
-    return {
-      text: "Не удалось поставить пост в очередь. Черновик сохранён; проверь подключение канала и попробуй снова.",
+    const messages = {
+      approval_required: "Сначала согласуйте эту версию в команде. Черновик сохранён в Авроре.",
+      preview_changed: "Черновик изменился после превью. Откройте его в Авроре и проверьте новую версию перед публикацией.",
+      web_preview_required: "У черновика есть настройки, которых нет в этом превью. Проверьте полное превью в Авроре.",
+      publication_permission_denied: "У текущей роли нет права публикации в этом проекте.",
+      preview_expired: "Превью устарело или уже закрыто. Черновик сохранён в Авроре.",
+      channel_unavailable: "Канал недоступен. Проверьте его подключение в настройках проекта.",
+      bad_schedule: "Время публикации не распознано. Откройте превью ещё раз.",
     };
-  } finally {
-    tx.release();
+    if (error instanceof BotPublicationError && messages[error.code]) return { text: messages[error.code] };
+    console.error("[bot] публикация из чата:", { errorName: error?.name || "Error" });
+    return { text: "Не удалось поставить пост в очередь. Черновик сохранён; проверьте подключение канала и попробуйте снова." };
   }
 }
 
@@ -9978,7 +9809,7 @@ async function botApprovePlan(userId, planId) {
          join channels c on c.id = p.channel_id and c.project_id = p.project_id
          join project_members member
            on member.project_id = p.project_id and member.user_id = $2
-          and member.status = 'active' and member.role in ('owner','approver')
+          and member.status = 'active' and member.role in ('owner','publisher')
         where p.id = $1 and p.status = 'pending'
           and c.network = 'tg' and c.is_active = true`,
       [planId, userId],
@@ -10063,7 +9894,7 @@ async function botConfirmPlan(userId, planId, token) {
          from autopilot_approval_previews preview
          join project_members member
            on member.project_id = preview.project_id and member.user_id = $2
-          and member.status = 'active' and member.role in ('owner','approver')
+          and member.status = 'active' and member.role in ('owner','publisher')
         where preview.token_hash = $1 and preview.user_id = $2 and preview.plan_id = $3`,
       [hashAutopilotPreviewToken(token), userId, planId],
     )
@@ -10095,7 +9926,7 @@ async function botConfirmPlan(userId, planId, token) {
          join channels c on c.id = p.channel_id and c.project_id = p.project_id
          join project_members member
            on member.project_id = p.project_id and member.user_id = $3
-          and member.status = 'active' and member.role in ('owner','approver')
+          and member.status = 'active' and member.role in ('owner','publisher')
         where p.id = $1 and p.project_id = $2
           and c.network = 'tg' and c.is_active = true`,
       [planId, projectId, userId],
@@ -10596,6 +10427,17 @@ async function handleUpdate(u) {
       const [kind, action, id, token] = String(cb.data || "").split(":");
 
       if (kind === "connection") {
+        if (action === "channel") {
+          const channelChatId = Number(id);
+          const projectId = Number(token);
+          if (cb.message?.chat?.type !== "private" || Number(cb.from?.id) !== Number(chatId)
+            || !Number.isSafeInteger(channelChatId) || channelChatId >= 0
+            || !Number.isSafeInteger(projectId) || projectId <= 0) {
+            return void (await answerCb(cb.id, "Подключение доступно только в личном чате"));
+          }
+          await answerCb(cb.id, "Проверяю права и подключаю…");
+          return void (await botConfirmChannelProject(userId, Number(chatId), channelChatId, projectId, `telegram-connect:${cb.id}`));
+        }
         if (action === "status" || action === "disconnect_cancel") {
           await answerCb(cb.id, "Проверяю подключение…");
           const status = await botConnectionStatus(userId);
@@ -11765,7 +11607,12 @@ const statsWorker = MEDIA_ONLY || AUTOPILOT_ONLY || PUBLICATION_ONLY ? null : ne
       if (channelId != null && (!Number.isInteger(channelId) || channelId <= 0)) {
         throw new Error("rss-now: bad channelId");
       }
-      await collectRss(userId, channelId);
+      let projectId = job.data.projectId == null ? null : Number(job.data.projectId);
+      if (projectId == null && channelId != null) {
+        projectId = Number((await pool.query("select project_id from channels where id = $1", [channelId])).rows[0]?.project_id);
+      }
+      if (!Number.isSafeInteger(projectId) || projectId <= 0) throw new Error("rss-now: project required");
+      await collectRss(userId, channelId, projectId);
     } else if (job.name === KNOWLEDGE_INDEX_JOB) {
       // Человек добавил материал в базу знаний — считаем векторы сейчас, а не суточным
       // циклом: он вернётся на экран через минуту и должен увидеть «готово».
@@ -11946,11 +11793,12 @@ async function billableRssSummary(item, feed, system, prompt) {
   }
 }
 
-async function collectRss(userId = null, channelId = null) {
+async function collectRss(userId = null, channelId = null, projectId = null) {
   return collectRssPipeline({
     pool,
     userId,
     channelId,
+    projectId,
     enqueuePost,
     summarize: (item, feed) => {
       const channelContext = [

@@ -39,7 +39,7 @@ describe("shared provider capability registry", () => {
 
   it("keeps current live publishing fail-closed", () => {
     expect(providerSupportsOperation("tg", "livePublish")).toBe(true);
-    expect(providerSupportsOperation("vk", "livePublish")).toBe(true);
+    expect(providerSupportsOperation("vk", "livePublish")).toBe(false);
     expect(providerSupportsOperation("rss", "livePublish")).toBe(false);
     expect(providerSupportsOperation("youtube", "livePublish")).toBe(false);
     expect(providerSupportsOperation("instagram", "livePublish")).toBe(false);
@@ -52,8 +52,8 @@ describe("shared provider capability registry", () => {
     expect(providerSupportsOperation("tg", "firstComment")).toBe(true);
     expect(providerSupportsOperation("tg", "pin")).toBe(true);
     expect(providerSupportsOperation("tg", "commentToggle")).toBe(false);
-    expect(providerSupportsOperation("vk", "firstComment")).toBe(true);
-    expect(providerSupportsOperation("vk", "commentToggle")).toBe(true);
+    expect(providerSupportsOperation("vk", "firstComment")).toBe(false);
+    expect(providerSupportsOperation("vk", "commentToggle")).toBe(false);
     expect(providerSupportsOperation("vk", "pin")).toBe(false);
   });
 
@@ -86,6 +86,15 @@ describe("shared provider capability registry", () => {
       reason: null,
       message: null,
     });
+  });
+
+  it("cannot enable VK writes just by presenting ready credentials", () => {
+    for (const operation of ["livePublish", "firstComment", "commentToggle"]) {
+      expect(resolveProviderOperation("vk", operation, { credentialState: "ready", permissionState: "ready" }))
+        .toMatchObject({ available: false, reason: "vk_auth_flow_unverified" });
+    }
+    // Historical read-only metrics and delivery reconciliation remain available.
+    expect(providerSupportsOperation("vk", "analytics")).toBe(true);
   });
 
   it("allows only an export package for TenChat without claiming an API", () => {

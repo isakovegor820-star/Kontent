@@ -1,3 +1,5 @@
+import { requireSelectedProjectPermission } from "@/lib/project-permissions";
+import { withProjectRoute } from "@/lib/project-route";
 // Гибридный радар: локальная выдача возвращается сразу, а worker расширяет её
 // проверенными Telegram-данными и доказательным OSINT по публичным веб-источникам.
 
@@ -161,9 +163,9 @@ function isFocusedResult(row: Record<string, unknown>, query: string) {
   return relevance >= 35;
 }
 
-async function searchLocal(pool: Db, userId: number, channelId: number | null, query: string) {
-  const ownerId = channelId ?? userId;
-  const ownerColumn = channelId ? "competitor.channel_id" : "competitor.user_id";
+async function searchLocal(pool: Db, userId: number, projectId: number, channelId: number | null, query: string) {
+  const ownerId = channelId;
+  const ownerColumn = "competitor.channel_id";
   const textQuery = radarTsQuery(query);
   if (!textQuery) return [];
 
@@ -255,12 +257,12 @@ async function searchLocal(pool: Db, userId: number, channelId: number | null, q
               result.quality_score, result.reason, result.id as action_id,
               'radar-result:' || result.id as result_key, true as verified
          from radar_search_results result
-         join radar_search_runs run on run.id = result.run_id and run.user_id = $1
+         join radar_search_runs run on run.id = result.run_id and run.user_id = $1 and run.project_id = $3
         where result.user_id = $1 and result.tsv @@ to_tsquery('russian', $2)
           and result.verification_status = 'verified'
           and result.created_at >= now() - interval '30 days'
         order by result.quality_score desc, result.created_at desc`,
-      [userId, textQuery],
+      [userId, textQuery, projectId],
     ),
   ]);
 
@@ -287,14 +289,14 @@ async function searchLocal(pool: Db, userId: number, channelId: number | null, q
   ]);
 }
 
-async function loadRunResults(pool: Db, userId: number, runId: number, afterId = 0) {
+async function loadRunResults(pool: Db, userId: number, projectId: number, runId: number, afterId = 0) {
   const run = (
     await pool.query<RunRow>(
       `select id, query, normalized_query, status, stage, progress, provider,
               local_count, external_count, error_code, error_message,
               cache_expires_at, created_at, updated_at, completed_at
-         from radar_search_runs where id = $1 and user_id = $2`,
-      [runId, userId],
+         from radar_search_runs where id = $1 and user_id = $2 and project_id = $3`,
+      [runId, userId, projectId],
     )
   ).rows[0];
   if (!run) return null;
@@ -328,16 +330,17 @@ function json(body: Record<string, unknown>, status = 200) {
   return NextResponse.json(body, { status, headers: { "cache-control": "no-store" } });
 }
 
-export async function GET(req: NextRequest) {
+async function handleGET(req: NextRequest) {
   const user = await getSessionUser(req);
   if (!user) return json({ error: "unauthorized" }, 401);
   const pool = getPool();
   const runId = Number(req.nextUrl.searchParams.get("run"));
   try {
+    const { projectId } = await requireSelectedProjectPermission(pool, user.id, "project.read");
     if (Number.isSafeInteger(runId) && runId > 0) {
       const requestedCursor = Number(req.nextUrl.searchParams.get("after"));
       const afterId = Number.isSafeInteger(requestedCursor) && requestedCursor > 0 ? requestedCursor : 0;
-      const payload = await loadRunResults(pool, user.id, runId, afterId);
+      const payload = await loadRunResults(pool, user.id, projectId, runId, afterId);
       return payload ? json(payload) : json({ error: "not_found" }, 404);
     }
 
@@ -347,24 +350,24 @@ export async function GET(req: NextRequest) {
     const wantedChannel = Number(req.nextUrl.searchParams.get("channel")) || null;
     const channelId = await resolveChannel(user.id, wantedChannel);
     if (wantedChannel && !channelId) return json({ error: "channel_not_found" }, 422);
-    const results = await searchLocal(pool, user.id, channelId, query);
+    const results = await searchLocal(pool, user.id, projectId, channelId, query);
     const latest = (
       await pool.query<RunRow>(
         `select id, query, normalized_query, status, stage, progress, provider,
                 local_count, external_count, error_code, error_message,
                 cache_expires_at, created_at, updated_at, completed_at
           from radar_search_runs
-          where user_id = $1 and channel_id is not distinct from $2 and normalized_query = $3
+          where user_id = $1 and channel_id is not distinct from $2 and normalized_query = $3 and project_id = $4
             and (
               (status = 'queued' and updated_at > now() - interval '2 minutes')
               or (status = 'running' and updated_at > now() - interval '10 minutes')
               or (status in ('ready','partial') and cache_expires_at > now())
             )
           order by created_at desc limit 1`,
-        [user.id, channelId, query],
+        [user.id, channelId, query, projectId],
       )
     ).rows[0];
-    const latestPayload = latest ? await loadRunResults(pool, user.id, Number(latest.id)) : null;
+    const latestPayload = latest ? await loadRunResults(pool, user.id, projectId, Number(latest.id)) : null;
     const combinedResults = deduplicateSerializedResults([
       ...results,
       ...(latestPayload?.results ?? []),
@@ -392,7 +395,7 @@ export async function GET(req: NextRequest) {
   }
 }
 
-export async function POST(req: NextRequest) {
+async function handlePOST(req: NextRequest) {
   if (!hasTrustedMutationOrigin(req)) {
     return json({ error: "forbidden_origin" }, 403);
   }
@@ -417,6 +420,7 @@ export async function POST(req: NextRequest) {
   const pool = getPool();
 
   try {
+    const { projectId } = await requireSelectedProjectPermission(pool, user.id, "content.create");
     if (!force) {
       const cached = (
         await pool.query<RunRow>(
@@ -424,14 +428,14 @@ export async function POST(req: NextRequest) {
                   local_count, external_count, error_code, error_message,
                   cache_expires_at, created_at, updated_at, completed_at
              from radar_search_runs
-            where user_id = $1 and channel_id is not distinct from $2 and normalized_query = $3
+            where user_id = $1 and channel_id is not distinct from $2 and normalized_query = $3 and project_id = $4
               and status in ('ready','partial') and cache_expires_at > now()
             order by completed_at desc nulls last limit 1`,
-          [user.id, channelId, query],
+          [user.id, channelId, query, projectId],
         )
       ).rows[0];
       if (cached) {
-        const payload = await loadRunResults(pool, user.id, Number(cached.id));
+        const payload = await loadRunResults(pool, user.id, projectId, Number(cached.id));
         return json({ ok: true, cached: true, ...payload });
       }
     }
@@ -441,25 +445,25 @@ export async function POST(req: NextRequest) {
         `select id, query, normalized_query, status, stage, progress, provider,
                 local_count, external_count, error_code, error_message,
                 cache_expires_at, created_at, updated_at, completed_at
-           from radar_search_runs where user_id = $1 and request_key = $2`,
-        [user.id, requestKey],
+           from radar_search_runs where user_id = $1 and request_key = $2 and project_id = $3`,
+        [user.id, requestKey, projectId],
       )
     ).rows[0];
     if (replay) {
       if (replay.normalized_query !== query) return json({ error: "idempotency_conflict" }, 409);
-      const payload = await loadRunResults(pool, user.id, Number(replay.id));
+      const payload = await loadRunResults(pool, user.id, projectId, Number(replay.id));
       return json({ ok: true, replayed: true, ...payload }, replay.status === "ready" ? 200 : 202);
     }
 
-    const local = await searchLocal(pool, user.id, channelId, query);
+    const local = await searchLocal(pool, user.id, projectId, channelId, query);
     const inserted = await pool.query<RunRow>(
       `insert into radar_search_runs
-         (user_id, channel_id, request_key, query, normalized_query, local_count)
-       values ($1, $2, $3, $4, $5, $6)
+         (user_id, channel_id, request_key, query, normalized_query, local_count, project_id)
+       values ($1, $2, $3, $4, $5, $6, $7)
        returning id, query, normalized_query, status, stage, progress, provider,
                  local_count, external_count, error_code, error_message,
                  cache_expires_at, created_at, updated_at, completed_at`,
-      [user.id, channelId, requestKey, String(body.q).trim().slice(0, 200), query, local.length],
+      [user.id, channelId, requestKey, String(body.q).trim().slice(0, 200), query, local.length, projectId],
     );
     let run = inserted.rows[0];
     try {
@@ -498,3 +502,6 @@ export async function POST(req: NextRequest) {
     return json({ error: "search_unavailable" }, 503);
   }
 }
+
+export const GET = withProjectRoute(handleGET);
+export const POST = withProjectRoute(handlePOST);

@@ -1,4 +1,6 @@
 "use client";
+import { useProjectFetch } from "@/lib/use-project-transport";
+
 
 import Link from "next/link";
 import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -357,6 +359,7 @@ function OpportunityCard({
 }
 
 function LegalOpportunitiesScreen() {
+  const fetch = useProjectFetch();
   const router = useRouter();
   const searchParams = useSearchParams();
   const store = useStore();
@@ -433,7 +436,7 @@ function LegalOpportunitiesScreen() {
     } finally {
       if (withLoader) setLoading(false);
     }
-  }, [publishUnreadCount, updateItems]);
+  }, [fetch, publishUnreadCount, updateItems]);
 
   const startAutomaticMonitoring = useCallback(async (wantedChannelId: number) => {
     setPreparing(true);
@@ -454,7 +457,7 @@ function LegalOpportunitiesScreen() {
       setPreparing(false);
       await loadData(wantedChannelId, true);
     }
-  }, [loadData]);
+  }, [fetch, loadData]);
 
   const initialize = useCallback(async () => {
     setLoading(true);
@@ -488,7 +491,7 @@ function LegalOpportunitiesScreen() {
       setLoadError(true);
       setLoading(false);
     }
-  }, [loadData, publishUnreadCount, startAutomaticMonitoring]);
+  }, [fetch, loadData, publishUnreadCount, startAutomaticMonitoring]);
 
   useEffect(() => {
     const startupTimer = setTimeout(() => void initialize(), 0);
@@ -542,7 +545,7 @@ function LegalOpportunitiesScreen() {
     } finally {
       viewedInFlightRef.current.delete(itemId);
     }
-  }, [publishUnreadCount, updateItems]);
+  }, [fetch, publishUnreadCount, updateItems]);
 
   const changeChannel = (nextChannelId: number) => {
     if (nextChannelId === channelId) return;

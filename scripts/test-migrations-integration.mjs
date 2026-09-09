@@ -87,6 +87,8 @@ try {
        (select count(*)::int from saved_posts where channel_id is null) as saved_unassigned,
        (select count(*)::int from hashtag_sets where channel_id is null) as tags_unassigned,
        (select count(*)::int from rss_items where skip_reason = 'limit') as rss_labeled,
+       (select count(*)::int from rss_feeds where id = 301 and url = 'https://legacy.example.test/rss'
+         and user_id = 1 and channel_id = 10) as rss_preserved,
        (select count(*)::int from ai_usage where status = 'committed') as usage_preserved,
        (select count(*)::int from content_brief where source = 'quiz') as quiz_briefs,
        (select count(*)::int from sessions
@@ -119,6 +121,7 @@ try {
     || Number(summary.saved_unassigned) !== 1
     || Number(summary.tags_unassigned) !== 1
     || Number(summary.rss_labeled) !== 1
+    || Number(summary.rss_preserved) !== 1
     || Number(summary.usage_preserved) !== 1
     || Number(summary.quiz_briefs) !== 1
     || Number(summary.invalidated_dual_sessions) !== 1

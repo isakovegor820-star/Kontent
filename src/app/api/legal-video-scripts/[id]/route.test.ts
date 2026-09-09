@@ -1,4 +1,4 @@
-import { NextRequest } from "next/server";
+import { ProjectRequest } from "@/test/project-request";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
@@ -34,7 +34,7 @@ describe("legal video item route", () => {
 
   it("uses the authenticated actor for the project-scoped script read", async () => {
     mocks.getScript.mockResolvedValue({ id: 201, projectId: 7 });
-    const response = await GET(new NextRequest("http://localhost/api/legal-video-scripts/201"), context);
+    const response = await GET(new ProjectRequest(7, "http://localhost/api/legal-video-scripts/201"), context);
     expect(response.status).toBe(200);
     expect(mocks.getScript).toHaveBeenCalledWith(expect.objectContaining({
       actorUserId: 12,
@@ -44,7 +44,7 @@ describe("legal video item route", () => {
 
   it("surfaces stale revision as 409 and forwards the server-owned actor", async () => {
     mocks.updateScript.mockRejectedValue(new LegalVideoScriptServiceError("version_conflict"));
-    const response = await PATCH(new NextRequest("http://localhost/api/legal-video-scripts/201", {
+    const response = await PATCH(new ProjectRequest(7, "http://localhost/api/legal-video-scripts/201", {
       method: "PATCH",
       headers: { origin: "http://localhost", "content-type": "application/json" },
       body: JSON.stringify({ expectedRevision: 3, title: "Новый заголовок" }),

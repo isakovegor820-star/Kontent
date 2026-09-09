@@ -1,3 +1,4 @@
+import { withProjectRoute } from "@/lib/project-route";
 import { NextRequest, NextResponse } from "next/server";
 import { resolveChannel } from "@/lib/autopilot";
 import { getPool } from "@/lib/db";
@@ -369,7 +370,7 @@ async function internetScope(
   return { competitors: sources, items, norms: [] as NormRow[] };
 }
 
-export async function GET(req: NextRequest) {
+async function handleGET(req: NextRequest) {
   const user = await getSessionUser(req);
   if (!user) return NextResponse.json({ error: "unauthorized" }, { status: 401 });
 
@@ -501,7 +502,7 @@ export async function GET(req: NextRequest) {
   }
 }
 
-export async function POST(req: NextRequest) {
+async function handlePOST(req: NextRequest) {
   if (!hasTrustedMutationOrigin(req)) {
     return NextResponse.json({ ok: false, error: "forbidden" }, { status: 403 });
   }
@@ -707,3 +708,6 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ ok: false, error: "server" }, { status: 500 });
   }
 }
+
+export const GET = withProjectRoute(handleGET);
+export const POST = withProjectRoute(handlePOST);

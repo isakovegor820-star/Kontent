@@ -1,3 +1,4 @@
+import { withProjectRoute } from "@/lib/project-route";
 // Д.9 — безопасное массовое одобрение плана.
 // Сначала сервер возвращает точный preview, затем принимает отдельный confirm с idempotency key.
 
@@ -172,7 +173,7 @@ async function finishOperation(
   );
 }
 
-export async function POST(req: NextRequest) {
+async function handlePOST(req: NextRequest) {
   if (!hasTrustedMutationOrigin(req)) {
     return NextResponse.json({ ok: false, error: "forbidden" }, { status: 403 });
   }
@@ -605,3 +606,5 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ ok: false, error: "server" }, { status: 500 });
   }
 }
+
+export const POST = withProjectRoute(handlePOST);

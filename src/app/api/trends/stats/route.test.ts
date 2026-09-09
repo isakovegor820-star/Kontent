@@ -1,5 +1,5 @@
+import { ProjectRequest } from "@/test/project-request";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { NextRequest } from "next/server";
 
 const mocks = vi.hoisted(() => ({
   query: vi.fn(),
@@ -50,7 +50,7 @@ describe("GET /api/trends/stats", () => {
   });
 
   it("aggregates the selected channel's own competitor base", async () => {
-    const response = await GET(new NextRequest(
+    const response = await GET(new ProjectRequest(1,
       "http://localhost/api/trends/stats?source=own&period=week&topic=Рыбалка&channel=11",
     ));
     expect(response.status).toBe(200);
@@ -71,7 +71,7 @@ describe("GET /api/trends/stats", () => {
   });
 
   it("keeps internet statistics user- and channel-scoped", async () => {
-    const response = await GET(new NextRequest(
+    const response = await GET(new ProjectRequest(1,
       "http://localhost/api/trends/stats?source=internet&period=month&channel=11",
     ));
     expect(response.status).toBe(200);
@@ -82,7 +82,7 @@ describe("GET /api/trends/stats", () => {
   });
 
   it("uses the public editorial collection without leaking another user's data", async () => {
-    const response = await GET(new NextRequest(
+    const response = await GET(new ProjectRequest(1,
       "http://localhost/api/trends/stats?source=collection&period=quarter&topic=садоводство",
     ));
     expect(response.status).toBe(200);
@@ -95,7 +95,7 @@ describe("GET /api/trends/stats", () => {
 
   it("requires an owned channel for private statistics", async () => {
     mocks.resolveChannel.mockResolvedValue(null);
-    const response = await GET(new NextRequest(
+    const response = await GET(new ProjectRequest(1,
       "http://localhost/api/trends/stats?source=internet&period=day&channel=999",
     ));
     expect(response.status).toBe(422);

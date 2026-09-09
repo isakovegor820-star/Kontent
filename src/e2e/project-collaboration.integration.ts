@@ -59,13 +59,13 @@ let projectId = 0;
 let foreignProjectId = 0;
 
 function getRequest(query = "") {
-  return new NextRequest(`http://localhost/api/project-notifications${query}`);
+  return new NextRequest(`http://localhost/api/project-notifications${query}`, { headers: { "x-aurora-project-id": String(projectId) } });
 }
 
 function mutationRequest(path: string) {
   return new NextRequest(`http://localhost${path}`, {
     method: "POST",
-    headers: { origin: "http://localhost" },
+    headers: { origin: "http://localhost", "x-aurora-project-id": String(projectId) },
   });
 }
 
@@ -249,6 +249,7 @@ describe.sequential("project collaboration server contracts", () => {
         origin: "http://localhost",
         "content-type": "application/json",
         "idempotency-key": "author-publish-contract",
+        "x-aurora-project-id": String(projectId),
       },
       body: JSON.stringify({ draftId: 1, draftVersion: 1, timezone: "UTC" }),
     }));

@@ -1,4 +1,4 @@
-import { NextRequest } from "next/server";
+import { ProjectRequest } from "@/test/project-request";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
@@ -25,7 +25,7 @@ import { LegalVisualServiceError } from "@/lib/legal-visual-service";
 import { GET, POST } from "./route";
 
 function request(method: "GET" | "POST", body?: Record<string, unknown>) {
-  return new NextRequest("http://localhost/api/legal-visuals", {
+  return new ProjectRequest(1, "http://localhost/api/legal-visuals", {
     method,
     headers: {
       origin: "http://localhost",
@@ -45,7 +45,7 @@ describe("legal visual collection route", () => {
 
   it("rejects unknown keys and a lying Content-Length oversized stream before create", async () => {
     expect((await POST(request("POST", { requestKey: "visual-create-001", surprise: true }))).status).toBe(400);
-    const oversized = await POST(new NextRequest("http://localhost/api/legal-visuals", {
+    const oversized = await POST(new ProjectRequest(1, "http://localhost/api/legal-visuals", {
       method: "POST",
       headers: { origin: "http://localhost", "content-type": "application/json", "content-length": "2" },
       body: JSON.stringify({ requestKey: "visual-create-001", config: { text: "x".repeat(140_000) } }),

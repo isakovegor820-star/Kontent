@@ -1,3 +1,4 @@
+import { withProjectRoute } from "@/lib/project-route";
 // База знаний канала (РАГ). Отсюда автопилот берёт ФАКТЫ для постов.
 //
 // Зачем это вообще: ИИ выдумывал. В канал ушло «решение Судьи Московского округа от
@@ -13,7 +14,7 @@ import { getPool } from "@/lib/db";
 import { getSessionUser } from "@/lib/session";
 import { getStatsQueue } from "@/lib/queue";
 import { enqueueKnowledgeIndex } from "@/lib/knowledge-index-queue.mjs";
-import { resolveChannel } from "@/lib/autopilot";
+import { deleteKnowledgeSource, knowledgeChannelSelector, knowledgeFailure, withKnowledgeChannel } from "@/lib/knowledge-access";
 import { hasTrustedMutationOrigin } from "@/lib/request-origin";
 import { channelAiContextFor } from "@/lib/ai-usage";
 
@@ -34,58 +35,60 @@ interface SourceRow {
   chunks: number;
 }
 
-export async function GET(req: NextRequest) {
+async function handleGET(req: NextRequest) {
   try {
     const user = await getSessionUser(req);
     if (!user) {
       return NextResponse.json({ ok: false, error: "unauthorized" }, { status: 401 });
     }
-    const pool = getPool();
-    const channelId = await resolveChannel(user.id, Number(req.nextUrl.searchParams.get("channel")) || null);
-    if (!channelId) {
-      return NextResponse.json({
-        ok: true,
-        sources: [],
-        facts: 0,
-        voice: 0,
-        channelId: null,
-        effectiveProfile: {},
+    try {
+      return await withKnowledgeChannel(getPool(), user.id, knowledgeChannelSelector(req.nextUrl.searchParams.get("channel")), "project.read", async (pool, channel) => {
+        const channelId = channel.id;
+
+        const sources = (
+          await pool.query<SourceRow>(
+            `select s.id, s.kind, s.title, s.status, s.last_error, s.added_at, s.indexed_at,
+                    (select count(*)::int from knowledge_chunks k where k.source_id = s.id) as chunks
+               from knowledge_sources s
+              where s.channel_id = $1
+              order by s.added_at desc`,
+            [channelId],
+          )
+        ).rows;
+
+        // Считаем ФАКТЫ отдельно от голоса: голос (посты канала) — образец стиля, опорой
+        // для утверждений он быть не может. Человек должен видеть именно счётчик опоры,
+        // иначе «в базе 40 кусков» создаст ложное чувство, что писать есть о чём.
+        const counts = (
+          await pool.query<{ facts: number; voice: number }>(
+            `select count(*) filter (where kind <> 'voice')::int as facts,
+                    count(*) filter (where kind = 'voice')::int  as voice
+               from knowledge_chunks where channel_id = $1`,
+            [channelId],
+          )
+        ).rows[0];
+        const context = await channelAiContextFor(user.id, channelId, 10, pool);
+
+        return NextResponse.json({
+          ok: true,
+          sources: sources.map((s) => ({ ...s, id: Number(s.id) })),
+          facts: counts.facts,
+          voice: counts.voice,
+          channelId,
+          effectiveProfile: context?.profileProvenance ?? {},
+          projectId: channel.projectId,
+        });
       });
+    } catch (error) {
+      const failure = knowledgeFailure(error);
+      if (failure?.error === "no_channel" && !req.nextUrl.searchParams.get("channel")) {
+        return NextResponse.json({ ok: true, sources: [], facts: 0, voice: 0, channelId: null, effectiveProfile: {} });
+      }
+      throw error;
     }
-
-    const sources = (
-      await pool.query<SourceRow>(
-        `select s.id, s.kind, s.title, s.status, s.last_error, s.added_at, s.indexed_at,
-                (select count(*)::int from knowledge_chunks k where k.source_id = s.id) as chunks
-           from knowledge_sources s
-          where s.channel_id = $1
-          order by s.added_at desc`,
-        [channelId],
-      )
-    ).rows;
-
-    // Считаем ФАКТЫ отдельно от голоса: голос (посты канала) — образец стиля, опорой
-    // для утверждений он быть не может. Человек должен видеть именно счётчик опоры,
-    // иначе «в базе 40 кусков» создаст ложное чувство, что писать есть о чём.
-    const counts = (
-      await pool.query<{ facts: number; voice: number }>(
-        `select count(*) filter (where kind <> 'voice')::int as facts,
-                count(*) filter (where kind = 'voice')::int  as voice
-           from knowledge_chunks where channel_id = $1`,
-        [channelId],
-      )
-    ).rows[0];
-    const context = await channelAiContextFor(user.id, channelId, 10, pool);
-
-    return NextResponse.json({
-      ok: true,
-      sources: sources.map((s) => ({ ...s, id: Number(s.id) })),
-      facts: counts.facts,
-      voice: counts.voice,
-      channelId,
-      effectiveProfile: context?.profileProvenance ?? {},
-    });
   } catch (err) {
+    const failure = knowledgeFailure(err);
+    if (failure) return NextResponse.json({ ok: false, error: failure.error }, { status: failure.status });
     console.error("[/api/knowledge] GET", {
       errorName: err instanceof Error ? err.name : "Error",
     });
@@ -93,7 +96,7 @@ export async function GET(req: NextRequest) {
   }
 }
 
-export async function POST(req: NextRequest) {
+async function handlePOST(req: NextRequest) {
   if (!hasTrustedMutationOrigin(req)) {
     return NextResponse.json({ ok: false, error: "forbidden_origin" }, { status: 403 });
   }
@@ -122,16 +125,14 @@ export async function POST(req: NextRequest) {
   if (!title) return NextResponse.json({ ok: false, error: "no_title" }, { status: 422 });
 
   try {
-    const pool = getPool();
-    const channelId = await resolveChannel(user.id, Number(body.channelId) || null);
-    if (!channelId) return NextResponse.json({ ok: false, error: "no_channel" }, { status: 422 });
-
-    const ins = await pool.query<{ id: number }>(
-      `insert into knowledge_sources (user_id, channel_id, kind, title, raw_text)
-       values ($1, $2, $3, $4, $5) returning id`,
-      [user.id, channelId, kind, title, text],
-    );
-    const id = Number(ins.rows[0].id);
+    const id = await withKnowledgeChannel(getPool(), user.id, knowledgeChannelSelector(body.channelId), "content.edit", async (pool, channel) => {
+      const ins = await pool.query<{ id: number }>(
+        `insert into knowledge_sources (user_id, channel_id, kind, title, raw_text)
+         values ($1, $2, $3, $4, $5) returning id`,
+        [user.id, channel.id, kind, title, text],
+      );
+      return Number(ins.rows[0].id);
+    });
 
     // Векторы считает воркер: это поход наружу (Ollama/облако), у него очередь и повторы.
     // Роут ждать не должен — человек увидит «считаю» и через секунды «готово».
@@ -142,13 +143,15 @@ export async function POST(req: NextRequest) {
 
     return NextResponse.json({ ok: true, id });
   } catch (err) {
+    const failure = knowledgeFailure(err);
+    if (failure) return NextResponse.json({ ok: false, error: failure.error }, { status: failure.status });
     console.error("[/api/knowledge] POST", err);
     return NextResponse.json({ ok: false, error: "server" }, { status: 500 });
   }
 }
 
 /** Убрать источник целиком — куски уедут каскадом. */
-export async function DELETE(req: NextRequest) {
+async function handleDELETE(req: NextRequest) {
   if (!hasTrustedMutationOrigin(req)) {
     return NextResponse.json({ ok: false, error: "forbidden_origin" }, { status: 403 });
   }
@@ -156,17 +159,19 @@ export async function DELETE(req: NextRequest) {
   if (!user) return NextResponse.json({ ok: false, error: "unauthorized" }, { status: 401 });
 
   const id = Number(req.nextUrl.searchParams.get("id"));
-  if (!Number.isInteger(id)) return NextResponse.json({ ok: false, error: "bad_id" }, { status: 422 });
+  if (!Number.isSafeInteger(id) || id <= 0) return NextResponse.json({ ok: false, error: "bad_id" }, { status: 422 });
 
   try {
-    const r = await getPool().query(`delete from knowledge_sources where id = $1 and user_id = $2`, [
-      id,
-      user.id,
-    ]);
-    if (!r.rowCount) return NextResponse.json({ ok: false, error: "not_found" }, { status: 404 });
+    await deleteKnowledgeSource(getPool(), user.id, id);
     return NextResponse.json({ ok: true });
   } catch (err) {
+    const failure = knowledgeFailure(err);
+    if (failure) return NextResponse.json({ ok: false, error: failure.error }, { status: failure.status });
     console.error("[/api/knowledge] DELETE", err);
     return NextResponse.json({ ok: false, error: "server" }, { status: 500 });
   }
 }
+
+export const GET = withProjectRoute(handleGET);
+export const POST = withProjectRoute(handlePOST);
+export const DELETE = withProjectRoute(handleDELETE);

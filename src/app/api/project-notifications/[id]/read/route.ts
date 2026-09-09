@@ -1,3 +1,4 @@
+import { withProjectRoute } from "@/lib/project-route";
 import { randomUUID } from "node:crypto";
 import type { NextRequest } from "next/server";
 
@@ -19,7 +20,7 @@ import {
 export const runtime = "nodejs";
 type RouteContext = { params: Promise<{ id: string }> };
 
-export async function POST(request: NextRequest, context: RouteContext) {
+async function handlePOST(request: NextRequest, context: RouteContext) {
   const requestId = randomUUID();
   if (!hasTrustedMutationOrigin(request)) {
     return projectNotificationJson({ ok: false, error: "forbidden_origin" }, 403, requestId);
@@ -45,3 +46,5 @@ export async function POST(request: NextRequest, context: RouteContext) {
     return projectNotificationApiError(error, requestId, "mark-one");
   }
 }
+
+export const POST = withProjectRoute(handlePOST);

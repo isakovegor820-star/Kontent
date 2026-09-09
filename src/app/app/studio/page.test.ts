@@ -11,14 +11,14 @@ describe("Studio responsive recovery controls", () => {
     expect(pageSource).toContain("w-full whitespace-normal text-pretty sm:w-auto sm:shrink-0");
   });
 
-  it("uses one App Router history entry for the one-shot reference flow", () => {
+  it("uses one native document history entry for the one-shot reference flow", () => {
     expect(pageSource).toContain('const composerHref = `/app/composer?draft=${result.draft.id}&from=studio${suggestMedia}`');
-    const replaceIndex = pageSource.indexOf('window.history.replaceState(window.history.state, "", `/app/studio?draft=${generation.referenceDraftId}`)');
-    const pushIndex = pageSource.indexOf("router.push(composerHref)", replaceIndex);
-
-    expect(replaceIndex).toBeGreaterThan(-1);
-    expect(pushIndex).toBeGreaterThan(replaceIndex);
-    expect(pageSource).not.toContain("window.location.assign(composerHref)");
+    expect(pageSource).toContain('window.history.replaceState(window.history.state, "", `/app/studio?draft=${generation.referenceDraftId}`)');
+    expect(pageSource).toContain("window.location.assign(composerHref)");
+    expect(pageSource).toContain("this one-shot handoff intentionally resets the consumed document context");
+    expect(pageSource.indexOf("window.location.assign(composerHref)")).toBeLessThan(
+      pageSource.indexOf("router.push(composerHref)"),
+    );
   });
 
   it("keeps fallback diagnostics internal without a caption or toast", () => {

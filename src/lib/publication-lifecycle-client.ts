@@ -1,3 +1,4 @@
+import { projectFetch as fetch } from "./project-transport";
 export type PublicationLifecycleResponse = {
   ok: boolean;
   error?: string;

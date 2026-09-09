@@ -1,4 +1,6 @@
 "use client";
+import { useProjectFetch, useProjectCall } from "@/lib/use-project-transport";
+
 
 // А3. Мастер первого запуска (ТЗ, приложение А + сценарий Б1).
 // Главное действие — дойти до календаря за 5 минут. Поэтому: ни сайдбара, ни лишних
@@ -32,6 +34,7 @@ import {
   TelegramIcon,
   Textarea,
 } from "@/components/ui/primitives";
+import { useProjects } from "@/components/app/project-provider";
 import { useStore } from "@/lib/store";
 import type { RealChannel } from "@/lib/types";
 import {
@@ -46,7 +49,7 @@ import { RUBRICS } from "@/lib/brief";
 import { PROFILE_FORMAT_OPTIONS } from "@/lib/profile";
 import { appDraftActionHref } from "@/lib/app-routes";
 import { parseBotLinkStatusResponse } from "@/lib/bot-link-client";
-import { createServerDraft, DraftRequestError, updateServerDraft } from "@/lib/draft-client";
+import { createServerDraft as unscopedCreateServerDraft, DraftRequestError, updateServerDraft as unscopedUpdateServerDraft } from "@/lib/draft-client";
 import { onboardingDraftReplayAction } from "@/lib/onboarding-first-material";
 import {
   completedOnboardingFallbackRoute,
@@ -541,6 +544,7 @@ function RealChannelRow({ channel }: { channel: RealChannel }) {
 }
 
 function StepConnect({ onBack, onNext }: { onBack: () => void; onNext: () => void | Promise<void> }) {
+  const fetch = useProjectFetch();
   const s = useStore();
   const refreshReal = s.refreshReal;
   const [handle, setHandle] = useState("");
@@ -573,7 +577,7 @@ function StepConnect({ onBack, onNext }: { onBack: () => void; onNext: () => voi
       document.removeEventListener("visibilitychange", refreshWhenVisible);
       for (const timer of refreshTimers.current) window.clearTimeout(timer);
     };
-  }, [refreshReal]);
+  }, [fetch, refreshReal]);
 
   function scheduleChannelRefresh() {
     for (const timer of refreshTimers.current) window.clearTimeout(timer);
@@ -773,6 +777,7 @@ function StepProfile({
   onBack: () => void;
   onNext: () => void;
 }) {
+  const fetch = useProjectFetch();
   const s = useStore();
   const uid = useId();
   const [phase, setPhase] = useState<"loading" | "confirm" | "interview">("loading");
@@ -1084,6 +1089,7 @@ function StepCompetitors({
   onNext: () => void;
   onSkip: () => void;
 }) {
+  const fetch = useProjectFetch();
   const uid = useId();
   const linkId = `${uid}-link`;
   const messageId = `${uid}-link-message`;
@@ -1119,7 +1125,7 @@ function StepCompetitors({
       });
 
     return () => controller.abort();
-  }, [channelId]);
+  }, [channelId, fetch]);
 
   // Раньше здесь стоял s.addCompetitor — он клал объект с нулями в localStorage и писал
   // «Собираем досье», хотя никто ничего не собирал: до платформы канал не доезжал вообще.
@@ -1312,12 +1318,17 @@ function StepFinish({
   onMaterialChange: (value: string) => void;
   onBack: () => void;
 }) {
+  const createServerDraft = useProjectCall(unscopedCreateServerDraft);
+  const updateServerDraft = useProjectCall(unscopedUpdateServerDraft);
+  const fetch = useProjectFetch();
   const s = useStore();
   const router = useRouter();
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [savedDraftId, setSavedDraftId] = useState<number | null>(null);
   const materialRef = useRef<HTMLTextAreaElement>(null);
+  const { current: selectedProject } = useProjects();
+  const recoveryKey = selectedProject ? onboardingRecoveryKey(userId, selectedProject.id) : null;
 
   async function completeAndOpen(draftId: number) {
     if (!channelId) return;
@@ -1329,7 +1340,7 @@ function StepFinish({
       setError("Материал сохранён, но сервер не подтвердил завершение настройки. Повтори — дубликат не появится.");
       return;
     }
-    clearQuizLS(userId);
+    clearQuizLS(recoveryKey);
     s.toast({
       kind: "success",
       title: "Всё готово",
@@ -1480,10 +1491,12 @@ function StepFinish({
 
 // Ключ localStorage для сохранения прогресса quiz между визитами.
 function loadQuizFromLS(
-  userId: number,
+  recoveryKey: string | null,
+  legacyKey?: string,
 ): { quiz: QuizAnswers; step: StepNo; channelId: number | null } | null {
   try {
-    const recovered = parseOnboardingRecovery(localStorage.getItem(onboardingRecoveryKey(userId)));
+    const recovered = parseOnboardingRecovery(recoveryKey ? localStorage.getItem(recoveryKey) : null)
+      ?? (legacyKey ? parseOnboardingRecovery(localStorage.getItem(legacyKey)) : null);
     if (!recovered) return null;
     return {
       quiz: recovered.quiz,
@@ -1494,30 +1507,35 @@ function loadQuizFromLS(
 }
 
 function saveQuizToLS(
-  userId: number,
+  recoveryKey: string | null,
   quiz: QuizAnswers,
   step: StepNo,
   channelId: number | null,
 ) {
+  if (!recoveryKey) return;
   try {
     localStorage.setItem(
-      onboardingRecoveryKey(userId),
+      recoveryKey,
       serializeOnboardingRecovery({ quiz, step, channelId }),
     );
   } catch { /* full */ }
 }
 
-function clearQuizLS(userId: number) {
-  try { localStorage.removeItem(onboardingRecoveryKey(userId)); } catch { /* ok */ }
+function clearQuizLS(recoveryKey: string | null) {
+  if (!recoveryKey) return;
+  try { localStorage.removeItem(recoveryKey); } catch { /* ok */ }
 }
 
 function Wizard({ userId }: { userId: number }) {
+  const { current: selectedProject } = useProjects();
+  const recoveryKey = selectedProject ? onboardingRecoveryKey(userId, selectedProject.id) : null;
+  const fetch = useProjectFetch();
   const s = useStore();
   const reduced = useReducedMotion();
 
   // Восстанавливаем прогресс из localStorage: если юзер закрыл вкладку между шагами,
   // ответы не потеряются.
-  const [restored] = useState(() => loadQuizFromLS(userId));
+  const [restored] = useState(() => loadQuizFromLS(recoveryKey, selectedProject?.personal ? onboardingRecoveryKey(userId) : undefined));
   const [pickedChannelId, setPickedChannelId] = useState<number | null>(
     () => restored?.channelId ?? null,
   );
@@ -1576,7 +1594,7 @@ function Wizard({ userId }: { userId: number }) {
         setProgressState("error");
       });
     return () => controller.abort();
-  }, [progressReload, userId]);
+  }, [fetch, progressReload, userId]);
 
   const lockedChannelExists =
     lockedChannelId == null || tgChannels.some((channel) => channel.id === lockedChannelId);
@@ -1587,10 +1605,10 @@ function Wizard({ userId }: { userId: number }) {
     const reset = window.setTimeout(() => {
       setLockedChannelId(null);
       setStepRaw(2);
-      saveQuizToLS(userId, quiz, 2, channelId);
+      saveQuizToLS(recoveryKey, quiz, 2, channelId);
     }, 0);
     return () => window.clearTimeout(reset);
-  }, [channelId, lockedChannelExists, quiz, s.realError, s.realReady, step, userId]);
+  }, [channelId, lockedChannelExists, quiz, recoveryKey, s.realError, s.realReady, step]);
 
   function persistProgress(payload: {
     step: StepNo;
@@ -1620,7 +1638,7 @@ function Wizard({ userId }: { userId: number }) {
   // Browser recovery is immediate; the same transition is serialized to the server.
   const setStep = (v: StepNo, options: { skippedFirstSource?: boolean } = {}) => {
     setStepRaw(v);
-    saveQuizToLS(userId, quiz, v, effectiveChannelId);
+    saveQuizToLS(recoveryKey, quiz, v, effectiveChannelId);
     persistProgress({
       step: v,
       channelId: effectiveChannelId,
@@ -1629,7 +1647,7 @@ function Wizard({ userId }: { userId: number }) {
   };
   const setQuiz = (v: QuizAnswers) => {
     setQuizRaw(v);
-    saveQuizToLS(userId, v, step, effectiveChannelId);
+    saveQuizToLS(recoveryKey, v, step, effectiveChannelId);
   };
 
   // Сохраняем бриф (source='quiz') после подключения канала.
@@ -1730,7 +1748,7 @@ function Wizard({ userId }: { userId: number }) {
           value={effectiveChannelId}
           onChange={(nextChannelId) => {
             setPickedChannelId(nextChannelId);
-            saveQuizToLS(userId, quiz, step, nextChannelId);
+            saveQuizToLS(recoveryKey, quiz, step, nextChannelId);
           }}
           label="Канал для профиля и публикации"
           className="mt-5 rounded-md border border-line bg-surface p-4"

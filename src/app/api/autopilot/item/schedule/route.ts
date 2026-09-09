@@ -1,3 +1,4 @@
+import { withProjectRoute } from "@/lib/project-route";
 import { NextRequest, NextResponse } from "next/server";
 import { readJsonBodyValue } from "@/lib/bounded-request-body";
 import { getSessionUser } from "@/lib/session";
@@ -12,7 +13,7 @@ export const runtime = "nodejs";
 const errorResponse = (error: string, status = 409) => NextResponse.json({ ok: false, error }, { status });
 type Item = { i: number; scheduledAt: string; scheduleTimezone?: string; status: string; postId?: number; draftId?: number; editorVersion?: number; approvalBlockers?: unknown };
 
-export async function PATCH(req: NextRequest) {
+async function handlePATCH(req: NextRequest) {
   if (!hasTrustedMutationOrigin(req)) return errorResponse("forbidden", 403);
   const user = await getSessionUser(req);
   if (!user) return errorResponse("unauthorized", 401);
@@ -34,6 +35,7 @@ export async function PATCH(req: NextRequest) {
     let nextScheduleRevision = 0;
     try {
       await tx.query("begin");
+      await requireProjectPermission(tx, user.id, projectId, "content.edit", { lock: true });
       const plan = (await tx.query<{ id: string; revision: string; channel_id: string; items: Item[] }>(
         postId
           ? `select id, revision, channel_id, items from autopilot_plan where project_id = $1 and status in ('pending', 'approved') and exists (select 1 from jsonb_array_elements(items) item where item->>'postId' = $2::text) order by id desc limit 1 for update`
@@ -86,3 +88,5 @@ export async function PATCH(req: NextRequest) {
     return errorResponse("server", 500);
   }
 }
+
+export const PATCH = withProjectRoute(handlePATCH);

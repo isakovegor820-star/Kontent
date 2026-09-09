@@ -1,4 +1,4 @@
-import { NextRequest } from "next/server";
+import { ProjectRequest } from "@/test/project-request";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
@@ -26,7 +26,7 @@ import { PublicationReviewError } from "@/lib/publication-review-service";
 import { POST } from "./route";
 
 function request(body: unknown, idempotencyKey = "extra-retry-request-0001") {
-  return new NextRequest("http://localhost/api/publication-extra-operations/77/retry", {
+  return new ProjectRequest(999, "http://localhost/api/publication-extra-operations/77/retry", {
     method: "POST",
     headers: {
       origin: "http://localhost",
@@ -92,7 +92,7 @@ describe("POST /api/publication-extra-operations/:id/retry", () => {
 
   it("fails closed on rate-limit storage before parsing the body", async () => {
     mocks.checkRateLimit.mockResolvedValueOnce({ allowed: false, remaining: 0 });
-    const req = new NextRequest("http://localhost/api/publication-extra-operations/77/retry", {
+    const req = new ProjectRequest(999, "http://localhost/api/publication-extra-operations/77/retry", {
       method: "POST",
       headers: {
         origin: "http://localhost",

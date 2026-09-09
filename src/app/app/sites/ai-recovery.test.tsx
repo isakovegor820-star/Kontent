@@ -1,21 +1,24 @@
 // @vitest-environment jsdom
 import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ReactNode } from "react";
+import { setProjectTransport } from "@/lib/project-transport";
+import { projectJson } from "@/test/project-response";
 vi.mock("@/components/app/shell", () => ({ AppShell: ({ children }: { children: ReactNode }) => <main>{children}</main> }));
 import SitesPage from "./page";
 const site = { id: 5, confirmedDomain: "example.test", canonicalUrl: "https://example.test/", verification: { state: "unverified", instructions: { dns: {}, meta: {} } }, publishingMode: "confirm", approvedStreak: 0, autoUnlockStreak: 10, autoModeUnlocked: false, status: "active", latestProfileId: 77 };
 const profile = { id: 77, pageCount: 1, publicationCount: 0, topics: [], gaps: [], technical: { seoScore: 80, geoScore: 70, seoIssues: [], geoIssues: [], pagesChecked: 1 }, linkablePages: [], summary: "Тестовый профиль", refinedAt: "2026-09-08T10:00Z", aiClassification: { status: "failed", topicClusters: 0 } };
 const report = { id: 12, kind: "initial_audit", status: "ready", summaryRu: "Аудит", interpretation: null, interpretationStatus: "failed" };
 const flush = async () => { await act(async () => { await Promise.resolve(); }); };
-afterEach(() => { cleanup(); vi.unstubAllGlobals(); vi.useRealTimers(); });
+beforeEach(() => setProjectTransport(7, true, 1));
+afterEach(() => { cleanup(); setProjectTransport(null); vi.unstubAllGlobals(); vi.useRealTimers(); });
 
 describe("Sites AI recovery UI", () => {
   it("keeps the add-site form compact for returning users and opens it on demand", async () => {
     const fetcher = vi.fn(async (url: string) => {
-      if (url === "/api/sites") return Response.json({ sites: [site] });
-      if (url.endsWith("/destinations")) return Response.json({ destinations: [] });
-      return Response.json({ site, profile, reports: [report], latestAnalysis: null });
+      if (url === "/api/sites") return projectJson(7, { sites: [site] });
+      if (url.endsWith("/destinations")) return projectJson(7, { destinations: [] });
+      return projectJson(7, { site, profile, reports: [report], latestAnalysis: null });
     });
     vi.stubGlobal("fetch", fetcher);
     render(<SitesPage />); await flush(); await flush();
@@ -33,10 +36,10 @@ describe("Sites AI recovery UI", () => {
         attempts += 1;
         return attempts === 1
           ? Response.json({ error: "server" }, { status: 503 })
-          : Response.json({ sites: [site] });
+          : projectJson(7, { sites: [site] });
       }
-      if (url.endsWith("/destinations")) return Response.json({ destinations: [] });
-      return Response.json({ site, profile, reports: [report], latestAnalysis: null });
+      if (url.endsWith("/destinations")) return projectJson(7, { destinations: [] });
+      return projectJson(7, { site, profile, reports: [report], latestAnalysis: null });
     });
     vi.stubGlobal("fetch", fetcher);
     render(<SitesPage />); await flush();
@@ -49,12 +52,12 @@ describe("Sites AI recovery UI", () => {
   it("surfaces a selected-site load failure and recovers in place", async () => {
     let detailAttempts = 0;
     const fetcher = vi.fn(async (url: string) => {
-      if (url === "/api/sites") return Response.json({ sites: [site] });
-      if (url.endsWith("/destinations")) return Response.json({ destinations: [] });
+      if (url === "/api/sites") return projectJson(7, { sites: [site] });
+      if (url.endsWith("/destinations")) return projectJson(7, { destinations: [] });
       detailAttempts += 1;
       return detailAttempts === 1
         ? Response.json({ error: "server" }, { status: 503 })
-        : Response.json({ site, profile, reports: [report], latestAnalysis: null });
+        : projectJson(7, { site, profile, reports: [report], latestAnalysis: null });
     });
     vi.stubGlobal("fetch", fetcher);
     render(<SitesPage />); await flush(); await flush();
@@ -67,14 +70,14 @@ describe("Sites AI recovery UI", () => {
     vi.useFakeTimers();
     let state = { ...profile, refinedAt: null as string | null };
     const fetcher = vi.fn(async (url: string, init?: RequestInit) => {
-      if (url === "/api/sites") return Response.json({ sites: [site] });
-      if (url.endsWith("/destinations")) return Response.json({ destinations: [] });
+      if (url === "/api/sites") return projectJson(7, { sites: [site] });
+      if (url.endsWith("/destinations")) return projectJson(7, { destinations: [] });
       if (url.endsWith("/ai/retry")) {
         expect(JSON.parse(String(init?.body))).toEqual({ target: "profile" });
         state = { ...state, aiClassification: { status: "processing", topicClusters: 0 } };
-        return Response.json({ ok: true }, { status: 202 });
+        return projectJson(7, { ok: true }, { status: 202 });
       }
-      return Response.json({ site, profile: state, reports: [report], latestAnalysis: null });
+      return projectJson(7, { site, profile: state, reports: [report], latestAnalysis: null });
     });
     vi.stubGlobal("fetch", fetcher);
     render(<SitesPage />); await flush(); await flush();
@@ -91,13 +94,13 @@ describe("Sites AI recovery UI", () => {
   });
   it("sends the report id and clears a failed network action so it can be retried", async () => {
     const fetcher = vi.fn(async (url: string, init?: RequestInit) => {
-      if (url === "/api/sites") return Response.json({ sites: [site] });
-      if (url.endsWith("/destinations")) return Response.json({ destinations: [] });
+      if (url === "/api/sites") return projectJson(7, { sites: [site] });
+      if (url.endsWith("/destinations")) return projectJson(7, { destinations: [] });
       if (url.endsWith("/ai/retry")) {
         expect(JSON.parse(String(init?.body))).toEqual({ target: "report", reportId: 12 });
         throw new TypeError("offline");
       }
-      return Response.json({ site, profile, reports: [report], latestAnalysis: null });
+      return projectJson(7, { site, profile, reports: [report], latestAnalysis: null });
     });
     vi.stubGlobal("fetch", fetcher);
     render(<SitesPage />); await flush(); await flush();
@@ -109,11 +112,11 @@ describe("Sites AI recovery UI", () => {
     vi.useFakeTimers();
     const other = { ...site, id: 6, confirmedDomain: "other.example.test" };
     const fetcher = vi.fn(async (url: string) => {
-      if (url === "/api/sites") return Response.json({ sites: [site, other] });
-      if (url.endsWith("/destinations")) return Response.json({ destinations: [] });
-      if (url.endsWith("/reports")) return Response.json({ ok: true }, { status: 202 });
+      if (url === "/api/sites") return projectJson(7, { sites: [site, other] });
+      if (url.endsWith("/destinations")) return projectJson(7, { destinations: [] });
+      if (url.endsWith("/reports")) return projectJson(7, { ok: true }, { status: 202 });
       const second = url === "/api/sites/6";
-      return Response.json({ site: second ? other : site, profile: { ...profile, summary: second ? "Профиль второго сайта" : "Профиль первого сайта" }, reports: [report], latestAnalysis: null });
+      return projectJson(7, { site: second ? other : site, profile: { ...profile, summary: second ? "Профиль второго сайта" : "Профиль первого сайта" }, reports: [report], latestAnalysis: null });
     });
     vi.stubGlobal("fetch", fetcher);
     render(<SitesPage />); await flush(); await flush();

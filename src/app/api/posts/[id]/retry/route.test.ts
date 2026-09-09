@@ -1,5 +1,5 @@
+import { ProjectRequest } from "@/test/project-request";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { NextRequest } from "next/server";
 
 const mocks = vi.hoisted(() => ({
   query: vi.fn(),
@@ -22,7 +22,7 @@ vi.mock("@/lib/queue", () => ({
 import { POST } from "./route";
 
 function request(key = "qa-retry-key") {
-  return new NextRequest("http://localhost/api/posts/41/retry", {
+  return new ProjectRequest(23, "http://localhost/api/posts/41/retry", {
     method: "POST",
     headers: { "idempotency-key": key },
   });
@@ -31,6 +31,7 @@ function request(key = "qa-retry-key") {
 describe("POST /api/posts/:id/retry", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mocks.query.mockReset().mockResolvedValueOnce({ rows: [{ network: "tg" }], rowCount: 1 });
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-08-02T12:00:00.000Z"));
     mocks.getSessionUser.mockResolvedValue({ id: 7 });
@@ -50,15 +51,24 @@ describe("POST /api/posts/:id/retry", () => {
       scheduledAt: "2026-08-02T12:02:00.000Z",
       scheduleRevision: 2,
     });
-    expect(String(mocks.query.mock.calls[0][0])).toContain("status in ('failed', 'quarantined')");
-    expect(String(mocks.query.mock.calls[0][0])).toContain("project_id = $2");
-    expect(mocks.query.mock.calls[0][1]?.[1]).toBe(23);
-    expect(String(mocks.query.mock.calls[0][0])).toContain("schedule_revision = schedule_revision + 1");
+    expect(String(mocks.query.mock.calls[1][0])).toContain("status in ('failed', 'quarantined')");
+    expect(String(mocks.query.mock.calls[1][0])).toContain("project_id = $2");
+    expect(mocks.query.mock.calls[1][1]?.[1]).toBe(23);
+    expect(String(mocks.query.mock.calls[1][0])).toContain("schedule_revision = schedule_revision + 1");
     expect(mocks.add).toHaveBeenCalledWith(
       "publish",
       { postId: 41, projectId: 23, scheduleRevision: 2 },
       expect.objectContaining({ delay: 120_000, jobId: expect.stringContaining("post-41-r2-manual-") }),
     );
+  });
+
+  it("leaves a blocked VK post intact and explains why retry is unavailable", async () => {
+    mocks.query.mockReset().mockResolvedValueOnce({ rows: [{ network: "vk" }], rowCount: 1 });
+    const response = await POST(request(), { params: Promise.resolve({ id: "41" }) });
+    expect(response.status).toBe(409);
+    expect(await response.json()).toMatchObject({ error: "vk_auth_flow_unverified" });
+    expect(mocks.query).toHaveBeenCalledTimes(1);
+    expect(mocks.add).not.toHaveBeenCalled();
   });
 
   it("compensates a queue failure without leaving a hidden scheduled row", async () => {
@@ -71,6 +81,6 @@ describe("POST /api/posts/:id/retry", () => {
     mocks.add.mockRejectedValueOnce(new Error("redis unavailable"));
     const response = await POST(request(), { params: Promise.resolve({ id: "41" }) });
     expect(response.status).toBe(500);
-    expect(String(mocks.query.mock.calls[1][0])).toContain("schedule_revision = $4");
+    expect(String(mocks.query.mock.calls[2][0])).toContain("schedule_revision = $4");
   });
 });

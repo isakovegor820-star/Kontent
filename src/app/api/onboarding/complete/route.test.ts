@@ -1,5 +1,5 @@
+import { ProjectRequest } from "@/test/project-request";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { NextRequest } from "next/server";
 
 const mocks = vi.hoisted(() => ({
   getSessionUser: vi.fn(),
@@ -19,7 +19,7 @@ function request(
   body: unknown = { channelId: 11, draftId: 41 },
   headers: Record<string, string> = {},
 ) {
-  return new NextRequest("http://localhost/api/onboarding/complete", {
+  return new ProjectRequest(7, "http://localhost/api/onboarding/complete", {
     method: "POST",
     headers: { "content-type": "application/json", ...headers },
     body: JSON.stringify(body),

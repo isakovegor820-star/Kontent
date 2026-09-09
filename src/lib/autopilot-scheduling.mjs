@@ -284,6 +284,13 @@ export async function scheduleAutopilotItem({
   let items;
   try {
     await tx.query("begin");
+    const membership = await tx.query(
+      `select member.role from project_members member join projects project on project.id=member.project_id
+       where member.project_id=$1 and member.user_id=$2 and member.status='active'
+         and member.role in ('owner','publisher') and project.is_archived=false
+       for share of member,project`, [projectId,userId],
+    );
+    if (!membership.rows[0]) throw new AutopilotApprovalLeaseLostError();
     const plan = (
       await tx.query(
         `select items
@@ -471,8 +478,10 @@ export async function scheduleAutopilotItem({
     const saved = await tx.query(
       `update autopilot_plan
           set items = $6::jsonb, approval_heartbeat_at = now(), revision = revision + 1
-        where id = $1 and project_id = $2 and user_id = $3 and channel_id = $4
+        where id = $1 and project_id = $2 and channel_id = $4
           and status = 'approving' and approval_operation_id = $5
+          and exists (select 1 from autopilot_approval_operations op
+            where op.id=$5 and op.project_id=$2 and op.user_id=$3 and op.status='processing')
         returning id`,
       [planId, projectId, userId, channelId, operationId, JSON.stringify(items)],
     );

@@ -1,5 +1,5 @@
+import { ProjectRequest } from "@/test/project-request";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { NextRequest } from "next/server";
 
 const mocks = vi.hoisted(() => ({
   getSessionUser: vi.fn(),
@@ -70,7 +70,7 @@ const RESERVATION_ID = 91;
 const SNAPSHOT_HASH = `sha256:${"a".repeat(64)}`;
 
 function request(key = "site-analysis-authenticated-contract") {
-  return new NextRequest("http://localhost/api/site-analysis", {
+  return new ProjectRequest(1, "http://localhost/api/site-analysis", {
     method: "POST",
     headers: {
       origin: "http://localhost",

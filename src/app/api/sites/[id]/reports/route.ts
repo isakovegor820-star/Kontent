@@ -1,3 +1,4 @@
+import { withProjectRoute } from "@/lib/project-route";
 import { NextRequest } from "next/server";
 
 import { enqueueSiteArticleJob, hasSiteArticlesWorker } from "@/lib/site-articles-queue";
@@ -9,7 +10,7 @@ export const runtime = "nodejs";
 
 type Context = { params: Promise<{ id: string }> };
 
-export async function GET(req: NextRequest, context: Context) {
+async function handleGET(req: NextRequest, context: Context) {
   const resolved = await resolveSiteRoute(req, "project.read", { label: "/api/sites/:id/reports GET" });
   if (!resolved.ok) return resolved.response;
   const { requestId, pool } = resolved.context;
@@ -28,7 +29,7 @@ export async function GET(req: NextRequest, context: Context) {
 }
 
 /** Отчёт по запросу за последние 30 дней — собирается worker'ом тем же кодом, что и ежемесячный. */
-export async function POST(req: NextRequest, context: Context) {
+async function handlePOST(req: NextRequest, context: Context) {
   const resolved = await resolveSiteRoute(req, "content.create", { mutation: true, label: "/api/sites/:id/reports POST" });
   if (!resolved.ok) return resolved.response;
   const { requestId } = resolved.context;
@@ -43,3 +44,6 @@ export async function POST(req: NextRequest, context: Context) {
     return siteErrorResponse(error, "/api/sites/:id/reports POST", requestId);
   }
 }
+
+export const GET = withProjectRoute(handleGET);
+export const POST = withProjectRoute(handlePOST);

@@ -1,3 +1,4 @@
+import { withProjectRoute } from "@/lib/project-route";
 // Д.9 — обновить настройки автопилота (вкл/выкл, режим, частота).
 
 import { NextRequest, NextResponse } from "next/server";
@@ -50,7 +51,7 @@ async function readSettingsBody(req: NextRequest) {
   }
 }
 
-export async function POST(req: NextRequest) {
+async function handlePOST(req: NextRequest) {
   if (!hasTrustedMutationOrigin(req)) {
     return NextResponse.json({ ok: false, error: "forbidden_origin" }, { status: 403 });
   }
@@ -210,3 +211,5 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ ok: false, error: "unavailable" }, { status: 503 });
   }
 }
+
+export const POST = withProjectRoute(handlePOST);

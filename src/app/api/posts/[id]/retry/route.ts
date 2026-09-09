@@ -1,3 +1,5 @@
+import { resolveProviderLiveWriteBoundary } from "@/lib/provider-write-boundary.mjs";
+import { withProjectRoute } from "@/lib/project-route";
 // Д.3 — ручная повторная отправка поста (кнопка «Отправить снова» после сбоя).
 // Возвращаем пост в очередь на публикацию сейчас; статус снова scheduled.
 
@@ -14,7 +16,7 @@ import {
 
 export const runtime = "nodejs";
 
-export async function POST(req: NextRequest, ctx: { params: Promise<{ id: string }> }) {
+async function handlePOST(req: NextRequest, ctx: { params: Promise<{ id: string }> }) {
   if (!hasTrustedMutationOrigin(req)) {
     return NextResponse.json({ ok: false, error: "forbidden" }, { status: 403 });
   }
@@ -35,6 +37,16 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ id: string
     const pool = getPool();
     const membership = await requireSelectedProjectPermission(pool, user.id, "content.publish");
     const projectId = membership.projectId;
+    const destination = (await pool.query<{ network: string }>(
+      `select channel.network from posts post
+         join channels channel on channel.id = post.channel_id and channel.project_id = post.project_id
+        where post.id = $1 and post.project_id = $2`, [postId, projectId],
+    )).rows[0];
+    if (!destination) return NextResponse.json({ ok: false, error: "not_retryable" }, { status: 422 });
+    const boundary = resolveProviderLiveWriteBoundary(destination.network);
+    if (!boundary.allowed) {
+      return NextResponse.json({ ok: false, error: boundary.code, message: boundary.message }, { status: 409 });
+    }
     // Повтор допустим только после подтверждённого failure. `publishing` и
     // `published_unverified` означают неизвестный внешний результат: повтор там может
     // создать дубль и должен начинаться с reconciliation.
@@ -107,3 +119,5 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ id: string
     return NextResponse.json({ ok: false, error: "server" }, { status: 500 });
   }
 }
+
+export const POST = withProjectRoute(handlePOST);

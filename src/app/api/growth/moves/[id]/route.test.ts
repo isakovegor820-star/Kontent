@@ -1,5 +1,5 @@
+import { ProjectRequest } from "@/test/project-request";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { NextRequest } from "next/server";
 
 const mocks = vi.hoisted(() => ({
   getSessionUser: vi.fn(), hasTrustedMutationOrigin: vi.fn(), checkRateLimit: vi.fn(),
@@ -27,7 +27,7 @@ describe("Growth move API", () => {
   });
 
   it("keeps skip as the neutral lifecycle escape", async () => {
-    const req = new NextRequest("http://localhost/api/growth/moves/12", {
+    const req = new ProjectRequest(1, "http://localhost/api/growth/moves/12", {
       method: "POST", headers: { "content-type": "application/json", origin: "http://localhost" },
       body: JSON.stringify({ action: "skip" }),
     });
@@ -37,7 +37,7 @@ describe("Growth move API", () => {
   });
 
   it("rejects unknown manual lifecycle mutations", async () => {
-    const req = new NextRequest("http://localhost/api/growth/moves/12", {
+    const req = new ProjectRequest(1, "http://localhost/api/growth/moves/12", {
       method: "POST", headers: { "content-type": "application/json", origin: "http://localhost" },
       body: JSON.stringify({ action: "published" }),
     });

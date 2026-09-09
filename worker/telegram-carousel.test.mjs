@@ -72,6 +72,24 @@ describe("Telegram native carousel contract", () => {
     expect(sendGroup).not.toHaveBeenCalled();
   });
 
+  it.each([
+    { ok: true, result: [{ message_id: 1 }, { message_id: 2 }] },
+    { ok: true, result: [{ message_id: 1 }, { message_id: 1 }, { message_id: 3 }] },
+    { ok: true, result: [] },
+    { ok: false, error_code: 500, description: "upstream uncertain" },
+  ])("stops incomplete or ambiguous receipts across a retry: %j", async (response) => {
+    const assets = [{ id: 1 }, { id: 2 }, { id: 3 }];
+    const parts = assets.map((_, index) => ({ id: index + 1, part_index: index, part_type: "media", payload_html: null, send_status: "pending", external_message_id: null }));
+    const state = harness(parts);
+    const sendGroup = vi.fn(async () => response);
+    const input = { parts: state.mutable, assets, sendGroup, sendText: vi.fn(), ...state };
+    expect(await deliverTelegramCarousel(input)).toMatchObject({ ok: false, deliveryUnknown: true });
+    expect(state.mutable.every(part => part.send_status === "unknown")).toBe(true);
+    expect(state.markFailed).not.toHaveBeenCalled();
+    expect(await deliverTelegramCarousel(input)).toMatchObject({ ok: false, deliveryUnknown: true });
+    expect(sendGroup).toHaveBeenCalledOnce();
+  });
+
   it("marks every item failed when Telegram rejects the group before delivery", async () => {
     const assets = [{ id: 1 }, { id: 2 }, { id: 3 }];
     const parts = assets.map((_, index) => ({ id: index + 1, part_index: index, part_type: "media", payload_html: null, send_status: "pending", external_message_id: null }));

@@ -1,4 +1,6 @@
 "use client";
+import { useProjectFetch } from "@/lib/use-project-transport";
+
 
 import Link from "next/link";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -280,6 +282,7 @@ export function TrendStatistics({
   onSourceChange: (source: TrendStatSource) => void;
   onOpenFeed?: (source: TrendStatSource) => void;
 }) {
+  const fetch = useProjectFetch();
   const normalizedInitialTopic = initialTopic.trim().slice(0, 100);
   const [period, setPeriod] = useState<TrendStatPeriod>("week");
   const [topicInput, setTopicInput] = useState(normalizedInitialTopic);
@@ -317,7 +320,7 @@ export function TrendStatistics({
     } finally {
       if (requestRef.current === controller) setLoading(false);
     }
-  }, [channelId, period, source, topic]);
+  }, [channelId, fetch, period, source, topic]);
 
   useEffect(() => {
     // eslint-disable-next-line react-hooks/set-state-in-effect -- загрузка зависит от выбранных серверных фильтров

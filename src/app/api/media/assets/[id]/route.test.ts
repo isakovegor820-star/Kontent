@@ -1,24 +1,24 @@
+import { ProjectRequest } from "@/test/project-request";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { NextRequest } from "next/server";
 
 const mocks = vi.hoisted(() => ({
   getSessionUser: vi.fn(),
   query: vi.fn(),
-  requireSelectedProjectPermission: vi.fn(),
+  requireProjectPermission: vi.fn(),
 }));
 
 vi.mock("@/lib/session", () => ({ getSessionUser: mocks.getSessionUser }));
 vi.mock("@/lib/db", () => ({ getPool: () => ({ query: mocks.query }) }));
 vi.mock("@/lib/project-permissions", () => ({
   ProjectAccessError: class ProjectAccessError extends Error {},
-  requireSelectedProjectPermission: mocks.requireSelectedProjectPermission,
+  requireProjectPermission: mocks.requireProjectPermission,
 }));
 
 import { GET } from "./route";
 
 function request(id = "41") {
   return GET(
-    new NextRequest(`http://localhost/api/media/assets/${id}`),
+    new ProjectRequest(23, `http://localhost/api/media/assets/${id}`),
     { params: Promise.resolve({ id }) },
   );
 }
@@ -27,13 +27,14 @@ describe("GET /api/media/assets/:id", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mocks.getSessionUser.mockResolvedValue({ id: 7 });
-    mocks.requireSelectedProjectPermission.mockResolvedValue({ projectId: 23 });
+    mocks.requireProjectPermission.mockResolvedValue({ projectId: 23 });
   });
 
   it("serves only the authenticated owner's signature-validated media types", async () => {
     const png = Buffer.from([0x89, 0x50, 0x4e, 0x47]);
     mocks.query.mockResolvedValue({
       rows: [{
+        project_id: 23,
         storage_backend: "postgres",
         object_key: null,
         bytes: png.length,
@@ -56,6 +57,7 @@ describe("GET /api/media/assets/:id", () => {
   it("refuses an unsafe stored MIME type and returns a correlation id", async () => {
     mocks.query.mockResolvedValue({
       rows: [{
+        project_id: 23,
         storage_backend: "postgres",
         object_key: null,
         bytes: 8,

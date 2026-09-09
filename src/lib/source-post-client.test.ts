@@ -2,6 +2,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ServerDraft } from "./draft-types";
 import { DEFAULT_POST_SETTINGS } from "./post-settings";
 import { createPostFromSource } from "./source-post-client";
+import { setProjectTransport } from "./project-transport";
+import { ProjectResponse, projectJson } from "@/test/project-response";
 const fetchMock = vi.fn<typeof fetch>();
 const source = {
   id: 41, version: 3, text: "Исходный текст новости", purpose: "source_context", origin: "rss",
@@ -13,7 +15,7 @@ const generatedText = "Новый экспертный пост по факта�
 const draft = { ...source, id: 42, text: generatedText, purpose: "publishable", origin: "ai" };
 
 function stream(events: object[]) {
-  return new Response(events.map((event) => JSON.stringify({ requestId: "r1", ...event })).join("\n") + "\n", {
+  return new ProjectResponse(7, events.map((event) => JSON.stringify({ requestId: "r1", ...event })).join("\n") + "\n", {
     headers: { "content-type": "application/x-ndjson" },
   });
 }
@@ -29,18 +31,19 @@ const options = () => ({ signal: new AbortController().signal, onProgress: vi.fn
 function responseFor(url: string) {
   if (url === "/api/settings") return Response.json({ postSettings: DEFAULT_POST_SETTINGS });
   if (url === "/api/ai/generate") return stream(terminal);
-  if (url === "/api/ai/generate/ack") return Response.json({ ok: true, generationResultId: 77 }, {
+  if (url === "/api/ai/generate/ack") return projectJson(7, { ok: true, generationResultId: 77 }, {
     headers: { "x-ai-acknowledged": "true" },
   });
-  if (url === "/api/drafts") return Response.json({ draft, created: true });
+  if (url === "/api/drafts") return projectJson(7, { draft, created: true });
   throw new Error(`Unexpected request: ${url}`);
 }
 beforeEach(() => {
+  setProjectTransport(7, true, 1);
   vi.stubGlobal("fetch", fetchMock);
   fetchMock.mockReset();
   fetchMock.mockImplementation(async (url) => responseFor(String(url)));
 });
-afterEach(() => vi.unstubAllGlobals());
+afterEach(() => { setProjectTransport(null); vi.unstubAllGlobals(); });
 
 describe("source → generated post", () => {
   it("generates from the owned source and selected variant, then acknowledges and saves a separate AI draft", async () => {

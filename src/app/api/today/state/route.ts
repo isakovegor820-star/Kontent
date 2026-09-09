@@ -1,3 +1,4 @@
+import { withProjectRoute } from "@/lib/project-route";
 import { readJsonBodyValue } from "@/lib/bounded-request-body";
 import { NextRequest, NextResponse } from "next/server";
 
@@ -8,7 +9,7 @@ import { TodayError, updateTodayItemState } from "@/lib/today";
 
 export const runtime = "nodejs";
 
-export async function POST(req: NextRequest) {
+async function handlePOST(req: NextRequest) {
   if (!hasTrustedMutationOrigin(req)) return NextResponse.json({ error: "forbidden_origin" }, { status: 403 });
   const user = await getSessionUser(req);
   if (!user) return NextResponse.json({ error: "unauthorized" }, { status: 401 });
@@ -35,3 +36,5 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "state_unavailable" }, { status: 503 });
   }
 }
+
+export const POST = withProjectRoute(handlePOST);

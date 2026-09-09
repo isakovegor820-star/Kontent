@@ -1,4 +1,6 @@
 "use client";
+import { useProjectFetch } from "@/lib/use-project-transport";
+
 
 import { useEffect, useMemo, useState } from "react";
 import {
@@ -31,6 +33,7 @@ const TIMEZONES = ["Europe/Moscow", "Europe/Saratov", "Europe/Samara", "Asia/Yek
 const SELECT_CLASS = "min-h-11 w-full rounded-xs border border-line bg-surface px-3 text-base text-text focus:border-brand focus:outline-none focus-visible:ring-4 focus-visible:ring-brand/15 sm:text-[14px]";
 
 export function ProjectBasicsSection() {
+  const fetch = useProjectFetch();
   const projects = useProjects();
   const current = projects.current;
   const [saved, setSaved] = useState({ name: "", timezone: "" });
@@ -99,6 +102,7 @@ const COPY_LABELS: Record<ChannelCopyGroup, { label: string; description: string
 };
 
 export function ChannelCopySection() {
+  const fetch = useProjectFetch();
   const store = useStore();
   const channels = store.realChannels.filter((channel) => channel.is_active);
   const [sourceId, setSourceId] = useState<number | null>(null);
@@ -159,6 +163,7 @@ export function ChannelCopySection() {
 }
 
 export function SettingsPreviewPanel() {
+  const fetch = useProjectFetch();
   const store = useStore();
   const channels = useMemo(() => store.realChannels.filter((channel) => channel.is_active), [store.realChannels]);
   const [channelId, setChannelId] = useState<number | null>(null);
@@ -171,7 +176,7 @@ export function SettingsPreviewPanel() {
   const resolvedChannelId = channelId && channels.some((channel) => channel.id === channelId)
     ? channelId
     : channels[0]?.id ?? null;
-  useEffect(() => { fetch("/api/settings/preview", { cache: "no-store" }).then((response) => response.json()).then((body) => { if (body?.ok) setQuota({ used: body.used, limit: body.limit, remaining: body.remaining }); }).catch(() => undefined); }, []);
+  useEffect(() => { fetch("/api/settings/preview", { cache: "no-store" }).then((response) => response.json()).then((body) => { if (body?.ok) setQuota({ used: body.used, limit: body.limit, remaining: body.remaining }); }).catch(() => undefined); }, [fetch]);
 
   const run = async () => {
     if (!resolvedChannelId || topic.trim().length < 3 || running) return;

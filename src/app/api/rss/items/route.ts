@@ -1,3 +1,4 @@
+import { withProjectRoute } from "@/lib/project-route";
 // Журнал RSS-записей: что пришло из лент и что с этим стало (пост создан / лимит / в работе).
 // Без этого экрана репостер — чёрный ящик: человек добавил ленту и не видит, работает ли она.
 
@@ -9,7 +10,7 @@ import { getSessionUser } from "@/lib/session";
 
 export const runtime = "nodejs";
 
-export async function GET(req: NextRequest) {
+async function handleGET(req: NextRequest) {
   const user = await getSessionUser(req);
   if (!user) return NextResponse.json({ error: "unauthorized" }, { status: 401 });
 
@@ -32,15 +33,14 @@ export async function GET(req: NextRequest) {
                 opportunity.state as opportunity_state, reading.read_at
            from rss_items i
            join rss_feeds f on f.id = i.feed_id
-           join channels c on c.id = f.channel_id and c.user_id = f.user_id
+           join channels c on c.id = f.channel_id
            left join legal_opportunity_states opportunity
              on opportunity.rss_item_id = i.id and opportunity.user_id = $1
            left join legal_opportunity_reads reading
              on reading.rss_item_id = i.id
             and reading.user_id = $1
             and reading.project_id = $2
-          where f.user_id = $1
-            and c.project_id = $2
+          where c.project_id = $2
             and f.source_kind = 'legal_opportunity'
             and f.is_active = true
             and ($3::bigint is null or f.channel_id = $3)`
@@ -57,7 +57,7 @@ export async function GET(req: NextRequest) {
                   ) as feed_rank
              from rss_items i
              join rss_feeds f on f.id = i.feed_id
-             join channels c on c.id = f.channel_id and c.user_id = f.user_id
+             join channels c on c.id = f.channel_id
              left join posts p on p.id = i.post_id
              left join legal_opportunity_states opportunity
                on opportunity.rss_item_id = i.id and opportunity.user_id = $1
@@ -65,8 +65,7 @@ export async function GET(req: NextRequest) {
                on reading.rss_item_id = i.id
               and reading.user_id = $1
               and reading.project_id = $2
-            where f.user_id = $1
-              and c.project_id = $2
+            where c.project_id = $2
               and f.source_kind = 'legal_opportunity'
               and f.is_active = true
               and ($3::bigint is null or f.channel_id = $3)
@@ -106,3 +105,5 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ error: "server" }, { status: 500 });
   }
 }
+
+export const GET = withProjectRoute(handleGET);

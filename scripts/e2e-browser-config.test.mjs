@@ -7,8 +7,10 @@ import {
   classifyE2eExpectedSessionExpiryWebKitPageError,
   classifyE2eKnownBrowserObservation,
   classifyE2eKnownWebKitDocumentNavigationCancellation,
+  classifyE2eKnownWebKitProvisionalWorkspacePoll,
   classifyE2eKnownWebKitRequestCancellation,
   e2eBrowserExecutableCandidates,
+  performE2eBrowserAuthenticatedRequest,
   resolveE2eAdvanceSchedule,
   resolveE2eBuildMode,
   resolveE2eBuildTimeoutMs,
@@ -23,6 +25,27 @@ describe("real E2E browser configuration", () => {
     expect(resolveE2eBrowserEngine()).toBe("chromium");
     expect(E2E_BROWSER_ENGINES.map((engine) => resolveE2eBrowserEngine(engine)))
       .toEqual(["chromium", "firefox", "webkit"]);
+  });
+
+  it("aborts a browser fixture request that would otherwise wait forever", async () => {
+    const originalFetch = globalThis.fetch;
+    let capturedSignal;
+    globalThis.fetch = (_input, init = {}) => new Promise((_resolve, reject) => {
+      capturedSignal = init.signal;
+      capturedSignal.addEventListener("abort", () => reject(capturedSignal.reason), { once: true });
+    });
+    const startedAt = Date.now();
+    try {
+      await expect(performE2eBrowserAuthenticatedRequest({
+        path: "/api/posts",
+        headers: { "x-aurora-project-id": "7" },
+        timeoutMs: 20,
+      })).rejects.toThrow("e2e_browser_request_timeout:GET:/api/posts");
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+    expect(capturedSignal?.aborted).toBe(true);
+    expect(Date.now() - startedAt).toBeLessThan(1_000);
   });
 
   it("rejects an unknown engine before starting disposable resources", () => {
@@ -316,6 +339,56 @@ describe("real E2E browser configuration", () => {
     ]) {
       expect(classifyE2eKnownWebKitDocumentNavigationCancellation({ ...input, ...override }))
         .toBeNull();
+    }
+  });
+
+  it("recognizes handled WebKit workspace polls only while the old document has a pending navigation", () => {
+    const baseUrl = "https://127.0.0.1:43190";
+    const input = {
+      engine: "webkit",
+      errorName: "Fetch API cannot load https",
+      message: "/127.0.0.1:43190/api/channels due to access control checks.",
+      navigationPending: true,
+      sourceUrl: `${baseUrl}/app/calendar`,
+      documentRequestUrl: `${baseUrl}/app/composer?draft=8`,
+      elapsedMs: 36,
+      baseUrl,
+    };
+    expect(classifyE2eKnownWebKitProvisionalWorkspacePoll(input)).toEqual({
+      kind: "webkit.provisional-document-workspace-poll",
+      detail: "/api/channels",
+      navigation: { from: "/app/calendar", to: "/app/composer", elapsedMs: 36 },
+    });
+    expect(classifyE2eKnownWebKitProvisionalWorkspacePoll({
+      ...input,
+      message: "/127.0.0.1:43190/api/ai/usage due to access control checks.",
+    })).toMatchObject({ detail: "/api/ai/usage" });
+    expect(classifyE2eKnownWebKitProvisionalWorkspacePoll({
+      ...input,
+      message: "/127.0.0.1:43190/api/posts due to access control checks.",
+    })).toMatchObject({ detail: "/api/posts" });
+    for (const override of [
+      { navigationPending: false },
+      { engine: "chromium" },
+      { engine: "firefox" },
+      { errorName: "Error" },
+      { errorName: "TypeError" },
+      { message: "Load failed" },
+      { message: "/127.0.0.1:43190/api/channels?projectId=8 due to access control checks." },
+      { message: "/127.0.0.1:43190/api/posts?view=range due to access control checks." },
+      { message: "/127.0.0.1:43190/api/publication-operations due to access control checks." },
+      { message: "/127.0.0.1:43190/api/drafts due to access control checks." },
+      { message: "/127.0.0.1:9999/api/channels due to access control checks." },
+      { sourceUrl: `${baseUrl}/login` },
+      { sourceUrl: "https://example.com/app/calendar" },
+      { documentRequestUrl: "https://example.com/app/composer" },
+      { documentRequestUrl: `${baseUrl}/api/channels` },
+      { elapsedMs: -1 },
+      { elapsedMs: 30_001 },
+      { elapsedMs: Number.NaN },
+      { baseUrl: "https://example.com" },
+    ]) {
+      expect(classifyE2eKnownWebKitProvisionalWorkspacePoll({ ...input, ...override })).toBeNull();
     }
   });
 

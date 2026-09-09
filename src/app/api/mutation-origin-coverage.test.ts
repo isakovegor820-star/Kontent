@@ -22,7 +22,7 @@ vi.mock("@/lib/rate-limit", () => ({
 import { POST as createBotLink } from "./bot/link/route";
 import { POST as collectStats } from "./stats/collect/route";
 
-const MUTATION = /export async function (POST|PUT|PATCH|DELETE)\s*\(([^)]*)\)\s*\{/g;
+const MUTATION = /(?:export )?async function (?:handle)?(POST|PUT|PATCH|DELETE)\s*\(([^)]*)\)\s*\{/g;
 const IDENTIFIER = "[A-Za-z_$][A-Za-z0-9_$]*";
 const REQUEST_ID_PREFIX =
   "(?:(?:const|let)\\s+requestId(?:\\s*:\\s*string)?\\s*=\\s*(?:crypto\\.)?randomUUID\\(\\);\\s*)?";

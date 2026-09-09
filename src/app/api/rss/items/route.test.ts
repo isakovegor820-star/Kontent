@@ -1,5 +1,5 @@
+import { ProjectRequest } from "@/test/project-request";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { NextRequest } from "next/server";
 
 const mocks = vi.hoisted(() => ({
   query: vi.fn(),
@@ -47,7 +47,7 @@ beforeEach(() => {
 
 describe("GET /api/rss/items", () => {
   it("returns a project-scoped unread summary for the navigation badge", async () => {
-    const response = await GET(new NextRequest("http://localhost/api/rss/items?summary=unread"));
+    const response = await GET(new ProjectRequest(17, "http://localhost/api/rss/items?summary=unread"));
 
     expect(response.status).toBe(200);
     await expect(response.json()).resolves.toEqual({ projectId: 17, unreadCount: 1 });
@@ -64,7 +64,7 @@ describe("GET /api/rss/items", () => {
       rows: [{ ...rows[0], read_at: "2026-08-14T10:00:00.000Z" }],
       rowCount: 1,
     });
-    const response = await GET(new NextRequest("http://localhost/api/rss/items?channelId=7"));
+    const response = await GET(new ProjectRequest(17, "http://localhost/api/rss/items?channelId=7"));
     const body = await response.json();
 
     expect(response.status).toBe(200);
@@ -75,7 +75,7 @@ describe("GET /api/rss/items", () => {
   });
 
   it("rejects unsupported summary modes", async () => {
-    const response = await GET(new NextRequest("http://localhost/api/rss/items?summary=all"));
+    const response = await GET(new ProjectRequest(17, "http://localhost/api/rss/items?summary=all"));
     expect(response.status).toBe(400);
     expect(mocks.query).not.toHaveBeenCalled();
   });

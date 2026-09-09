@@ -118,6 +118,19 @@ describe("Telegram multipart delivery", () => {
     expect(attempt.sendText).not.toHaveBeenCalled();
   });
 
+  it.each([
+    { ok: true, result: {} },
+    { ok: false, description: "invalid response" },
+    { ok: false, error_code: 400, deliveryUnknown: true },
+    { ok: false, error_code: 500 },
+  ])("keeps malformed acknowledgments unknown without repeating the send: %j", async (response) => {
+    const state = harness([{ part_index: 0, part_type: "text", payload_html: "message", send_status: "pending", external_message_id: null }], [response]);
+    expect(await deliverTelegramParts(state.input)).toMatchObject({ ok: false, deliveryUnknown: true });
+    expect(state.mutable[0].send_status).toBe("unknown");
+    expect(await deliverTelegramParts(state.input)).toMatchObject({ ok: false, deliveryUnknown: true });
+    expect(state.sendText).toHaveBeenCalledOnce();
+  });
+
   it("rejects an oversized persisted part before any provider call", async () => {
     const attempt = harness([{
       part_index: 0,

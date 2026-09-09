@@ -1,5 +1,5 @@
+import { ProjectRequest } from "@/test/project-request";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { NextRequest } from "next/server";
 
 const mocks = vi.hoisted(() => ({
   getSessionUser: vi.fn(),
@@ -93,7 +93,7 @@ const generation = {
 };
 
 function request(key?: string) {
-  return new NextRequest("http://localhost/api/media/generations", {
+  return new ProjectRequest(23, "http://localhost/api/media/generations", {
     method: "POST",
     headers: {
       origin: "http://localhost",

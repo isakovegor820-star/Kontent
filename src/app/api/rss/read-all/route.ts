@@ -1,3 +1,4 @@
+import { withProjectRoute } from "@/lib/project-route";
 import { NextRequest, NextResponse } from "next/server";
 
 import { getPool } from "@/lib/db";
@@ -7,7 +8,7 @@ import { getSessionUser } from "@/lib/session";
 
 export const runtime = "nodejs";
 
-export async function POST(req: NextRequest) {
+async function handlePOST(req: NextRequest) {
   if (!hasTrustedMutationOrigin(req)) {
     return NextResponse.json({ ok: false, error: "forbidden_origin" }, { status: 403 });
   }
@@ -24,8 +25,7 @@ export async function POST(req: NextRequest) {
          from rss_items item
          join rss_feeds feed on feed.id = item.feed_id
          join channels channel on channel.id = feed.channel_id
-        where feed.user_id = $1
-          and channel.project_id = $2
+        where channel.project_id = $2
           and feed.source_kind = 'legal_opportunity'
           and feed.is_active = true
           and item.skip_reason is distinct from 'irrelevant'
@@ -52,3 +52,5 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ ok: false, error: "server" }, { status: 500 });
   }
 }
+
+export const POST = withProjectRoute(handlePOST);

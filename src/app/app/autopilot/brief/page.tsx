@@ -1,4 +1,6 @@
 "use client";
+import { useProjectFetch } from "@/lib/use-project-transport";
+
 
 // Бриф контента (ТЗ Д.9). Без него автопилот писал наугад: в ИИ уходила заглушка
 // «Полезный совет по твоей теме», и модель выдумывала что угодно. Здесь человек
@@ -31,6 +33,7 @@ interface Rubric {
 }
 
 function BriefInner() {
+  const fetch = useProjectFetch();
   // Какой канал настраиваем — приходит из «Автопилота» адресом. Нет параметра (открыли
   // ссылку напрямую) — сервер возьмёт самый ранний канал, и это тот же канал, что покажет
   // «Автопилот» по умолчанию.
@@ -58,7 +61,7 @@ function BriefInner() {
     } finally {
       setLoading(false);
     }
-  }, [channelId]);
+  }, [channelId, fetch]);
 
   useEffect(() => {
     // eslint-disable-next-line react-hooks/set-state-in-effect -- загрузка при монтировании

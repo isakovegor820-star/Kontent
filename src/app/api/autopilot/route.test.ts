@@ -1,5 +1,5 @@
+import { ProjectRequest } from "@/test/project-request";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { NextRequest } from "next/server";
 
 const mocks = vi.hoisted(() => ({
   getSessionUser: vi.fn(),
@@ -68,7 +68,7 @@ describe("GET /api/autopilot", () => {
   it("loads channels, settings, brief, and plan from the server-selected project", async () => {
     mocks.resolveChannel.mockResolvedValue(22);
 
-    const response = await GET(new NextRequest("http://localhost/api/autopilot?channel=22"));
+    const response = await GET(new ProjectRequest(88, "http://localhost/api/autopilot?channel=22"));
 
     expect(response.status).toBe(200);
     expect(mocks.query).toHaveBeenCalledWith(
@@ -101,7 +101,7 @@ describe("GET /api/autopilot", () => {
     };
     mocks.ensureSettings.mockResolvedValue(settings);
 
-    const response = await GET(new NextRequest("http://localhost/api/autopilot?channel=22"));
+    const response = await GET(new ProjectRequest(88, "http://localhost/api/autopilot?channel=22"));
 
     expect(response.status).toBe(200);
     expect((await response.json()).settings).toEqual(settings);
@@ -110,7 +110,7 @@ describe("GET /api/autopilot", () => {
   it("returns 404 instead of falling back when a project A channel is requested from project B", async () => {
     mocks.resolveChannel.mockResolvedValue(null);
 
-    const response = await GET(new NextRequest("http://localhost/api/autopilot?channel=99"));
+    const response = await GET(new ProjectRequest(88, "http://localhost/api/autopilot?channel=99"));
 
     expect(response.status).toBe(404);
     expect(mocks.resolveChannel).toHaveBeenCalledWith(
@@ -162,7 +162,7 @@ describe("GET /api/autopilot", () => {
       return { rows: [], rowCount: 0 };
     });
 
-    const response = await GET(new NextRequest("http://localhost/api/autopilot?channel=22"));
+    const response = await GET(new ProjectRequest(88, "http://localhost/api/autopilot?channel=22"));
     const body = await response.json();
 
     expect(response.status).toBe(200);
@@ -210,7 +210,7 @@ describe("GET /api/autopilot", () => {
       return { rows: [], rowCount: 0 };
     });
 
-    const response = await GET(new NextRequest("http://localhost/api/autopilot?channel=22"));
+    const response = await GET(new ProjectRequest(88, "http://localhost/api/autopilot?channel=22"));
     const body = await response.json();
 
     expect(body.plan).toBeNull();
@@ -261,7 +261,7 @@ describe("GET /api/autopilot", () => {
       return { rows: [], rowCount: 0 };
     });
 
-    const response = await GET(new NextRequest("http://localhost/api/autopilot?channel=22"));
+    const response = await GET(new ProjectRequest(88, "http://localhost/api/autopilot?channel=22"));
     const body = await response.json();
 
     expect(body.activePlan).toMatchObject({ id: 70, status: "pending" });
@@ -272,7 +272,7 @@ describe("GET /api/autopilot", () => {
   it("does not disguise an internal failure as an empty successful state", async () => {
     mocks.query.mockRejectedValueOnce(new Error("database unavailable"));
 
-    const response = await GET(new NextRequest("http://localhost/api/autopilot"));
+    const response = await GET(new ProjectRequest(88, "http://localhost/api/autopilot"));
 
     expect(response.status).toBe(500);
     await expect(response.json()).resolves.toMatchObject({ error: "server" });

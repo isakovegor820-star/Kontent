@@ -1,5 +1,5 @@
+import { ProjectRequest } from "@/test/project-request";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { NextRequest } from "next/server";
 
 const mocks = vi.hoisted(() => ({
   getSessionUser: vi.fn(),
@@ -44,7 +44,7 @@ import { POST as createPlan } from "./[campaignId]/plans/route";
 import { POST as createItemDraft } from "./[campaignId]/plans/[planId]/items/[itemId]/draft/route";
 
 function request(path: string, method: string, body?: unknown, headers: Record<string, string> = {}) {
-  return new NextRequest(`https://aurora.test${path}`, {
+  return new ProjectRequest(999, `https://aurora.test${path}`, {
     method,
     headers: { origin: "https://aurora.test", "content-type": "application/json", ...headers },
     body: body === undefined ? undefined : JSON.stringify(body),

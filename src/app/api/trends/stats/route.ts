@@ -1,3 +1,4 @@
+import { withProjectRoute } from "@/lib/project-route";
 import { NextRequest, NextResponse } from "next/server";
 
 import { resolveChannel } from "@/lib/autopilot";
@@ -220,7 +221,7 @@ function analyticsSql(source: TrendStatSource, period: keyof typeof TREND_STAT_P
     from metrics`;
 }
 
-export async function GET(req: NextRequest) {
+async function handleGET(req: NextRequest) {
   const user = await getSessionUser(req);
   if (!user) return NextResponse.json({ error: "unauthorized" }, { status: 401 });
 
@@ -295,3 +296,5 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ error: "stats_unavailable" }, { status: 503 });
   }
 }
+
+export const GET = withProjectRoute(handleGET);

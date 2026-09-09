@@ -1,5 +1,5 @@
+import { ProjectRequest } from "@/test/project-request";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { NextRequest } from "next/server";
 
 const mocks = vi.hoisted(() => ({
   getSessionUser: vi.fn(),
@@ -7,6 +7,10 @@ const mocks = vi.hoisted(() => ({
   renderLibraryExport: vi.fn(),
 }));
 
+vi.mock("@/lib/project-permissions", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/lib/project-permissions")>();
+  return { ...actual, requireSelectedProjectPermission: vi.fn(async () => ({ projectId: 1, userId: 7, role: "owner", version: 1 })) };
+});
 vi.mock("@/lib/session", () => ({ getSessionUser: mocks.getSessionUser }));
 vi.mock("@/lib/db", () => ({ getPool: () => ({ query: mocks.query }) }));
 vi.mock("@/lib/library-export.mjs", async (importOriginal) => {
@@ -26,17 +30,17 @@ describe("GET /api/library/exports/:id", () => {
 
   it("loads the user-owned snapshot and renders the requested format", async () => {
     const response = await GET(
-      new NextRequest("http://localhost/api/library/exports/41?format=csv"),
+      new ProjectRequest(1, "http://localhost/api/library/exports/41?format=csv"),
       { params: Promise.resolve({ id: "41" }) },
     );
     expect(response.status).toBe(200);
     expect(response.headers.get("content-disposition")).toContain("aurora-ideas-41.csv");
-    expect(mocks.query).toHaveBeenCalledWith(expect.stringContaining("expires_at > now()"), [41, 7]);
+    expect(mocks.query).toHaveBeenCalledWith(expect.stringContaining("expires_at > now()"), [41, 7, 1]);
   });
 
   it("rejects unsupported formats", async () => {
     const response = await GET(
-      new NextRequest("http://localhost/api/library/exports/41?format=xml"),
+      new ProjectRequest(1, "http://localhost/api/library/exports/41?format=xml"),
       { params: Promise.resolve({ id: "41" }) },
     );
     expect(response.status).toBe(400);

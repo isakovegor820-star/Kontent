@@ -1,5 +1,5 @@
+import { ProjectRequest } from "@/test/project-request";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { NextRequest } from "next/server";
 
 const mocks = vi.hoisted(() => ({
   getSessionUser: vi.fn(),
@@ -38,7 +38,7 @@ const recovered = {
 };
 
 function request() {
-  return new NextRequest("http://localhost/api/drafts/41/recover", {
+  return new ProjectRequest(1, "http://localhost/api/drafts/41/recover", {
     method: "POST",
     headers: { "content-type": "application/json", origin: "http://localhost" },
     body: JSON.stringify(body),
@@ -82,7 +82,7 @@ describe("POST /api/drafts/:id/recover", () => {
   });
 
   it("rejects cross-origin and unconfirmed recovery requests before mutation", async () => {
-    const crossOrigin = new NextRequest("http://localhost/api/drafts/41/recover", {
+    const crossOrigin = new ProjectRequest(1, "http://localhost/api/drafts/41/recover", {
       method: "POST",
       headers: { origin: "https://attacker.example", "sec-fetch-site": "cross-site" },
       body: JSON.stringify(body),
@@ -90,7 +90,7 @@ describe("POST /api/drafts/:id/recover", () => {
     expect((await POST(crossOrigin, { params: Promise.resolve({ id: "41" }) })).status).toBe(403);
     expect(mocks.recoverDraftForUser).not.toHaveBeenCalled();
 
-    const unconfirmed = new NextRequest("http://localhost/api/drafts/41/recover", {
+    const unconfirmed = new ProjectRequest(1, "http://localhost/api/drafts/41/recover", {
       method: "POST",
       headers: { "content-type": "application/json", origin: "http://localhost" },
       body: JSON.stringify({ ...body, acceptResponsibility: false }),

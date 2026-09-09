@@ -1,5 +1,5 @@
+import { ProjectRequest } from "@/test/project-request";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { NextRequest } from "next/server";
 
 const mocks = vi.hoisted(() => ({
   getSessionUser: vi.fn(),
@@ -22,6 +22,10 @@ const mocks = vi.hoisted(() => ({
   recordProductEvent: vi.fn(),
 }));
 
+vi.mock("@/lib/project-permissions", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/lib/project-permissions")>();
+  return { ...actual, requireSelectedProjectPermission: vi.fn(async () => ({ projectId: 1, userId: 7, role: "owner", version: 1 })) };
+});
 vi.mock("@/lib/session", () => ({ getSessionUser: mocks.getSessionUser }));
 vi.mock("@/lib/db", () => ({ getPool: () => ({ query: mocks.query }) }));
 vi.mock("@/lib/server-product-events.mjs", () => ({
@@ -93,7 +97,7 @@ describe("generation deadlines", () => {
 });
 
 function request(channelId = 42) {
-  return new NextRequest("http://localhost/api/ai/generate", {
+  return new ProjectRequest(1, "http://localhost/api/ai/generate", {
     method: "POST",
     headers: {
       origin: "http://localhost",
@@ -105,7 +109,7 @@ function request(channelId = 42) {
 }
 
 function studioRequest() {
-  return new NextRequest("http://localhost/api/ai/generate", {
+  return new ProjectRequest(1, "http://localhost/api/ai/generate", {
     method: "POST",
     headers: {
       origin: "http://localhost",
@@ -130,7 +134,7 @@ function studioRequest() {
 }
 
 function studioFactCheckOffRequest() {
-  return new NextRequest("http://localhost/api/ai/generate", {
+  return new ProjectRequest(1, "http://localhost/api/ai/generate", {
     method: "POST",
     headers: {
       origin: "http://localhost",
@@ -155,7 +159,7 @@ function studioFactCheckOffRequest() {
 }
 
 function studioSparseLegalBriefRequest() {
-  return new NextRequest("http://localhost/api/ai/generate", {
+  return new ProjectRequest(1, "http://localhost/api/ai/generate", {
     method: "POST",
     headers: {
       origin: "http://localhost",
@@ -180,7 +184,7 @@ function studioSparseLegalBriefRequest() {
 }
 
 function editorialRequest() {
-  return new NextRequest("http://localhost/api/ai/generate", {
+  return new ProjectRequest(1, "http://localhost/api/ai/generate", {
     method: "POST",
     headers: {
       origin: "http://localhost",
@@ -206,7 +210,7 @@ function editorialRequest() {
 }
 
 function balancedStudioRequest() {
-  return new NextRequest("http://localhost/api/ai/generate", {
+  return new ProjectRequest(1, "http://localhost/api/ai/generate", {
     method: "POST",
     headers: {
       origin: "http://localhost",
@@ -231,7 +235,7 @@ function balancedStudioRequest() {
 }
 
 function maximumStudioRequest() {
-  return new NextRequest("http://localhost/api/ai/generate", {
+  return new ProjectRequest(1, "http://localhost/api/ai/generate", {
     method: "POST",
     headers: {
       origin: "http://localhost",
@@ -258,7 +262,7 @@ function maximumStudioRequest() {
 }
 
 function reviewableBlockedEditorialRequest() {
-  return new NextRequest("http://localhost/api/ai/generate", {
+  return new ProjectRequest(1, "http://localhost/api/ai/generate", {
     method: "POST",
     headers: {
       origin: "http://localhost",
@@ -284,7 +288,7 @@ function reviewableBlockedEditorialRequest() {
 }
 
 function studioReferenceRequest(version = 3) {
-  return new NextRequest("http://localhost/api/ai/generate", {
+  return new ProjectRequest(1, "http://localhost/api/ai/generate", {
     method: "POST",
     headers: {
       origin: "http://localhost",
@@ -355,7 +359,7 @@ function ownedReferenceDraft(overrides: Record<string, unknown> = {}) {
 }
 
 function trendsRequest() {
-  return new NextRequest("http://localhost/api/ai/generate", {
+  return new ProjectRequest(1, "http://localhost/api/ai/generate", {
     method: "POST",
     headers: {
       origin: "http://localhost",
@@ -441,7 +445,7 @@ describe("POST /api/ai/generate prerequisites", () => {
 
   it("creates a correlation ID before rejecting a cross-site preflight", async () => {
     const warnLog = vi.spyOn(console, "warn").mockImplementation(() => {});
-    const response = await POST(new NextRequest("https://aurora.test/api/ai/generate", {
+    const response = await POST(new ProjectRequest(1, "https://aurora.test/api/ai/generate", {
       method: "POST",
       headers: {
         "content-type": "application/json",
@@ -667,7 +671,7 @@ describe("POST /api/ai/generate prerequisites", () => {
         { status: 200, headers: { "content-type": "text/event-stream" } },
       ));
       vi.stubGlobal("fetch", fetchMock);
-      const response = await POST(new NextRequest("http://localhost/api/ai/generate", {
+      const response = await POST(new ProjectRequest(1, "http://localhost/api/ai/generate", {
         method: "POST",
         headers: { origin: "http://localhost", "content-type": "application/json", "idempotency-key": `brand-event-${engine}` },
         body: JSON.stringify({
@@ -1376,7 +1380,7 @@ describe("POST /api/ai/generate prerequisites", () => {
       ));
     vi.stubGlobal("fetch", fetchMock);
 
-    const response = await POST(new NextRequest("http://localhost/api/ai/generate", {
+    const response = await POST(new ProjectRequest(1, "http://localhost/api/ai/generate", {
       method: "POST",
       headers: {
         origin: "http://localhost",
