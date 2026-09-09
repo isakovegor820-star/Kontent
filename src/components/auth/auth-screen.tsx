@@ -18,7 +18,7 @@ import { Logo } from "@/components/brand";
 import { HeroProductScene } from "@/components/landing/hero-product-scene";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/primitives";
-import { hasPendingProjectInvite } from "@/lib/project-invite-client";
+import { hasPendingProjectInvite, projectInviteStorage } from "@/lib/project-invite-client";
 import {
   PASSWORD_MAX,
   PASSWORD_MIN,
@@ -43,7 +43,7 @@ function validateEmail(raw: string): string | undefined {
 
 function signedInDestination(intent: AuthIntent, onboarded = true) {
   if (intent === "admin") return "/admin#overview";
-  if (hasPendingProjectInvite(typeof window === "undefined" ? null : window.sessionStorage)) {
+  if (hasPendingProjectInvite(projectInviteStorage())) {
     return "/invite";
   }
   if (typeof window !== "undefined") {

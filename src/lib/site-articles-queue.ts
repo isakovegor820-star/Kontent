@@ -3,7 +3,7 @@ import { Queue } from "bullmq";
 import { redisProducerConnectionOptions } from "./queue";
 
 export const SITE_ARTICLES_QUEUE = "site-articles";
-export type SiteArticleJobName = "plan" | "generate" | "publish" | "reconcile" | "probe" | "report";
+export type SiteArticleJobName = "plan" | "generate" | "publish" | "reconcile" | "probe" | "report" | "refine" | "interpret";
 
 const globalForQueue = globalThis as unknown as { auroraSiteArticlesQueue?: Queue };
 
@@ -56,7 +56,7 @@ export async function enqueueSiteArticleJob(
   queue: Pick<Queue, "add"> = getSiteArticlesQueue(),
   timeoutMs = 2_000,
 ): Promise<{ jobId: string }> {
-  const key = data.articleId ?? data.publicationId ?? data.siteId ?? "x";
+  const key = data.articleId ?? data.publicationId ?? data.profileId ?? data.reportId ?? data.siteId ?? "x";
   const suffix = options.jobId ?? `site-articles-${name}-${key}`;
   try {
     await within(queue.add(name, data, {

@@ -103,7 +103,7 @@ describe("article generation prompt and validation", () => {
     expect(prompt.user).toContain("ALLOWED_LINKS:\n- https://clinic.example/uslugi/implantaciya");
     expect(prompt.user).toContain("FACTS:\n- Клиника работает с 2010 года");
     expect(prompt.user).toContain("question: Сколько стоит имплантация?");
-    expect(prompt.promptVersion).toBe("site-article-v1");
+    expect(prompt.promptVersion).toBe("site-article-v2");
     expect(() => buildArticlePrompt({ type: "nope", site, profile, source: {} })).toThrow("site_article_type_invalid");
   });
 

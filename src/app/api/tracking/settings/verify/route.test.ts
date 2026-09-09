@@ -54,6 +54,13 @@ describe("POST /api/tracking/settings/verify", () => {
     }));
   });
 
+  it("passes script verification with a server-owned application origin", async () => {
+    const response = await POST(request({ expectedVersion: 2, verificationMethod: "script" }));
+    expect(response.status).toBe(200);
+    expect(mocks.verifyProjectTrackingSite).toHaveBeenCalledWith(expect.objectContaining({ verificationMethod: "script", appOrigin: "http://localhost" }));
+    expect((await POST(request({ expectedVersion: 2, verificationMethod: "script", appOrigin: "https://attacker.example" }))).status).toBe(400);
+  });
+
   it("rejects unknown fields, unsupported media and a lying oversized stream", async () => {
     expect((await POST(request({ expectedVersion: 2, projectId: 99 }))).status).toBe(400);
     expect((await POST(request("{}", { "content-type": "text/plain" }))).status).toBe(415);

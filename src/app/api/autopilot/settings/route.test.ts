@@ -222,6 +222,23 @@ describe("POST /api/autopilot/settings", () => {
     }));
   });
 
+  it("persists every control from the channel settings form in the selected project", async () => {
+    const settings = {
+      enabled: true, mode: "confirm", post_frequency: 3, generation_engine: "navy-gpt-5-4",
+      planning_weeks: 7, quick_settings: { newsPerWeek: 1, detail: 3, energy: 1, emoji: 0 },
+    };
+    mocks.ensureSettings.mockResolvedValue({ ...settings, enabled: true });
+    mocks.query.mockResolvedValue({ rows: [{ ...settings, planning_months: 2 }], rowCount: 1 });
+
+    const response = await POST(request({ channelId: 22, ...settings }));
+
+    expect(response.status).toBe(200);
+    expect((await response.json()).settings).toEqual({ ...settings, planning_months: 2 });
+    expect(mocks.query).toHaveBeenCalledWith(expect.stringContaining("quick_settings = coalesce($10::jsonb"), [
+      88, 22, true, "confirm", 3, "navy-gpt-5-4", 2, 7, null, JSON.stringify(settings.quick_settings),
+    ]);
+  });
+
   it("marks a delayed partial recovery as paused as soon as Autopilot is disabled", async () => {
     mocks.query
       .mockResolvedValueOnce({

@@ -1,12 +1,13 @@
 "use client";
 import { useProjectCall } from "@/lib/use-project-transport";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { CheckCircle2, ExternalLink, FileText, RefreshCw, Sparkles, XCircle } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { Badge, Card, Field, Input, Textarea } from "@/components/ui/primitives";
 import { cn } from "@/lib/utils";
+import { articleHasQualityBlock } from "@/lib/site-articles/quality.mjs";
 
 import { ARTICLE_STATUS_LABEL, errorMessage, formatDate, requestJson as unscopedRequestJson } from "./client";
 
@@ -72,6 +73,9 @@ export function ArticlesPanel({ siteId, verified, hasDestinations, hasProfile, o
   const [draft, setDraft] = useState({ title: "", metaDescription: "", bodyMarkdown: "" });
   const [manualType, setManualType] = useState<string>("audience_answer");
   const [manualBrief, setManualBrief] = useState("");
+  const detailRequest = useRef(0);
+  const detailRefresh = useRef("");
+  useEffect(() => () => { detailRequest.current += 1; }, [siteId]);
 
   const load = useCallback(async () => {
     try {
@@ -96,15 +100,37 @@ export function ArticlesPanel({ siteId, verified, hasDestinations, hasProfile, o
     return () => clearInterval(timer);
   }, [active, load]);
 
-  const openArticle = useCallback(async (id: number) => {
-    setOpenId(id);
-    setEditing(false);
+  const loadArticle = useCallback(async (id: number, request: number) => {
     const { status, body } = await requestJson<{ article?: Article; error?: string }>(`/api/sites/${siteId}/articles/${id}`);
+    if (request !== detailRequest.current) return;
     if (status === 200 && body.article) {
       setDetail(body.article);
       setDraft({ title: body.article.title, metaDescription: body.article.metaDescription || "", bodyMarkdown: body.article.bodyMarkdown || "" });
+    } else {
+      setError(errorMessage(body.error, "Не удалось открыть материал."));
     }
   }, [requestJson, siteId]);
+
+  const openArticle = useCallback(async (id: number) => {
+    const request = ++detailRequest.current;
+    setOpenId(id);
+    setDetail(null);
+    setEditing(false);
+    await loadArticle(id, request);
+  }, [loadArticle]);
+
+  // List polling must also update the open card at the terminal transition. Do
+  // not replace unsaved edits or let an old response replace a newer selection.
+  const selected = articles.find((article) => article.id === openId);
+  useEffect(() => {
+    if (editing || !selected || !detail || selected.id !== detail.id) return;
+    const revision = `${siteId}:${selected.id}:${selected.status}:${selected.version}:${selected.updatedAt}`;
+    if (detailRefresh.current === revision) return;
+    detailRefresh.current = revision;
+    if (selected.status !== detail.status || selected.version !== detail.version || selected.updatedAt !== detail.updatedAt) {
+      void loadArticle(selected.id, ++detailRequest.current);
+    }
+  }, [detail, editing, loadArticle, selected, siteId]);
 
   const act = useCallback(async (id: number, action: string, extra: Record<string, unknown> = {}) => {
     setBusy(`${id}:${action}`);
@@ -291,12 +317,16 @@ export function ArticlesPanel({ siteId, verified, hasDestinations, hasProfile, o
 
               <div className="mt-5 flex flex-wrap gap-2">
                 {["needs_review", "approved", "failed"].includes(detail.status) && (
-                  <Button type="button" size="sm" onClick={() => act(detail.id, "approve")} disabled={busy !== null}>
+                  <Button type="button" size="sm" onClick={() => act(detail.id, "approve")} disabled={busy !== null || articleHasQualityBlock(detail)}>
                     <CheckCircle2 className="h-4 w-4" aria-hidden />{detail.status === "approved" ? "Опубликовать" : "Одобрить"}
                   </Button>
                 )}
                 {["needs_review", "approved", "failed"].includes(detail.status) && !editing && (
-                  <Button type="button" size="sm" variant="secondary" onClick={() => setEditing(true)}>Править</Button>
+                  <Button type="button" size="sm" variant="secondary" onClick={() => {
+                    detailRequest.current += 1;
+                    detailRefresh.current = "";
+                    setEditing(true);
+                  }}>Править</Button>
                 )}
                 {["needs_review", "approved", "failed", "draft"].includes(detail.status) && (
                   <Button type="button" size="sm" variant="ghost" onClick={() => act(detail.id, "reject", { reason: "rejected_by_reviewer" })} disabled={busy !== null}>

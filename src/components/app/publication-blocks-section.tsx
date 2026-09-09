@@ -84,7 +84,7 @@ export function PublicationBlocksSection() {
       })
       .catch((reason) => {
         if (reason instanceof DOMException && reason.name === "AbortError") return;
-        setError("Блоки публикации не загрузились. Другие настройки проекта не затронуты.");
+        setError("Шаблоны не загрузились. Другие настройки проекта не затронуты.");
       })
       .finally(() => {
         if (!controller.signal.aborted) setLoading(false);
@@ -120,12 +120,12 @@ export function PublicationBlocksSection() {
     const name = form.name.trim();
     const text = form.text.trim();
     if (!name || !text) {
-      setError("Заполните название и текст блока.");
+      setError("Заполните название и текст шаблона.");
       return;
     }
     const editing = editingId == null ? null : blocks.find((block) => block.id === editingId);
     if (editingId != null && !editing) {
-      setError("Блок уже изменился. Обновите список и повторите.");
+      setError("Шаблон уже изменился. Обновите список и повторите.");
       return;
     }
     setBusy(true);
@@ -151,7 +151,7 @@ export function PublicationBlocksSection() {
       setBlocks((currentBlocks) => editing
         ? currentBlocks.map((block) => block.id === saved.id ? saved : block)
         : [...currentBlocks, saved]);
-      setMessage(editing ? "Блок обновлён." : "Блок создан и доступен в Композиторе.");
+      setMessage(editing ? "Шаблон обновлён." : "Шаблон создан. Его можно выбрать при создании поста.");
       cancelForm();
     } catch (reason) {
       setError(publicationSettingsErrorMessage(reason));
@@ -181,7 +181,7 @@ export function PublicationBlocksSection() {
       const saved = response.ok ? parsePublicationBlock(body?.block) : null;
       if (!saved) throw body;
       setBlocks((currentBlocks) => currentBlocks.map((item) => item.id === saved.id ? saved : item));
-      setMessage(enabled ? "Блок снова доступен в Композиторе." : "Блок отключён для новых публикаций.");
+      setMessage(enabled ? "Шаблон снова доступен при создании поста." : "Шаблон отключён для новых публикаций.");
     } catch (reason) {
       setError(publicationSettingsErrorMessage(reason));
     } finally {
@@ -189,30 +189,37 @@ export function PublicationBlocksSection() {
     }
   };
 
+  const originalBlock = blocks.find((block) => block.id === editingId);
+  const formDirty = (creating || editingId != null) && (
+    form.kind !== (originalBlock?.kind ?? EMPTY_FORM.kind)
+    || form.name !== (originalBlock?.name ?? "")
+    || form.text !== (originalBlock?.text ?? "")
+  );
+
   return (
-    <section id="publication-blocks" className="mb-5 rounded-md border border-line bg-surface p-4 shadow-soft sm:p-5" aria-labelledby="publication-blocks-title">
+    <section data-settings-dirty={formDirty || undefined} id="publication-blocks" className="mb-5 rounded-md border border-line bg-surface p-4 shadow-soft sm:p-5" aria-labelledby="publication-blocks-title">
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div className="min-w-0 max-w-[64ch]">
           <h2 id="publication-blocks-title" className="flex items-center gap-2 text-[17px] font-extrabold tracking-tight text-text">
             <FileText className="h-5 w-5 text-brand" aria-hidden />
-            Блоки публикации
+            Шаблоны для постов
           </h2>
           <p className="mt-1 text-[13px] leading-relaxed text-text-3">
-            Подготовьте подписи, контакты, оговорки и первый комментарий один раз. В Композиторе их можно включать отдельно для каждого поста.
+            Сохрани готовую подпись, контакты или первый комментарий. При создании поста выбери нужный шаблон, чтобы не вводить текст заново.
           </p>
         </div>
         {canManage && !creating && editingId == null && (
           <Button type="button" variant="outline" size="sm" onClick={beginCreate}>
             <Plus className="h-4 w-4" aria-hidden />
-            Добавить блок
+            Создать шаблон
           </Button>
         )}
       </div>
 
       {!current ? (
-        <p className="mt-4 text-[13px] text-text-3">Выберите проект, чтобы увидеть его блоки.</p>
+        <p className="mt-4 text-[13px] text-text-3">Выберите проект, чтобы увидеть его шаблоны.</p>
       ) : loading ? (
-        <p role="status" className="mt-4 text-[13px] text-text-3">Загружаем блоки…</p>
+        <p role="status" className="mt-4 text-[13px] text-text-3">Загружаем шаблоны…</p>
       ) : error && blocks.length === 0 ? (
         <div className="mt-4 flex flex-wrap items-center gap-3">
           <p id={errorId} role="alert" className="text-[13px] text-danger-text">{error}</p>
@@ -234,7 +241,7 @@ export function PublicationBlocksSection() {
             >
               <div className="grid gap-3 sm:grid-cols-[minmax(0,0.85fr)_minmax(0,1.15fr)]">
                 <div>
-                  <label htmlFor={kindId} className="text-[13px] font-semibold text-text-2">Тип блока</label>
+                  <label htmlFor={kindId} className="text-[13px] font-semibold text-text-2">Что сохранить</label>
                   <select
                     id={kindId}
                     value={form.kind}
@@ -268,7 +275,7 @@ export function PublicationBlocksSection() {
                 </div>
               </div>
               <div>
-                <label htmlFor={textId} className="block text-[13px] font-semibold text-text-2">Текст блока</label>
+                <label htmlFor={textId} className="block text-[13px] font-semibold text-text-2">Текст шаблона</label>
                 <Textarea
                   id={textId}
                   value={form.text}
@@ -291,7 +298,7 @@ export function PublicationBlocksSection() {
               {error && <p id={errorId} role="alert" className="text-[13px] font-medium text-danger-text">{error}</p>}
               <div className="flex flex-wrap gap-2">
                 <Button type="submit" variant="solid" loading={busy}>
-                  {editingId == null ? "Создать блок" : "Сохранить блок"}
+                  {editingId == null ? "Создать шаблон" : "Сохранить шаблон"}
                 </Button>
                 <Button type="button" variant="ghost" onClick={cancelForm} disabled={busy}>Отменить</Button>
               </div>
@@ -301,7 +308,7 @@ export function PublicationBlocksSection() {
           {blocks.length === 0 && !creating ? (
             <div className="mt-4 border-t border-line pt-4">
               <p className="text-[13px] leading-relaxed text-text-3">
-                Блоков пока нет. Начните с подписи автора или первого комментария.
+                Пока нет шаблонов. Начни с подписи автора или контактов, которые часто добавляешь в посты.
               </p>
             </div>
           ) : (
@@ -344,7 +351,7 @@ export function PublicationBlocksSection() {
           )}
           {!canManage && (
             <p className="mt-3 text-[12px] leading-relaxed text-text-3">
-              Изменять общие блоки может владелец проекта. Выбирать их для своих публикаций можно в Композиторе.
+              Изменять общие шаблоны может владелец проекта. Выбирать их можно при создании поста.
             </p>
           )}
         </>

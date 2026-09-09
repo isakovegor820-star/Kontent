@@ -171,6 +171,12 @@ jobs:
         env:
           MIGRATION_TEST_DATABASE_URL: "postgres://postgres:postgres@localhost:5432/aurora_tracking_gate_test"
 
+      - name: Test Studio and Sites recovery, accounting and analytics
+        run: npx vitest run --config vitest.integration.config.ts src/e2e/studio-sites-review.integration.ts --maxWorkers=1
+        env:
+          STUDIO_SITES_TEST_POSTGRES_URL: "postgres://postgres:postgres@localhost:5432/postgres"
+          STUDIO_SITES_TEST_REDIS_URL: "redis://127.0.0.1:6380"
+
       - name: Production build 1
         run: npm run build
 

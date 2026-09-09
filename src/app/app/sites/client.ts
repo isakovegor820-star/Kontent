@@ -1,14 +1,20 @@
 
 import { projectFetch as fetch } from "@/lib/project-transport";
 export async function requestJson<T>(input: string, init?: RequestInit): Promise<{ status: number; body: T }> {
-  const response = await fetch(input, {
-    ...init,
-    headers: { "content-type": "application/json", accept: "application/json", ...(init?.headers || {}) },
-    credentials: "same-origin",
-    cache: "no-store",
-  });
-  const body = (await response.json().catch(() => ({}))) as T;
-  return { status: response.status, body };
+  try {
+    const response = await fetch(input, {
+      ...init,
+      headers: { "content-type": "application/json", accept: "application/json", ...(init?.headers || {}) },
+      credentials: "same-origin",
+      cache: "no-store",
+    });
+    const body = (await response.json()) as T;
+    return { status: response.status, body };
+  } catch {
+    // A mutation may have reached the server. Do not retry it automatically or
+    // report an empty success; let every caller leave its busy state normally.
+    return { status: 503, body: { error: "request_unconfirmed" } as T };
+  }
 }
 
 export function formatDate(value: string | null | undefined, withTime = false) {
@@ -22,6 +28,10 @@ export function formatDate(value: string | null | undefined, withTime = false) {
 
 export function errorMessage(code: string | undefined, fallback: string) {
   switch (code) {
+    case "request_unconfirmed": return "Не удалось получить ответ сервера. Обнови данные, чтобы проверить результат действия перед повтором.";
+    case "article_changed": return "Материал уже изменился. Обнови данные и повтори действие.";
+    case "ai_task_not_retryable": return "Состояние уже изменилось. Обнови данные: возможно, обработка уже началась.";
+    case "article_quality_failed": return "Материал не прошёл проверку качества. Исправь замечания или сгенерируй его заново перед одобрением.";
     case "consent_required": return "Подтверди, что у тебя есть право анализировать этот сайт.";
     case "bad_url":
     case "domain_mismatch": return "Укажи адрес сайта вместе с протоколом, например https://example.ru.";

@@ -44,10 +44,10 @@ export function brandDictionaryPrompt(
       return [`— аббревиатура: «${entry.term}» → «${entry.replacement}»${expansion}${suffix}`];
     }
     if (entry.kind === "exception") {
-      return [`— исключение: вариант «${entry.term}» разрешён${suffix}`];
+      return [`— сохранить как есть: «${entry.term}»; если используешь эту фразу, сохраняй её дословно, без перефразирования и исправлений${suffix}`];
     }
     if (entry.kind === "allowed") {
-      return [`— допустимый вариант: «${entry.term}»${suffix}`];
+      return [`— допустимый вариант: «${entry.term}»; не заменяй его другим названием из словаря${suffix}`];
     }
     return [];
   });
@@ -80,8 +80,9 @@ function normalizeKind(value: unknown): BrandDictionaryEntryKind {
   return kind;
 }
 
-function normalizeText(value: unknown, max: number, code: "invalid_term" | "invalid_replacement" | "invalid_expansion") {
-  const normalized = String(value ?? "").normalize("NFC").trim().replace(/[ \t]+/gu, " ");
+function normalizeText(value: unknown, max: number, code: "invalid_term" | "invalid_replacement" | "invalid_expansion", preserveSpacing = false) {
+  const trimmed = String(value ?? "").normalize("NFC").trim();
+  const normalized = preserveSpacing ? trimmed : trimmed.replace(/[ \t]+/gu, " ");
   if (
     normalized.length < 1
     || normalized.length > max
@@ -109,7 +110,7 @@ function normalizeEntry(input: {
   caseSensitive: unknown;
 }) {
   const kind = normalizeKind(input.kind);
-  const term = normalizeText(input.term, 240, "invalid_term");
+  const term = normalizeText(input.term, 240, "invalid_term", kind === "exception");
   const replacement = optionalText(input.replacement, 240, "invalid_replacement");
   const expansion = optionalText(input.expansion, 500, "invalid_expansion");
   if ((kind === "allowed" || kind === "exception") && replacement !== null) {

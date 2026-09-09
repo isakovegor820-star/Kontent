@@ -216,6 +216,8 @@ export function classifyE2eKnownBrowserObservation({
 export function classifyE2eKnownWebKitRequestCancellation({
   engine,
   requestUrl,
+  requestMethod,
+  resourceType,
   failure,
   currentUrl,
   baseUrl,
@@ -241,7 +243,38 @@ export function classifyE2eKnownWebKitRequestCancellation({
     currentUrl,
     webPort,
   });
-  return observation ? { ...observation, message: rawMessage } : null;
+  if (observation) return { ...observation, message: rawMessage };
+
+  // These loaders are deliberately aborted by the workspace request fence or by
+  // leaving the bot connection page. Require requestfailed("cancelled") evidence;
+  // a matching pageerror alone must still fail the browser-runtime assertion.
+  let current;
+  try {
+    current = new URL(String(currentUrl || ""));
+  } catch {
+    return null;
+  }
+  if (
+    String(requestMethod || "").toUpperCase() !== "GET"
+    || resourceType !== "fetch"
+    || current.origin !== expectedBase.origin
+    || expectedBase.hostname !== "127.0.0.1"
+    || Number(expectedBase.port) !== Number(webPort)
+  ) return null;
+  const detail = `${request.pathname}${request.search}`;
+  if (
+    current.pathname === "/app/settings"
+    && current.searchParams.get("section") === "project"
+    && ["/api/channels", "/api/posts", "/api/ai/usage"].includes(detail)
+  ) return { kind: "webkit.cancelled-project-refresh", detail, message: rawMessage };
+  if (
+    current.pathname === "/bot/connect"
+    && request.pathname === "/login"
+    && /^[A-Za-z0-9_-]+$/u.test(request.searchParams.get("_rsc") || "")
+    && [...request.searchParams.keys()].every((key) => ["_rsc", "next"].includes(key))
+    && (!request.searchParams.has("next") || request.searchParams.get("next") === "/bot/connect")
+  ) return { kind: "webkit.cancelled-bot-login-prefetch", detail, message: rawMessage };
+  return null;
 }
 
 export function classifyE2eKnownWebKitDocumentNavigationCancellation({

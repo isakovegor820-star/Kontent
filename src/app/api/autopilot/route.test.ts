@@ -92,6 +92,21 @@ describe("GET /api/autopilot", () => {
     expect(planQuery?.[1]).toEqual([88, 22]);
   });
 
+  it("exposes all saved controls to the Autopilot page", async () => {
+    mocks.resolveChannel.mockResolvedValue(22);
+    const settings = {
+      enabled: true, mode: "confirm", post_frequency: 3, approvals_streak: 0,
+      generation_engine: "navy-gpt-5-4", planning_months: 2, planning_weeks: 7,
+      quick_settings: { newsPerWeek: 1, detail: 3, energy: 1, emoji: 0 },
+    };
+    mocks.ensureSettings.mockResolvedValue(settings);
+
+    const response = await GET(new NextRequest("http://localhost/api/autopilot?channel=22"));
+
+    expect(response.status).toBe(200);
+    expect((await response.json()).settings).toEqual(settings);
+  });
+
   it("returns 404 instead of falling back when a project A channel is requested from project B", async () => {
     mocks.resolveChannel.mockResolvedValue(null);
 
