@@ -6,6 +6,8 @@ import ComposerPage from "./page";
 import { createPostFromSource, SourcePostCreationError } from "@/lib/source-post-client";
 import type { ServerDraft } from "@/lib/draft-types";
 import { DRAFT_REVIEW_POLICY_VERSION } from "@/lib/draft-review";
+import { setProjectTransport } from "@/lib/project-transport";
+import { projectJson } from "@/test/project-response";
 
 const fixture = vi.hoisted(() => ({
   params: new URLSearchParams("draft=41"),
@@ -41,6 +43,7 @@ const source: ServerDraft = {
 const generated: ServerDraft = { ...source, id: 42, text: "Новый пост, написанный ИИ.", purpose: "publishable", origin: "ai", generation_result_id: 77, generation_binding_valid: true, blocked_reason: null };
 const generate = vi.mocked(createPostFromSource);
 beforeEach(() => {
+  setProjectTransport(1, true, 1);
   vi.clearAllMocks();
   vi.stubGlobal("React", React);
   for (const name of ["localStorage", "sessionStorage"]) {
@@ -61,13 +64,13 @@ beforeEach(() => {
   fixture.params = new URLSearchParams("draft=41");
   fixture.projects.current.role = "owner";
   vi.stubGlobal("fetch", vi.fn(async (url) => {
-    if (url === "/api/drafts/41") return Response.json({ draft: source });
-    if (url === "/api/drafts/42") return Response.json({ draft: generated });
-    return Response.json({});
+    if (url === "/api/drafts/41") return projectJson(1, { draft: source });
+    if (url === "/api/drafts/42") return projectJson(1, { draft: generated });
+    return projectJson(1, {});
   }));
   generate.mockResolvedValue({ draft: generated, created: true } as Awaited<ReturnType<typeof createPostFromSource>>);
 });
-afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
+afterEach(() => { cleanup(); setProjectTransport(null); vi.unstubAllGlobals(); });
 
 it("leaves a source read-only until its button is activated, then opens the generated text", async () => {
   const view = render(<ComposerPage />);

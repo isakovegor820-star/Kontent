@@ -101,7 +101,7 @@ describe("GET /api/autopilot", () => {
     };
     mocks.ensureSettings.mockResolvedValue(settings);
 
-    const response = await GET(new NextRequest("http://localhost/api/autopilot?channel=22"));
+    const response = await GET(new ProjectRequest(88, "http://localhost/api/autopilot?channel=22"));
 
     expect(response.status).toBe(200);
     expect((await response.json()).settings).toEqual(settings);

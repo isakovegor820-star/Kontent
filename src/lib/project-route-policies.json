@@ -1210,6 +1210,11 @@
     "policy": "project"
   },
   {
+    "path": "/api/sites/[id]/ai/retry",
+    "method": "POST",
+    "policy": "project"
+  },
+  {
     "path": "/api/sites/[id]/analyze",
     "method": "POST",
     "policy": "project"

@@ -3,6 +3,8 @@ import React from "react";
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { ProjectTeamSection } from "./project-team-section";
+import { setProjectTransport } from "@/lib/project-transport";
+import { projectJson } from "@/test/project-response";
 
 const mocks = vi.hoisted(() => ({
   fetch: vi.fn(),
@@ -13,24 +15,22 @@ const mocks = vi.hoisted(() => ({
 }));
 vi.mock("@/components/app/project-provider", () => ({ useProjects: () => mocks.projects }));
 beforeEach(() => {
+  setProjectTransport(7, true, 1);
   vi.stubGlobal("React", React);
   vi.stubGlobal("fetch", mocks.fetch);
   mocks.fetch.mockReset();
 });
-afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
+afterEach(() => { cleanup(); setProjectTransport(null); vi.unstubAllGlobals(); });
 
 it("keeps the server recipient next to the generated URL after clearing the form and removes that URL after revoke", async () => {
   const inviteUrl = `https://aurora.test/invite#token=${"j".repeat(43)}`;
-  mocks.fetch.mockImplementation(async (_url: string, init?: RequestInit) => ({
-    ok: true,
-    json: async () => init?.method === "POST" ? {
+  mocks.fetch.mockImplementation(async (_url: string, init?: RequestInit) => projectJson(7, init?.method === "POST" ? {
       ok: true, inviteUrl,
       invitation: {
         id: 8, email: "recipient@example.test", role: "author", status: "pending",
         expiresAt: "2099-01-01T00:00:00Z", createdAt: "2026-09-08T00:00:00Z", acceptedAt: null, revokedAt: null,
       },
-    } : init?.method === "DELETE" ? { ok: true } : { ok: true, members: [], invitations: [] },
-  }));
+    } : init?.method === "DELETE" ? { ok: true } : { ok: true, members: [], invitations: [] }));
   render(<ProjectTeamSection />);
   const create = screen.getByRole("button", { name: "Создать приглашение" });
   await waitFor(() => expect((create as HTMLButtonElement).disabled).toBe(false));
