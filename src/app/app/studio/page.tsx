@@ -1498,10 +1498,12 @@ function StudioPageInner() {
         const composerHref = `/app/composer?draft=${result.draft.id}&from=studio${suggestMedia}`;
         if (generation?.autoOpenComposer && generation.referenceDraftId) {
           // Only now is it safe to consume the one-shot intent: the generated text already
-          // has a durable, idempotent draft. The Next.js navigation creates one deterministic
-          // browser-history entry, so Back returns to Studio without starting again.
+          // has a durable, idempotent draft. A document navigation ends the consumed Library
+          // request context and creates one deterministic history entry, so Back returns to
+          // Studio without keeping the one-shot generation or its in-flight requests alive.
           window.history.replaceState(window.history.state, "", `/app/studio?draft=${generation.referenceDraftId}`);
-          router.push(composerHref);
+          // eslint-disable-next-line @next/next/no-location-assign-relative-destination -- this one-shot handoff intentionally resets the consumed document context
+          window.location.assign(composerHref);
           return;
         }
         router.push(composerHref);
