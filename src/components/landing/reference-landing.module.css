@@ -269,21 +269,7 @@
   position: relative;
   z-index: 2;
   max-width: 37rem;
-}
-
-.eyebrow {
-  width: fit-content;
-  margin: 0 0 1rem;
-  padding: 0.42rem 0.75rem;
-  border: 1px solid rgb(37 99 255 / 0.08);
-  border-radius: 999px;
-  color: var(--landing-blue-dark);
-  background: #eff4ff;
-  font-size: 0.75rem;
-  font-weight: 800;
-  letter-spacing: 0.065em;
-  line-height: 1;
-  text-transform: uppercase;
+  padding-block-start: 0.25rem;
 }
 
 .hero h1 {
@@ -940,13 +926,28 @@
 }
 
 .sectionHeading {
+  position: relative;
   max-width: 46rem;
-  margin: 0 auto clamp(2.5rem, 5vw, 4rem);
+  margin: 0 auto clamp(2.25rem, 4vw, 3.25rem);
+  padding-block-start: 1.75rem;
   text-align: center;
 }
 
-.sectionHeading .eyebrow {
-  margin-inline: auto;
+.sectionHeading::before,
+.analyticsIntro::before {
+  content: "";
+  position: absolute;
+  inset-block-start: 0;
+  width: 2.75rem;
+  height: 0.2rem;
+  border-radius: 999px;
+  background: linear-gradient(90deg, #8dacff, var(--landing-blue));
+  box-shadow: 0 8px 18px -8px rgb(37 99 255 / 0.72);
+}
+
+.sectionHeading::before {
+  inset-inline-start: 50%;
+  transform: translateX(-50%);
 }
 
 .sectionHeading h2,
@@ -1118,11 +1119,13 @@
 }
 
 .analyticsIntro {
+  position: relative;
   align-self: center;
+  padding-block-start: 1.75rem;
 }
 
-.analyticsIntro .eyebrow {
-  margin-block-end: 1.2rem;
+.analyticsIntro::before {
+  inset-inline-start: 0;
 }
 
 .analyticsIntro h2 {
@@ -1446,12 +1449,13 @@
 .donutCard li b { color: var(--landing-ink); }
 
 .socialSection {
-  padding-block-end: 2rem;
+  padding-block: 0 2rem;
   text-align: center;
 }
 
-.socialSection .eyebrow {
-  margin: 0 auto 1.5rem;
+.socialSection .container {
+  padding-block: 1.5rem;
+  border-block: 1px solid rgb(37 99 255 / 0.08);
 }
 
 .socialList {
@@ -1722,18 +1726,8 @@
 }
 
 .accessCard {
-  min-height: 21rem;
-}
-
-.accessStatus {
-  width: fit-content;
-  margin-block-end: 1.25rem;
-  padding: 0.45rem 0.7rem;
-  border-radius: 999px;
-  color: var(--landing-blue-dark);
-  background: #edf3ff;
-  font-size: 0.8125rem;
-  font-weight: 800;
+  min-height: 18.75rem;
+  padding-block-start: 2rem;
 }
 
 .accessCard h3 {
@@ -2007,14 +2001,9 @@
     margin-inline: auto;
   }
 
-  .heroCopy .eyebrow,
   .heroActions,
   .heroBenefits {
     justify-content: center;
-  }
-
-  .heroCopy .eyebrow {
-    margin-inline: auto;
   }
 
   .productScene {
