@@ -342,7 +342,7 @@ export async function runSitesCoverage({ page, pool, userId, projectId, waitFor,
   assert.equal(generated.article_type, "machine_readable_page");
   assert.equal(generated.origin, "manual");
   assert.equal(generated.source_ref.brief, brief);
-  assert.equal(generated.generation.promptVersion, "site-article-v1");
+  assert.equal(generated.generation.promptVersion, "site-article-v2");
   assert.deepEqual(generated.quality.issues, []);
   assert.equal(generated.title, FAKE_SITES_ARTICLE_TITLE);
   assert.equal(fakeSitesState.ai.article, 1);
