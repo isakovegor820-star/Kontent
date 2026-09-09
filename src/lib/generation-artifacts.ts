@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import type { Pool, PoolClient } from "pg";
 
 import { getPool } from "./db";
+import type { AiUsageStoredResult } from "./ai-usage";
 import type { DraftAiValidation } from "./draft-types";
 import { normalizeDraftAiValidation } from "./draft-review";
 import { requireSelectedProjectPermission } from "./project-permissions";
@@ -42,6 +43,10 @@ export interface GenerationArtifactResult {
   validation: DraftAiValidation;
 }
 
+export interface StagedGenerationResult extends GenerationArtifactResult {
+  usageResult: AiUsageStoredResult;
+}
+
 export interface ResolvedGenerationDraft extends GenerationArtifactResult {
   channelId: number;
   sourceContextId: number | null;
@@ -80,6 +85,53 @@ export function generationBindingValid(input: {
     && input.resultHash === input.receiptHash
     && generationResultHash(input.text) === input.resultHash
     && JSON.stringify(validation) === JSON.stringify(receipt);
+}
+
+function record(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : null;
+}
+
+function storedGenerationResult(input: {
+  id: number;
+  text: string;
+  providerResult: unknown;
+  validation: DraftAiValidation;
+}): AiUsageStoredResult | null {
+  const provider = record(input.providerResult);
+  if (!provider) return null;
+  const protocol = provider.protocol;
+  const pipeline = provider.pipeline;
+  const requestedEngine = provider.requestedEngine;
+  const engine = provider.engine;
+  const fallbackUsed = provider.fallbackUsed;
+  if (
+    (protocol !== "ndjson" && protocol !== "text")
+    || (pipeline !== "single" && pipeline !== "editorial" && pipeline !== "draft-fallback")
+    || typeof requestedEngine !== "string"
+    || typeof engine !== "string"
+    || typeof fallbackUsed !== "boolean"
+  ) return null;
+  return {
+    protocol,
+    text: input.text,
+    pipeline,
+    requestedEngine,
+    engine,
+    fallbackUsed,
+    generationResultId: input.id,
+    validation: {
+      version: input.validation.version,
+      status: input.validation.status,
+      requiresReview: input.validation.requiresReview,
+      provenance: input.validation.provenance as unknown as Record<string, unknown>,
+      blockerCodes: input.validation.blockerCodes,
+      ...(input.validation.topicAlignment
+        ? { topicAlignment: input.validation.topicAlignment }
+        : {}),
+    },
+  };
 }
 
 function positiveId(value: unknown): number | null {
@@ -318,16 +370,17 @@ export async function lookupTerminalGenerationFailure(
     : null;
 }
 
-/** Persists immutable provider output and a receipt bound to its exact SHA-256. */
-export async function stageGenerationArtifact(
-  input: {
-    userId: number;
-    serverRequestId: string;
-    text: string;
-    validation: unknown;
-    providerResult: Record<string, unknown>;
-  },
-  pool: TransactionPool = getPool(),
+type GenerationArtifactInput = {
+  userId: number;
+  serverRequestId: string;
+  text: string;
+  validation: unknown;
+  providerResult: Record<string, unknown>;
+};
+
+async function stageGenerationArtifactInTransaction(
+  input: GenerationArtifactInput,
+  tx: PoolClient,
 ): Promise<GenerationArtifactResult> {
   const validation = normalizeDraftAiValidation(input.validation);
   if (!validation) {
@@ -336,58 +389,207 @@ export async function stageGenerationArtifact(
   const text = input.text.trim();
   if (!text) throw new GenerationArtifactError("generation_result_empty");
   const hash = generationResultHash(text);
+  const operation = (await tx.query<{ id: number | string; status: GenerationOperationStatus }>(
+    `select id, status from generation_operations
+      where user_id = $1 and server_request_id = $2::uuid for update`,
+    [input.userId, input.serverRequestId],
+  )).rows[0];
+  if (!operation || !["running", "pending_ack"].includes(operation.status)) {
+    throw new GenerationArtifactError("generation_operation_not_running");
+  }
+  const inserted = await tx.query<{ id: number | string; text: string; result_hash: string }>(
+    `insert into generation_results (operation_id, result_hash, text, provider_result)
+     values ($1, $2, $3, $4::jsonb)
+     on conflict (operation_id) do nothing
+     returning id, text, result_hash`,
+    [operation.id, hash, text, JSON.stringify(input.providerResult)],
+  );
+  const result = inserted.rows[0] ?? (await tx.query<{
+    id: number | string; text: string; result_hash: string;
+  }>(
+    `select id, text, result_hash from generation_results where operation_id = $1 for share`,
+    [operation.id],
+  )).rows[0];
+  if (!result || result.text !== text || result.result_hash !== hash) {
+    throw new GenerationArtifactError("generation_result_conflict");
+  }
+  const receiptPayload = JSON.stringify(validation);
+  await tx.query(
+    `insert into validation_receipts (generation_result_id, result_hash, status, receipt)
+     values ($1, $2, $3, $4::jsonb)
+     on conflict (generation_result_id) do nothing`,
+    [result.id, hash, validation.status, receiptPayload],
+  );
+  const receipt = (await tx.query<{ result_hash: string; status: string; receipt: unknown }>(
+    `select result_hash, status, receipt from validation_receipts
+      where generation_result_id = $1 for share`,
+    [result.id],
+  )).rows[0];
+  if (
+    !receipt
+    || receipt.result_hash !== hash
+    || receipt.status !== validation.status
+    || JSON.stringify(normalizeDraftAiValidation(receipt.receipt)) !== JSON.stringify(validation)
+  ) throw new GenerationArtifactError("generation_receipt_conflict");
+  await tx.query(
+    `update generation_operations set status = 'pending_ack', updated_at = now()
+      where id = $1 and status in ('running', 'pending_ack')`,
+    [operation.id],
+  );
+  return { id: Number(result.id), text, resultHash: hash, validation };
+}
+
+/**
+ * Stages the immutable artifact and the replay payload in one database transaction.
+ * A failure cannot leave generation_operations in pending_ack without an ai_usage result.
+ */
+export async function stageGenerationResult(
+  input: {
+    userId: number;
+    reservationId: number | null;
+    serverRequestId: string;
+    result: AiUsageStoredResult;
+    providerResult: Record<string, unknown>;
+  },
+  pool: TransactionPool = getPool(),
+): Promise<StagedGenerationResult> {
+  if (!positiveId(input.reservationId) || !validRequestId(input.serverRequestId)) {
+    throw new GenerationArtifactError("bad_generation_result_stage");
+  }
   const tx = await pool.connect();
   try {
     await tx.query("begin");
-    const operation = (await tx.query<{ id: number | string; status: GenerationOperationStatus }>(
-      `select id, status from generation_operations
-        where user_id = $1 and server_request_id = $2::uuid for update`,
-      [input.userId, input.serverRequestId],
-    )).rows[0];
-    if (!operation || !["running", "pending_ack"].includes(operation.status)) {
-      throw new GenerationArtifactError("generation_operation_not_running");
+    const artifact = await stageGenerationArtifactInTransaction({
+      userId: input.userId,
+      serverRequestId: input.serverRequestId,
+      text: input.result.text,
+      validation: input.result.validation,
+      providerResult: input.providerResult,
+    }, tx);
+    const usageResult: AiUsageStoredResult = {
+      ...input.result,
+      text: artifact.text,
+      generationResultId: artifact.id,
+    };
+    const staged = await tx.query<{ status: string; result_payload: unknown }>(
+      `update ai_usage
+          set result_payload = $4::jsonb,
+              result_content_type = $5
+        where id = $1 and user_id = $2 and operation_id = $3::uuid
+          and status = 'reserved' and expires_at is not null and expires_at > now()
+        returning status, result_payload`,
+      [
+        input.reservationId,
+        input.userId,
+        input.serverRequestId,
+        JSON.stringify(usageResult),
+        usageResult.protocol,
+      ],
+    );
+    if (staged.rowCount !== 1 || staged.rows[0]?.status !== "reserved" || !staged.rows[0]?.result_payload) {
+      throw new GenerationArtifactError("generation_usage_stage_failed");
     }
-    const inserted = await tx.query<{ id: number | string; text: string; result_hash: string }>(
-      `insert into generation_results (operation_id, result_hash, text, provider_result)
-       values ($1, $2, $3, $4::jsonb)
-       on conflict (operation_id) do nothing
-       returning id, text, result_hash`,
-      [operation.id, hash, text, JSON.stringify(input.providerResult)],
-    );
-    const result = inserted.rows[0] ?? (await tx.query<{
-      id: number | string; text: string; result_hash: string;
-    }>(
-      `select id, text, result_hash from generation_results where operation_id = $1 for share`,
-      [operation.id],
-    )).rows[0];
-    if (!result || result.text !== text || result.result_hash !== hash) {
-      throw new GenerationArtifactError("generation_result_conflict");
-    }
-    const receiptPayload = JSON.stringify(validation);
-    await tx.query(
-      `insert into validation_receipts (generation_result_id, result_hash, status, receipt)
-       values ($1, $2, $3, $4::jsonb)
-       on conflict (generation_result_id) do nothing`,
-      [result.id, hash, validation.status, receiptPayload],
-    );
-    const receipt = (await tx.query<{ result_hash: string; status: string; receipt: unknown }>(
-      `select result_hash, status, receipt from validation_receipts
-        where generation_result_id = $1 for share`,
-      [result.id],
-    )).rows[0];
-    if (
-      !receipt
-      || receipt.result_hash !== hash
-      || receipt.status !== validation.status
-      || JSON.stringify(normalizeDraftAiValidation(receipt.receipt)) !== JSON.stringify(validation)
-    ) throw new GenerationArtifactError("generation_receipt_conflict");
-    await tx.query(
-      `update generation_operations set status = 'pending_ack', updated_at = now()
-        where id = $1 and status in ('running', 'pending_ack')`,
-      [operation.id],
-    );
     await tx.query("commit");
-    return { id: Number(result.id), text, resultHash: hash, validation };
+    return { ...artifact, usageResult };
+  } catch (error) {
+    await tx.query("rollback").catch(() => {});
+    throw error;
+  } finally {
+    tx.release();
+  }
+}
+
+/**
+ * Repairs results created by the former two-transaction staging flow. The provider
+ * artifact is immutable, so it can safely repopulate ai_usage and be replayed without
+ * another provider call or quota reservation.
+ */
+export async function recoverPendingGenerationResult(
+  userId: number,
+  requestKey: string,
+  fingerprint: string,
+  pool: TransactionPool = getPool(),
+): Promise<AiUsageStoredResult | null> {
+  if (!positiveId(userId) || !validRequestKey(requestKey) || !validFingerprint(fingerprint)) return null;
+  const tx = await pool.connect();
+  try {
+    await tx.query("begin");
+    const row = (await tx.query<{
+      request_fingerprint: string;
+      operation_status: GenerationOperationStatus;
+      ai_usage_id: number | string;
+      generation_result_id: number | string | null;
+      text: string | null;
+      result_hash: string | null;
+      provider_result: unknown;
+      receipt_hash: string | null;
+      receipt_status: string | null;
+      receipt: unknown;
+    }>(
+      `select operation.request_fingerprint, operation.status as operation_status,
+              usage.id as ai_usage_id, result.id as generation_result_id,
+              result.text, result.result_hash, result.provider_result,
+              receipt.result_hash as receipt_hash, receipt.status as receipt_status, receipt.receipt
+         from generation_operations operation
+         join ai_usage usage
+           on usage.id = operation.ai_usage_id and usage.user_id = operation.user_id
+         left join generation_results result on result.operation_id = operation.id
+         left join validation_receipts receipt on receipt.generation_result_id = result.id
+        where operation.user_id = $1 and operation.request_key = $2
+        for update of operation, usage`,
+      [userId, requestKey],
+    )).rows[0];
+    if (!row) {
+      await tx.query("commit");
+      return null;
+    }
+    if (row.request_fingerprint !== fingerprint) {
+      throw new GenerationArtifactError("generation_operation_conflict");
+    }
+    if (row.operation_status !== "pending_ack") {
+      await tx.query("commit");
+      return null;
+    }
+    const generationResultId = positiveId(row.generation_result_id);
+    const validation = normalizeDraftAiValidation(row.receipt);
+    if (
+      !generationResultId
+      || typeof row.text !== "string"
+      || !validation
+      || row.receipt_status !== validation.status
+      || !generationBindingValid({
+        generationResultId,
+        text: row.text,
+        resultHash: row.result_hash,
+        receiptHash: row.receipt_hash,
+        aiValidation: validation,
+        receipt: row.receipt,
+      })
+    ) throw new GenerationArtifactError("generation_recovery_invalid");
+    const usageResult = storedGenerationResult({
+      id: generationResultId,
+      text: row.text,
+      providerResult: row.provider_result,
+      validation,
+    });
+    if (!usageResult) throw new GenerationArtifactError("generation_recovery_invalid");
+    const restored = await tx.query(
+      `update ai_usage
+          set status = case
+                         when status = 'committed' then 'committed'
+                         when status = 'reserved' and expires_at > now() then 'reserved'
+                         else 'expired'
+                       end,
+              result_payload = $4::jsonb,
+              result_content_type = $5,
+              finalized_at = case when status = 'committed' then finalized_at else now() end
+        where id = $3 and user_id = $1 and reservation_key = $2
+        returning id`,
+      [userId, requestKey, row.ai_usage_id, JSON.stringify(usageResult), usageResult.protocol],
+    );
+    if (restored.rowCount !== 1) throw new GenerationArtifactError("generation_recovery_unavailable");
+    await tx.query("commit");
+    return usageResult;
   } catch (error) {
     await tx.query("rollback").catch(() => {});
     throw error;

@@ -1,6 +1,11 @@
 import { describe, expect, it } from "vitest";
 
-import { aiDraftPhaseLabel, createAiDraftProjection, projectAiDraftEvent } from "./ai-draft-projection";
+import {
+  aiDraftPhaseLabel,
+  createAiDraftProjection,
+  projectAiDraftEvent,
+  recoverAiDraftText,
+} from "./ai-draft-projection";
 import type { AiStreamEvent } from "./ai-stream";
 
 const requestId = "projection-test";
@@ -71,5 +76,17 @@ describe("AI draft projection", () => {
 
     expect(state.buffer).toBe("Новый");
     expect(state.visibleText).toBe("Текущий сохранённый пост");
+  });
+
+  it("returns the visible generated draft instead of erasing it on a late stream error", () => {
+    let state = createAiDraftProjection();
+    state = projectAiDraftEvent(state, { type: "phase", phase: "writing", requestId });
+    state = projectAiDraftEvent(state, { type: "delta", text: "Готовый текст", requestId });
+
+    expect(recoverAiDraftText(state)).toBe("Готовый текст");
+  });
+
+  it("falls back to the previous text only when the failed stream produced no candidate", () => {
+    expect(recoverAiDraftText(createAiDraftProjection(), "Исходный текст")).toBe("Исходный текст");
   });
 });

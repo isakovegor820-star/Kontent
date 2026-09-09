@@ -43,6 +43,7 @@ import {
   aiDraftPhaseLabel,
   createAiDraftProjection,
   projectAiDraftEvent,
+  recoverAiDraftText,
 } from "@/lib/ai-draft-projection";
 import type { ConversationTurn } from "@/lib/ai-provider";
 import { finalizeAiClientStream, parseAiStreamBuffer, type AiStreamEvent } from "@/lib/ai-stream";
@@ -1728,7 +1729,7 @@ function StudioPageInner() {
               : null;
             setPendingEngineSuggestion(suggested);
             setMsg({
-              text: previousText,
+              text: recoverAiDraftText(projection, previousText),
               errorMessage: failureText(event),
               progressLabel: undefined,
               requestId: event.requestId,

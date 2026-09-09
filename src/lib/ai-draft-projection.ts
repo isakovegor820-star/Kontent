@@ -24,6 +24,13 @@ export function createAiDraftProjection(initialText = ""): AiDraftProjection {
   };
 }
 
+/** Keeps the most useful visible candidate when a stream fails before terminal ACK. */
+export function recoverAiDraftText(current: AiDraftProjection, previousText = ""): string {
+  if (current.visibleText.trim()) return current.visibleText;
+  if (current.buffer.trim()) return current.buffer;
+  return previousText;
+}
+
 /**
  * Editorial generation has several provider passes. The protocol resets its pass buffer
  * with `replace("")`; that is not a request to erase the user's visible draft. Promote a

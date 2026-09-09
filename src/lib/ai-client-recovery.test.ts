@@ -31,4 +31,16 @@ describe("AI client recovery copy", () => {
   ])("maps %s stream failures without losing the recovery action", (error, expected) => {
     expect(aiFailureRecoveryRu({ error, label: "Модель" })).toContain(expected);
   });
+
+  it.each([
+    ["usage_finalization_unavailable", "Черновик оставлен в чате"],
+    ["usage_unavailable", "Запрос не отправлен модели"],
+    ["generation_result_pending_ack", "без нового вызова модели"],
+    ["generation_operation_unavailable", "защищённое сохранение"],
+  ])("does not blame the selected model for internal failure %s", (error, expected) => {
+    const recovery = aiFailureRecoveryRu({ error, label: "Аврора Искра (NavyAI)" }, 503);
+    expect(recovery).toContain(expected);
+    expect(recovery).not.toContain("Аврора Искра");
+    expect(recovery).not.toContain("сейчас недоступен");
+  });
 });
