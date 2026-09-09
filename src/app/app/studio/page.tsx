@@ -1624,10 +1624,11 @@ function StudioPageInner() {
         const composerHref = `/app/composer?draft=${result.draft.id}&from=studio${suggestMedia}`;
         if (generation?.autoOpenComposer && generation.referenceDraftId) {
           // Only now is it safe to consume the one-shot intent: the generated text already
-          // has a durable, idempotent draft. Preserve the cleaned Studio entry before the
-          // Next navigation, so Back returns to Studio without starting again.
+          // has a durable, idempotent draft. A native navigation creates one deterministic
+          // browser-history entry and emits pagehide for the durable recovery checkpoint.
           window.history.replaceState(window.history.state, "", `/app/studio?draft=${generation.referenceDraftId}`);
-          router.push(composerHref);
+          // eslint-disable-next-line @next/next/no-location-assign-relative-destination -- pagehide is the recovery durability boundary for this one-shot flow.
+          window.location.assign(composerHref);
           return;
         }
         router.push(composerHref);

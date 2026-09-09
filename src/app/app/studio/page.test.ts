@@ -11,14 +11,13 @@ describe("Studio responsive recovery controls", () => {
     expect(pageSource).toContain("w-full whitespace-normal text-pretty sm:w-auto sm:shrink-0");
   });
 
-  it("uses one Next history entry for the one-shot reference flow", () => {
+  it("uses one native history entry for the one-shot reference flow", () => {
     expect(pageSource).toContain('const composerHref = `/app/composer?draft=${result.draft.id}&from=studio${suggestMedia}`');
     expect(pageSource).toContain('window.history.replaceState(window.history.state, "", `/app/studio?draft=${generation.referenceDraftId}`)');
-    expect(pageSource).not.toContain("window.location.assign(composerHref)");
-    const oneShotNavigation = pageSource.indexOf(
-      'window.history.replaceState(window.history.state, "", `/app/studio?draft=${generation.referenceDraftId}`)',
+    expect(pageSource).toContain("window.location.assign(composerHref)");
+    expect(pageSource.indexOf("window.location.assign(composerHref)")).toBeLessThan(
+      pageSource.indexOf("router.push(composerHref)"),
     );
-    expect(pageSource.indexOf("router.push(composerHref)", oneShotNavigation)).toBeGreaterThan(oneShotNavigation);
   });
 
   it("keeps fallback diagnostics internal without a caption or toast", () => {
