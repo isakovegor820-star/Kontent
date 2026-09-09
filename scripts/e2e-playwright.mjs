@@ -21,5 +21,5 @@ export const { chromium, firefox, webkit } = require(copied);
 export const e2ePlaywrightProof = Object.freeze({ version: manifest.version,
   sourceHash: createHash("sha256").update(source).digest("hex"),
   patchedHash: createHash("sha256").update(patched).digest("hex"),
-  change: "Firefox binding context captured before initialization await; owned dependency copy only" });
+  change: "Firefox binding context retained across bounded reload teardown; owned dependency copy only" });
 console.log(JSON.stringify({ e2ePlaywright: e2ePlaywrightProof }));
