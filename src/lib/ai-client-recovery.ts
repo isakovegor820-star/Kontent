@@ -24,6 +24,18 @@ export function aiFailureRecoveryRu(info: AiFailureInfo | null, status?: number)
   if (info?.error === "request_result_unavailable") {
     return "Запрос был списан раньше, но его сохранённый результат недоступен. Не повторяй его с новым ключом; передай номер запроса в поддержку.";
   }
+  if (info?.error === "usage_finalization_unavailable") {
+    return "Текст получен, но сервер не подтвердил его сохранение. Черновик оставлен в чате — повтори тот же запрос с сохранённым ключом.";
+  }
+  if (info?.error === "usage_unavailable") {
+    return "Сервис учёта генераций временно недоступен. Запрос не отправлен модели; подожди немного и повтори его.";
+  }
+  if (info?.error === "generation_result_pending_ack") {
+    return "Текст уже получен и ожидает подтверждения. Повтори тот же запрос — сервер восстановит результат без нового вызова модели.";
+  }
+  if (info?.error === "generation_operation_unavailable") {
+    return "Не удалось подготовить защищённое сохранение результата. Запрос не отправлен модели; повтори его позже.";
+  }
   if (info?.error === "ai_operation_budget_exhausted") {
     return info.dimension === "tokens"
       ? "Запрос слишком объёмный для одного запуска. Сократи исходный текст и отправь его снова."

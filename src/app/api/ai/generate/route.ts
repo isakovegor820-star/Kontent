@@ -33,7 +33,6 @@ import {
   channelAiContextFor,
   lookupAiUsageRequest,
   releaseAiUsageRequest,
-  stageAiUsageResult,
   styleSamplesFor,
   type AiUsageStoredResult,
 } from "@/lib/ai-usage";
@@ -71,7 +70,8 @@ import {
   failGenerationOperation,
   GenerationArtifactError,
   lookupTerminalGenerationFailure,
-  stageGenerationArtifact,
+  recoverPendingGenerationResult,
+  stageGenerationResult,
 } from "@/lib/generation-artifacts";
 import {
   buildReferenceAdaptationTask,
@@ -818,24 +818,19 @@ function studioStreamResponse(
             : {}),
         };
       };
-      const stageReservation = async (result: AiUsageStoredResult) => {
-        const staged = await stageAiUsageResult(userId, reservationId, requestId, result).catch(() => {
-          throw new AiUsageFinalizationError();
-        });
-        if (staged.status !== "reserved" || !staged.result) throw new AiUsageFinalizationError();
-      };
       const stageAndSendTerminal = async (
         result: AiUsageStoredResult,
         terminal: Extract<AiStreamEvent, { type: "done" }>,
+        replacement: Extract<AiStreamEvent, { type: "replace" }>,
       ) => {
         if (!result.validation) throw new AiUsageFinalizationError();
-        let artifact;
+        let staged;
         try {
-          artifact = await stageGenerationArtifact({
+          staged = await stageGenerationResult({
             userId,
+            reservationId,
             serverRequestId: requestId,
-            text: result.text,
-            validation: result.validation,
+            result,
             providerResult: {
               protocol: result.protocol,
               pipeline: result.pipeline,
@@ -853,14 +848,18 @@ function studioStreamResponse(
           });
           throw new AiUsageFinalizationError();
         }
-        const stored = { ...result, generationResultId: artifact.id };
-        await stageReservation(stored);
         if (consumerSignal.aborted) {
+          throw new DOMException("AI stream consumer closed", "AbortError");
+        }
+        // The final replacement is visible only after artifact + replay payload commit.
+        // Provider deltas can still stream, but a late storage error cannot promote an
+        // uncommitted candidate to a ready result.
+        if (!send(replacement)) {
           throw new DOMException("AI stream consumer closed", "AbortError");
         }
         // This is the sole terminal outcome. It never charges quota: only a client that
         // received `done` can ACK the staged result in the separate second phase.
-        if (!send({ ...terminal, generationResultId: artifact.id })) {
+        if (!send({ ...terminal, generationResultId: staged.id })) {
           throw new DOMException("AI stream consumer closed", "AbortError");
         }
       };
@@ -963,7 +962,6 @@ function studioStreamResponse(
           ) {
             throw new PostSettingsValidationError(validation.issues);
           }
-          if (!send({ type: "replace", requestId, text: finalText, pipeline: finalPipeline })) return;
           await stageAndSendTerminal(
             {
               protocol: "ndjson",
@@ -983,6 +981,7 @@ function studioStreamResponse(
               fallbackUsed: anyFallback,
               ackRequired: true,
             },
+            { type: "replace", requestId, text: finalText, pipeline: finalPipeline },
           );
           completed = true;
           return;
@@ -1094,7 +1093,6 @@ function studioStreamResponse(
         ) {
           throw new PostSettingsValidationError(validation.issues, validation.errorCode);
         }
-        if (!send({ type: "replace", requestId, text: finalText, pipeline: finalPipeline })) return;
         await stageAndSendTerminal(
           {
             protocol: "ndjson",
@@ -1114,6 +1112,7 @@ function studioStreamResponse(
             fallbackUsed: anyFallback,
             ackRequired: true,
           },
+          { type: "replace", requestId, text: finalText, pipeline: finalPipeline },
         );
         completed = true;
       } catch (error) {
@@ -1346,6 +1345,21 @@ export async function POST(req: NextRequest) {
     if ((existing.state === "replay" || existing.state === "terminal_pending_ack") && existing.result) {
       logAiRequest("info", requestId, "request_replayed", { engine: existing.result.engine });
       return replayResponse(requestId, existing.result);
+    }
+    if (
+      existing.state === "released"
+      || existing.state === "expired"
+      || existing.state === "committed_without_result"
+    ) {
+      const recovered = await recoverPendingGenerationResult(
+        user.id,
+        usageKey,
+        requestFingerprint,
+      );
+      if (recovered) {
+        logAiRequest("info", requestId, "request_replayed", { engine: recovered.engine });
+        return replayResponse(requestId, recovered);
+      }
     }
     if (existing.state === "in_progress") {
       return aiJson(

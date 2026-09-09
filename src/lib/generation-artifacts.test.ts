@@ -5,7 +5,9 @@ import {
   GenerationArtifactError,
   generationBindingValid,
   generationResultHash,
+  recoverPendingGenerationResult,
   resolveGenerationDraft,
+  stageGenerationResult,
 } from "./generation-artifacts";
 
 const validation = {
@@ -120,6 +122,177 @@ describe("generation artifact binding", () => {
     );
     expect(query.mock.calls.some(([sql]) => String(sql).includes("status = 'running'"))).toBe(false);
     expect(query).toHaveBeenCalledWith("rollback");
+    expect(release).toHaveBeenCalledOnce();
+  });
+
+  it("stages the artifact and replay payload in one transaction", async () => {
+    const text = "Точный результат для атомарного сохранения";
+    const hash = generationResultHash(text);
+    const requestId = "123e4567-e89b-42d3-a456-426614174000";
+    const query = vi.fn(async (sql: string, params?: unknown[]) => {
+      if (sql === "begin" || sql === "commit" || sql === "rollback") {
+        return { rows: [], rowCount: null };
+      }
+      if (sql.includes("select id, status from generation_operations")) {
+        return { rows: [{ id: "71", status: "running" }], rowCount: 1 };
+      }
+      if (sql.includes("insert into generation_results")) {
+        return { rows: [{ id: "91", text, result_hash: hash }], rowCount: 1 };
+      }
+      if (sql.includes("insert into validation_receipts")) return { rows: [], rowCount: 1 };
+      if (sql.includes("select result_hash, status, receipt from validation_receipts")) {
+        return {
+          rows: [{ result_hash: hash, status: validation.status, receipt: validation }],
+          rowCount: 1,
+        };
+      }
+      if (sql.includes("update generation_operations")) return { rows: [], rowCount: 1 };
+      if (sql.includes("update ai_usage")) {
+        return {
+          rows: [{ status: "reserved", result_payload: JSON.parse(String(params?.[3])) }],
+          rowCount: 1,
+        };
+      }
+      return { rows: [], rowCount: 0 };
+    });
+    const release = vi.fn();
+    const pool = { connect: vi.fn(async () => ({ query, release })) };
+
+    const staged = await stageGenerationResult({
+      userId: 5,
+      reservationId: 33,
+      serverRequestId: requestId,
+      result: {
+        protocol: "ndjson",
+        text,
+        pipeline: "single",
+        requestedEngine: "navy-deepseek-flash",
+        engine: "navy-deepseek-flash",
+        fallbackUsed: false,
+        validation,
+      },
+      providerResult: {
+        protocol: "ndjson",
+        pipeline: "single",
+        requestedEngine: "navy-deepseek-flash",
+        engine: "navy-deepseek-flash",
+        fallbackUsed: false,
+      },
+    }, pool as never);
+
+    expect(staged).toMatchObject({
+      id: 91,
+      text,
+      usageResult: { generationResultId: 91, text },
+    });
+    expect(query).toHaveBeenCalledWith("begin");
+    expect(query).toHaveBeenCalledWith("commit");
+    expect(query).not.toHaveBeenCalledWith("rollback");
+    expect(query.mock.calls.some(([sql]) => String(sql).includes("update ai_usage"))).toBe(true);
+    expect(release).toHaveBeenCalledOnce();
+  });
+
+  it("rolls back the artifact when the replay payload cannot be staged", async () => {
+    const text = "Результат не должен остаться наполовину сохранённым";
+    const hash = generationResultHash(text);
+    const query = vi.fn(async (sql: string) => {
+      if (sql === "begin" || sql === "commit" || sql === "rollback") {
+        return { rows: [], rowCount: null };
+      }
+      if (sql.includes("select id, status from generation_operations")) {
+        return { rows: [{ id: "71", status: "running" }], rowCount: 1 };
+      }
+      if (sql.includes("insert into generation_results")) {
+        return { rows: [{ id: "91", text, result_hash: hash }], rowCount: 1 };
+      }
+      if (sql.includes("insert into validation_receipts")) return { rows: [], rowCount: 1 };
+      if (sql.includes("select result_hash, status, receipt from validation_receipts")) {
+        return {
+          rows: [{ result_hash: hash, status: validation.status, receipt: validation }],
+          rowCount: 1,
+        };
+      }
+      if (sql.includes("update generation_operations")) return { rows: [], rowCount: 1 };
+      if (sql.includes("update ai_usage")) return { rows: [], rowCount: 0 };
+      return { rows: [], rowCount: 0 };
+    });
+    const release = vi.fn();
+    const pool = { connect: vi.fn(async () => ({ query, release })) };
+
+    await expect(stageGenerationResult({
+      userId: 5,
+      reservationId: 33,
+      serverRequestId: "123e4567-e89b-42d3-a456-426614174000",
+      result: {
+        protocol: "ndjson",
+        text,
+        pipeline: "single",
+        requestedEngine: "navy-deepseek-flash",
+        engine: "navy-deepseek-flash",
+        fallbackUsed: false,
+        validation,
+      },
+      providerResult: {
+        protocol: "ndjson",
+        pipeline: "single",
+        requestedEngine: "navy-deepseek-flash",
+        engine: "navy-deepseek-flash",
+        fallbackUsed: false,
+      },
+    }, pool as never)).rejects.toMatchObject({ code: "generation_usage_stage_failed" });
+    expect(query).toHaveBeenCalledWith("rollback");
+    expect(query).not.toHaveBeenCalledWith("commit");
+    expect(release).toHaveBeenCalledOnce();
+  });
+
+  it("restores a legacy pending ACK artifact into ai_usage for safe replay", async () => {
+    const text = "Ранее сохранённый результат";
+    const hash = generationResultHash(text);
+    const query = vi.fn(async (sql: string) => {
+      if (sql === "begin" || sql === "commit" || sql === "rollback") {
+        return { rows: [], rowCount: null };
+      }
+      if (sql.includes("from generation_operations operation")) {
+        return {
+          rowCount: 1,
+          rows: [{
+            request_fingerprint: "a".repeat(64),
+            operation_status: "pending_ack",
+            ai_usage_id: "33",
+            generation_result_id: "91",
+            text,
+            result_hash: hash,
+            provider_result: {
+              protocol: "ndjson",
+              pipeline: "single",
+              requestedEngine: "navy-deepseek-flash",
+              engine: "navy-deepseek-flash",
+              fallbackUsed: false,
+            },
+            receipt_hash: hash,
+            receipt_status: validation.status,
+            receipt: validation,
+          }],
+        };
+      }
+      if (sql.includes("update ai_usage")) return { rows: [{ id: "33" }], rowCount: 1 };
+      return { rows: [], rowCount: 0 };
+    });
+    const release = vi.fn();
+    const pool = { connect: vi.fn(async () => ({ query, release })) };
+
+    await expect(recoverPendingGenerationResult(
+      5,
+      "web:studio-request-1",
+      "a".repeat(64),
+      pool as never,
+    )).resolves.toMatchObject({
+      text,
+      generationResultId: 91,
+      engine: "navy-deepseek-flash",
+    });
+    expect(query.mock.calls.some(([sql]) => String(sql).includes("status = case"))).toBe(true);
+    expect(query).toHaveBeenCalledWith("commit");
     expect(release).toHaveBeenCalledOnce();
   });
 });
