@@ -10,17 +10,17 @@ const worker = await readFile(resolve("worker.mjs"), "utf8");
 const workflowDirectory = resolve(".github/workflows");
 
 describe("production deployment shell contract", () => {
-  it("keeps artifact and migration failures before the live symlink switch", () => {
+  it("finishes artifacts before cutover and starts migration only after old services stop", () => {
     const build = script.indexOf("INSTALL_BUILD_ARTIFACT");
-    const runtimeEnv = script.indexOf("LOAD_RUNTIME_ENV");
+    const state = script.indexOf('"forward-only" > "$state_file"');
+    const stop = script.indexOf("STOP_FOR_FORWARD_ONLY_CUTOVER");
     const migrate = script.indexOf("bash scripts/run-production-migrations.sh");
-    const state = script.indexOf("rollback-compatible\" > \"$state_file");
     const swap = script.indexOf('swap_current "$release"');
     expect(build).toBeGreaterThan(0);
-    expect(runtimeEnv).toBeGreaterThan(build);
-    expect(migrate).toBeGreaterThan(runtimeEnv);
-    expect(state).toBeGreaterThan(migrate);
-    expect(swap).toBeGreaterThan(state);
+    expect(state).toBeGreaterThan(build);
+    expect(stop).toBeGreaterThan(state);
+    expect(swap).toBeGreaterThan(stop);
+    expect(migrate).toBeGreaterThan(swap);
   });
 
   it("never runs production DDL through the runtime database identity", () => {
@@ -76,11 +76,11 @@ describe("production deployment shell contract", () => {
     expect(workflow).toContain("AURORA_DB_POOL_MAX_WORKER=${AURORA_DB_POOL_MAX_WORKER}");
   });
 
-  it("routes the AI engine selection through the release without stranding a rollback", () => {
+  it("routes the AI engine selection through the release without stranding forward repair", () => {
     // An engine whose upstream route stops answering has to be routable away from without a
     // hand-edit on the box: production pinned a dead engine and took Autopilot and the
     // pre-deploy readiness gate down with it. An empty variable must leave the deployed
-    // value alone so a rollback release keeps its own configuration.
+    // value alone so the previous release remains an exact incident reference.
     expect(script).toContain('AI_SERVICE_ENGINE="${AURORA_AI_SERVICE_ENGINE:-}"');
     expect(script).toContain('AI_FALLBACK_ENGINES="${AURORA_AI_FALLBACK_ENGINES:-}"');
     expect(script).toContain('AI_SEMANTIC_ENGINE="${AURORA_AI_SEMANTIC_ENGINE:-}"');
@@ -138,39 +138,41 @@ describe("production deployment shell contract", () => {
     }
   });
 
-  it("rolls back restart, health, and partial web/worker activation failures", () => {
+  it("holds both services on restart, health, and partial activation failures", () => {
     expect(script).toContain("if ! systemctl restart aurora-web.service aurora-worker.service");
     expect(script).toContain("if ! wait_for_health");
     expect(script).toContain("if ! services_active");
     expect(script).toContain("systemctl is-active --quiet aurora-web.service");
     expect(script).toContain("systemctl is-active --quiet aurora-worker.service");
-    expect(script.split('rollback_to "$previous" || true')).toHaveLength(4);
+    expect(script.split("hold_services || true")).toHaveLength(4);
+    expect(script).not.toContain("rollback_to");
   });
 
-  it("waits through delayed worker startup after deploy and rollback restarts", () => {
+  it("waits through delayed worker startup after the target restart", () => {
     const waitForHealth = script.slice(
       script.indexOf("wait_for_health()"),
-      script.indexOf("rollback_to()"),
+      script.indexOf("services_stopped()"),
     );
     expect(waitForHealth).toMatch(/if curl[\s\S]*&& services_active; then/u);
   });
 
-  it("makes full smoke failure invoke the remote schema-boundary rollback", () => {
+  it("makes full smoke failure invoke the remote forward-only hold", () => {
     expect(workflow).toContain("if npm run test:deployment-smoke; then");
-    expect(workflow).toContain("AURORA_DEPLOY_ACTION=rollback");
-    expect(workflow).toContain("schema-boundary-verified rollback");
+    expect(workflow).toContain("AURORA_DEPLOY_ACTION=hold");
+    expect(workflow).toContain("forward-only service hold");
+    expect(workflow).not.toContain("AURORA_DEPLOY_ACTION=rollback");
   });
 
-  it("allows bounded post-restart readiness convergence before rollback", () => {
+  it("allows bounded post-restart readiness convergence before hold", () => {
     const verify = workflow.indexOf("Verify production deployment");
     const retry = workflow.indexOf('smoke_attempts=12', verify);
     const smoke = workflow.indexOf("if npm run test:deployment-smoke; then", retry);
     const wait = workflow.indexOf("sleep 5", smoke);
-    const rollback = workflow.indexOf("AURORA_DEPLOY_ACTION=rollback", wait);
+    const hold = workflow.indexOf("AURORA_DEPLOY_ACTION=hold", wait);
     expect(retry).toBeGreaterThan(verify);
     expect(smoke).toBeGreaterThan(retry);
     expect(wait).toBeGreaterThan(smoke);
-    expect(rollback).toBeGreaterThan(wait);
+    expect(hold).toBeGreaterThan(wait);
   });
 
   it("autodeploys only the exact main SHA that completed CI successfully", () => {
@@ -184,17 +186,19 @@ describe("production deployment shell contract", () => {
     expect(workflow).toContain("AURORA_DEPLOY_SHA: ${{ github.event.workflow_run.head_sha || github.sha }}");
   });
 
-  it("fails closed before deploy writes when readiness or rollback evidence is missing", () => {
+  it("fails closed before deploy writes without exact cutover and backup evidence", () => {
     const preflight = workflow.indexOf("Verify current production readiness before deploy");
     const configureSsh = workflow.indexOf("Configure SSH");
-    const boundary = workflow.indexOf("Verify exact rollback boundary");
+    const boundary = workflow.indexOf("Verify exact forward-only cutover and backup boundary");
     const deploy = workflow.indexOf("Deploy release");
     expect(preflight).toBeGreaterThan(0);
     expect(configureSsh).toBeGreaterThan(preflight);
     expect(boundary).toBeGreaterThan(configureSsh);
     expect(deploy).toBeGreaterThan(boundary);
-    expect(workflow).toContain('expected="${current_sha}:${AURORA_DEPLOY_SHA}"');
-    expect(workflow).toContain('[[ "$AURORA_SCHEMA_ROLLBACK_AUDIT" == "$expected" ]]');
+    expect(workflow).toContain('expected_pair="${current_sha}:${AURORA_DEPLOY_SHA}"');
+    expect(workflow).toContain('expected_cutover="${expected_pair}:forward-only"');
+    expect(workflow).toContain('[[ "$AURORA_SCHEMA_FORWARD_ONLY_AUDIT" == "$expected_cutover" ]]');
+    expect(workflow).toContain('[[ "$AURORA_BACKUP_RESTORE_AUDIT" == "$expected_pair" ]]');
   });
 
   it("allows only the explicit degraded-mail release profile override", () => {
@@ -204,7 +208,7 @@ describe("production deployment shell contract", () => {
     expect(workflow.match(/AURORA_DEPLOYMENT_SMOKE_ALLOW_FORWARD_SCHEMA: "true"/gu)).toHaveLength(1);
   });
 
-  it("verifies CI, immutable actions, pinned host identity, and rollback compatibility", () => {
+  it("verifies CI, immutable actions, pinned host identity, and forward-only compatibility", () => {
     expect(workflow).toContain("actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1");
     expect(workflow).toContain("actions/setup-node@820762786026740c76f36085b0efc47a31fe5020");
     expect(workflow).toContain("verify-required-ci-checks.mjs");
@@ -214,7 +218,7 @@ describe("production deployment shell contract", () => {
     expect(workflow).not.toContain("ssh-keyscan");
     expect(workflow).toContain("PRODUCTION_SSH_HOST_FINGERPRINT");
     expect(workflow).toContain("verify-ssh-host-identity.sh");
-    expect(script.indexOf("verify-rollback-boundary.mjs")).toBeLessThan(
+    expect(script.indexOf("verify-forward-only-boundary.mjs")).toBeLessThan(
       script.indexOf("bash scripts/run-production-migrations.sh"),
     );
   });
@@ -250,7 +254,7 @@ describe("production deployment shell contract", () => {
     const rebaseBlock = script.slice(rebase, script.indexOf("current=\"$(readlink -f", rebase));
     expect(rebase).toBeGreaterThan(services);
     expect(rebaseBlock).toContain("node scripts/rebase-monthly-profile-hashes.mjs");
-    // A data re-baseline is recoverable from the UI, so it must never trigger a rollback.
+    // A data re-baseline is recoverable from the UI, so it must never trigger a service hold.
     expect(rebaseBlock).not.toContain("rollback_to");
     expect(rebaseBlock).not.toContain("exit 1");
   });

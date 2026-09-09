@@ -83,12 +83,13 @@ jobs:
             "$PRODUCTION_SSH_HOST" \
             "$PRODUCTION_SSH_HOST_FINGERPRINT"
 
-      - name: Verify exact rollback boundary
+      - name: Verify exact forward-only cutover and backup boundary
         env:
           PRODUCTION_SSH_HOST: ${{ secrets.PRODUCTION_SSH_HOST }}
           PRODUCTION_SSH_USER: ${{ secrets.PRODUCTION_SSH_USER }}
           AURORA_DEPLOY_SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
-          AURORA_SCHEMA_ROLLBACK_AUDIT: ${{ vars.SCHEMA_ROLLBACK_AUDIT }}
+          AURORA_SCHEMA_FORWARD_ONLY_AUDIT: ${{ vars.SCHEMA_FORWARD_ONLY_AUDIT }}
+          AURORA_BACKUP_RESTORE_AUDIT: ${{ vars.BACKUP_RESTORE_AUDIT }}
         run: |
           test -n "$PRODUCTION_SSH_USER"
           current_sha="$(
@@ -104,9 +105,14 @@ jobs:
             echo "Unable to resolve the exact current production SHA" >&2
             exit 1
           fi
-          expected="${current_sha}:${AURORA_DEPLOY_SHA}"
-          [[ "$AURORA_SCHEMA_ROLLBACK_AUDIT" == "$expected" ]] || {
-            echo "SCHEMA_ROLLBACK_AUDIT must equal the rehearsed current:target pair: $expected" >&2
+          expected_pair="${current_sha}:${AURORA_DEPLOY_SHA}"
+          expected_cutover="${expected_pair}:forward-only"
+          [[ "$AURORA_SCHEMA_FORWARD_ONLY_AUDIT" == "$expected_cutover" ]] || {
+            echo "SCHEMA_FORWARD_ONLY_AUDIT must equal the rehearsed cutover: $expected_cutover" >&2
+            exit 1
+          }
+          [[ "$AURORA_BACKUP_RESTORE_AUDIT" == "$expected_pair" ]] || {
+            echo "BACKUP_RESTORE_AUDIT must equal the restored current:target pair: $expected_pair" >&2
             exit 1
           }
 
@@ -166,7 +172,7 @@ jobs:
           PRODUCTION_SSH_HOST: ${{ secrets.PRODUCTION_SSH_HOST }}
           PRODUCTION_SSH_USER: ${{ secrets.PRODUCTION_SSH_USER }}
           AURORA_DEPLOY_SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
-          AURORA_SCHEMA_ROLLBACK_AUDIT: ${{ vars.SCHEMA_ROLLBACK_AUDIT }}
+          AURORA_SCHEMA_FORWARD_ONLY_AUDIT: ${{ vars.SCHEMA_FORWARD_ONLY_AUDIT }}
           AURORA_ALLOW_LOCAL_PEER_MIGRATIONS: ${{ vars.ALLOW_LOCAL_PEER_MIGRATIONS }}
           AURORA_INCOMPLETE_RELEASE_SHA: ${{ vars.INCOMPLETE_RELEASE_SHA }}
           AURORA_AVATAR_BODY_LIMIT_BYTES: ${{ vars.AVATAR_BODY_LIMIT_BYTES }}
@@ -179,9 +185,8 @@ jobs:
         run: |
           test -n "$PRODUCTION_SSH_USER"
           [[ "$AURORA_DEPLOY_SHA" =~ ^[0-9a-f]{40}$ ]]
-          if [[ -n "$AURORA_SCHEMA_ROLLBACK_AUDIT" \
-            && ! "$AURORA_SCHEMA_ROLLBACK_AUDIT" =~ ^[0-9a-f]{40}:[0-9a-f]{40}$ ]]; then
-            echo "SCHEMA_ROLLBACK_AUDIT must be an exact previous:target SHA pair" >&2
+          if [[ ! "$AURORA_SCHEMA_FORWARD_ONLY_AUDIT" =~ ^[0-9a-f]{40}:[0-9a-f]{40}:forward-only$ ]]; then
+            echo "SCHEMA_FORWARD_ONLY_AUDIT must be an exact previous:target:forward-only attestation" >&2
             exit 1
           fi
           if [[ "$AURORA_ALLOW_LOCAL_PEER_MIGRATIONS" != "true" \
@@ -245,7 +250,7 @@ jobs:
             -o ServerAliveInterval=15 \
             -o ServerAliveCountMax=8 \
             "${PRODUCTION_SSH_USER}@${PRODUCTION_SSH_HOST}" \
-            "AURORA_DEPLOY_SHA=${AURORA_DEPLOY_SHA} AURORA_SCHEMA_ROLLBACK_AUDIT=${AURORA_SCHEMA_ROLLBACK_AUDIT} AURORA_ALLOW_LOCAL_PEER_MIGRATIONS=${AURORA_ALLOW_LOCAL_PEER_MIGRATIONS} AURORA_INCOMPLETE_RELEASE_SHA=${AURORA_INCOMPLETE_RELEASE_SHA} AURORA_AVATAR_BODY_LIMIT_BYTES=${AURORA_AVATAR_BODY_LIMIT_BYTES} AURORA_DB_POOL_MAX_WEB=${AURORA_DB_POOL_MAX_WEB} AURORA_DB_POOL_MAX_WORKER=${AURORA_DB_POOL_MAX_WORKER} AURORA_AI_SERVICE_ENGINE=${AURORA_AI_SERVICE_ENGINE} AURORA_AI_FALLBACK_ENGINES=${AURORA_AI_FALLBACK_ENGINES} AURORA_AI_SEMANTIC_ENGINE=${AURORA_AI_SEMANTIC_ENGINE} AURORA_AI_SEMANTIC_FALLBACK_ENGINES=${AURORA_AI_SEMANTIC_FALLBACK_ENGINES} AURORA_BUILD_ARCHIVE=${remote_archive} AURORA_BUILD_ARCHIVE_SHA256=${build_archive_sha256} AURORA_SOURCE_BUNDLE=${remote_source_bundle} AURORA_SOURCE_BUNDLE_SHA256=${source_bundle_sha256} bash -s" \
+            "AURORA_DEPLOY_SHA=${AURORA_DEPLOY_SHA} AURORA_SCHEMA_FORWARD_ONLY_AUDIT=${AURORA_SCHEMA_FORWARD_ONLY_AUDIT} AURORA_ALLOW_LOCAL_PEER_MIGRATIONS=${AURORA_ALLOW_LOCAL_PEER_MIGRATIONS} AURORA_INCOMPLETE_RELEASE_SHA=${AURORA_INCOMPLETE_RELEASE_SHA} AURORA_AVATAR_BODY_LIMIT_BYTES=${AURORA_AVATAR_BODY_LIMIT_BYTES} AURORA_DB_POOL_MAX_WEB=${AURORA_DB_POOL_MAX_WEB} AURORA_DB_POOL_MAX_WORKER=${AURORA_DB_POOL_MAX_WORKER} AURORA_AI_SERVICE_ENGINE=${AURORA_AI_SERVICE_ENGINE} AURORA_AI_FALLBACK_ENGINES=${AURORA_AI_FALLBACK_ENGINES} AURORA_AI_SEMANTIC_ENGINE=${AURORA_AI_SEMANTIC_ENGINE} AURORA_AI_SEMANTIC_FALLBACK_ENGINES=${AURORA_AI_SEMANTIC_FALLBACK_ENGINES} AURORA_BUILD_ARCHIVE=${remote_archive} AURORA_BUILD_ARCHIVE_SHA256=${build_archive_sha256} AURORA_SOURCE_BUNDLE=${remote_source_bundle} AURORA_SOURCE_BUNDLE_SHA256=${source_bundle_sha256} bash -s" \
             < scripts/deploy-production.sh
 
       - name: Verify production deployment
@@ -267,13 +272,13 @@ jobs:
               sleep 5
             fi
           done
-          echo "release smoke failed; initiating schema-boundary-verified rollback" >&2
+          echo "release smoke failed; initiating forward-only service hold" >&2
           ssh -i ~/.ssh/deploy_key \
             -o StrictHostKeyChecking=yes \
             -o IdentitiesOnly=yes \
             -o ServerAliveInterval=15 \
             -o ServerAliveCountMax=8 \
             "${PRODUCTION_SSH_USER}@${PRODUCTION_SSH_HOST}" \
-            "AURORA_DEPLOY_ACTION=rollback AURORA_DEPLOY_SHA=${AURORA_DEPLOY_SHA} bash -s" \
+            "AURORA_DEPLOY_ACTION=hold AURORA_DEPLOY_SHA=${AURORA_DEPLOY_SHA} bash -s" \
             < scripts/deploy-production.sh
           exit 1

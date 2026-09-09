@@ -354,7 +354,8 @@ workflow secret reference — имя входа GitHub, не значение и
 | `AURORA_READINESS_TOKEN` | `scripts/deployment-smoke.mjs:88`<br>`scripts/production-autopilot-diagnostics.sh:263`<br>`.github/workflows/production-ai-readiness-recovery.yml:109`<br>`.github/workflows/deployment-smoke.yml:21`<br>`.github/workflows/deploy-production.yml:63` |
 | `AURORA_RELEASES_DIR` | `scripts/deploy-production.sh:12` |
 | `AURORA_REQUIRED_CI_CHECKS` | `scripts/verify-required-ci-checks.mjs:34`<br>`.github/workflows/deploy-production.yml:49` |
-| `AURORA_SCHEMA_ROLLBACK_AUDIT` | `scripts/deploy-production.sh:335`<br>`scripts/verify-rollback-boundary.mjs:43`<br>`.github/workflows/deploy-production.yml:248` |
+| `AURORA_SCHEMA_FORWARD_ONLY_AUDIT` | `scripts/deploy-production.sh`<br>`scripts/verify-forward-only-boundary.mjs`<br>`.github/workflows/deploy-production.yml` |
+| `AURORA_BACKUP_RESTORE_AUDIT` | `.github/workflows/deploy-production.yml` |
 | `AURORA_SOURCE_BUNDLE` | `scripts/deploy-production.sh:18` |
 | `AURORA_SOURCE_BUNDLE_SHA256` | `scripts/deploy-production.sh:19` |
 | `AURORA_TRIGGER_WEEKLY` | `scripts/production-autopilot-engine-switch.sh:19` |

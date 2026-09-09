@@ -16,7 +16,7 @@
 | Trends hydration | Дефект не воспроизведён | production build: direct-open `scope=internet`, без `niche → internet` и hydration errors |
 | Full product E2E | Готово локально | real web+workers, runtime restart, tenant/monthly/editorial/publication/tracking/export и 5 viewport-профилей; 0 browser runtime errors |
 | Production ledger | Внешний блокер | Нужен только read-only результат SQL из раздела 3 |
-| Rollback boundary | Внешний блокер | Нужен audit точной пары previous SHA → target SHA |
+| Forward-only cutover | Внешний блокер | Нужны audit точной пары previous SHA → target SHA и восстановление свежего backup |
 | Production infrastructure | Внешний блокер | Нужны protected variables/secrets и успешный full smoke |
 
 ### Снимок внешних доказательств — 2026-08-20
@@ -58,7 +58,7 @@ restart services as part of this read-only audit.
 - **Infrastructure operator** — подтверждает host fingerprint, systemd units, monitoring и
   protected GitHub environment.
 - **Observer** — следит за readiness, error rate, publication queue и operational alerts.
-- **Incident commander** — единственный принимает решение об остановке/rollback.
+- **Incident commander** — единственный принимает решение об остановке и forward repair.
 
 Любой участник может объявить stop при расхождении checksum, неоднозначной схеме,
 неуспешном required check, недоступном rollback или появлении cross-project данных.
@@ -163,18 +163,17 @@ workflow должны быть закреплены 40-символьными SH
 1. Проверить backup и выполнить тест восстановления в отдельную базу.
 2. Запустить старый release на исходной схеме и сохранить baseline smoke.
 3. Применить forward migrations штатным `npm run db:migrate`.
-4. Пока старый release ещё работает, проверить чтение и создание session через legacy
-   `token`; затем проверить новый release через `token_hash`.
-5. Запустить новый web и worker; readiness должен быть `200` только с operator bearer.
+4. Остановить старые worker и web до первой forward migration и проверить, что оба inactive.
+5. Переключить symlink на target, применить forward migrations и запустить только новый web/worker; readiness должен быть `200` только с operator bearer.
 6. Повторить tenant A/B, monthly lineage, Autopilot deterministic-block и 20-way Growth
    concurrency scenarios.
 7. Выполнить полный deployment smoke.
-8. Выполнить rollback drill к предыдущему release без отката схемы; старый web и worker
-   должны оставаться совместимыми с расширенной схемой.
+8. Инъецировать restart, health и full-smoke failures; каждый путь должен оставить target symlink текущим, оба сервиса остановленными и не запускать предыдущий runtime.
 
-Для изменённого manifest Database operator записывает в protected
-`SCHEMA_ROLLBACK_AUDIT` только точную пару `<previous-sha>:<target-sha>` после успешного
-шага 8. Без этой пары deployment блокируется.
+После успешной репетиции Database operator записывает в protected
+`SCHEMA_FORWARD_ONLY_AUDIT` только `<previous-sha>:<target-sha>:forward-only`, а после
+восстановления свежего backup — `BACKUP_RESTORE_AUDIT=<previous-sha>:<target-sha>`.
+Без обеих точных attestations deployment блокируется.
 
 ## 6. Gate D — production go/no-go
 
@@ -192,7 +191,7 @@ Go допускается только когда одновременно вы�
 Deploy выполняется только через protected GitHub workflow. Ручной SSH deploy и запись в
 ledger запрещены.
 
-## 7. Stop и rollback criteria
+## 7. Stop и forward-repair criteria
 
 Немедленный stop до переключения symlink:
 
@@ -201,7 +200,7 @@ ledger запрещены.
 - staging schema отличается от утверждённой;
 - backup/restore не доказан.
 
-Rollback приложения после переключения:
+Немедленный service hold после переключения:
 
 - не активен web или worker;
 - liveness не восстановился в заданный budget;
@@ -209,9 +208,9 @@ Rollback приложения после переключения:
 - readiness показывает schema/Redis/worker failure;
 - обнаружена tenant leakage или publication deterministic bypass.
 
-Rollback выполняется только к release, подтверждённому `SCHEMA_ROLLBACK_AUDIT`. Миграции
-назад не применяются. Если предыдущий release несовместим с текущей схемой — **STOP**, а не
-принудительный rollback.
+Workflow сохраняет target symlink и останавливает web/worker; миграции назад и автоматический
+запуск предыдущего release запрещены. Восстановление выполняется forward fix на текущей схеме.
+Предыдущий release сохраняется только как immutable incident reference.
 
 ## 8. Наблюдение после release
 
