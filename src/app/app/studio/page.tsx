@@ -1498,10 +1498,10 @@ function StudioPageInner() {
         const composerHref = `/app/composer?draft=${result.draft.id}&from=studio${suggestMedia}`;
         if (generation?.autoOpenComposer && generation.referenceDraftId) {
           // Only now is it safe to consume the one-shot intent: the generated text already
-          // has a durable, idempotent draft. A native navigation creates one deterministic
+          // has a durable, idempotent draft. The Next.js navigation creates one deterministic
           // browser-history entry, so Back returns to Studio without starting again.
           window.history.replaceState(window.history.state, "", `/app/studio?draft=${generation.referenceDraftId}`);
-          window.location.assign(composerHref);
+          router.push(composerHref);
           return;
         }
         router.push(composerHref);
