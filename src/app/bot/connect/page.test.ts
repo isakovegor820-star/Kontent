@@ -22,6 +22,11 @@ describe("Telegram connection confirmation screen", () => {
     expect(page).not.toContain('if (!token) {\n      setView("invalid")');
   });
 
+  it("opens login on demand without prefetching across the one-time connection flow", () => {
+    expect(page).toContain('<Link href={loginHref} prefetch={false}');
+    expect(page).toContain('const loginHref = "/login?next=%2Fbot%2Fconnect"');
+  });
+
   it("uses explicit action and consequence labels", () => {
     expect(page).toContain("Подключить этот чат");
     expect(page).toContain("Перенести подключение");
