@@ -1,3 +1,4 @@
+import { ProjectAccessError } from "@/lib/project-permissions";
 // Гибридный радар: локальная выдача возвращается сразу, а worker расширяет её
 // проверенными Telegram-данными и доказательным OSINT по публичным веб-источникам.
 
@@ -6,7 +7,7 @@ import { randomUUID } from "node:crypto";
 
 import { NextRequest, NextResponse } from "next/server";
 
-import { resolveChannel } from "@/lib/autopilot";
+import { withResearchProject, researchChannel } from "@/lib/research-project-access";
 import { getPool } from "@/lib/db";
 import {
   normalizeRadarQuery,
@@ -19,10 +20,11 @@ import { getSessionUser } from "@/lib/session";
 
 export const runtime = "nodejs";
 
-type Db = ReturnType<typeof getPool>;
+type Db = Pick<ReturnType<typeof getPool>, "query">;
 
 type RunRow = {
   id: string | number;
+  project_id?: string | number | null;
   query: string;
   normalized_query: string;
   status: "queued" | "running" | "ready" | "partial" | "failed";
@@ -161,14 +163,13 @@ function isFocusedResult(row: Record<string, unknown>, query: string) {
   return relevance >= 35;
 }
 
-async function searchLocal(pool: Db, userId: number, channelId: number | null, query: string) {
-  const ownerId = channelId ?? userId;
-  const ownerColumn = channelId ? "competitor.channel_id" : "competitor.user_id";
+async function searchLocal(pool: Db, userId: number, projectId: number, channelId: number | null, query: string) {
   const textQuery = radarTsQuery(query);
   if (!textQuery) return [];
 
-  const [competitors, trends, directory, webDirectory, cached] = await Promise.all([
-    pool.query(
+  const rows = [];
+  for (const query of [
+    () => pool.query(
       `select post.id, post.text, post.views, post.reactions, post.posted_at,
               competitor.title, competitor.handle,
               case when competitor.handle is null then null
@@ -180,12 +181,13 @@ async function searchLocal(pool: Db, userId: number, channelId: number | null, q
               true as verified
          from competitor_posts post
          join competitors competitor on competitor.id = post.competitor_id
-        where ${ownerColumn} = $1
+         join channels channel on channel.id = competitor.channel_id and channel.project_id = $1
+        where ($3::bigint is null or competitor.channel_id = $3)
           and post.tsv @@ to_tsquery('russian', $2)
         order by ts_rank(post.tsv, to_tsquery('russian', $2)) desc, post.posted_at desc nulls last`,
-      [ownerId, textQuery],
+      [projectId, textQuery, channelId],
     ),
-    pool.query(
+    () => pool.query(
       `select post.id, post.text, post.views, post.reactions, post.posted_at,
               source.title, source.handle,
               'https://t.me/' || source.handle || '/' || post.tg_msg_id as url,
@@ -201,7 +203,7 @@ async function searchLocal(pool: Db, userId: number, channelId: number | null, q
                  post.posted_at desc nulls last`,
       [textQuery],
     ),
-    pool.query(
+    () => pool.query(
       `select source.id, source.title, source.handle, source.description,
               source.canonical_url as url, source.subscribers, source.last_post_at,
               source.posts_per_week, source.verified_at, source.indexed_posts_count,
@@ -221,7 +223,7 @@ async function searchLocal(pool: Db, userId: number, channelId: number | null, q
         order by ts_rank(source.content_tsv, to_tsquery('russian', $1)) desc, source.verified_at desc`,
       [textQuery],
     ),
-    pool.query(
+    () => pool.query(
       `select source.id, source.title, source.description,
               coalesce(source.content_sample, source.description) as search_text,
               source.canonical_url as url, source.domain, source.verified_at,
@@ -240,7 +242,7 @@ async function searchLocal(pool: Db, userId: number, channelId: number | null, q
         order by ts_rank(source.tsv, to_tsquery('russian', $1)) desc, source.last_seen_at desc`,
       [textQuery],
     ),
-    pool.query(
+    () => pool.query(
       `select result.id, result.result_type as kind, result.provider as origin,
               result.title, result.handle, result.description, result.text, result.url,
               result.posted_at, result.last_post_at, result.verified_at,
@@ -256,13 +258,14 @@ async function searchLocal(pool: Db, userId: number, channelId: number | null, q
               'radar-result:' || result.id as result_key, true as verified
          from radar_search_results result
          join radar_search_runs run on run.id = result.run_id and run.user_id = $1
-        where result.user_id = $1 and result.tsv @@ to_tsquery('russian', $2)
+        where result.user_id = $1 and run.project_id = $3 and result.tsv @@ to_tsquery('russian', $2)
           and result.verification_status = 'verified'
           and result.created_at >= now() - interval '30 days'
         order by result.quality_score desc, result.created_at desc`,
-      [userId, textQuery],
+      [userId, textQuery, projectId],
     ),
-  ]);
+  ]) rows.push(await query());
+  const [competitors, trends, directory, webDirectory, cached] = rows;
 
   const focusedLocal = [...competitors.rows, ...trends.rows]
     .map((row) => ({
@@ -287,14 +290,14 @@ async function searchLocal(pool: Db, userId: number, channelId: number | null, q
   ]);
 }
 
-async function loadRunResults(pool: Db, userId: number, runId: number, afterId = 0) {
+async function loadRunResults(pool: Db, userId: number, projectId: number, runId: number, afterId = 0) {
   const run = (
     await pool.query<RunRow>(
-      `select id, query, normalized_query, status, stage, progress, provider,
+      `select id, project_id, query, normalized_query, status, stage, progress, provider,
               local_count, external_count, error_code, error_message,
               cache_expires_at, created_at, updated_at, completed_at
-         from radar_search_runs where id = $1 and user_id = $2`,
-      [runId, userId],
+         from radar_search_runs where id = $1 and user_id = $2 and project_id = $3`,
+      [runId, userId, projectId],
     )
   ).rows[0];
   if (!run) return null;
@@ -331,13 +334,13 @@ function json(body: Record<string, unknown>, status = 200) {
 export async function GET(req: NextRequest) {
   const user = await getSessionUser(req);
   if (!user) return json({ error: "unauthorized" }, 401);
-  const pool = getPool();
   const runId = Number(req.nextUrl.searchParams.get("run"));
   try {
+    return await withResearchProject(getPool(), user.id, "project.read", async (pool, projectId) => {
     if (Number.isSafeInteger(runId) && runId > 0) {
       const requestedCursor = Number(req.nextUrl.searchParams.get("after"));
       const afterId = Number.isSafeInteger(requestedCursor) && requestedCursor > 0 ? requestedCursor : 0;
-      const payload = await loadRunResults(pool, user.id, runId, afterId);
+      const payload = await loadRunResults(pool, user.id, projectId, runId, afterId);
       return payload ? json(payload) : json({ error: "not_found" }, 404);
     }
 
@@ -345,26 +348,26 @@ export async function GET(req: NextRequest) {
     if (!query) return json({ results: [], groups: { profiles: 0, sources: 0, channels: 0, posts: 0, trends: 0 } });
     if (query.length < 2) return json({ error: "query_too_short" }, 422);
     const wantedChannel = Number(req.nextUrl.searchParams.get("channel")) || null;
-    const channelId = await resolveChannel(user.id, wantedChannel);
+    const channelId = await researchChannel(pool, projectId, wantedChannel);
     if (wantedChannel && !channelId) return json({ error: "channel_not_found" }, 422);
-    const results = await searchLocal(pool, user.id, channelId, query);
+    const results = await searchLocal(pool, user.id, projectId, channelId, query);
     const latest = (
       await pool.query<RunRow>(
-        `select id, query, normalized_query, status, stage, progress, provider,
+        `select id, project_id, query, normalized_query, status, stage, progress, provider,
                 local_count, external_count, error_code, error_message,
                 cache_expires_at, created_at, updated_at, completed_at
           from radar_search_runs
-          where user_id = $1 and channel_id is not distinct from $2 and normalized_query = $3
+          where user_id = $1 and channel_id is not distinct from $2 and normalized_query = $3 and project_id = $4
             and (
               (status = 'queued' and updated_at > now() - interval '2 minutes')
               or (status = 'running' and updated_at > now() - interval '10 minutes')
               or (status in ('ready','partial') and cache_expires_at > now())
             )
           order by created_at desc limit 1`,
-        [user.id, channelId, query],
+        [user.id, channelId, query, projectId],
       )
     ).rows[0];
-    const latestPayload = latest ? await loadRunResults(pool, user.id, Number(latest.id)) : null;
+    const latestPayload = latest ? await loadRunResults(pool, user.id, projectId, Number(latest.id)) : null;
     const combinedResults = deduplicateSerializedResults([
       ...results,
       ...(latestPayload?.results ?? []),
@@ -386,7 +389,9 @@ export async function GET(req: NextRequest) {
         trends: combinedResults.filter((item) => item.kind === "trend").length,
       },
     });
+    });
   } catch (error) {
+    if (error instanceof ProjectAccessError) return json({ error: "forbidden" }, 403);
     console.error("[/api/radar/search] GET", error);
     return json({ error: "search_unavailable" }, 503);
   }
@@ -407,38 +412,37 @@ export async function POST(req: NextRequest) {
   const query = normalizeRadarQuery(body.q);
   if (query.length < 2) return json({ error: "query_too_short" }, 422);
   const wantedChannel = Number(body.channelId) || null;
-  const channelId = await resolveChannel(user.id, wantedChannel);
-  if (wantedChannel && !channelId) return json({ error: "channel_not_found" }, 422);
   const requestKey = String(req.headers.get("idempotency-key") || body.requestKey || randomUUID())
     .trim()
     .slice(0, 128);
   if (!/^[a-zA-Z0-9:_-]{8,128}$/u.test(requestKey)) return json({ error: "bad_request_key" }, 422);
   const force = body.force === true;
-  const pool = getPool();
-
   try {
+    return await withResearchProject(getPool(), user.id, "content.create", async (pool, projectId, afterCommit) => {
+    const channelId = await researchChannel(pool, projectId, wantedChannel);
+    if (wantedChannel && !channelId) return json({ error: "channel_not_found" }, 422);
     if (!force) {
       const cached = (
         await pool.query<RunRow>(
-          `select id, query, normalized_query, status, stage, progress, provider,
+          `select id, project_id, query, normalized_query, status, stage, progress, provider,
                   local_count, external_count, error_code, error_message,
                   cache_expires_at, created_at, updated_at, completed_at
              from radar_search_runs
-            where user_id = $1 and channel_id is not distinct from $2 and normalized_query = $3
+            where user_id = $1 and channel_id is not distinct from $2 and normalized_query = $3 and project_id = $4
               and status in ('ready','partial') and cache_expires_at > now()
             order by completed_at desc nulls last limit 1`,
-          [user.id, channelId, query],
+          [user.id, channelId, query, projectId],
         )
       ).rows[0];
-      if (cached) {
-        const payload = await loadRunResults(pool, user.id, Number(cached.id));
+      if (cached && Number(cached.project_id) === projectId) {
+        const payload = await loadRunResults(pool, user.id, projectId, Number(cached.id));
         return json({ ok: true, cached: true, ...payload });
       }
     }
 
     const replay = (
       await pool.query<RunRow>(
-        `select id, query, normalized_query, status, stage, progress, provider,
+        `select id, project_id, query, normalized_query, status, stage, progress, provider,
                 local_count, external_count, error_code, error_message,
                 cache_expires_at, created_at, updated_at, completed_at
            from radar_search_runs where user_id = $1 and request_key = $2`,
@@ -446,22 +450,23 @@ export async function POST(req: NextRequest) {
       )
     ).rows[0];
     if (replay) {
-      if (replay.normalized_query !== query) return json({ error: "idempotency_conflict" }, 409);
-      const payload = await loadRunResults(pool, user.id, Number(replay.id));
+      if (Number(replay.project_id) !== projectId || replay.normalized_query !== query) return json({ error: "idempotency_conflict" }, 409);
+      const payload = await loadRunResults(pool, user.id, projectId, Number(replay.id));
       return json({ ok: true, replayed: true, ...payload }, replay.status === "ready" ? 200 : 202);
     }
 
-    const local = await searchLocal(pool, user.id, channelId, query);
+    const local = await searchLocal(pool, user.id, projectId, channelId, query);
     const inserted = await pool.query<RunRow>(
       `insert into radar_search_runs
-         (user_id, channel_id, request_key, query, normalized_query, local_count)
-       values ($1, $2, $3, $4, $5, $6)
+         (user_id, channel_id, request_key, query, normalized_query, local_count, project_id)
+       values ($1, $2, $3, $4, $5, $6, $7)
        returning id, query, normalized_query, status, stage, progress, provider,
                  local_count, external_count, error_code, error_message,
                  cache_expires_at, created_at, updated_at, completed_at`,
-      [user.id, channelId, requestKey, String(body.q).trim().slice(0, 200), query, local.length],
+      [user.id, channelId, requestKey, String(body.q).trim().slice(0, 200), query, local.length, projectId],
     );
     let run = inserted.rows[0];
+    afterCommit(async (pool) => {
     try {
       await enqueueRadarSearch({ runId: Number(run.id), userId: user.id });
       run = (
@@ -493,7 +498,11 @@ export async function POST(req: NextRequest) {
     }
 
     return json({ ok: true, cached: false, run: serializeRun(run), results: local }, 202);
+    });
+    return json({ ok: true, cached: false, run: serializeRun(run), results: local }, 202);
+    });
   } catch (error) {
+    if (error instanceof ProjectAccessError) return json({ error: "forbidden" }, 403);
     console.error("[/api/radar/search] POST", error);
     return json({ error: "search_unavailable" }, 503);
   }

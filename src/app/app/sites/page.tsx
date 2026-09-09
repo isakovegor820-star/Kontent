@@ -1,5 +1,7 @@
 "use client";
 
+import { projectNativeUrl } from "@/lib/project-native-url";
+
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   AlertTriangle,
@@ -250,6 +252,8 @@ export default function SitesPage() {
   const [listError, setListError] = useState<string | null>(null);
   const [selectedId, setSelectedId] = useState<number | null>(null);
   const [details, setDetails] = useState<SiteDetails | null>(null);
+  const activeSiteId = useRef<number | null>(null);
+  const detailsRequest = useRef(0);
 
   const [url, setUrl] = useState("");
   const [consent, setConsent] = useState(false);
@@ -265,8 +269,6 @@ export default function SitesPage() {
   const [destinationCount, setDestinationCount] = useState(0);
   const [reportRequested, setReportRequested] = useState(false);
   const [retryingAi, setRetryingAi] = useState<string | null>(null);
-  const detailsRequest = useRef(0);
-  const activeSiteId = useRef<number | null>(null);
 
   const loadSites = useCallback(async () => {
     try {
@@ -283,20 +285,21 @@ export default function SitesPage() {
 
   // Состояние обновляется только после ответа сервера — синхронных setState в эффектах нет.
   const loadDetails = useCallback(async (id: number) => {
-    if (id !== activeSiteId.current) return null;
-    const request = ++detailsRequest.current;
+    if (activeSiteId.current !== id) return null;
+    const sequence = ++detailsRequest.current;
     try {
       const { status, body } = await requestJson<SiteDetails & { error?: string }>(`/api/sites/${id}`);
-      if (request !== detailsRequest.current) return null;
+      if (sequence !== detailsRequest.current || activeSiteId.current !== id) return null;
       if (status !== 200 || !body.site) throw Object.assign(new Error("details_failed"), { code: body.error });
       setDetails({ site: body.site, latestAnalysis: body.latestAnalysis, profile: body.profile, reports: body.reports });
       void requestJson<{ destinations?: Array<{ status: string; readyToPublish: boolean }> }>(`/api/sites/${id}/destinations`).then((result) => {
-        if (request !== detailsRequest.current) return;
+        if (sequence !== detailsRequest.current || activeSiteId.current !== id) return;
         setDestinationCount((result.body.destinations || []).filter((item) => item.status === "active" && item.readyToPublish).length);
       });
       return body;
     } catch (error) {
-      if (request === detailsRequest.current) setActionError(errorMessage((error as { code?: string }).code, "Не удалось загрузить сайт."));
+      if (sequence !== detailsRequest.current || activeSiteId.current !== id) return null;
+      setActionError(errorMessage((error as { code?: string }).code, "Не удалось загрузить сайт."));
       return null;
     }
   }, []);
@@ -313,12 +316,16 @@ export default function SitesPage() {
     if (activeId === null) return;
     // eslint-disable-next-line react-hooks/set-state-in-effect -- loadDetails updates state only after the request settles
     void loadDetails(activeId);
-    return () => { activeSiteId.current = null; detailsRequest.current += 1; };
+    return () => { detailsRequest.current += 1; };
   }, [activeId, loadDetails]);
 
   const selectSite = useCallback((id: number) => {
     activeSiteId.current = id;
     detailsRequest.current += 1;
+    setVerifying(false);
+    setReanalyzing(false);
+    setReportRequested(false);
+    setRetryingAi(null);
     setDestinationCount(0);
     setVerifyMessage(null);
     setActionError(null);
@@ -335,24 +342,30 @@ export default function SitesPage() {
     if (activeId === null) return;
     setReportRequested(true);
     const { status, body } = await requestJson<{ error?: string }>(`/api/sites/${activeId}/reports`, { method: "POST", body: JSON.stringify({}) });
+    if (activeSiteId.current !== activeId) return;
     if (status >= 400) {
       setActionError(errorMessage(body.error, "Не удалось запросить отчёт."));
       setReportRequested(false);
       return;
     }
-    setTimeout(() => { void loadDetails(activeId); setReportRequested(false); }, 6000);
+    setTimeout(() => {
+      if (activeSiteId.current !== activeId) return;
+      void loadDetails(activeId); setReportRequested(false);
+    }, 6000);
   }, [activeId, loadDetails]);
 
   const retryAi = useCallback(async (target: "profile" | "report", reportId?: number) => {
     if (activeId === null || retryingAi) return;
+    const siteId = activeId;
     setRetryingAi(target === "profile" ? "profile" : `report:${reportId}`);
     setActionError(null);
-    const { status, body } = await requestJson<{ error?: string }>(`/api/sites/${activeId}/ai/retry`, {
+    const { status, body } = await requestJson<{ error?: string }>(`/api/sites/${siteId}/ai/retry`, {
       method: "POST", body: JSON.stringify({ target, reportId }),
     });
+    if (activeSiteId.current !== siteId) return;
     setRetryingAi(null);
-    if (status >= 400 && activeSiteId.current === activeId) setActionError(errorMessage(body.error, "Не удалось повторить задачу."));
-    await loadDetails(activeId);
+    if (status >= 400) setActionError(errorMessage(body.error, "Не удалось повторить задачу."));
+    await loadDetails(siteId);
   }, [activeId, retryingAi, loadDetails]);
 
   const aiActive = Boolean(current?.profile && !current.profile.refinedAt && current.profile.aiClassification?.status !== "failed")
@@ -403,6 +416,7 @@ export default function SitesPage() {
       `/api/sites/${details.site.id}/verify`,
       { method: "POST", body: JSON.stringify({ method: "auto" }) },
     );
+    if (activeSiteId.current !== details.site.id) return;
     setVerifying(false);
     if (status !== 200) {
       setVerifyMessage({ tone: "danger", text: errorMessage(body.error, "Проверка не выполнена.") });
@@ -425,6 +439,7 @@ export default function SitesPage() {
       `/api/sites/${details.site.id}/analyze`,
       { method: "POST", headers: { "idempotency-key": createSiteAnalysisUuid() }, body: JSON.stringify({}) },
     );
+    if (activeSiteId.current !== details.site.id) return;
     setReanalyzing(false);
     if ((status !== 202 && status !== 200) || !body.analysis) {
       setActionError(errorMessage(body.error, "Не удалось запустить анализ."));
@@ -542,7 +557,7 @@ export default function SitesPage() {
                       <ExternalLink className="h-3.5 w-3.5" aria-hidden />{selected.canonicalUrl}
                     </a>
                   </div>
-                  <div className="flex items-center gap-2">
+                  <div className="flex max-w-full flex-wrap items-center gap-2">
                     <Badge tone="neutral">режим: {selected.publishingMode === "confirm" ? "с подтверждением" : "автомат"}</Badge>
                     <Button type="button" size="sm" variant="secondary" onClick={reanalyze} disabled={reanalyzing || analysisActive}>
                       <RefreshCw className={cn("h-4 w-4", (reanalyzing || analysisActive) && "animate-spin")} aria-hidden />
@@ -562,7 +577,7 @@ export default function SitesPage() {
                       {analysis && ACTIVE_STATUSES.has(analysis.status) && <span className="type-caption text-text-3">{analysis.progress}%</span>}
                     </div>
                     {analysis && ACTIVE_STATUSES.has(analysis.status) && (
-                      <div className="mt-3 h-1.5 overflow-hidden rounded-full bg-surface-inset" role="progressbar" aria-valuenow={analysis.progress} aria-valuemin={0} aria-valuemax={100}>
+                      <div className="mt-3 h-1.5 overflow-hidden rounded-full bg-surface-inset" role="progressbar" aria-label="Ход анализа сайта" aria-valuenow={analysis.progress} aria-valuemin={0} aria-valuemax={100}>
                         <div className="h-full bg-brand transition-[width]" style={{ width: `${analysis.progress}%` }} />
                       </div>
                     )}
@@ -623,6 +638,7 @@ export default function SitesPage() {
                 value={tab}
                 onChange={setTab}
                 ariaLabel="Разделы сайта"
+                className="max-w-full flex-wrap"
                 items={[
                   { value: "profile", label: "Профиль" },
                   { value: "articles", label: "Материалы" },
@@ -768,7 +784,7 @@ export default function SitesPage() {
                           {REPORT_FORMATS.map(([format, label]) => (
                             <a
                               key={format}
-                              href={`/api/sites/${selected.id}/reports/${report.id}/export?format=${format}`}
+                              href={projectNativeUrl(`/api/sites/${selected.id}/reports/${report.id}/export?format=${format}`)}
                               download
                               className="inline-flex min-h-9 items-center gap-1.5 rounded-sm border border-line px-2.5 py-1.5 text-[12px] font-semibold text-brand hover:border-brand/35 hover:bg-info-soft"
                             >

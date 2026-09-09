@@ -7,6 +7,13 @@
    и авторизация сохраняют собственное светлое оформление.
    ========================================================================== */
 
+/* Native focus scrolling must keep controls above the mobile navigation. */
+@media (width < 64rem) {
+  html:has(.app-v3) {
+    scroll-padding-block-end: var(--app-content-bottom-inset);
+  }
+}
+
 /* Токены также поднимаются на html: это даёт ту же тему portaled-модалкам и
    тостам, которые физически рендерятся за пределами .app-v3. */
 html:has(.app-v3),

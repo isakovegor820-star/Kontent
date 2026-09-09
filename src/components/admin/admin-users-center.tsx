@@ -89,7 +89,7 @@ const POST_STATUS_LABEL: Record<string, string> = {
   draft: "Черновик",
   scheduled: "Запланирован",
   publishing: "Публикуется",
-  published_unverified: "Опубликован, проверка ожидается",
+  published_unverified: "Доставка не подтверждена",
   published: "Опубликован",
   missing: "Не найден в соцсети",
   deleted_external: "Удалён в соцсети",
@@ -344,7 +344,7 @@ const ACCOUNT_ACTION_LABEL: Record<string, string> = {
   "account.blocked": "Аккаунт заблокирован",
   "account.unblocked": "Аккаунт разблокирован",
   "account.sessions_revoked": "Все сессии завершены",
-  "account.password_reset_sent": "Отправлена ссылка для сброса пароля",
+  "account.password_reset_sent": "Запрошена отправка ссылки для сброса пароля",
   "account.ai_limit_changed": "Изменён дневной лимит AI",
 };
 
@@ -358,6 +358,14 @@ const ACCOUNT_ACTION_ERROR: Record<string, string> = {
   forbidden_origin: "Запрос отклонён по origin. Обновите страницу.",
   unauthorized: "Сессия истекла. Войдите снова.",
   access_denied: "У сессии нет прав администратора.",
+};
+
+const ACCOUNT_ACTION_RECEIPT: Record<string, string> = {
+  block: "account.blocked",
+  unblock: "account.unblocked",
+  revoke_sessions: "account.sessions_revoked",
+  send_password_reset: "account.password_reset_sent",
+  set_ai_limit: "account.ai_limit_changed",
 };
 
 export function AccountControls({ detail, onChanged, onDirtyChange }: { detail: AdminUserDetail; onChanged: () => void; onDirtyChange?: (dirty: boolean) => void }) {
@@ -382,8 +390,9 @@ export function AccountControls({ detail, onChanged, onDirtyChange }: { detail: 
         body: JSON.stringify({ action, ...payload }),
       });
       checkAdminAccess(response);
-      const result = await response.json().catch(() => null) as { status?: string; error?: string } | null;
-      if (!response.ok) {
+      const result = await response.json().catch(() => null) as { status?: string; error?: string; action?: string; targetUserId?: number } | null;
+      if (!response.ok || result?.status !== "ok"
+        || result.action !== ACCOUNT_ACTION_RECEIPT[action] || result.targetUserId !== user.id) {
         const code = result?.status ?? result?.error ?? "unavailable";
         throw new Error(ACCOUNT_ACTION_ERROR[code] ?? "Не удалось подтвердить результат. Ввод сохранён. Обновите карточку и проверьте журнал перед повтором.");
       }
@@ -410,7 +419,7 @@ export function AccountControls({ detail, onChanged, onDirtyChange }: { detail: 
       </div>
       {user.blockedReason ? <p className="type-caption mt-3 rounded-sm bg-danger-soft p-3 text-danger-text">Причина: {user.blockedReason}</p> : null}
       <div className="mt-4 flex flex-wrap gap-2">
-        <Button variant="secondary" size="sm" disabled={!user.email} loading={busy === "send_password_reset"} onClick={() => void perform("send_password_reset", {}, `Ссылка для сброса пароля отправлена на ${user.email}.`)} title={user.email ? undefined : "У аккаунта нет email"}>
+        <Button variant="secondary" size="sm" disabled={!user.email} loading={busy === "send_password_reset"} onClick={() => void perform("send_password_reset", {}, `Запрос на отправку ссылки принят для ${user.email}.`)} title={user.email ? undefined : "У аккаунта нет email"}>
           <KeySquare className="h-3.5 w-3.5" aria-hidden />Отправить ссылку для сброса
         </Button>
         <Button variant="secondary" size="sm" onClick={() => setPending("revoke")}>
@@ -482,7 +491,7 @@ export function AccountControls({ detail, onChanged, onDirtyChange }: { detail: 
             }}
           >
             <h3 id="account-block-title" className="text-text">Заблокировать «{user.name}»?</h3>
-            <p className="type-secondary mt-2 text-text-2">Вход станет невозможен, все сессии завершатся немедленно. Проекты, каналы и публикации сохранятся; запланированные посты продолжат выходить. Вы сможете разблокировать аккаунт здесь.</p>
+            <p className="type-secondary mt-2 text-text-2">Вход станет невозможен, все сессии завершатся немедленно. Проекты, каналы и публикации сохранятся. Доставка по расписанию зависит от действующих прав отправителя. Вы сможете разблокировать аккаунт здесь.</p>
             <label className="mt-4 block">
               <span className="type-caption mb-1.5 block text-text-3">Причина (видна только администраторам)</span>
               <textarea value={reason} onChange={(event) => setReason(event.target.value)} maxLength={500} rows={3} className="w-full rounded-xs border border-line-strong bg-surface px-3.5 py-2 text-text" />

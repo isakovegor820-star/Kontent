@@ -12,7 +12,7 @@ const section = source.slice(source.indexOf('section "REDIS AUTOPILOT QUEUE STAT
 function run({ clients = 'id=1 name=bull:YXV0b3BpbG90LXBsYW5z db=2\nid=2 name=bull:YXV0b3BpbG90LXBsYW5z db=3', keys = 'bull:autopilot-plans:a\nbull:autopilot-plans:a\nbull:autopilot-plans:b', failScan = false, failClients = false } = {}) {
   const dir = mkdtempSync(join(tmpdir(), 'aurora-diag-test-'));
   temp.push(dir);
-  writeFileSync(join(dir, '.env.production'), 'REDIS_URL=redis://127.0.0.1:57642/2\n', { mode: 0o600 });
+  writeFileSync(join(dir, '.env.production'), 'REDIS_URL=redis://127.0.0.1:1/2\n', { mode: 0o600 });
   const stub = `
     section() { :; }; redact() { cat; }
     redis-cli() {
@@ -57,6 +57,9 @@ describe('production Redis diagnostics execute the shipped shell section', () =>
     const text = run({ clients: 'NOAUTH Authentication required.', keys: 'ERR scan failed' });
     expect(text).toContain('autopilot_queue_keys=unavailable\n');
     expect(text).toContain('publish consumers=unavailable\n');
+  });
+  it.each(['id=1 name= db=2\nERR partial output', 'id=1 name=bull:YXV0b3BpbG90LXBsYW5z db=2 db=3', 'id=1 name=bull:YXV0b3BpbG90LXBsYW5z db=2\nid=bad name= db=2'])('rejects malformed complete client inventories: %s', (clients) => {
+    expect(run({ clients })).toContain('autopilot-plans consumers=unavailable\n');
   });
   it('does not guess the database for legacy client metadata', () => {
     expect(run({ clients: 'id=1 name=bull:YXV0b3BpbG90LXBsYW5z' })).toContain('autopilot-plans consumers=unavailable\n');

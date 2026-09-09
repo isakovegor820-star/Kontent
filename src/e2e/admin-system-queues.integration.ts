@@ -1,16 +1,48 @@
 import { Queue, Worker } from "bullmq";
-import { afterAll, describe, expect, it, vi } from "vitest";
+import Redis from "ioredis";
+import { createServer } from "node:net";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { probeAdminQueues } from "@/lib/admin-system-diagnostics";
 
 // A different logical DB from the full QA worker: no real publication processor
 // can consume these jobs. No provider or publication code runs in this suite.
 const url = process.env.SYSTEM_TEST_REDIS_URL || "";
-if (url !== "redis://127.0.0.1:57642/1") throw new Error("Requires dedicated audit Redis logical DB 1");
-const connection = { host: "127.0.0.1", port: 57642, db: 1, maxRetriesPerRequest: null };
+const target = url ? new URL(url) : null;
+if (!target || target.protocol !== "redis:" || !["localhost", "127.0.0.1", "[::1]"].includes(target.hostname)
+  || target.pathname !== "/8") throw new Error("Requires explicit disposable loopback SYSTEM_TEST_REDIS_URL logical database 8");
+const connection = {
+  host: target.hostname, port: Number(target.port || 6379), db: 8, maxRetriesPerRequest: null,
+  username: target.username ? decodeURIComponent(target.username) : undefined,
+  password: target.password ? decodeURIComponent(target.password) : undefined,
+};
 const queue = new Queue("publish", { connection });
+const inspector = new Redis(url, { lazyConnect: true, maxRetriesPerRequest: 0, connectTimeout: 1500 });
 let worker: Worker | undefined;
+let initialKeys = new Set<string>();
+let ownFixture = false;
 async function snapshot() { return (await probeAdminQueues()).find(q => q.name === "publish")!; }
-afterAll(async () => { await worker?.close(); await queue.close(); vi.unstubAllEnvs(); });
+beforeAll(async () => {
+  await queue.waitUntilReady();
+  await inspector.connect();
+  initialKeys = new Set(await inspector.keys("*"));
+  expect([...initialKeys].every(key => /^bull:publish:(meta|id|events|marker)$/u.test(key))).toBe(true);
+  expect((await queue.getWorkers()).filter(worker => Number(worker.db) === 8)).toHaveLength(0);
+  const counts = await queue.getJobCounts("wait", "active", "delayed", "prioritized", "paused", "waiting-children", "completed", "failed");
+  expect(Object.values(counts).every(count => count === 0)).toBe(true);
+  ownFixture = true;
+});
+afterAll(async () => {
+  await worker?.close();
+  if (ownFixture) {
+    await queue.resume();
+    for (const job of await queue.getJobs(["wait", "active", "delayed", "prioritized", "paused", "waiting-children", "completed", "failed"], 0, -1)) await job.remove();
+    const createdKeys = (await inspector.keys("*")).filter(key => !initialKeys.has(key));
+    if (createdKeys.length) await inspector.del(...createdKeys);
+  }
+  await queue.close();
+  inspector.disconnect();
+  vi.unstubAllEnvs();
+});
 
 describe.sequential("monitoring against real BullMQ execution in isolated Redis", () => {
   it("observes an actual failed job, then execution recovery without deleting the failure", async () => {
@@ -59,9 +91,16 @@ describe.sequential("monitoring against real BullMQ execution in isolated Redis"
     await job.remove();
   });
   it("bounds an unavailable Redis and preserves null counts instead of zero", async () => {
-    vi.stubEnv("REDIS_URL", "redis://127.0.0.1:57644/1");
-    const started = performance.now();
-    expect(await snapshot()).toMatchObject({ state: "unavailable", waiting: null, failed: null, workers: null });
-    expect(performance.now() - started).toBeLessThan(4000);
+    // Own socket resets every connection; no guessed port can target another service.
+    const refused = createServer(socket => socket.destroy());
+    await new Promise<void>(resolve => refused.listen(0, "127.0.0.1", resolve));
+    const address = refused.address();
+    if (!address || typeof address === "string") throw new Error("missing isolated fault socket");
+    try {
+      vi.stubEnv("REDIS_URL", `redis://127.0.0.1:${address.port}/8`);
+      const started = performance.now();
+      expect(await snapshot()).toMatchObject({ state: "unavailable", waiting: null, failed: null, workers: null });
+      expect(performance.now() - started).toBeLessThan(4000);
+    } finally { await new Promise<void>(resolve => refused.close(() => resolve())); }
   });
 });

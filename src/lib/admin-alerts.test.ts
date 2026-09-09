@@ -1,37 +1,12 @@
 import { describe, expect, it, vi } from "vitest";
 
 import {
-  AdminAlertTracker,
   adminAlertRecipients,
   adminAlertsConfig,
-  deliverAdminAlerts,
+  sendAdminAlertMessage,
   evaluateAdminAlertConditions,
   formatAdminAlertMessage,
-  type AdminAlertCondition,
 } from "./admin-alerts";
-
-const condition = (id: AdminAlertCondition["id"], firing: boolean): AdminAlertCondition => ({
-  id, firing, severity: "critical", detail: firing ? "down" : "ok",
-});
-
-describe("admin alert tracker", () => {
-  it("notifies once on failure, repeats after the cooldown and once on recovery", () => {
-    const tracker = new AdminAlertTracker({ repeatMs: 60_000 });
-    expect(tracker.transition([condition("redis", false)], 0)).toEqual([]);
-    expect(tracker.transition([condition("redis", true)], 1_000).map((item) => item.kind)).toEqual(["fired"]);
-    expect(tracker.transition([condition("redis", true)], 30_000)).toEqual([]);
-    expect(tracker.transition([condition("redis", true)], 61_000).map((item) => item.kind)).toEqual(["still_firing"]);
-    expect(tracker.transition([condition("redis", true)], 90_000)).toEqual([]);
-    const recovered = tracker.transition([condition("redis", false)], 100_000);
-    expect(recovered).toMatchObject([{ id: "redis", kind: "recovered", sinceMs: 1_000 }]);
-    expect(tracker.transition([condition("redis", false)], 200_000)).toEqual([]);
-  });
-
-  it("stays silent for components that were never seen failing", () => {
-    const tracker = new AdminAlertTracker();
-    expect(tracker.transition([condition("database", false), condition("publication_worker", false)])).toEqual([]);
-  });
-});
 
 describe("admin alert conditions", () => {
   it("derives conditions from the readiness probe and the overdue count independently", async () => {
@@ -54,36 +29,37 @@ describe("admin alert conditions", () => {
 });
 
 describe("admin alert delivery", () => {
+  it("does not treat malformed HTTP200 as a confirmed Telegram receipt", async () => {
+    expect(await sendAdminAlertMessage({ token: "123:isolated", chatId: "555", text: "down", fetchImpl: async () => Response.json({}) })).toEqual({ kind: "unknown" });
+  });
+  it("requires a real message ID and distinguishes explicit rejection from lost confirmation", async () => {
+    const send = (response: Response) => sendAdminAlertMessage({ token: "123:isolated", chatId: "555", text: "down", fetchImpl: async () => response });
+    expect(await send(Response.json({ ok: true, result: { message_id: 81 } }))).toMatchObject({ kind: "accepted", messageIds: [81] });
+    expect(await send(Response.json({ ok: true, result: {} }))).toEqual({ kind: "unknown" });
+    expect(await send(Response.json({ ok: false, error_code: 429, parameters: { retry_after: 60 } }, { status: 429 }))).toMatchObject({ kind: "rejected", retryAfterSeconds: 60 });
+    expect(await send(new Response("broken", { status: 503 }))).toEqual({ kind: "unknown" });
+    expect(await sendAdminAlertMessage({ token: "123:isolated", chatId: "555", text: "down", fetchImpl: async () => { throw Error("secret-url"); } })).toEqual({ kind: "unknown" });
+  });
+  it("bounds a hung acknowledgement body and cancels the request", async () => {
+    vi.useFakeTimers();
+    try {
+      let signal: AbortSignal | undefined;
+      const pending = sendAdminAlertMessage({ token: "123:isolated", chatId: "555", text: "down", fetchImpl: async (_url, init) => {
+        signal = init?.signal as AbortSignal;
+        return { status: 200, json: () => new Promise(() => {}) } as Response;
+      } });
+      await vi.advanceTimersByTimeAsync(8_000);
+      expect(await pending).toEqual({ kind: "unknown" });
+      expect(signal?.aborted).toBe(true);
+    } finally { vi.useRealTimers(); }
+  });
+
   it("formats HTML-safe messages with a deep link into the panel", () => {
     const text = formatAdminAlertMessage({ id: "overdue_publications", kind: "fired", severity: "warning", detail: "7 <публикаций>", sinceMs: 0 }, "https://aurora.example/", 0);
     expect(text).toContain("🟠 <b>Аврора · Публикации застряли в очереди</b>");
     expect(text).toContain("7 &lt;публикаций&gt;");
     expect(text).toContain('href="https://aurora.example/admin?pstatus=overdue#publications"');
     expect(formatAdminAlertMessage({ id: "redis", kind: "recovered", severity: "critical", detail: "ok", sinceMs: 0 }, null, 0)).toMatch(/^✅ .*Восстановлено/u);
-  });
-
-  it("sends only to allowlisted admins with a linked chat and never leaks the token in logs", async () => {
-    const pool = { query: vi.fn(async (_sql: string, params: unknown[]) => {
-      expect(params).toEqual([[1, 2], ["ops@example.com"]]);
-      return { rowCount: 1, rows: [{ id: 1, tg_chat_id: "555" }] };
-    }) };
-    const send: (url: string | URL | Request, init?: RequestInit) => Promise<Response> = async () => new Response("{}", { status: 200 });
-    const fetchImpl = vi.fn(send);
-    const logger = { error: vi.fn(), info: vi.fn() };
-    const env = { TG_BOT_TOKEN: "123:secret-token", AURORA_ADMIN_USER_IDS: "1,2", AURORA_ADMIN_EMAILS: "ops@example.com", APP_URL: "https://aurora.example" };
-    const result = await deliverAdminAlerts({
-      pool: pool as never,
-      notifications: [{ id: "redis", kind: "fired", severity: "critical", detail: "PING не отвечает", sinceMs: 0 }],
-      env, fetchImpl: fetchImpl as never, logger,
-    });
-    expect(result).toEqual({ sent: 1, failed: 0, recipients: 1 });
-    const body = JSON.parse(String(fetchImpl.mock.calls[0]?.[1]?.body));
-    expect(body).toMatchObject({ chat_id: "555", parse_mode: "HTML" });
-    expect(logger.error).not.toHaveBeenCalled();
-    fetchImpl.mockResolvedValueOnce(new Response("{}", { status: 403 }));
-    const failed = await deliverAdminAlerts({ pool: pool as never, notifications: [{ id: "redis", kind: "fired", severity: "critical", detail: "x", sinceMs: 0 }], env, fetchImpl: fetchImpl as never, logger });
-    expect(failed.failed).toBe(1);
-    expect(JSON.stringify(logger.error.mock.calls)).not.toContain("secret-token");
   });
 
   it("returns nobody when the allowlist is empty and reads bounded config", async () => {

@@ -2,7 +2,7 @@ import type { Metadata } from "next";
 import { notFound } from "next/navigation";
 
 import { getPool } from "@/lib/db";
-import { listHostedArticles, loadHostedSite, sectionJsonLd } from "@/lib/site-hosted/service";
+import { listHostedArticles, loadHostedSite, sectionJsonLd, serializeHostedJsonLd } from "@/lib/site-hosted/service";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -42,7 +42,7 @@ export default async function HostedIndexPage({ params }: Params) {
   const articles = await listHostedArticles(pool, site);
   return (
     <main id="main">
-      <script type="application/ld+json" dangerouslySetInnerHTML={{ __html: JSON.stringify(sectionJsonLd(site)) }} />
+      <script type="application/ld+json" dangerouslySetInnerHTML={{ __html: serializeHostedJsonLd(sectionJsonLd(site)) }} />
       <header className="border-b border-line pb-6">
         <p className="text-[13px] font-semibold uppercase tracking-wide text-text-3">Материалы</p>
         <h1 className="mt-2 text-[28px] font-bold leading-tight">{site.brandName}</h1>

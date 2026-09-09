@@ -109,7 +109,7 @@ export function DestinationsPanel({ siteId, verified, publishingMode, approvedSt
         </p>
         <div className="mt-4 flex flex-wrap items-center gap-3">
           {publishingMode === "confirm" ? (
-            <Button type="button" size="sm" variant={unlocked ? "primary" : "secondary"} disabled={!unlocked || busy === "mode"} onClick={() => patchSettings({ publishingMode: "auto" }, "mode")}>
+            <Button type="button" size="sm" className="max-w-full whitespace-normal" variant={unlocked ? "primary" : "secondary"} disabled={!unlocked || busy === "mode"} onClick={() => patchSettings({ publishingMode: "auto" }, "mode")}>
               {unlocked ? <Unlock className="h-4 w-4" aria-hidden /> : <Lock className="h-4 w-4" aria-hidden />}
               Включить автоматический режим
             </Button>

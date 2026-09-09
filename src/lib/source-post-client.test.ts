@@ -2,7 +2,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ServerDraft } from "./draft-types";
 import { DEFAULT_POST_SETTINGS } from "./post-settings";
 import { createPostFromSource } from "./source-post-client";
-const fetchMock = vi.fn<typeof fetch>();
+const fetchMock = vi.hoisted(() => vi.fn<typeof fetch>());
+vi.mock("@/lib/project-fetch", () => ({ projectFetch: fetchMock }));
 const source = {
   id: 41, version: 3, text: "Исходный текст новости", purpose: "source_context", origin: "rss",
   client_key: "rss_item_source:88:channel:11:variant:expert",
@@ -36,11 +37,10 @@ function responseFor(url: string) {
   throw new Error(`Unexpected request: ${url}`);
 }
 beforeEach(() => {
-  vi.stubGlobal("fetch", fetchMock);
   fetchMock.mockReset();
   fetchMock.mockImplementation(async (url) => responseFor(String(url)));
 });
-afterEach(() => vi.unstubAllGlobals());
+afterEach(() => vi.clearAllMocks());
 
 describe("source → generated post", () => {
   it("generates from the owned source and selected variant, then acknowledges and saves a separate AI draft", async () => {

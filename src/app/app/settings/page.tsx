@@ -1,5 +1,9 @@
 "use client";
 
+import { projectFetch as fetch } from "@/lib/project-fetch";
+import { projectNativeUrl } from "@/lib/project-native-url";
+import { useOAuthReturnProject } from "@/components/app/use-oauth-return-project";
+
 /**
  * А12 — НАСТРОЙКИ (Приложение А).
  *
@@ -525,6 +529,8 @@ function vkConnectError(code?: string): string {
       return "Сервер не смог зашифровать ключ. Напиши в поддержку.";
     case "unauthorized":
       return "Сессия истекла — зайди заново.";
+    case "forbidden":
+      return "Нет прав на управление подключениями этого проекта. Выбери доступный проект или обратись к его владельцу.";
     default:
       return "Не получилось подключить. Попробуй ещё раз.";
   }
@@ -859,7 +865,7 @@ function OAuthNetworks() {
               ) : (
                 // Полная навигация (не SPA): уходим на экран согласия провайдера и обратно.
                 <a
-                  href={`/api/channels/oauth/start?network=${id}`}
+                  href={projectNativeUrl(`/api/channels/oauth/start?network=${id}`)}
                   className={cn(
                     "inline-flex shrink-0 items-center rounded-sm border border-line-strong",
                     "px-3 py-1.5 text-[13px] font-semibold text-text transition-colors hover:bg-surface-2",
@@ -1304,6 +1310,7 @@ function SettingsContent() {
   const { ready, toast, refreshReal } = s;
   const router = useRouter();
   const searchParams = useSearchParams();
+  const oauthReturnProject = useOAuthReturnProject(Boolean(searchParams.get("connected")), searchParams.get("oauthProjectId"));
   const activeSection = normalizeSection(searchParams.get("section"));
   const [query, setQuery] = useState("");
 
@@ -1315,6 +1322,7 @@ function SettingsContent() {
     params.delete("connected");
     params.delete("oauth");
     params.delete("network");
+    params.delete("oauthProjectId");
     router.replace(`/app/settings?${params.toString()}`, { scroll: false });
   };
 
@@ -1325,12 +1333,14 @@ function SettingsContent() {
 
   // Возврат из OAuth-редиректа: показываем итог подключения и чистим URL.
   useEffect(() => {
-    if (!ready) return;
+    if (!ready || oauthReturnProject === "pending") return;
     const connected = searchParams.get("connected");
     const oauthErr = searchParams.get("oauth");
     if (!connected && !oauthErr) return;
 
-    if (connected) {
+    if (connected && oauthReturnProject === "forbidden") {
+      toast({ kind: "danger", title: "Проект подключения недоступен", body: oauthMessage("forbidden", "") });
+    } else if (connected) {
       refreshReal();
       const publishSupported = hasComposerPayloadSupport(connected);
       toast({
@@ -1354,7 +1364,7 @@ function SettingsContent() {
     // URL без параметров, чтобы тост не всплыл повторно при обновлении страницы.
     // После очистки searchParams эффект перезапустится и молча выйдет (нет параметров).
     router.replace("/app/settings?section=integrations", { scroll: false });
-  }, [searchParams, ready, toast, refreshReal, router]);
+  }, [searchParams, ready, toast, refreshReal, router, oauthReturnProject]);
 
   return (
     <AppShell

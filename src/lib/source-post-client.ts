@@ -5,6 +5,7 @@ import { readAiStreamWithDeadline } from "./ai-stream-reader";
 import { createServerDraft } from "./draft-client";
 import type { ServerDraft } from "./draft-types";
 import { legalOpportunityPostSettings, legalOpportunityVariantFromClientKey } from "./legal-opportunity-post";
+import { projectFetch as fetch } from "./project-fetch";
 
 export class SourcePostCreationError extends Error {}
 

@@ -13,31 +13,12 @@ import {
   requireSelectedProjectPermission,
 } from "@/lib/project-permissions";
 import { hasTrustedMutationOrigin } from "@/lib/request-origin";
-import { saveVerifiedTelegramChannel } from "@/lib/telegram-channel-connect.mjs";
+import { createTelegramChannelProof, saveVerifiedTelegramChannel } from "@/lib/telegram-channel-connect.mjs";
+
+import { TelegramConnectError, verifyTelegramChannelActor } from "@/lib/telegram-connect-provider.mjs";
+import { checkRateLimit, rateLimitResponse } from "@/lib/rate-limit";
 
 export const runtime = "nodejs";
-
-interface TgChat {
-  id: number;
-  title?: string;
-  username?: string;
-  type?: string;
-  linked_chat_id?: number;
-}
-
-async function tg<T>(method: string, params: Record<string, string>): Promise<T | null> {
-  const token = process.env.TG_BOT_TOKEN;
-  if (!token) return null;
-  const url = new URL(`https://api.telegram.org/bot${token}/${method}`);
-  for (const [k, v] of Object.entries(params)) url.searchParams.set(k, v);
-  try {
-    const r = await fetch(url, { cache: "no-store" });
-    const data = (await r.json()) as { ok: boolean; result?: T };
-    return data.ok ? (data.result ?? null) : null;
-  } catch {
-    return null;
-  }
-}
 
 export async function POST(req: NextRequest) {
   if (!hasTrustedMutationOrigin(req)) {
@@ -47,6 +28,8 @@ export async function POST(req: NextRequest) {
   if (!user) {
     return NextResponse.json({ ok: false, error: "unauthorized" }, { status: 401 });
   }
+  const limit = await checkRateLimit(`telegram-connect:user:${user.id}`, 10, 60, { failureMode: "closed" });
+  if (!limit.allowed) return rateLimitResponse(limit);
   const pool = getPool();
   let projectId: number;
   try {
@@ -73,22 +56,12 @@ export async function POST(req: NextRequest) {
   }
   const chatRef = /^-?\d+$/.test(handle) ? handle : `@${handle}`;
 
-  // 1. Есть ли у бота доступ к каналу?
-  const chat = await tg<TgChat>("getChat", { chat_id: chatRef });
-  if (!chat) {
-    return NextResponse.json({ ok: false, error: "no_access" }, { status: 422 });
-  }
-
-  // 2. Бот — админ с правом публикации?
-  const botId = process.env.TG_BOT_TOKEN?.split(":")[0] ?? "";
-  const member = await tg<{ status?: string; can_post_messages?: boolean }>("getChatMember", {
-    chat_id: String(chat.id),
-    user_id: botId,
-  });
-  const canPost =
-    member?.status === "administrator" && member.can_post_messages !== false;
-  if (!canPost) {
-    return NextResponse.json({ ok: false, error: "not_admin" }, { status: 422 });
+  const actor = (await pool.query<{ tg_chat_id: string | null }>(
+    "select tg_chat_id from users where id = $1", [user.id],
+  )).rows[0];
+  const actorId = Number(actor?.tg_chat_id);
+  if (!Number.isSafeInteger(actorId) || actorId <= 0) {
+    return NextResponse.json({ ok: false, error: "telegram_identity_required" }, { status: 403 });
   }
 
   // 3. Сохраняем (или обновляем) канал пользователя.
@@ -97,17 +70,32 @@ export async function POST(req: NextRequest) {
   // Проверку делаем И запросом, И ловлей 23505: между select и insert есть окно, в которое
   // канал может занять другой аккаунт, и защитой от этой гонки может быть только база.
   try {
+    const chat = await verifyTelegramChannelActor({
+      token: process.env.TG_BOT_TOKEN, actorId, chatRef, signal: req.signal,
+    });
+    const proof = await createTelegramChannelProof(pool, { userId: user.id, projectId, chatId: chat.id, source: "web" });
+    if (proof.state === "access_denied") {
+      return NextResponse.json({ ok: false, error: "access_denied" }, { status: 403 });
+    }
+    if (proof.state !== "ready" || proof.actorId !== actorId) {
+      return NextResponse.json({ ok: false, error: "telegram_identity_required" }, { status: 403 });
+    }
     // Provider checks can take several seconds. Recheck the captured project rather
     // than trusting a selection that may have changed in another browser tab.
     await requireProjectPermission(pool, user.id, projectId, "project.manage");
     const saved = await saveVerifiedTelegramChannel(pool, {
       userId: user.id,
       projectId,
+      actorId,
+      proofId: proof.proofId,
       chat: {
         ...chat,
         username: chat.username ?? handle,
       },
     });
+    if (saved.state === "proof_required" || saved.state === "proof_invalid") {
+      return NextResponse.json({ ok: false, error: "connection_expired" }, { status: 409 });
+    }
     if (saved.state === "access_denied") {
       return NextResponse.json({ ok: false, error: "access_denied" }, { status: 403 });
     }
@@ -123,7 +111,7 @@ export async function POST(req: NextRequest) {
     await getStatsQueue()
       .add(
         "discover",
-        { userId: user.id, channelId },
+        { userId: user.id, projectId, channelId },
         {
           jobId: `discover-${user.id}-${channelId}`,
           removeOnComplete: true,
@@ -137,6 +125,12 @@ export async function POST(req: NextRequest) {
 
     return NextResponse.json({ ok: true, channelId, title: chat.title });
   } catch (err) {
+    if (err instanceof TelegramConnectError) {
+      return NextResponse.json({ ok: false, error: err.code, retryAfter: err.retryAfter }, {
+        status: err.status,
+        headers: err.retryAfter ? { "Retry-After": String(err.retryAfter) } : {},
+      });
+    }
     if (err instanceof ProjectAccessError) {
       return NextResponse.json({ ok: false, error: "access_denied" }, { status: 403 });
     }

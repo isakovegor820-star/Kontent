@@ -1,3 +1,5 @@
+import { AiWorkAccessError } from "../src/lib/ai-work-access.mjs";
+import { withSiteAnalysisAiAccess } from "./site-analysis-access.mjs";
 import {
   aggregateSiteInterviewReport,
   buildSiteInterviewPrompt,
@@ -129,6 +131,10 @@ export async function runSiteInterview(pool, input, dependencies = {}) {
   if (!Number.isSafeInteger(userId) || userId <= 0) throw new TypeError("site interview worker: invalid user id");
   if (!input?.snapshot?.snapshotHash) throw new TypeError("site interview worker: snapshot required");
 
+  if (!Number.isSafeInteger(Number(input.projectId)) || Number(input.projectId) <= 0) throw new AiWorkAccessError("ai_work_scope_required");
+  const scope = { analysisId, runRevision, userId, projectId: Number(input.projectId) };
+  // Resolve durable authority before quota acquisition, including replay-only runs.
+  await withSiteAnalysisAiAccess(pool, scope, async () => {});
   const acquire = dependencies.acquireUsage || acquireWorkerAiUsage;
   const release = dependencies.releaseUsage || releaseWorkerAiUsage;
   const heartbeat = dependencies.heartbeatUsage || heartbeatWorkerAiUsage;
@@ -230,7 +236,7 @@ export async function runSiteInterview(pool, input, dependencies = {}) {
         engine: input.engine || null,
       });
       const identity = { analysisId, runRevision, batchId: batch.id, semanticKey, providerRequestKey, requestFingerprint };
-      const stored = await loadBatch(pool, identity);
+      const stored = await withSiteAnalysisAiAccess(pool, scope, (client) => loadBatch(client, identity));
       if (stored?.status === "ready" && stored.response_payload) {
         const replay = parseAndValidateSiteInterviewBatch(JSON.stringify(stored.response_payload), {
           batchId: batch.id,
@@ -241,7 +247,7 @@ export async function runSiteInterview(pool, input, dependencies = {}) {
         if (!replay.ok) throw new SiteInterviewWorkerError("stored_batch_invalid", "Сохранённый этап анализа не прошёл проверку.", { details: replay.errors });
         return replay.value;
       }
-      await claimBatch(pool, identity);
+      await withSiteAnalysisAiAccess(pool, scope, (client) => claimBatch(client, identity));
       let completion;
       const providerAttempts = Math.min(3, Math.max(1, Number(
         dependencies.providerAttempts ?? SITE_INTERVIEW_EXECUTION_LIMITS.providerAttempts,
@@ -258,6 +264,7 @@ export async function runSiteInterview(pool, input, dependencies = {}) {
             providerRequestId: input.requestId,
           }, {
             signal: completionSignal,
+            spendScope: { pool,userId,projectId:Number(input.projectId) },
             allowFallback: dependencies.allowFallback !== false,
             timeoutMs: dependencies.timeoutMs ?? SITE_INTERVIEW_EXECUTION_LIMITS.timeoutMs,
             telemetry: (event) => dependencies.telemetry?.({
@@ -271,9 +278,10 @@ export async function runSiteInterview(pool, input, dependencies = {}) {
           });
           break;
         } catch (error) {
+          if (/^ai_(?:work|spend)_/u.test(String(error?.code || ""))) throw error;
           const code = safeProviderCode(error);
           if (providerAttempt < providerAttempts && retryableProviderError(error)) {
-            await claimBatch(pool, identity);
+            await withSiteAnalysisAiAccess(pool, scope, (client) => claimBatch(client, identity));
             continue;
           }
           await failBatch(pool, identity, code);
@@ -294,7 +302,7 @@ export async function runSiteInterview(pool, input, dependencies = {}) {
         await failBatch(pool, identity, "schema_invalid");
         throw new SiteInterviewWorkerError("schema_invalid", "Ответ аналитика не прошёл формальную проверку.", { details: validated.errors });
       }
-      await saveBatch(pool, { ...identity, engine: completion.engine, payload: validated.value });
+      await withSiteAnalysisAiAccess(pool, scope, (client) => saveBatch(client, { ...identity, engine: completion.engine, payload: validated.value }));
       return validated.value;
     };
 

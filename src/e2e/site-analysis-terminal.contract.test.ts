@@ -130,6 +130,10 @@ describe("authenticated site-analysis terminal contract", () => {
       const sql = String(sqlValue);
       if (sql === "begin" || sql === "rollback") return { rows: [], rowCount: 0 };
       if (sql === "commit") return { rows: [], rowCount: 0 };
+      if (sql.startsWith("select analysis.id, analysis.user_id")) {
+        expect(values).toEqual([ANALYSIS_ID, 1, null, null]);
+        return {rows:durable ? [{id:durable.id,user_id:durable.user_id,project_id:durable.project_id,site_id:null}] : [],rowCount:durable ? 1 : 0};
+      }
       if (sql.includes("select status, run_revision, worker_lease_token")) {
         return { rows: durable ? [{
           status: durable.status,
@@ -167,6 +171,10 @@ describe("authenticated site-analysis terminal contract", () => {
     const pool = {
       query: vi.fn(async (sqlValue: string, values: unknown[] = []) => {
         const sql = String(sqlValue);
+        if (sql.startsWith("select analysis.id, analysis.user_id")) {
+          expect(values).toEqual([ANALYSIS_ID, 1, null, null]);
+          return {rows:durable ? [{id:durable.id,user_id:durable.user_id,project_id:durable.project_id,site_id:null}] : [],rowCount:durable ? 1 : 0};
+        }
         if (sql.includes("where project_id = $1 and user_id = $2 and idempotency_key in")) {
           const matches = durable
             && durable.project_id === Number(values[0])

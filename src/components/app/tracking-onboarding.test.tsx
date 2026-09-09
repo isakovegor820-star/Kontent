@@ -9,6 +9,9 @@ configure({ asyncUtilTimeout: 5000 });
 
 const project = vi.hoisted(() => ({ current: { id: 7, role: "owner" }, ready: true, switching: false }));
 vi.mock("@/components/app/project-provider", () => ({ useProjects: () => project }));
+vi.mock("@/lib/project-fetch", () => ({
+  projectFetch: (input: RequestInfo | URL, init?: RequestInit) => globalThis.fetch(input, init),
+}));
 const empty: ProjectTrackingSettings = {
   status: "not_connected", siteOrigin: null, publicKey: null, attributionWindowDays: 30,
   version: 0, verifiedAt: null, lastPingAt: null, signalReceivedAt: null,

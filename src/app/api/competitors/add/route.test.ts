@@ -1,7 +1,10 @@
+import type { PoolClient } from "pg";
+import { ProjectAccessError, roleAllows, type ActiveProjectMembership, type ProjectPermission, type ProjectRole } from "@/lib/project-permissions";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { NextRequest } from "next/server";
 
 const mocks = vi.hoisted(() => ({
+  role: "owner" as ProjectRole,
   query: vi.fn(),
   session: vi.fn(),
   resolveChannel: vi.fn(),
@@ -14,6 +17,19 @@ vi.mock("@/lib/session", () => ({ getSessionUser: mocks.session }));
 vi.mock("@/lib/autopilot", () => ({ resolveChannel: mocks.resolveChannel }));
 vi.mock("@/lib/queue", () => ({ getStatsQueue: () => ({ add: mocks.queueAdd }) }));
 vi.mock("@/lib/request-origin", () => ({ hasTrustedMutationOrigin: mocks.trusted }));
+
+// Route behavior is isolated here; real PostgreSQL authority/locks are covered by N21 integration.
+vi.mock("@/lib/selected-project-transaction", () => ({
+  withSelectedProjectPermission: async (pool: PoolClient, userId: number, permission: ProjectPermission,
+    action: (client: PoolClient, membership: ActiveProjectMembership) => Promise<Response>) => {
+    if (!roleAllows(mocks.role, permission)) throw new ProjectAccessError("permission_denied");
+    return action(pool, { projectId: 13, userId, role: mocks.role, version: 1 });
+  },
+}));
+vi.mock("@/lib/research-project-access", async (importOriginal) => ({
+  ...await importOriginal<typeof import("@/lib/research-project-access")>(),
+  researchChannel: mocks.resolveChannel,
+}));
 
 import { POST } from "./route";
 
@@ -28,6 +44,7 @@ function request(body: unknown) {
 describe("POST /api/competitors/add", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mocks.role = "owner";
     mocks.trusted.mockReturnValue(true);
     mocks.session.mockResolvedValue({ id: 7 });
     mocks.resolveChannel.mockResolvedValue(11);
@@ -52,7 +69,7 @@ describe("POST /api/competitors/add", () => {
     await expect(response.json()).resolves.toMatchObject({ ok: true, id: 88, handle: "nasa", network: "instagram" });
     const insert = mocks.query.mock.calls.find(([sql]) => String(sql).includes("insert into competitors"));
     expect(insert?.[1]).toEqual([7, 11, "instagram", "nasa", "NASA", "instagram_business_discovery"]);
-    expect(mocks.queueAdd).toHaveBeenCalledWith("competitor", { id: 88 }, expect.any(Object));
+    expect(mocks.queueAdd).toHaveBeenCalledWith("competitor", { id: 88, userId: 7, projectId: 13 }, expect.any(Object));
   });
 
   it("rejects content URLs and missing display names before touching the database", async () => {
@@ -81,7 +98,7 @@ describe("POST /api/competitors/add", () => {
     }));
 
     expect(response.status).toBe(200);
-    expect(mocks.resolveChannel).toHaveBeenCalledWith(7, 42);
+    expect(mocks.resolveChannel).toHaveBeenCalledWith(expect.objectContaining({ query: mocks.query }), 13, 42, true);
     const insert = mocks.query.mock.calls.find(([sql]) => String(sql).includes("insert into competitors"));
     expect(insert?.[1]).toEqual([7, 11, "tg", "durov", "@durov", "telegram_public_web"]);
   });

@@ -5,6 +5,7 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import ProjectInvitePage from "./page";
 import { AuthScreen } from "@/components/auth/auth-screen";
 import { PROJECT_INVITE_STORAGE_KEY } from "@/lib/project-invite-client";
+import { getClientProjectId, projectFetch, setClientProjectId } from "@/lib/project-fetch";
 
 const mocks = vi.hoisted(() => ({
   user: { id: 1, email: "owner@example.test", name: "Owner", onboarded: true } as { id: number; email: string; name: string; onboarded: boolean } | null,
@@ -37,10 +38,11 @@ beforeEach(() => {
   mocks.authError = false;
   vi.stubGlobal("React", React);
   vi.stubGlobal("fetch", mocks.fetch);
+  setClientProjectId(11);
   window.sessionStorage.clear();
   window.history.replaceState({ next: "preserved" }, "", `/invite#token=${token}`);
 });
-afterEach(() => { cleanup(); vi.restoreAllMocks(); vi.unstubAllGlobals(); });
+afterEach(() => { cleanup(); setClientProjectId(null); vi.restoreAllMocks(); vi.unstubAllGlobals(); });
 
 it("shows the current account and retains the invitation after a mismatch with an actionable switch button", async () => {
   mocks.fetch.mockResolvedValue(reply(403, { error: "email_mismatch" }));
@@ -120,7 +122,7 @@ it("keeps a valid URL and permits acceptance when browser storage is blocked", a
     setItem: () => { throw new DOMException("blocked", "SecurityError"); },
     removeItem: () => {},
   } as unknown as Storage);
-  mocks.fetch.mockResolvedValue(reply(200, { ok: true }));
+  mocks.fetch.mockResolvedValue(reply(200, { ok: true, membership: { projectId: 22 } }));
   render(<ProjectInvitePage />);
   await screen.findByRole("button", { name: "Принять приглашение" });
   expect(window.location.hash).toBe(`#token=${token}`);
@@ -154,7 +156,7 @@ it("does not submit a previous stored invitation for a malformed incoming link",
 
 it("accepts a new hash without reload and ignores a late result for the previous invitation", async () => {
   const earlier = pending<ReturnType<typeof reply>>();
-  mocks.fetch.mockReturnValueOnce(earlier.promise).mockResolvedValueOnce(reply(200, { ok: true }));
+  mocks.fetch.mockReturnValueOnce(earlier.promise).mockResolvedValueOnce(reply(200, { ok: true, membership: { projectId: 22 } }));
   render(<ProjectInvitePage />);
   await accept();
   const nextToken = "e".repeat(43);
@@ -188,8 +190,8 @@ it("does not promise an unused invitation when the response is lost", async () =
   expect(window.sessionStorage.getItem(PROJECT_INVITE_STORAGE_KEY)).toBe(token);
 });
 
-it("allows the new account to accept after an earlier account email mismatch", async () => {
-  mocks.fetch.mockResolvedValueOnce(reply(403, { error: "email_mismatch" })).mockResolvedValueOnce(reply(200, { ok: true }));
+it("allows the new account to accept and binds the tab to the accepted project", async () => {
+  mocks.fetch.mockResolvedValueOnce(reply(403, { error: "email_mismatch" })).mockResolvedValueOnce(reply(200, { ok: true, membership: { projectId: 22 } }));
   const page = render(<ProjectInvitePage />);
   await accept();
   await screen.findByRole("alert");
@@ -197,6 +199,10 @@ it("allows the new account to accept after an earlier account email mismatch", a
   page.rerender(<ProjectInvitePage />);
   await accept();
   await screen.findByText("Приглашение принято");
+  expect(getClientProjectId()).toBe(22);
   fireEvent.click(screen.getByRole("button", { name: "Открыть проект" }));
   expect(mocks.router.push).toHaveBeenCalledWith("/app/calendar");
+  mocks.fetch.mockResolvedValueOnce(new Response(null, { status: 200 }));
+  await projectFetch("/api/drafts");
+  expect(new Headers(mocks.fetch.mock.calls.at(-1)?.[1]?.headers).get("x-aurora-project-id")).toBe("22");
 });

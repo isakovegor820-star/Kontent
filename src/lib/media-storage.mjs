@@ -48,15 +48,16 @@ export function chooseMediaStorageBackend({ kind, bytes, env = process.env }) {
   return "object";
 }
 
-export async function putMediaObject({ projectId, sha256, extension, mimeType, body, env = process.env }) {
-  const config = mediaObjectConfig(env);
-  if (!config) throw Object.assign(new Error("object_storage_not_configured"), { code: "object_storage_not_configured" });
+function mediaObjectKey({ projectId, sha256, extension }) {
   const safeExtension = String(extension).replace(/[^a-z0-9]/giu, "").slice(0, 8) || "bin";
   const normalizedProjectId = Number(projectId);
-  if (!Number.isSafeInteger(normalizedProjectId) || normalizedProjectId <= 0) {
-    throw new Error("invalid_media_project");
-  }
-  const key = `projects/${normalizedProjectId}/media/${sha256}-${randomUUID()}.${safeExtension}`;
+  if (!Number.isSafeInteger(normalizedProjectId) || normalizedProjectId <= 0) throw new Error("invalid_media_project");
+  return `projects/${normalizedProjectId}/media/${sha256}-${randomUUID()}.${safeExtension}`;
+}
+
+export async function putMediaObject({ projectId, sha256, extension, mimeType, body, key = mediaObjectKey({ projectId, sha256, extension }), env = process.env }) {
+  const config = mediaObjectConfig(env);
+  if (!config) throw Object.assign(new Error("object_storage_not_configured"), { code: "object_storage_not_configured" });
   const response = await s3(config).send(new PutObjectCommand({
     Bucket: config.bucket,
     Key: key,
@@ -64,8 +65,31 @@ export async function putMediaObject({ projectId, sha256, extension, mimeType, b
     ContentType: mimeType,
     CacheControl: "private, max-age=3600",
     Metadata: { sha256 },
-  }));
+  }), { abortSignal: AbortSignal.timeout(60_000) });
   return { key, etag: String(response.ETag || "").replaceAll('"', "") || null };
+}
+
+// The intent commits before PUT, so a timeout, lost receipt, process crash, failed
+// quota insertion, or an already-completed generation leaves a recoverable key.
+// A session lock prevents cleanup from deleting an upload/persistence in progress.
+export async function withJournaledMediaObject(input, persist) {
+  const { pool, put = putMediaObject, ...upload } = input;
+  const key = mediaObjectKey(upload);
+  const client = await pool.connect();
+  let locked = false;
+  try {
+    await client.query("select pg_advisory_lock(hashtextextended($1, 0))", [key]);
+    locked = true;
+    await client.query(
+      `insert into media_object_orphans (object_key, reason_code, next_attempt_at)
+       values ($1, 'upload_pending', now() + interval '5 minutes')`, [key],
+    );
+    const object = await put({ ...upload, key });
+    return await persist(object, client);
+  } finally {
+    if (locked) await client.query("select pg_advisory_unlock(hashtextextended($1, 0))", [key]).catch(() => {});
+    client.release();
+  }
 }
 
 export async function signedMediaObjectUrl({ key, fileName, download = false, env = process.env }) {
@@ -78,6 +102,47 @@ export async function signedMediaObjectUrl({ key, fileName, download = false, en
     Key: key,
     ResponseContentDisposition: disposition,
   }), { expiresIn: DEFAULT_SIGNED_URL_TTL_SECONDS });
+}
+
+/** Server-side ranged read: no independently reusable signed URL reaches a browser. */
+export async function mediaObjectRangeStream({ key, start, end, signal, env = process.env }) {
+  const config = mediaObjectConfig(env);
+  if (!config) throw new Error("object_storage_not_configured");
+  const response = await s3(config).send(new GetObjectCommand({
+    Bucket: config.bucket, Key: key, Range: `bytes=${start}-${end}`,
+  }), { abortSignal: AbortSignal.any([AbortSignal.timeout(300_000), ...(signal ? [signal] : [])]) });
+  if (!response.Body || Number(response.ContentLength) !== end - start + 1) {
+    response.Body?.destroy?.();
+    throw new Error("media_object_range_mismatch");
+  }
+  return response.Body.transformToWebStream();
+}
+
+/** Recheck current access before reading and immediately before exposing every chunk. */
+export function authorizedMediaStream(source, authorize, { maxBytes } = {}) {
+  const reader = source.getReader();
+  let emittedBytes = 0;
+  return new ReadableStream({
+    async pull(controller) {
+      try {
+        await authorize();
+        const chunk = await reader.read();
+        await authorize();
+        if (chunk.done) {
+          if (maxBytes !== undefined && emittedBytes !== maxBytes) throw new Error("media_stream_truncated");
+          controller.close();
+        } else {
+          emittedBytes += chunk.value.byteLength;
+          if (maxBytes !== undefined && emittedBytes > maxBytes) throw new Error("media_stream_exceeds_bound");
+          controller.enqueue(chunk.value);
+        }
+      } catch (error) {
+        await reader.cancel(error).catch(() => {});
+        controller.error(error);
+      }
+    },
+    cancel(reason) { return reader.cancel(reason); },
+  }, { highWaterMark: 0 });
 }
 
 export async function deleteMediaObject(key, env = process.env) {
@@ -118,7 +183,7 @@ export async function loadMediaAssetBuffer({ pool, assetId, projectId, maxBytes,
   return { ...asset, data: Buffer.from(data) };
 }
 
-export async function cleanupMediaObjectOrphans({ pool, limit = 25, env = process.env }) {
+export async function cleanupMediaObjectOrphans({ pool, limit = 25, env = process.env, remove = deleteMediaObject }) {
   if (!Number.isSafeInteger(limit) || limit < 1 || limit > 100) throw new Error("invalid_orphan_cleanup_limit");
   const client = await pool.connect();
   let deleted = 0;
@@ -133,6 +198,8 @@ export async function cleanupMediaObjectOrphans({ pool, limit = 25, env = proces
       [limit],
     )).rows;
     for (const row of rows) {
+      const lock = await client.query("select pg_try_advisory_xact_lock(hashtextextended($1, 0)) as acquired", [row.object_key]);
+      if (lock.rows[0]?.acquired === false) { retained += 1; continue; }
       const referenced = (await client.query(
         "select 1 from media_assets where object_key = $1 limit 1",
         [row.object_key],
@@ -143,7 +210,7 @@ export async function cleanupMediaObjectOrphans({ pool, limit = 25, env = proces
         continue;
       }
       try {
-        await deleteMediaObject(row.object_key, env);
+        await remove(row.object_key, env);
         await client.query("update media_object_orphans set deleted_at = now(), last_error_code = null where id = $1", [row.id]);
         deleted += 1;
       } catch (error) {
@@ -221,5 +288,5 @@ export function postgresMediaStream({ pool, assetId, projectId, start, end, chun
       }
     },
     cancel() { finish("cancelled"); },
-  });
+  }, { highWaterMark: 0 });
 }

@@ -112,4 +112,19 @@ describe("POST /api/media/assets", () => {
       for (const release of releases) release();
     }
   });
+  it.each([
+    ["media_storage_quota_exceeded:user", 409, "media_storage_quota_exceeded"],
+    ["media_storage_limits_not_configured", 503, "media_storage_unavailable"],
+  ])("returns a safe actionable error for %s", async (message, status, code) => {
+    const form = new FormData(); form.set("file", new File([new Uint8Array([1, 2, 3])], "fixture.png", { type: "image/png" }));
+    const multipart = new Response(form);
+    const body = new Uint8Array(await multipart.arrayBuffer());
+    mocks.readRequestBodyLimited.mockResolvedValue(body);
+    mocks.inspectUploadedImage.mockResolvedValue({ format: "png", width: 1, height: 1 });
+    mocks.query.mockResolvedValueOnce({ rows: [] }).mockRejectedValueOnce(new Error(message));
+    const response = await POST(multipartRequest({ "content-type": multipart.headers.get("content-type")! }));
+    expect(response.status).toBe(status);
+    expect(await response.json()).toMatchObject({ ok: false, error: code });
+  });
+
 });

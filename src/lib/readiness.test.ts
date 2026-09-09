@@ -173,6 +173,24 @@ describe("readiness model", () => {
     expect(report.reasons).toContain("ai_evidence_stale");
   });
 
+  it.each([null, "not-a-date", "2026-08-01T12:00:11.000Z"])("rejects missing, malformed or future AI evidence: %s", (updatedAt) => {
+    const report = evaluateReadiness({
+      ...healthyDefaults, database: "up", redis: "up", publicationWorker: "up",
+      aiProviders: [{ ...provider, updatedAt }],
+    });
+    expect(report.aiReady).toBe(false);
+    expect(report.reasons).toContain("ai_evidence_stale");
+  });
+
+  it("keeps a successful AI check valid only strictly before its expiry", () => {
+    const report = evaluateReadiness({
+      ...healthyDefaults, database: "up", redis: "up", publicationWorker: "up", aiProviders: [provider],
+      checkedAt: new Date("2026-08-01T12:14:59.999Z"),
+    });
+    expect(report.aiReady).toBe(true);
+    expect(report.reasons).not.toContain("ai_evidence_stale");
+  });
+
   it("reports an open observed AI circuit as degraded", () => {
     const report = evaluateReadiness({
       ...healthyDefaults,

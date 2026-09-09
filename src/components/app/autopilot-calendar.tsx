@@ -11,6 +11,7 @@ import { useModalFocus } from "@/components/ui/use-modal-focus";
 import { toTelegramHtml } from "@/lib/telegram-format.mjs";
 import type { RichTextEntity } from "@/lib/rich-text.mjs";
 import { cn } from "@/lib/utils";
+import { projectNativeUrl } from "@/lib/project-native-url";
 import { localScheduleFieldsForInstant } from "@/lib/timezone-schedule";
 
 export type AutopilotCalendarItem = {
@@ -50,8 +51,8 @@ function MediaPreview({ media }: { media: unknown }) {
     const url = typeof asset.url === "string" ? asset.url : null;
     if (!url || !/^(https?:\/\/|\/)/u.test(url)) return null;
     return asset.kind === "video" || record.kind === "video"
-      ? <video key={index} src={url} controls preload="metadata" className="max-h-80 w-full rounded-md" />
-      : <Image key={index} src={url} alt={`Изображение поста ${index + 1}`} width={640} height={480} unoptimized className="max-h-80 w-full rounded-md object-contain" />;
+      ? <video key={index} src={projectNativeUrl(url)} controls preload="metadata" className="max-h-80 w-full rounded-md" />
+      : <Image key={index} src={projectNativeUrl(url)} alt={`Изображение поста ${index + 1}`} width={640} height={480} unoptimized className="max-h-80 w-full rounded-md object-contain" />;
   })}</div>;
 }
 
@@ -172,7 +173,9 @@ export function AutopilotCalendar({ items, selected, busy, storageKey, channelNa
               {entries.length === 0 ? <p className="text-xs text-text-3">Нет постов</p> : <div className="space-y-2">{entries.map((item) => <div key={item.id} className={cn("rounded-sm border p-2", item.state === "review" ? "border-brand/20 bg-info-soft" : item.state === "attention" ? "border-danger/20 bg-danger-soft" : "border-line bg-surface-inset")}>
                 <div className="flex items-center justify-between gap-2">
                   <span className="text-xs font-bold tabular-nums">{time(item.scheduledAt)}</span>
-                  {item.selectable && item.planIndex != null && <input type="checkbox" checked={selected.has(item.planIndex)} disabled={busy} onChange={() => onSelect(item.planIndex!)} aria-label={`Выбрать пост: ${item.title}`} className="h-5 w-5 accent-brand" />}
+                  {item.selectable && item.planIndex != null && <label className="flex min-h-11 min-w-11 items-center justify-center">
+                    <input type="checkbox" checked={selected.has(item.planIndex)} disabled={busy} onChange={() => onSelect(item.planIndex!)} aria-label={`Выбрать пост: ${item.title}`} className="h-5 w-5 accent-brand" />
+                  </label>}
                 </div>
                 <button type="button" onClick={() => setOpenId(item.id)} className="mt-1 block min-h-11 w-full rounded-sm text-left focus-visible:outline-2 focus-visible:outline-brand" aria-label={`Открыть пост: ${item.title}`}>
                   <span className="line-clamp-3 text-[13px] leading-snug text-text">{item.title}</span>

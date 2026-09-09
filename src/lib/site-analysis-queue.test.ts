@@ -13,9 +13,9 @@ describe("site analysis queue boundary", () => {
   });
 
   it("fails closed when no full worker is present", async () => {
-    expect(await hasSiteAnalysisWorker({ getWorkersCount: vi.fn().mockResolvedValue(0) } as never))
+    expect(await hasSiteAnalysisWorker({ client: Promise.resolve({ options: { db: 0 } }), getWorkers: vi.fn().mockResolvedValue([]) } as never))
       .toBe(false);
-    expect(await hasSiteAnalysisWorker({ getWorkersCount: vi.fn().mockResolvedValue(1) } as never))
+    expect(await hasSiteAnalysisWorker({ client: Promise.resolve({ options: { db: 0 } }), getWorkers: vi.fn().mockResolvedValue([{ db: "0" }]) } as never))
       .toBe(true);
   });
 

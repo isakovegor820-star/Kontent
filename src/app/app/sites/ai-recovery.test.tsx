@@ -4,14 +4,16 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ReactNode } from "react";
 vi.mock("@/components/app/shell", () => ({ AppShell: ({ children }: { children: ReactNode }) => <main>{children}</main> }));
 import SitesPage from "./page";
+import { setClientProjectId } from "@/lib/project-fetch";
 const site = { id: 5, confirmedDomain: "example.test", canonicalUrl: "https://example.test/", verification: { state: "unverified", instructions: { dns: {}, meta: {} } }, publishingMode: "confirm", approvedStreak: 0, autoUnlockStreak: 10, autoModeUnlocked: false, status: "active", latestProfileId: 77 };
 const profile = { id: 77, pageCount: 1, publicationCount: 0, topics: [], gaps: [], technical: { seoScore: 80, geoScore: 70, seoIssues: [], geoIssues: [], pagesChecked: 1 }, linkablePages: [], summary: "Тестовый профиль", refinedAt: "2026-09-08T10:00Z", aiClassification: { status: "failed", topicClusters: 0 } };
 const report = { id: 12, kind: "initial_audit", status: "ready", summaryRu: "Аудит", interpretation: null, interpretationStatus: "failed" };
 const flush = async () => { await act(async () => { await Promise.resolve(); }); };
-afterEach(() => { cleanup(); vi.unstubAllGlobals(); vi.useRealTimers(); });
+afterEach(() => { cleanup(); setClientProjectId(null); vi.unstubAllGlobals(); vi.useRealTimers(); });
 
 describe("Sites AI recovery UI", () => {
   it("shows failure instead of a queue, retries the selected profile and updates its terminal status", async () => {
+    setClientProjectId(7);
     vi.useFakeTimers();
     let state = { ...profile, refinedAt: null as string | null };
     const fetcher = vi.fn(async (url: string, init?: RequestInit) => {
@@ -38,6 +40,7 @@ describe("Sites AI recovery UI", () => {
     expect(fetcher.mock.calls).toHaveLength(calls);
   });
   it("sends the report id and clears a failed network action so it can be retried", async () => {
+    setClientProjectId(7);
     const fetcher = vi.fn(async (url: string, init?: RequestInit) => {
       if (url === "/api/sites") return Response.json({ sites: [site] });
       if (url.endsWith("/destinations")) return Response.json({ destinations: [] });
@@ -51,9 +54,10 @@ describe("Sites AI recovery UI", () => {
     render(<SitesPage />); await flush(); await flush();
     fireEvent.click(screen.getByRole("button", { name: "Повторить интерпретацию" })); await flush();
     expect((screen.getByRole("button", { name: "Повторить интерпретацию" }) as HTMLButtonElement).disabled).toBe(false);
-    expect(screen.getByText(/Не удалось получить ответ сервера/)).toBeTruthy();
+    expect(screen.getByText(/Не получили подтверждение от сервера/)).toBeTruthy();
   });
   it("does not replace the selected site with an old report refresh timer", async () => {
+    setClientProjectId(7);
     vi.useFakeTimers();
     const other = { ...site, id: 6, confirmedDomain: "other.example.test" };
     const fetcher = vi.fn(async (url: string) => {

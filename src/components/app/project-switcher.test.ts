@@ -1,6 +1,8 @@
+// @vitest-environment jsdom
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { describe, expect, it, vi } from "vitest";
+import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type { ClientProject } from "@/lib/project-client";
 import { ProjectSwitcherView } from "./project-switcher";
@@ -15,6 +17,12 @@ const project: ClientProject = {
   selected: true,
   createdAt: "2026-08-11T10:00:00.000Z",
 };
+
+afterEach(() => {
+  cleanup();
+  document.querySelectorAll("[data-test-dirty-fixture]").forEach((node) => node.remove());
+  vi.restoreAllMocks();
+});
 
 describe("ProjectSwitcherView", () => {
   it("uses a labelled native selector and exposes the current role", () => {
@@ -48,4 +56,40 @@ describe("ProjectSwitcherView", () => {
     expect(html).toContain("Повторить загрузку проектов");
     expect(html).toContain("<button");
   });
+
+  it("requires confirmation before a project switch can discard a settings draft", () => {
+    const dirty = document.createElement("div");
+    dirty.dataset.settingsDirty = "true";
+    dirty.dataset.testDirtyFixture = "true";
+    document.body.append(dirty);
+    const onSelect = vi.fn();
+    const confirm = vi.spyOn(window, "confirm").mockReturnValue(false);
+    render(createElement(ProjectSwitcherView, {
+      projects: [project, { ...project, id: 8, name: "Второй проект", selected: false }],
+      current: project,
+      ready: true,
+      error: false,
+      switching: false,
+      onSelect,
+      onRetry: vi.fn(),
+    }));
+
+    fireEvent.change(screen.getByRole("combobox", { name: "Текущий проект" }), { target: { value: "8" } });
+    expect(confirm).toHaveBeenCalledOnce();
+    expect(onSelect).not.toHaveBeenCalled();
+
+    confirm.mockReturnValue(true);
+    fireEvent.change(screen.getByRole("combobox", { name: "Текущий проект" }), { target: { value: "8" } });
+    expect(onSelect).toHaveBeenCalledWith(8);
+  });
+});
+
+ it("does not display another project as selected after the current membership is revoked", () => {
+  const root = document.createElement("div");
+  root.innerHTML = renderToStaticMarkup(createElement(ProjectSwitcherView, {
+    projects: [project], current: null, ready: true, error: true, switching: false,
+    onSelect: vi.fn(), onRetry: vi.fn(),
+  }));
+  expect(root.querySelector("select")?.value).toBe("");
+  expect(root.querySelector("option:checked")?.textContent).toBe("Выберите проект");
 });

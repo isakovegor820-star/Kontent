@@ -1,4 +1,4 @@
-import { SafeHttpError, parsePublicHttpUrl, resolvePublicTarget } from "../safe-http.mjs";
+import { SafeHttpError, parsePublicHttpUrl, resolvePublicTarget, requestPublicHttp } from "../safe-http.mjs";
 import {
   PROVIDER_DELIVERY_OUTCOMES,
   classifiedFailure,
@@ -22,6 +22,7 @@ export class WordPressAdapterError extends Error {
 
 function normalizeBaseUrl(value) {
   const url = parsePublicHttpUrl(value);
+  if (url.protocol !== "https:") throw new SafeHttpError("bad_protocol", "WordPress требует HTTPS для пароля приложения");
   url.hash = "";
   url.search = "";
   // Принимаем и корень сайта, и уже готовый /wp-json.
@@ -49,7 +50,7 @@ async function readJson(response) {
 }
 
 export function wpPostToRef(post, baseUrl) {
-  if (!post || typeof post !== "object") return null;
+  if (!post || typeof post !== "object" || !Number.isSafeInteger(post.id) || post.id <= 0) return null;
   const link = typeof post.link === "string" ? post.link : null;
   return {
     id: Number(post.id),
@@ -64,15 +65,14 @@ export function wpPostToRef(post, baseUrl) {
 /**
  * Адаптер WordPress REST API (пароли приложений). Все запросы идут только на публичный адрес
  * (проверка DNS перед запросом — как в safe-http), любой не-JSON и 5xx классифицируются
- * как неизвестная доставка, чтобы повтор шёл через reconcile по slug, а не через второй POST.
+ * как неизвестная доставка. Сверка использует квитанцию назначения и ожидаемое действие; совпадения slug недостаточно для второго POST.
  */
-export function createWordPressAdapter({ fetchImpl = fetch, lookupFn, timeoutMs = DEFAULT_TIMEOUT_MS, now = () => new Date() } = {}) {
+export function createWordPressAdapter({ fetchImpl, requestFn, lookupFn, timeoutMs = DEFAULT_TIMEOUT_MS, now = () => new Date() } = {}) {
   async function request(destination, path, { method = "GET", body = null, query = null } = {}) {
     const base = normalizeBaseUrl(destination.baseUrl);
     const url = new URL(`${base.pathname}${path}`, base);
     for (const [key, value] of Object.entries(query || {})) if (value !== undefined && value !== null) url.searchParams.set(key, String(value));
-    await resolvePublicTarget(url, lookupFn);
-    const response = await fetchImpl(url.toString(), {
+    const options = {
       method,
       redirect: "manual",
       headers: {
@@ -83,7 +83,17 @@ export function createWordPressAdapter({ fetchImpl = fetch, lookupFn, timeoutMs 
       },
       body: body ? JSON.stringify(body) : undefined,
       signal: AbortSignal.timeout(timeoutMs),
-    });
+    };
+    let response;
+    if (fetchImpl) {
+      // An explicit transport injection is reserved for isolated contract tests.
+      await resolvePublicTarget(url, lookupFn);
+      response = await fetchImpl(url.toString(), options);
+    } else {
+      response = await requestPublicHttp(url, {
+        ...options, requestFn, lookupFn, timeoutMs, maxBytes: MAX_RESPONSE_BYTES,
+      });
+    }
     if (response.status >= 300 && response.status < 400) {
       throw new WordPressAdapterError("redirect_forbidden", "WordPress: REST API перенаправляет запрос", { status: response.status });
     }
@@ -92,10 +102,16 @@ export function createWordPressAdapter({ fetchImpl = fetch, lookupFn, timeoutMs 
   }
 
   function classify(error) {
-    if (error instanceof SafeHttpError) return definiteFailure(error.code, { code: error.code });
+    if (error instanceof SafeHttpError) {
+      if (["bad_url", "bad_protocol", "credentials", "bad_host", "private_address"].includes(error.code)) {
+        return definiteFailure(error.code, { code: error.code });
+      }
+      // Timeout, body loss/limit and redirects can happen after WordPress accepts a POST.
+      return deliveryUnknown(null, error.code);
+    }
     if (error instanceof WordPressAdapterError) {
       if (error.code === "credentials_missing") return classifiedFailure(PROVIDER_DELIVERY_OUTCOMES.AUTH_FAILED, error.code, { code: error.code });
-      if (error.code === "response_not_json" || error.code === "response_too_large") return deliveryUnknown(null, error.code);
+      if (["response_not_json", "response_too_large", "redirect_forbidden"].includes(error.code)) return deliveryUnknown(null, error.code);
       return definiteFailure(error.code, { code: error.code, retryable: error.code === "redirect_forbidden" ? false : true });
     }
     const code = typeof error?.name === "string" && error.name === "TimeoutError" ? "provider_timeout" : "network_error";
@@ -134,7 +150,7 @@ export function createWordPressAdapter({ fetchImpl = fetch, lookupFn, timeoutMs 
         if (status === 401 || status === 403) return { ok: false, credentialState: "invalid", permissionState: "denied", reason: "auth_failed" };
         if (status !== 200 || !payload) return { ok: false, credentialState: "unknown", permissionState: "unknown", reason: `http_${status}` };
         const capabilities = payload.capabilities || {};
-        const canPublish = Boolean(capabilities.publish_posts || capabilities.edit_posts);
+        const canPublish = capabilities.publish_posts === true;
         return {
           ok: canPublish,
           credentialState: "ready",
@@ -160,6 +176,7 @@ export function createWordPressAdapter({ fetchImpl = fetch, lookupFn, timeoutMs 
         const { status, payload: post } = await request(destination, "/wp/v2/posts", { method: "POST", body: articleBody(payload, "publish") });
         if (status === 201 || status === 200) {
           const ref = wpPostToRef(post, destination.baseUrl);
+          if (!ref || !["publish", "future"].includes(ref.status)) return deliveryUnknown(providerOperationId, "receipt_invalid");
           return success(providerOperationId, { providerRef: ref, publishedUrl: ref?.link || null });
         }
         return failureFromStatus(status, post, providerOperationId);
@@ -169,15 +186,35 @@ export function createWordPressAdapter({ fetchImpl = fetch, lookupFn, timeoutMs 
       }
     },
 
-    async reconcile(destination, providerOperationId) {
+    async reconcile(destination, providerOperationId, context = {}) {
+      const action = context.action || "publish";
+      const postId = Number(context.knownProviderRef?.id);
+      // Standard WordPress has no durable client operation key. A slug can predate
+      // this attempt or be renamed after it: existence/absence cannot prove create.
+      if (action === "publish" || !Number.isSafeInteger(postId) || postId <= 0) {
+        return deliveryUnknown(providerOperationId, "publication_receipt_required");
+      }
       try {
-        const { status, payload } = await request(destination, "/wp/v2/posts", {
-          query: { slug: providerOperationId, status: "publish,future,draft,pending,private", per_page: 5, context: "edit" },
-        });
-        if (status !== 200 || !Array.isArray(payload)) return failureFromStatus(status, payload, providerOperationId);
-        const match = payload.find((post) => post?.slug === providerOperationId);
-        if (!match) return definiteFailure("not_found", { code: "not_found", providerOperationId });
-        const ref = wpPostToRef(match, destination.baseUrl);
+        const { status, payload: post } = await request(destination, `/wp/v2/posts/${postId}`, { query: { context: "edit" } });
+        if (status === 404) return deliveryUnknown(providerOperationId, "publication_not_observed");
+        if (status !== 200) return failureFromStatus(status, post, providerOperationId);
+        const ref = wpPostToRef(post, destination.baseUrl);
+        if (!ref || ref.id !== postId) return deliveryUnknown(providerOperationId, "receipt_invalid");
+        if (action === "unpublish") {
+          return ref.status === "draft"
+            ? success(providerOperationId, { providerRef: ref, publishedUrl: null })
+            : deliveryUnknown(providerOperationId, "requested_state_not_observed");
+        }
+        const expected = context.expectedPayload && articleBody(context.expectedPayload, "publish");
+        const sameMeta = !context.expectedPayload?.structuredData
+          || post.meta?.aurora_structured_data === expected.meta.aurora_structured_data;
+        const sameCategory = !context.expectedPayload?.categoryId
+          || post.categories?.includes(Number(context.expectedPayload.categoryId));
+        if (action !== "update" || !expected || ref.status !== "publish" || post.slug !== expected.slug
+          || post.title?.raw !== expected.title || post.content?.raw !== expected.content
+          || post.excerpt?.raw !== expected.excerpt || !sameMeta || !sameCategory) {
+          return deliveryUnknown(providerOperationId, "requested_revision_not_observed");
+        }
         return success(providerOperationId, { providerRef: ref, publishedUrl: ref.link });
       } catch (error) {
         const failure = classify(error);
@@ -193,6 +230,7 @@ export function createWordPressAdapter({ fetchImpl = fetch, lookupFn, timeoutMs 
         const { status, payload: post } = await request(destination, `/wp/v2/posts/${postId}`, { method: "POST", body: articleBody(payload, "publish") });
         if (status === 200) {
           const ref = wpPostToRef(post, destination.baseUrl);
+          if (!ref || ref.id !== postId || !["publish", "future"].includes(ref.status)) return deliveryUnknown(providerOperationId, "receipt_invalid");
           return success(providerOperationId, { providerRef: ref, publishedUrl: ref?.link || null });
         }
         return failureFromStatus(status, post, providerOperationId);
@@ -209,8 +247,12 @@ export function createWordPressAdapter({ fetchImpl = fetch, lookupFn, timeoutMs 
       try {
         // Не удаляем безвозвратно: статья уходит в черновики, чтобы владелец мог вернуть её.
         const { status, payload: post } = await request(destination, `/wp/v2/posts/${postId}`, { method: "POST", body: { status: "draft" } });
-        if (status === 200) return success(providerOperationId, { providerRef: wpPostToRef(post, destination.baseUrl), publishedUrl: null });
-        if (status === 404) return success(providerOperationId, { providerRef: null, publishedUrl: null });
+        if (status === 200) {
+          const ref = wpPostToRef(post, destination.baseUrl);
+          if (!ref || ref.id !== postId || ref.status !== "draft") return deliveryUnknown(providerOperationId, "receipt_invalid");
+          return success(providerOperationId, { providerRef: ref, publishedUrl: null });
+        }
+        if (status === 404) return deliveryUnknown(providerOperationId, "publication_not_observed");
         return failureFromStatus(status, post, providerOperationId);
       } catch (error) {
         const failure = classify(error);

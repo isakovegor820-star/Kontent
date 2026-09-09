@@ -20,6 +20,7 @@ const fixture = vi.hoisted(() => ({
 vi.mock("next/navigation", () => ({ useRouter: () => fixture.router, useSearchParams: () => fixture.params }));
 vi.mock("@/lib/store", () => ({ useStore: () => fixture.store }));
 vi.mock("@/components/app/project-provider", () => ({ useProjects: () => fixture.projects }));
+vi.mock("@/lib/project-fetch", () => ({ projectFetch: (...args: Parameters<typeof fetch>) => fetch(...args) }));
 vi.mock("@/components/app/shell", () => ({ AppShell: ({ children }: React.PropsWithChildren) => children }));
 vi.mock("@/components/app/evidence-card", () => ({ EvidenceCard: () => null }));
 vi.mock("@/components/app/editorial-review-panel", () => ({ EditorialReviewPanel: () => null }));

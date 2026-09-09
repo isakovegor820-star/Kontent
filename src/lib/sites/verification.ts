@@ -42,17 +42,43 @@ export function txtRecordsContainToken(records: unknown, token: string): boolean
   });
 }
 
-const META_TAG = /<meta\b[^>]*>/giu;
+function* headTags(head: string): Generator<string> {
+  // Consume complete tags before looking for meta. A literal <meta inside a quoted
+  // attribute of another element, even an unterminated one, is only text.
+  let offset = 0;
+  while (offset < head.length) {
+    const start = head.indexOf("<", offset);
+    if (start < 0) return;
+    let quote: string | null = null;
+    let end = start + 1;
+    for (; end < head.length; end += 1) {
+      const char = head[end];
+      if (quote) { if (char === quote) quote = null; }
+      else if (char === '\"' || char === "'") quote = char;
+      else if (char === ">") break;
+    }
+    if (end === head.length) return;
+    yield head.slice(start, end + 1);
+    offset = end + 1;
+  }
+}
 const ATTRIBUTE = /([a-z-]+)\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'>]+))/giu;
 
 export function htmlContainsVerificationMeta(html: unknown, token: string): boolean {
   if (typeof html !== "string" || !isSiteVerificationToken(token)) return false;
-  // Достаточно первых 256 КБ: подтверждающий тег должен стоять в <head>.
-  const head = html.slice(0, 256 * 1024);
-  for (const tag of head.match(META_TAG) || []) {
+  // Only a real document-head meta proves ownership. Comments, JSON/script examples,
+  // templates and body user content must never act as a verification credential.
+  const document = html.slice(0, 256 * 1024)
+    .replace(/<!--[\s\S]*?(?:-->|$)/gu, "")
+    .replace(/<(script|style|template|noscript|title|textarea)\b[^>]*>[\s\S]*?(?:<\/\1\s*>|$)/giu, "");
+  const head = document.match(/^\s*(?:<!doctype[^>]*>\s*)?(?:<html\b[^>]*>\s*)?<head\b[^>]*>([\s\S]*?)<\/head\s*>/iu)?.[1];
+  if (!head) return false;
+  for (const tag of headTags(head)) {
+    if (!/^<meta(?:\s|\/?>)/iu.test(tag)) continue;
     const attributes = new Map<string, string>();
     for (const match of tag.matchAll(ATTRIBUTE)) {
-      attributes.set(match[1].toLowerCase(), (match[2] ?? match[3] ?? match[4] ?? "").trim());
+      const name = match[1].toLowerCase();
+      if (!attributes.has(name)) attributes.set(name, (match[2] ?? match[3] ?? match[4] ?? "").trim());
     }
     if (attributes.get("name")?.toLowerCase() === SITE_VERIFICATION_META_NAME && attributes.get("content") === token) {
       return true;
@@ -89,8 +115,17 @@ async function checkMeta(canonicalUrl: string, token: string, fetchText: NonNull
   }
 }
 
+export function siteVerificationRedirectAllowed(nextUrl: URL, initialUrl: URL): boolean {
+  return nextUrl.hostname === initialUrl.hostname
+    && (initialUrl.protocol !== "https:" || nextUrl.protocol === "https:");
+}
+
 const defaultFetchText = async (url: string) => {
-  const response = await fetchPublicText(url, { timeoutMs: 8_000, maxBytes: 512 * 1024, headers: { accept: "text/html" } });
+  const initialUrl = new URL(url);
+  const response = await fetchPublicText(url, {
+    timeoutMs: 8_000, maxBytes: 512 * 1024, headers: { accept: "text/html" },
+    validateRedirect: (nextUrl: URL) => siteVerificationRedirectAllowed(nextUrl, initialUrl),
+  });
   if (!response.ok) throw new Error(`http_${response.status}`);
   return response.text();
 };

@@ -1,3 +1,4 @@
+import { projectFetch as fetch } from "@/lib/project-fetch";
 export type PublicationLifecycleResponse = {
   ok: boolean;
   error?: string;
@@ -117,6 +118,53 @@ export function publicationOperationIsSettled(
   return operation.destinations.some((destination) => (
     SETTLED_PUBLICATION_STATUSES.has(destination.postStatus)
   ));
+}
+
+/** A terminal delivery blocks rescheduling; only confirmed destinations mean success. */
+export function publicationDeliveryPresentation(operation: PublicationOperationEditorContext): {
+  label: string;
+  tone: "success" | "fire" | "danger";
+  title: string;
+  description: string;
+  nextStep: string;
+} | null {
+  if (!publicationOperationIsSettled(operation)) return null;
+  const statuses = operation.destinations.map((destination) => destination.postStatus);
+  if (statuses.includes("published_unverified")) return {
+    label: "Ждёт подтверждения",
+    tone: "fire",
+    title: "Доставка не подтверждена",
+    description: "Внешняя сеть могла принять пост, но подтверждение не получено. Автоматический повтор остановлен, чтобы не создать дубль.",
+    nextStep: "Перед новой отправкой проверь пост в канале. Новый черновик не разрешает неопределённость этой доставки.",
+  };
+  if (statuses.includes("deleted_external")) return {
+    label: "Удалено во внешней сети",
+    tone: "danger",
+    title: "Публикация удалена во внешней сети",
+    description: "Один или несколько постов удалены во внешней сети. Редактор показывает исходную версию; автоматической повторной отправки нет.",
+    nextStep: "Проверь остальные назначения перед созданием новой публикации.",
+  };
+  if (statuses.includes("missing")) return {
+    label: "Не найдено во внешней сети",
+    tone: "danger",
+    title: "Публикация не найдена",
+    description: "Один или несколько постов не найдены при проверке внешней сети. Автоматическая повторная отправка не выполняется.",
+    nextStep: "Проверь пост в канале перед новой отправкой. Отсутствие подтверждения не доказывает отсутствие публикации.",
+  };
+  if (statuses.every((status) => status === "published")) return {
+    label: "Опубликовано",
+    tone: "success",
+    title: "Публикация уже завершена",
+    description: "Публикация завершена. Редактор показывает её исходную версию; новый пост будет создан отдельно.",
+    nextStep: "Опубликованный пост не изменится — можно создать отдельный новый черновик.",
+  };
+  return {
+    label: "Опубликовано частично",
+    tone: "fire",
+    title: "Опубликовано не во всех назначениях",
+    description: "Часть назначений подтверждена, остальные имеют другой статус. Успешные части не нужно отправлять заново.",
+    nextStep: "Проверь статусы назначений в календаре перед новой отправкой.",
+  };
 }
 
 export function publicationEditorMutationKind(

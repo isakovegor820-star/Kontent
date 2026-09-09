@@ -43,6 +43,9 @@ function makePool({ site = siteRow(), article = articleRow(), corpusPages = [], 
     calls.push({ sql: text, params });
     const custom = onQuery?.(text, params);
     if (custom) return custom;
+    if (text.includes("select site_id, project_id, coalesce(generation_requested_by_user_id")) return { rows: [{site_id:article.site_id,project_id:article.project_id,user_id:article.generation_requested_by_user_id ?? article.user_id}] };
+    if (text.includes("select member.role from projects project")) return { rows: [{role:"owner"}] };
+    if (text.includes("select id from sites where id=$1")) return { rows: [{id:site.id}] };
     if (text.includes("update site_articles set status = 'generating'")) { leaseToken = params[1]; return { rows: [article] }; }
     if (text.includes("select worker_lease_token from site_articles")) return { rows: [{ worker_lease_token: leaseToken }] };
     if (text.includes("from sites s") && text.includes("left join site_profiles")) return { rows: [site] };
@@ -67,6 +70,18 @@ const usageDeps = () => ({
 });
 
 describe("generateSiteArticle", () => {
+  it("bills the persisted regeneration requester, including embeddings, instead of the historical site owner", async () => {
+    const { pool, client } = makePool({ article: articleRow({ user_id: 11, generation_requested_by_user_id: 66 }) });
+    const completeAiText = vi.fn(async () => ({ text: goodCompletion, engine: "navy-deepseek-pro" }));
+    const embed = vi.fn(async () => null);
+    const deps = { ...usageDeps(), completeAiText, embed, engine: "navy-deepseek-pro" };
+    expect(await generateSiteArticle(pool, { articleId: 100 }, deps)).toMatchObject({ ok: true });
+    expect(deps.acquireUsage).toHaveBeenCalledWith(pool, expect.objectContaining({ userId: 66 }));
+    expect(completeAiText).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ spendScope: { pool, userId: 66, projectId: 3 } }));
+    expect(embed).toHaveBeenCalledWith(expect.any(String), { pool, userId: 66, projectId: 3 });
+    expect(deps.commitUsage).toHaveBeenCalledWith(client, 66, 501);
+  });
+
   it("makes acquisition failures retryable instead of stranding the article in generating", async () => {
     const { pool, calls } = makePool();
     const deps = { ...usageDeps(), acquireUsage: vi.fn(async () => { throw Object.assign(new Error("db unavailable"), { code: "db_unavailable" }); }), completeAiText: vi.fn() };
@@ -209,9 +224,12 @@ function publicationPool({ site = siteRow(), article, publication, destination, 
     if (custom) return custom;
     if (text.includes("set status = 'publishing', attempts = attempts + 1")) return { rows: [{ id: publication.id }] };
     if (text.includes("from site_article_publications p join site_articles a")) return { rows: [publication] };
+    if (text.includes("update site_articles set status = 'publishing'")) return { rows: [{ ...article, status: "publishing" }], rowCount: 1 };
     if (text.includes("from sites s") && text.includes("left join site_profiles")) return { rows: [site] };
     if (text.includes("from site_articles where id = $1")) return { rows: [article] };
     if (text.includes("from site_destinations where id = $1")) return { rows: [destination] };
+    if (text.includes("update site_article_publications")) return {rows:[],rowCount:1};
+    if (text.includes("with latest as (")) return { rows: [{unsettled:false,retired:publication.action === "unpublish",live:publication.action === "unpublish" ? [] : [{provider_ref:article.provider_ref,published_url:article.published_url}]}] };
     return { rows: [] };
   };
   const client = { query: vi.fn(handler), release: vi.fn() };
@@ -248,6 +266,40 @@ describe("publishSiteArticle", () => {
     expect(registry.site_hosted.publish).not.toHaveBeenCalled();
     const stale = publicationPool({ article: approvedArticle(), publication: pendingPublication({ article_version: 1 }), destination: hostedDestination });
     expect(await publishSiteArticle(stale.pool, { publicationId: 900 }, { adapters: registry })).toMatchObject({ ok: false, reason: "article_version_stale" });
+  });
+
+  it("refuses a queued publication when its approval no longer matches the version", async () => {
+    const { pool } = publicationPool({ article: { ...approvedArticle(), approved_version: 1 }, publication: pendingPublication(), destination: hostedDestination });
+    const registry = adapters({ ok: true });
+    expect(await publishSiteArticle(pool, { publicationId: 900 }, { adapters: registry })).toMatchObject({ ok: false, reason: "article_not_approved" });
+    expect(registry.site_hosted.publish).not.toHaveBeenCalled();
+  });
+
+  it("does not send if a rejection wins the final atomic article claim", async () => {
+    const { pool } = publicationPool({ article: approvedArticle(), publication: pendingPublication(), destination: hostedDestination,
+      onQuery: (sql) => sql.includes("update site_articles set status = 'publishing'") ? { rows: [], rowCount: 0 } : null });
+    const registry = adapters({ ok: true });
+    expect(await publishSiteArticle(pool, { publicationId: 900 }, { adapters: registry })).toMatchObject({ ok: false, reason: "article_claim_lost" });
+    expect(registry.site_hosted.publish).not.toHaveBeenCalled();
+  });
+
+  it("uses only the selected destination receipt for updates", async () => {
+    const article={ ...approvedArticle(), status: "published", provider_ref: { slug: "hosted-wrong-for-wordpress" } };
+    const publication=pendingPublication({ action: "update" });
+    const { pool }=publicationPool({ article, publication, destination: { ...hostedDestination, kind: "wordpress" },
+      onQuery: (sql, params) => sql.includes("select provider_ref, action from site_article_publications")
+        ? (expect(params).toEqual([article.id,publication.destination_id]),{rows:[{action:"publish",provider_ref:{id:321}}]}) : null });
+    const registry=adapters({ok:true});registry.wordpress.update=vi.fn(async()=>({ok:true,outcome:"success",providerRef:{id:321}}));
+    await publishSiteArticle(pool,{publicationId:900},{adapters:registry});
+    expect(registry.wordpress.update).toHaveBeenCalledWith(expect.anything(),{id:321},expect.anything());
+    expect(registry.wordpress.publish).not.toHaveBeenCalled();
+  });
+
+  it("never turns update without a destination receipt into a new publish", async () => {
+    const {pool}=publicationPool({article:{...approvedArticle(),status:"published",provider_ref:null},publication:pendingPublication({action:"update"}),destination:hostedDestination});
+    const registry=adapters({ok:true});
+    expect(await publishSiteArticle(pool,{publicationId:900},{adapters:registry})).toMatchObject({ok:false,reason:"destination_receipt_missing"});
+    expect(registry.site_hosted.publish).not.toHaveBeenCalled();expect(registry.site_hosted.update).not.toHaveBeenCalled();
   });
 
   it("keeps an unknown delivery unverified and schedules reconcile instead of a second publish", async () => {

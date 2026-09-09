@@ -1,5 +1,7 @@
 "use client";
 
+import { projectFetch as fetch } from "@/lib/project-fetch";
+
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
@@ -643,7 +645,7 @@ export function LibraryRegistryView({ channelId, channelName }: { channelId: num
                         aria-pressed={item.userRating === rating}
                         disabled={Boolean(stateBusy)}
                         onClick={() => void setItemState(item, { rating: item.userRating === rating ? null : rating })}
-                        className="grid h-10 w-10 place-items-center rounded-sm text-text-3 hover:bg-fire-soft hover:text-fire focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-brand/15 disabled:opacity-50"
+                        className="grid h-11 w-11 place-items-center rounded-sm text-text-3 hover:bg-fire-soft hover:text-fire focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-brand/15 disabled:opacity-50"
                       >
                         <Star className={cn("h-4 w-4", item.userRating != null && rating <= item.userRating && "fill-current text-fire")} aria-hidden />
                       </button>
@@ -652,10 +654,10 @@ export function LibraryRegistryView({ channelId, channelName }: { channelId: num
                       type="button"
                       disabled={Boolean(stateBusy)}
                       onClick={() => void setItemState(item, { viewed: !item.viewedAt })}
-                      className="inline-flex min-h-10 basis-full items-center gap-1.5 rounded-sm px-2 text-[11px] font-semibold text-text-2 hover:bg-surface-inset sm:ml-auto sm:basis-auto"
+                      className="inline-flex min-h-11 basis-full items-center gap-1.5 rounded-sm px-2 text-[11px] font-semibold text-text-2 hover:bg-surface-inset sm:ml-auto sm:basis-auto"
                     >
                       {item.viewedAt ? <EyeOff className="h-3.5 w-3.5" aria-hidden /> : <Check className="h-3.5 w-3.5" aria-hidden />}
-                      {item.viewedAt ? "Сделать новым" : "Просмотрено"}
+                      {item.viewedAt ? "Сделать новым" : "Отметить просмотренным"}
                     </button>
                   </div>
                 </fieldset>
@@ -676,7 +678,7 @@ export function LibraryRegistryView({ channelId, channelName }: { channelId: num
                     Обсудить с Авророй
                   </Button>
                   {item.sourceUrl && (
-                    <a href={item.sourceUrl} target="_blank" rel="noopener noreferrer" className="inline-flex min-h-10 items-center gap-1.5 rounded-sm px-2.5 text-[12px] font-semibold text-text-2 hover:bg-surface-inset hover:text-text">
+                    <a href={item.sourceUrl} target="_blank" rel="noopener noreferrer" className="inline-flex min-h-11 items-center gap-1.5 rounded-sm px-2.5 text-[12px] font-semibold text-text-2 hover:bg-surface-inset hover:text-text">
                       <ExternalLink className="h-3.5 w-3.5" aria-hidden /> Открыть оригинал
                     </a>
                   )}

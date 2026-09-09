@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { AiSpendError } from "./ai-spend-ledger.mjs";
 
 import {
   AiProviderError,
@@ -43,7 +44,13 @@ export type AiPublicFailureCode =
   | "network_error"
   | "circuit_open"
   | "provider_unavailable"
-  | "provider_error";
+  | "provider_error"
+  | "ai_spend_cap_exceeded"
+  | "ai_spend_concurrency_exceeded"
+  | "ai_spend_configuration_required"
+  | "ai_spend_scope_forbidden"
+  | "ai_spend_scope_required"
+  | "ai_spend_invalid_projection";
 
 export type AiStreamFactory = (
   params: GenerateParams,
@@ -124,6 +131,9 @@ function normalizedError(
   if (callerSignal?.aborted) {
     return abortReason(callerSignal, new DOMException("The operation was aborted", "AbortError"));
   }
+  // A definitive local policy denial remains the cause even when a timer elapsed
+  // while admission was pending. Only the caller's explicit cancellation wins.
+  if (raw instanceof AiSpendError) return raw;
   if (overallSignal.aborted) return abortReason(overallSignal, timeoutError(engine, "overall_timeout"));
   if (firstTokenSignal.aborted) return abortReason(firstTokenSignal, timeoutError(engine, "first_token_timeout"));
   if (raw instanceof AiProviderError) return raw;
@@ -138,6 +148,17 @@ function normalizedError(
 }
 
 export function publicAiFailureCode(error: unknown): AiPublicFailureCode {
+  if (error instanceof AiSpendError) {
+    switch (error.code) {
+      case "ai_spend_cap_exceeded":
+      case "ai_spend_concurrency_exceeded":
+      case "ai_spend_configuration_required":
+      case "ai_spend_scope_forbidden":
+      case "ai_spend_scope_required":
+      case "ai_spend_invalid_projection": return error.code;
+      default: return "ai_spend_configuration_required";
+    }
+  }
   if (!(error instanceof AiProviderError)) {
     if (error instanceof Error && error.name === "TimeoutError") return "overall_timeout";
     return error instanceof TypeError ? "network_error" : "provider_error";
@@ -188,7 +209,7 @@ function canRetryNavyModelRejection(
     && fromEngine.startsWith("navy-")
     && toEngine.startsWith("navy-")
     && error instanceof AiProviderError
-    && [400, 404, 422].includes(Number(error.status)),
+    && [400, 404, 410, 422].includes(Number(error.status)),
   );
 }
 
@@ -322,7 +343,8 @@ export async function* orchestrateText(
           firstTokenController.signal,
         );
         const code = publicAiFailureCode(error);
-        if (options.signal?.aborted) {
+        if (options.signal?.aborted || error instanceof AiSpendError) {
+          // Release a possible half-open permit without inventing a provider failure.
           circuitBreaker?.recordCancellation(engine, now());
         } else {
           circuitBreaker?.recordFailure(engine, {

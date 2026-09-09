@@ -1,3 +1,5 @@
+import { ProjectAccessError } from "@/lib/project-permissions";
+import { withResearchProject } from "@/lib/research-project-access";
 // Д.6 — досье конкурента. Всё из ОТКРЫТЫХ данных (competitor_posts, competitor_stats).
 //
 // Честность здесь важнее полноты:
@@ -70,13 +72,13 @@ export async function GET(req: NextRequest, ctx: { params: Promise<{ id: string 
   if (!Number.isInteger(cid)) return NextResponse.json({ error: "not_found" }, { status: 404 });
 
   try {
-    const pool = getPool();
+    return await withResearchProject(getPool(), user.id, "project.read", async (pool, projectId) => {
     const comp = (
       await pool.query(
         `select id, network, handle, title, custom_title, avatar_url, subscribers, status,
                 last_error, collected_at, added_at, is_active, connection_method
-           from competitors where id = $1 and user_id = $2`,
-        [cid, user.id],
+           from competitors where id = $1 and channel_id in (select id from channels where project_id = $2)`,
+        [cid, projectId],
       )
     ).rows[0];
     if (!comp) return NextResponse.json({ error: "not_found" }, { status: 404 });
@@ -303,7 +305,9 @@ export async function GET(req: NextRequest, ctx: { params: Promise<{ id: string 
       },
       aiInsight: null,
     });
+    });
   } catch (err) {
+    if (err instanceof ProjectAccessError) return NextResponse.json({ error: "forbidden" }, { status: 403 });
     console.error("[/api/competitors/[id]]", err);
     return NextResponse.json({ error: "server" }, { status: 500 });
   }
@@ -333,11 +337,11 @@ export async function PATCH(req: NextRequest, ctx: { params: Promise<{ id: strin
   }
 
   try {
-    const pool = getPool();
+    return await withResearchProject(getPool(), user.id, "content.edit", async (pool, projectId, afterCommit) => {
     const source = (
       await pool.query<{ id: number; is_active: boolean }>(
-        `select id, is_active from competitors where id = $1 and user_id = $2`,
-        [cid, user.id],
+        `select id, is_active from competitors where id = $1 and channel_id in (select id from channels where project_id = $2)`,
+        [cid, projectId],
       )
     ).rows[0];
     if (!source) return NextResponse.json({ ok: false, error: "not_found" }, { status: 404 });
@@ -347,8 +351,8 @@ export async function PATCH(req: NextRequest, ctx: { params: Promise<{ id: strin
         `update competitors
             set is_active = false, status = 'paused', last_error = null,
                 sync_requested_at = null, sync_started_at = null
-          where id = $1 and user_id = $2`,
-        [cid, user.id],
+          where id = $1 and channel_id in (select id from channels where project_id = $2)`,
+        [cid, projectId],
       );
       return NextResponse.json({ ok: true, status: "paused", isActive: false });
     }
@@ -356,14 +360,16 @@ export async function PATCH(req: NextRequest, ctx: { params: Promise<{ id: strin
     await pool.query(
       `update competitors
           set is_active = true, status = 'refreshing', last_error = null,
+              collection_requested_by_user_id = $3,
               sync_requested_at = now()
-        where id = $1 and user_id = $2`,
-      [cid, user.id],
+        where id = $1 and channel_id in (select id from channels where project_id = $2)`,
+      [cid, projectId, user.id],
     );
+    afterCommit(async (pool) => {
     try {
       await getStatsQueue().add(
         "competitor",
-        { id: cid },
+        { id: cid, userId: user.id, projectId },
         { removeOnComplete: true, attempts: 2, backoff: { type: "fixed", delay: 15000 } },
       );
     } catch (error) {
@@ -373,8 +379,11 @@ export async function PATCH(req: NextRequest, ctx: { params: Promise<{ id: strin
       );
       throw error;
     }
+    });
     return NextResponse.json({ ok: true, status: "refreshing", isActive: true });
+    });
   } catch (err) {
+    if (err instanceof ProjectAccessError) return NextResponse.json({ error: "forbidden" }, { status: 403 });
     console.error("[/api/competitors/[id]] PATCH", err);
     return NextResponse.json({ ok: false, error: "server" }, { status: 500 });
   }
@@ -391,9 +400,13 @@ export async function DELETE(req: NextRequest, ctx: { params: Promise<{ id: stri
   if (!Number.isInteger(cid)) return NextResponse.json({ ok: false, error: "not_found" }, { status: 404 });
 
   try {
-    await getPool().query(`delete from competitors where id = $1 and user_id = $2`, [cid, user.id]);
+    return await withResearchProject(getPool(), user.id, "content.edit", async (pool, projectId) => {
+    const deleted = await pool.query(`delete from competitors where id = $1 and channel_id in (select id from channels where project_id = $2)`, [cid, projectId]);
+    if (!deleted.rowCount) return NextResponse.json({ error: "not_found" }, { status: 404 });
     return NextResponse.json({ ok: true });
+    });
   } catch (err) {
+    if (err instanceof ProjectAccessError) return NextResponse.json({ error: "forbidden" }, { status: 403 });
     console.error("[/api/competitors/[id]] DELETE", err);
     return NextResponse.json({ ok: false, error: "server" }, { status: 500 });
   }

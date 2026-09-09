@@ -1,7 +1,9 @@
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { readFile } from "node:fs/promises";
-import { beforeAll, afterAll, describe, expect, it } from "vitest";
+import { beforeAll, afterAll, describe, expect, it as baseIt, vi } from "vitest";
 import pg from "pg";
+import { withAiSpendScope } from "@/lib/ai-spend-ledger.mjs";
+import { fakeAiSpendEnv } from "./fixtures/ai-spend-env.mjs";
 
 import { completeAiText } from "@/lib/ai-completion-service.mjs";
 import { orchestrateText } from "@/lib/ai-orchestrator";
@@ -25,7 +27,10 @@ if (!target || !["localhost", "127.0.0.1", "::1"].includes(target.hostname)
 
 const pool = new pg.Pool({ connectionString: databaseUrl, ssl: false, max: 8 });
 let userId = 0;
+let projectId = 0;
+const it = (name: string, test: () => Promise<void>) => baseIt(name, () => withAiSpendScope({ pool, userId, projectId }, test));
 let mode: "success" | "primary-timeout" | "all-fail" | "truncated" = "success";
+let timedOutPrimaryConnections = 0;
 const requests: Array<{ model?: string; messages?: Array<{ role?: string; content?: string }>; stream?: boolean }> = [];
 
 async function jsonBody(request: IncomingMessage) {
@@ -68,7 +73,9 @@ const provider = createServer(async (request, response) => {
     return;
   }
   if (mode === "primary-timeout" && primary) {
-    setTimeout(() => openAiSuccess(response, body), 250);
+    response.once("close", () => { if (!response.writableEnded) timedOutPrimaryConnections++; });
+    // Never race a delayed success against the deadline: keep the primary pending
+    // until the actual client abort closes its connection.
     return;
   }
   openAiSuccess(response, body);
@@ -81,6 +88,7 @@ beforeAll(async () => {
   process.env.NAVYAI_API_KEY = "disposable-test-key";
   process.env.NAVYAI_API_URL = `http://127.0.0.1:${address.port}/v1`;
   process.env.AI_FALLBACK_ENGINES = "navy-deepseek-flash";
+  Object.assign(process.env, fakeAiSpendEnv());
 
   await pool.query("drop schema public cascade");
   await pool.query("create schema public");
@@ -89,6 +97,8 @@ beforeAll(async () => {
   userId = Number((await pool.query(
     "insert into users (email, name, ai_engine) values ('qa-ai-gate@example.test', 'QA AI Gate', 'navy-deepseek-pro') returning id",
   )).rows[0].id);
+  projectId = Number((await pool.query("insert into projects (name,created_by_user_id) values ('AI gate',$1) returning id", [userId])).rows[0].id);
+  await pool.query("insert into project_members(project_id,user_id,role) values ($1,$2,'owner')", [projectId,userId]);
 });
 
 afterAll(async () => {
@@ -132,17 +142,22 @@ describe("Gate 4 common AI orchestration on disposable infrastructure", () => {
 
   it("uses the same Navy primary/fallback policy for direct and streamed surfaces", async () => {
     mode = "primary-timeout";
+    timedOutPrimaryConnections = 0;
+    const requestsBefore = requests.length;
+    // This verifies fallback policy across real DB/HTTP boundaries, not a 100 ms SLO.
+    // The primary must remain unanswered until the native attempt deadline aborts it.
+    const attemptMs = 2_000;
     const direct = await completeAiText({
       system: "SYSTEM",
       user: "DIRECT",
       engine: "navy-deepseek-pro",
-    }, { env: process.env, timeoutMs: 100 });
+    }, { env: process.env, timeoutMs: attemptMs });
     expect(direct).toMatchObject({ engine: "navy-deepseek-flash", fallbackUsed: true, attempts: 2 });
 
     const events = [];
     for await (const event of orchestrateText({ kind: "write", task: "STREAM" }, "navy-deepseek-pro", {
-      firstTokenMs: 100,
-      overallMs: 2_000,
+      firstTokenMs: attemptMs,
+      overallMs: 8_000,
       fallbackEngines: ["navy-deepseek-flash"],
       circuitBreaker: null,
     })) events.push(event);
@@ -152,6 +167,15 @@ describe("Gate 4 common AI orchestration on disposable infrastructure", () => {
       toEngine: "navy-deepseek-flash",
     }));
     expect(events).toContainEqual(expect.objectContaining({ type: "delta", engine: "navy-deepseek-flash" }));
+    expect(events).toContainEqual(expect.objectContaining({
+      type: "telemetry", engine: "navy-deepseek-pro", outcome: "failed", code: "first_token_timeout",
+    }));
+    expect(events.at(-1)).toMatchObject({ type: "telemetry", engine: "navy-deepseek-flash", outcome: "succeeded" });
+    expect(requests.slice(requestsBefore).map(body => [body.model, Boolean(body.stream)])).toEqual([
+      ["deepseek-v4-pro", false], ["deepseek-v4-flash", false],
+      ["deepseek-v4-pro", true], ["deepseek-v4-flash", true],
+    ]);
+    await vi.waitFor(() => expect(timedOutPrimaryConnections).toBe(2));
   });
 
   it("refunds one reservation after all providers fail and does not duplicate the charge", async () => {

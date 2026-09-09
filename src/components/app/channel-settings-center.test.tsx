@@ -7,6 +7,9 @@ import { ChannelSettingsCenter } from "./channel-settings-center";
 
 const mocks = vi.hoisted(() => ({ toast: vi.fn(), fetch: vi.fn() }));
 vi.mock("next/navigation", () => ({ useSearchParams: () => new URLSearchParams() }));
+vi.mock("@/lib/project-fetch", () => ({
+  projectFetch: (input: RequestInfo | URL, init?: RequestInit) => globalThis.fetch(input, init),
+}));
 vi.mock("@/lib/store", () => ({
   useStore: () => ({
     realReady: true,

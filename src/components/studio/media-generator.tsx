@@ -1,5 +1,9 @@
 "use client";
 
+import { projectNativeUrl } from "@/lib/project-native-url";
+
+import { projectFetch as fetch } from "@/lib/project-fetch";
+
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
   AlertTriangle,
@@ -310,7 +314,8 @@ export function MediaGenerator({
 
   useEffect(() => {
     if (!currentId) return;
-    feedEndRef.current?.scrollIntoView({ behavior: "smooth", block: "nearest" });
+    const reduce = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
+    feedEndRef.current?.scrollIntoView({ behavior: reduce ? "instant" : "smooth", block: "nearest" });
   }, [currentId]);
 
   const generate = async (retry?: MediaGeneration) => {
@@ -480,10 +485,9 @@ export function MediaGenerator({
     <section
       className="flex h-[var(--studio-h)] min-h-[520px] min-w-0 flex-col overflow-hidden"
       aria-label="Чат с дизайнером"
-      aria-busy={hasActiveGenerations}
     >
       <p role="status" className="sr-only">{announcement}</p>
-      <div className="min-h-0 flex-1 overflow-y-auto">
+      <div className="min-h-0 flex-1 overflow-y-auto" aria-busy={hasActiveGenerations}>
         <div
           className={cn(
             "mx-auto flex min-h-full w-full max-w-[820px] flex-col px-4 py-6 md:px-6 md:py-8",
@@ -554,13 +558,13 @@ export function MediaGenerator({
                       </div>
                     )}
 
-                    {active && <TaskStatus label={status.title} />}
+                    {active && <TaskStatus label={status.title} announce={false} />}
 
                     {generation.status === "ready" && generation.assetUrl && (
                       <div className="mt-4 flex w-fit max-w-[min(100%,640px)] overflow-hidden rounded-[18px] bg-surface outline -outline-offset-1 outline-[var(--image-outline)]">
                         {/* eslint-disable-next-line @next/next/no-img-element */}
                         <img
-                          src={generation.assetUrl}
+                          src={projectNativeUrl(generation.assetUrl)}
                           alt={`Результат по запросу: ${generation.prompt}`}
                           className="block h-auto max-h-[480px] w-auto max-w-full object-contain"
                         />
@@ -571,7 +575,7 @@ export function MediaGenerator({
                       <div className="mt-3 flex flex-wrap gap-2">
                         {generation.status === "ready" && generation.downloadUrl && (
                           <a
-                            href={generation.downloadUrl}
+                            href={projectNativeUrl(generation.downloadUrl)}
                             download
                             className={cn(
                               "inline-flex min-h-11 items-center justify-center gap-2 rounded-[10px] border border-line-strong bg-surface px-4 text-[13px] font-semibold text-text",

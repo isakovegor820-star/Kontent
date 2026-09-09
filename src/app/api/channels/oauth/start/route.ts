@@ -17,10 +17,12 @@ import {
   isKnownOAuthProvider,
 } from "@/lib/oauth-capabilities";
 import { OAUTH_STATE_COOKIE, callbackUrlFromReq } from "@/lib/oauth-request";
+import { getPool } from "@/lib/db";
+import { nativeRequestProjectId } from "@/lib/native-project-request";
+import { ProjectAccessError, requireProjectPermission } from "@/lib/project-permissions";
+import { OAUTH_STATE_MAX_AGE_S, sealOAuthState } from "@/lib/oauth-state";
 
 export const runtime = "nodejs";
-
-const STATE_MAX_AGE_S = 600; // 10 минут на прохождение экрана согласия
 
 function stateCookieOptions() {
   return {
@@ -28,7 +30,7 @@ function stateCookieOptions() {
     secure: process.env.NODE_ENV === "production",
     sameSite: "lax" as const,
     path: "/",
-    maxAge: STATE_MAX_AGE_S,
+    maxAge: OAUTH_STATE_MAX_AGE_S,
   };
 }
 
@@ -59,6 +61,18 @@ export async function GET(req: NextRequest) {
     return NextResponse.redirect(new URL(`/app/settings?oauth=not_configured&network=${network}`, req.url));
   }
 
+  let projectId: number;
+  try {
+    projectId = nativeRequestProjectId(req);
+    await requireProjectPermission(getPool(), user.id, projectId, "project.manage");
+  } catch (error) {
+    if (!(error instanceof ProjectAccessError)) throw error;
+    return NextResponse.redirect(new URL(`/app/settings?oauth=forbidden&network=${encodeURIComponent(network)}`, req.url));
+  }
+  if (!process.env.TOKENS_MASTER_KEY) {
+    return NextResponse.redirect(new URL(`/app/settings?oauth=server&network=${encodeURIComponent(network)}`, req.url));
+  }
+
   const state = randomState();
   const pkce = randomPkce();
   const redirectUri = callbackUrlFromReq(req, network);
@@ -69,10 +83,10 @@ export async function GET(req: NextRequest) {
     codeChallenge: pkce.challenge,
   }));
 
-  // state + verifier + сеть + пользователь — в HttpOnly-cookie до колбэка.
+  // Project selection survives native navigation; authenticated state cannot be edited.
   res.cookies.set(
     OAUTH_STATE_COOKIE,
-    JSON.stringify({ state, verifier: pkce.verifier, network, userId: user.id }),
+    sealOAuthState({ state, verifier: pkce.verifier, network, userId: user.id, projectId }),
     stateCookieOptions(),
   );
   return res;

@@ -79,13 +79,22 @@ export function ProjectSwitcherView({
         aria-busy={switching || undefined}
         value={current?.id ?? ""}
         disabled={switching || projects.length === 0}
-        onChange={(event) => onSelect(Number(event.currentTarget.value))}
+        onChange={(event) => {
+          const projectId = Number(event.currentTarget.value);
+          const dirtySettings = document.querySelector('[data-settings-dirty="true"]');
+          if (
+            dirtySettings
+            && !window.confirm("Сменить проект? Несохранённые изменения на текущем экране будут потеряны.")
+          ) return;
+          onSelect(projectId);
+        }}
         className={cn(
           "h-11 min-w-0 rounded-xs border border-line bg-surface px-3 text-sm font-semibold text-text",
           "focus-visible:ring-4 focus-visible:ring-brand/15 disabled:opacity-60",
           compact ? "w-full max-w-52 truncate" : "w-full",
         )}
       >
+        {!current && <option value="" disabled>Выберите проект</option>}
         {projects.map((project) => (
           <option key={project.id} value={project.id}>{project.name}</option>
         ))}

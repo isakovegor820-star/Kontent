@@ -1,3 +1,5 @@
+import { projectFetch as fetch } from "@/lib/project-fetch";
+
 export type ClientProjectExportKind = "content_plan" | "analytics";
 export type ClientProjectExportFormat = "csv" | "xlsx" | "pdf";
 export type ClientProjectExportStatus =
@@ -282,6 +284,9 @@ export function defaultProjectExportPeriod(
 export function projectExportFormFromOperation(
   operation: ClientProjectExportOperation,
 ): ProjectExportFormValue {
+  const status = operation.filters.status[0] ?? "";
+  const isUnverified = ["Опубликован, проверяется", "Доставка не подтверждена"]
+    .some((label) => label.toLocaleLowerCase("ru-RU") === status.normalize("NFKC").trim().toLocaleLowerCase("ru-RU"));
   return {
     kind: operation.kind,
     format: operation.format,
@@ -290,7 +295,7 @@ export function projectExportFormFromOperation(
     channel: operation.filters.channel[0] ?? "",
     author: operation.filters.author[0] ?? "",
     campaign: operation.filters.campaign[0] ?? "",
-    status: operation.filters.status[0] ?? "",
+    status: isUnverified ? "published_unverified" : status,
   };
 }
 

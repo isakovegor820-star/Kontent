@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ReactNode } from "react";
 import StudioPage from "./page";
 import { serializeStudioChatSession } from "@/lib/studio-chat-session";
+import { setClientProjectId } from "@/lib/project-fetch";
 
 const mocks = vi.hoisted(() => ({
   search: new URLSearchParams("mode=chat"),
@@ -18,13 +19,14 @@ vi.mock("@/components/studio/media-generator", () => ({ MediaGenerator: () => nu
 vi.mock("@/components/studio/post-settings-menu", () => ({ PostSettingsMenu: () => null }));
 
 beforeEach(() => {
+  setClientProjectId(7);
   for (const key of ["localStorage", "sessionStorage"]) {
     vi.stubGlobal(key, { getItem: vi.fn(() => null), setItem: vi.fn(), removeItem: vi.fn() });
   }
   Element.prototype.scrollIntoView = vi.fn();
   vi.stubGlobal("ResizeObserver", class { observe() {} disconnect() {} unobserve() {} });
 });
-afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
+afterEach(() => { cleanup(); setClientProjectId(null); vi.unstubAllGlobals(); });
 
 describe("Studio message actions", () => {
   it.each(["Короче", "Улучшить"])("%s sends the selected message and excludes unrelated chat history", async (label) => {

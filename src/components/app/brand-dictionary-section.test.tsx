@@ -8,6 +8,9 @@ import { analyzeLegalTypography, applyTypographySuggestions } from "@/lib/legal-
 
 const project = vi.hoisted(() => ({ current: { id: 7, role: "owner" } }));
 vi.mock("@/components/app/project-provider", () => ({ useProjects: () => project }));
+vi.mock("@/lib/project-fetch", () => ({
+  projectFetch: (input: RequestInfo | URL, init?: RequestInit) => globalThis.fetch(input, init),
+}));
 let dictionary: ClientBrandDictionary;
 let failSave: boolean;
 let failLoad: boolean;

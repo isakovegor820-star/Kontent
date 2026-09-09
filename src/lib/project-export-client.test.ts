@@ -9,6 +9,7 @@ import {
   parseExportCampaignOptions,
   parseProjectExportOperation,
   projectExportRequestBody,
+  projectExportFormFromOperation,
   previewProjectExport,
   validateProjectExportPeriod,
   type ClientProjectExportOperation,
@@ -62,6 +63,22 @@ function json(value: unknown, init?: ResponseInit) {
 type Fetcher = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
 
 describe("project export browser contract", () => {
+
+  it.each(["Опубликован, проверяется", "Доставка не подтверждена", "published_unverified"])(
+    "reopens unknown filter %s using its canonical value without rewriting the saved operation", (status) => {
+      const saved = { ...operation, filters: { ...operation.filters, status: [status] } };
+      const before = JSON.stringify(saved);
+      const restored = projectExportFormFromOperation(saved);
+      expect(restored.status).toBe("published_unverified");
+      expect(projectExportRequestBody(restored).filters.status).toEqual(["published_unverified"]);
+      expect(JSON.stringify(saved)).toBe(before);
+    },
+  );
+
+  it.each(["Опубликован", "Подтверждено", "Запланирован"])("preserves other restored filters: %s", (status) => {
+    expect(projectExportFormFromOperation({ ...operation, filters: { ...operation.filters, status: [status] } }).status).toBe(status);
+  });
+
   it("accepts only a complete server operation and never accepts ready without an artifact", () => {
     expect(parseProjectExportOperation(operation)).toEqual(operation);
     expect(parseProjectExportOperation({ ...operation, artifact: null })).toBeNull();

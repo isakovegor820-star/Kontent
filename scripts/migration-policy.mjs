@@ -25,6 +25,8 @@ const APPROVED_REPLACED_CONSTRAINTS = new Set([
   "autopilot_settings_pkey",
   "content_brief_source_check",
   "rss_items_skip_reason_check",
+  // N18 replaces the global key with user/project/url after a coordinated cutover.
+  "rss_feeds_user_id_url_key",
   "site_analysis_jobs_status_check",
   "site_analysis_jobs_stage_check",
   "media_generations_prompt_policy_version_check",

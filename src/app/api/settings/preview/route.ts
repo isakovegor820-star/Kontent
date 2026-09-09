@@ -171,7 +171,7 @@ export async function POST(req: NextRequest) {
         temperature: 0.45,
         maxTokens: 1400,
         acceptLengthLimitedOutput: true,
-      });
+      }, { spendScope: { pool, userId: user.id, projectId: membership.projectId } });
       await pool.query(
         `update settings_preview_runs
             set status = 'succeeded', result_text = $2, completed_at = now()

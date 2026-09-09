@@ -43,7 +43,44 @@
     "worker": "AURORA_RUNTIME_ROLE=worker node --env-file=.env.local worker.mjs",
     "worker:site-analysis": "AURORA_RUNTIME_ROLE=worker node --env-file=.env.local scripts/site-analysis-worker.mjs",
     "worker:media": "AURORA_RUNTIME_ROLE=worker AURORA_WORKER_MODE=media node --env-file=.env.local worker.mjs",
-    "worker:publication": "AURORA_RUNTIME_ROLE=worker AURORA_WORKER_MODE=publication node --env-file=.env.local worker.mjs"
+    "worker:publication": "AURORA_RUNTIME_ROLE=worker AURORA_WORKER_MODE=publication node --env-file=.env.local worker.mjs",
+    "typecheck": "tsc --noEmit --incremental false",
+    "test:telegram-ownership:integration": "vitest run --config vitest.integration.config.ts src/e2e/telegram-ownership.integration.ts",
+    "test:ai-project-authorization:integration": "vitest run --config vitest.integration.config.ts src/e2e/ai-project-authorization.integration.ts",
+    "test:calendar-pagination:integration": "vitest run --config vitest.integration.config.ts src/e2e/calendar-pagination.integration.ts",
+    "test:project-request-context:integration": "vitest run --config vitest.integration.config.ts src/e2e/project-request-context.integration.ts",
+    "test:ai-spend:integration": "vitest run --config vitest.integration.config.ts src/e2e/ai-spend-failure-reproduction.integration.ts",
+    "test:sites-revision:integration": "vitest run --config vitest.integration.config.ts src/e2e/sites-revision.integration.ts",
+    "test:telegram-delivery:integration": "node scripts/test-telegram-delivery-integration.mjs",
+    "test:media-quota:integration": "node scripts/test-media-quota-integration.mjs",
+    "test:telemetry-envelope": "node scripts/telemetry-envelope-probe.mjs",
+    "test:media-lifecycle:integration": "node scripts/test-media-lifecycle-integration.mjs",
+    "test:restored-publications:integration": "node scripts/test-restored-publications-integration.mjs",
+    "test:capacity:integration": "node scripts/test-capacity-integration.mjs",
+    "test:admin-operations:integration": "vitest run --config vitest.integration.config.ts src/e2e/admin-operations-center.integration.ts",
+    "test:admin-alert-recipient:integration": "vitest run --config vitest.integration.config.ts src/e2e/admin-alert-recipient.integration.ts",
+    "test:sites-delivery:integration": "node scripts/test-sites-delivery-integration.mjs",
+    "test:native-project-media:integration": "vitest run --config vitest.integration.config.ts src/e2e/native-project-media.integration.ts",
+    "test:hosted-projection:integration": "vitest run --config vitest.integration.config.ts src/e2e/hosted-projection.integration.ts",
+    "test:runtime-operations:integration": "vitest run --config vitest.integration.config.ts src/e2e/runtime-operations.integration.ts",
+    "test:oauth-project-context:integration": "vitest run --config vitest.integration.config.ts src/e2e/oauth-project-context.integration.ts",
+    "test:publication-authority:integration": "node scripts/test-publication-authority-integration.mjs",
+    "test:publication-adjacent-authority:integration": "node scripts/test-publication-adjacent-authority-integration.mjs",
+    "test:admin-alert-delivery:integration": "vitest run --config vitest.integration.config.ts src/e2e/admin-alert-delivery.integration.ts",
+    "test:site-destination-identity:integration": "vitest run --config vitest.integration.config.ts src/e2e/site-destination-identity.integration.ts",
+    "test:rss-project-authorization:integration": "vitest run --config vitest.integration.config.ts src/e2e/rss-project-authorization.integration.ts",
+    "test:research-project-access:integration": "vitest run --config vitest.integration.config.ts src/e2e/research-project-access.integration.ts",
+    "test:legacy-content-project:integration": "vitest run --config vitest.integration.config.ts src/e2e/legacy-content-project.integration.ts",
+    "test:sites-ai-current-access:integration": "vitest run --config vitest.integration.config.ts src/e2e/sites-ai-current-access.integration.ts",
+    "test:project-fetch:browser": "node scripts/test-project-fetch-browser.mjs",
+    "test:admin-resource-auth:integration": "vitest run --config vitest.integration.config.ts src/e2e/admin-resource-auth.integration.ts",
+    "test:admin-system-integrity:integration": "vitest run --config vitest.integration.config.ts src/e2e/admin-system-integrity.integration.ts",
+    "test:admin-system-queues:integration": "vitest run --config vitest.integration.config.ts src/e2e/admin-system-queues.integration.ts",
+    "test:queue-worker-availability:integration": "vitest run --config vitest.integration.config.ts src/e2e/queue-worker-availability.integration.ts",
+    "test:project-export-filters:integration": "vitest run --config vitest.integration.config.ts src/e2e/project-export-filters.integration.ts",
+    "test:vk-connection-authority:integration": "vitest run --config vitest.integration.config.ts src/e2e/vk-connection-authority.integration.ts",
+    "test:production-diagnostics-privacy:integration": "vitest run --config vitest.integration.config.ts src/e2e/production-diagnostics-privacy.integration.ts",
+    "test:admin-access-recovery:integration": "vitest run --config vitest.integration.config.ts src/e2e/admin-access-recovery.integration.ts"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.1104.0",
@@ -55,13 +92,13 @@
     "ioredis": "^5.11.1",
     "lucide-react": "^1.24.0",
     "motion": "^12.42.2",
-    "next": "16.2.12",
+    "next": "16.3.4",
     "parse5": "^8.0.1",
     "pdfkit": "^0.17.2",
     "pg": "^8.22.0",
     "react": "19.2.4",
     "react-dom": "19.2.4",
-    "sharp": "^0.35.3"
+    "sharp": "0.35.4"
   },
   "devDependencies": {
     "@tailwindcss/postcss": "^4",
@@ -72,17 +109,18 @@
     "@types/react": "^19",
     "@types/react-dom": "^19",
     "eslint": "^9",
-    "eslint-config-next": "16.2.12",
+    "eslint-config-next": "16.3.4",
     "jsdom": "^29.1.1",
     "playwright-core": "^1.61.1",
     "tailwindcss": "^4",
     "typescript": "^5",
-    "vitest": "^4.1.10"
+    "vitest": "^4.1.11"
   },
   "overrides": {
-    "js-yaml": "4.3.1",
+    "js-yaml": "4.3.2",
     "nanoid": "3.3.18",
     "postcss": "8.5.26",
+    "sharp": "$sharp",
     "minimatch@3.1.5": {
       "brace-expansion": "1.1.18"
     },
@@ -90,8 +128,7 @@
       "brace-expansion": "5.0.9"
     },
     "next": {
-      "postcss": "8.5.26",
-      "sharp": "0.35.3"
+      "postcss": "8.5.26"
     }
   }
 }

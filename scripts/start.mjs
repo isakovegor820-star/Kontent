@@ -43,8 +43,10 @@ function start(label, args, env = process.env) {
   });
 }
 
-process.once("SIGINT", () => stop("SIGINT", 130));
-process.once("SIGTERM", () => stop("SIGTERM", 143));
+// A process-group signal can also be forwarded by npm. Keep the handlers installed
+// while children drain; stop() already makes repeated signals idempotent.
+process.on("SIGINT", () => stop("SIGINT", 130));
+process.on("SIGTERM", () => stop("SIGTERM", 143));
 
 try {
   resolveDatabasePoolConfig({ ...process.env, NODE_ENV: "production", AURORA_RUNTIME_ROLE: "web" });

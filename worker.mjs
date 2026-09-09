@@ -1,6 +1,17 @@
+import { createReadOnlyLifecycle } from "./worker/read-only-lifecycle.mjs";
+const readOnlyWork = createReadOnlyLifecycle();
+
 import { createMediaGenerationStore, recoverMediaDeliveries } from "./worker/media-generation-store.mjs";
 import { startTaskHeartbeat, WorkerTaskLeaseLost } from "./worker/task-heartbeat.mjs";
 import { CRON_SCHEDULES } from "./worker/cron-schedules.mjs";
+import { MAX_COMPETITORS } from "./src/lib/competitor-policy.mjs";
+import { requireResearchWorkerScope, requireRadarWorkerScope, withResearchWorkerWrite, ResearchProjectAccessError } from "./worker/research-project-scope.mjs";
+import { mediaStorageError, mediaStorageErrorLabel } from "./src/lib/media-storage-quota.mjs";
+import { beginAiSpendAttempt, withAiSpendScope, withChannelAiSpendScope, withSystemAiSpendScope } from "./src/lib/ai-spend-ledger.mjs";
+import { telegramUpdateContext, TELEGRAM_MESSAGE_METHODS, deliverTelegramUpdateCall } from "./worker/telegram-update-delivery.mjs";
+import { deliverTelegramBackgroundCall } from "./worker/telegram-background-delivery.mjs";
+import "./worker/outbound-guard.mjs";
+import { readTelegramResponse } from "./src/lib/telegram-response.mjs";
 // Д.3 — воркер публикации. Отдельный «всегда включённый» процесс: слушает очередь
 // и публикует посты точно в срок с сервера. Пользователь может закрыть ноутбук —
 // задача всё равно сработает.
@@ -77,7 +88,7 @@ import { extractSitePage } from "./src/lib/site-crawler.mjs";
 import {
   chooseMediaStorageBackend,
   loadMediaAssetBuffer,
-  putMediaObject,
+  withJournaledMediaObject,
 } from "./src/lib/media-storage.mjs";
 import {
   enqueueLegalVisualRenderJob,
@@ -275,7 +286,7 @@ import {
   AUDIENCE_STALE_PROJECT_DELIVERIES_SQL,
   classifyAudienceTelegramResponse,
 } from "./src/lib/audience-delivery-contract.mjs";
-import { beginProviderCall, claimPublicationLease } from "./worker/publication-lease.mjs";
+import { beginProviderCall, claimPublicationLease, claimPublicationPart, authorizeProviderStep } from "./worker/publication-lease.mjs";
 import { providerTerminalFailure } from "./worker/provider-terminal-failures.mjs";
 import {
   decideTelegramAggregateReconciliation,
@@ -343,9 +354,12 @@ import {
   maskBotAccountEmail,
   parseLegacyBotStartPayload,
 } from "./src/lib/bot-connection.mjs";
+import { verifyTelegramChannelActor } from "./src/lib/telegram-connect-provider.mjs";
 import {
   markTelegramChannelUnavailable,
   saveVerifiedTelegramChannel,
+  createTelegramChannelProof,
+  pendingTelegramChannelProof,
   telegramChannelAdminUrl,
   telegramChannelMembershipChange,
 } from "./src/lib/telegram-channel-connect.mjs";
@@ -575,6 +589,15 @@ async function findSupport(channelId, topic, k = TOP_K) {
  * и поиск возвращал бы одно и то же по два раза.
  */
 async function indexSource(sourceId) {
+  const source = (await pool.query(`select source.user_id, coalesce(channel.project_id,site.project_id) as project_id
+    from knowledge_sources source left join channels channel on channel.id=source.channel_id
+    left join sites site on site.id=source.site_id where source.id=$1`, [sourceId])).rows[0];
+  if (!source) return { error: "no_source" };
+  if (!source.project_id) return { error: "ai_spend_scope_required" };
+  return withAiSpendScope({ pool,userId:Number(source.user_id),projectId:Number(source.project_id) }, () => indexSourceScoped(sourceId));
+}
+
+async function indexSourceScoped(sourceId) {
   const src = (
     await pool.query(
       `select id, user_id, channel_id, site_id, kind, title, raw_text from knowledge_sources where id = $1`,
@@ -957,16 +980,8 @@ async function persistMediaResult(generation, outputUrl, lease) {
     kind: generation.kind,
     bytes: buffer.byteLength,
   });
-  const object = storageBackend === "object"
-    ? await putMediaObject({
-        projectId: generation.project_id,
-        sha256,
-        extension: ext,
-        mimeType: mime,
-        body: buffer,
-      })
-    : null;
-  const tx = await pool.connect();
+  const persist = async (object, objectClient = null) => {
+  const tx = objectClient || await pool.connect();
   try {
     await tx.query("begin");
     const locked = (
@@ -1026,19 +1041,17 @@ async function persistMediaResult(generation, outputUrl, lease) {
     await tx.query("commit");
   } catch (error) {
     await tx.query("rollback").catch(() => {});
-    if (object?.key) {
-      await pool.query(
-        `insert into media_object_orphans (object_key, reason_code, last_error_code)
-         values ($1, 'asset_transaction_failed', $2)
-         on conflict (object_key) do update
-           set reason_code = excluded.reason_code, last_error_code = excluded.last_error_code,
-               next_attempt_at = now(), deleted_at = null`,
-        [object.key, error?.code || "transaction_failed"],
-      ).catch(() => {});
-    }
+    const storageFailure = mediaStorageError(error);
+    if (storageFailure) throw new MediaGenerationAttemptError(storageFailure.code, mediaStorageErrorLabel(storageFailure.code));
     throw error;
   } finally {
-    tx.release();
+    if (!objectClient) tx.release();
+  }
+  };
+  if (storageBackend === "object") {
+    await withJournaledMediaObject({ pool, projectId: generation.project_id, sha256, extension: ext, mimeType: mime, body: buffer }, persist);
+  } else {
+    await persist(null);
   }
 }
 
@@ -1076,7 +1089,9 @@ const mediaWorker = AUTOPILOT_ONLY || PUBLICATION_ONLY ? null : new Worker(
     const maxAttempts = Number(job.opts.attempts || 1);
     const finalAttempt = job.attemptsMade + 1 >= maxAttempts;
     try {
-      const result = await executeMediaGenerationJob({
+      const spendOwner = (await pool.query("select user_id from media_generations where id=$1 and project_id=$2", [generationId,projectId])).rows[0];
+      if (!spendOwner) throw new UnrecoverableError("media_job_identity_invalid");
+      const result = await withAiSpendScope({ pool,userId:Number(spendOwner.user_id),projectId }, () => executeMediaGenerationJob({
         generationId,
         projectId,
         requestId,
@@ -1090,7 +1105,7 @@ const mediaWorker = AUTOPILOT_ONLY || PUBLICATION_ONLY ? null : new Worker(
         buildPayload: buildNavyMediaPayload,
         now: Date.now,
         wait: sleep,
-      }, { handoffPollAttempts: 100, handoffPollMs: 100 });
+      }, { handoffPollAttempts: 100, handoffPollMs: 100 }));
       console.log("[media-worker]", {
         event: "attempt_completed",
         requestId,
@@ -1187,21 +1202,30 @@ const MAX_ATTEMPTS = 3;
 
 /** Вызов Bot API. Одна дверь наружу — таймаут и разбор ответа в одном месте. */
 async function tg(method, body, timeoutMs = 20_000) {
+  const update = telegramUpdateContext.getStore();
+  if (!update || !TELEGRAM_MESSAGE_METHODS.has(method)) return tgTransport(method, body, timeoutMs);
+  return deliverTelegramUpdateCall({
+    pool, botId: Number(TOKEN.split(":")[0]), updateId: update.updateId,
+    partIndex: update.next++, method, body, send: () => tgTransport(method, body, timeoutMs),
+  });
+}
+
+async function tgRead(method, body, timeoutMs = 15_000) {
+  if (!["getChat", "getChatMemberCount"].includes(method)) throw new Error("telegram_read_method_required");
+  return tgTransport(method, body, timeoutMs, readOnlyWork.fetch);
+}
+
+async function tgTransport(method, body, timeoutMs = 20_000, fetchImpl = fetch) {
   const recordsDelivery = new Set(["sendMessage", "editMessageText", "editMessageReplyMarkup"]).has(method)
     && Number.isSafeInteger(Number(body?.chat_id));
   try {
-    const r = await fetch(`${TELEGRAM_API_URL}/bot${TOKEN}/${method}`, {
+    const r = await fetchImpl(`${TELEGRAM_API_URL}/bot${TOKEN}/${method}`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       signal: AbortSignal.timeout(timeoutMs), // без таймаута зависший запрос блокирует очередь (ревью)
       body: JSON.stringify(body),
     });
-    const parsed = await r.json().catch(() => ({ ok: false, description: `HTTP ${r.status}` }));
-    const result = parsed?.ok !== true
-      && !Number.isInteger(Number(parsed?.error_code))
-      && r.status >= 400
-      ? { ...parsed, error_code: r.status }
-      : parsed;
+    const result = await readTelegramResponse(r);
     if (recordsDelivery) {
       await pool.query(
         `insert into bot_delivery_events (
@@ -1297,7 +1321,7 @@ async function tgSendAsset(chatId, asset, captionHtml = null) {
     body: form,
     signal: AbortSignal.timeout(isVideo ? 120_000 : 60_000),
   });
-  return response.json().catch(() => ({ ok: false, description: "Telegram не принял файл" }));
+  return readTelegramResponse(response);
 }
 
 async function tgSendMediaGroup(chatId, assets, captionHtml = null) {
@@ -1322,7 +1346,7 @@ async function tgSendMediaGroup(chatId, assets, captionHtml = null) {
     body: form,
     signal: AbortSignal.timeout(120_000),
   });
-  return response.json().catch(() => ({ ok: false, description: "Telegram не принял карусель" }));
+  return readTelegramResponse(response);
 }
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -1380,7 +1404,7 @@ async function vkPostStats(token, groupId, postId) {
 
 /** Telegram: текущий путь tgSend, без изменений логики. Текст прогоняем через
  * форматтер-гарант: даже если ИИ или человек дал «простыню», в канал уйдёт структура. */
-async function publishTg(channel, postId, text, media, frozenPayload = false) {
+async function publishTg(channel, postId, text, media, admission, frozenPayload = false) {
   try {
     const isCarousel = media?.kind === "carousel";
     const carouselItems = isCarousel && Array.isArray(media.items) ? media.items : [];
@@ -1490,31 +1514,29 @@ async function publishTg(channel, postId, text, media, frozenPayload = false) {
     const delivery = {
       parts,
       sendText: (value) => tgSendHtml(channel.tg_chat_id, value),
-      markSending: (part) => pool.query(
-        `update publication_parts set send_status = 'sending', updated_at = now()
-          where id = $1 and send_status in ('pending','failed')`,
-        [part.id],
-      ),
+      markSending: (part) => claimPublicationPart(pool, {
+        ...admission, postId, projectId: channel.project_id, partId: part.id,
+      }),
       markSent: async (part, messageId) => (await pool.query(
         `update publication_parts
             set send_status = 'sent', external_message_id = $2,
                 verification_state = 'verified', attempts = attempts + 1,
                 last_error_code = null, last_verified_at = now(), updated_at = now()
-          where id = $1 returning id, part_index, part_type, external_message_id, send_status`,
+          where id = $1 and send_status = 'sending' returning id, part_index, part_type, external_message_id, send_status`,
         [part.id, messageId],
       )).rows[0],
       markFailed: (part, response) => pool.query(
         `update publication_parts
             set send_status = 'failed', attempts = attempts + 1,
                 last_error_code = $2, updated_at = now()
-          where id = $1`,
+          where id = $1 and send_status in ('pending','failed','sending') and external_message_id is null`,
         [part.id, response?.error_code === 429 ? "telegram_rate_limited" : "telegram_send_failed"],
       ),
       markUnknown: (part) => pool.query(
         `update publication_parts
             set send_status = 'unknown', attempts = attempts + 1,
                 last_error_code = 'delivery_unknown', updated_at = now()
-          where id = $1`,
+          where id = $1 and send_status in ('pending','failed','sending') and external_message_id is null`,
         [part.id],
       ),
     };
@@ -1612,7 +1634,8 @@ async function loadOAuthToken(channel) {
 }
 
 /** Обновляет access_token по refresh_token и сохраняет новый конверт в oauth_tokens. */
-async function refreshOAuthToken(channel, tok) {
+async function refreshOAuthToken(channel, tok, authorize) {
+  if (typeof authorize !== "function" || !(await authorize())) return { authorityLost: true };
   const cfg = getOAuthConfig(channel.network);
   if (!cfg || !tok.refreshToken) return null;
   try {
@@ -1643,7 +1666,10 @@ async function refreshOAuthToken(channel, tok) {
  *   { ok: true, externalId, postUrl } | { ok: false, reason }
  * payload: { text, media, title, privacyStatus }.
  */
-async function publishOAuth(channel, payload) {
+async function publishOAuth(channel, payload, authorize) {
+  const authorityLost = { ok: false, outcome: PROVIDER_OUTCOMES.DEFINITE_FAILURE, authorityLost: true,
+    code: "publication_authority_lost", reason: "Право на публикацию изменилось", deliveryUnknown: false };
+  if (typeof authorize !== "function" || !(await authorize())) return authorityLost;
   const adapter = getAdapter(channel.network);
   if (!adapter) return { ok: false, reason: `сеть ${channel.network} не поддерживается` };
 
@@ -1659,16 +1685,23 @@ async function publishOAuth(channel, payload) {
 
   // Токен на исходе (<5 мин) — обновляем заранее, чтобы не получить 401 на публикации.
   if (tok.expiresAt && tok.expiresAt.getTime() - Date.now() < 5 * 60 * 1000) {
-    tok = (await refreshOAuthToken(channel, tok)) || tok;
+    const fresh = await refreshOAuthToken(channel, tok, authorize);
+    if (fresh?.authorityLost) return authorityLost;
+    tok = fresh || tok;
   }
 
+  if (!(await authorize())) return authorityLost;
   let res = await adapter.publish(tok.accessToken, payload, tok.externalId);
 
+  // An ambiguous acknowledgement is never evidence that a 401-looking request failed.
+  if (res.deliveryUnknown || res.outcome === "delivery_unknown") return res;
   // 401/протухший токен — один раз обновляем и повторяем.
   if (!res.ok && /401|invalid.*(token|grant)|expired/i.test(res.reason || "")) {
-    const fresh = await refreshOAuthToken(channel, tok);
+    const fresh = await refreshOAuthToken(channel, tok, authorize);
+    if (fresh?.authorityLost) return authorityLost;
     if (fresh) {
       tok = fresh;
+      if (!(await authorize())) return authorityLost;
       res = await adapter.publish(tok.accessToken, payload, tok.externalId);
     } else {
       return {
@@ -1703,18 +1736,20 @@ const WORKER_LOCAL_AI_TIMEOUT_MS = 240_000;
 // бэкофф. Не-429 ответы (включая 404) возвращаем как есть — вызывающий код сам проверяет r.ok.
 const TG_FETCH_ATTEMPTS = 3;
 async function fetchTgWithBackoff(url) {
+  readOnlyWork.throwIfStopped();
   let delay = 2000;
   for (let attempt = 1; attempt <= TG_FETCH_ATTEMPTS; attempt++) {
     let res;
     try {
-      res = await fetch(url, {
+      res = await readOnlyWork.fetch(url, {
         headers: { "user-agent": "Mozilla/5.0" },
         signal: AbortSignal.timeout(15_000),
       });
     } catch (err) {
+      readOnlyWork.throwIfStopped();
       if (attempt === TG_FETCH_ATTEMPTS) throw err;
       console.warn(`[recon] сеть: ${err?.message}; повтор через ${Math.round(delay / 1000)}с (попытка ${attempt})`);
-      await sleep(delay);
+      await readOnlyWork.wait(delay);
       delay *= 2;
       continue;
     }
@@ -1725,7 +1760,7 @@ async function fetchTgWithBackoff(url) {
         return res; // r.ok = false → вызывающий обработает как пустой результат
       }
       console.warn(`[recon] 429 от t.me, ждём ${Math.round(wait / 1000)}с (попытка ${attempt})`);
-      await sleep(wait);
+      await readOnlyWork.wait(wait);
       delay *= 2;
       continue;
     }
@@ -1774,6 +1809,7 @@ const BOT_NOTIFICATION_FIELDS = Object.freeze({
   opportunity: "content_opportunities_enabled",
   daily: "daily_digest_enabled",
   weekly: "weekly_digest_enabled",
+  post_result: "post_results_enabled",
 });
 
 async function notifyUser(userId, text, buttons, options = {}) {
@@ -1782,6 +1818,7 @@ async function notifyUser(userId, text, buttons, options = {}) {
     const projectId = Number.isSafeInteger(explicitProjectId) && explicitProjectId > 0
       ? explicitProjectId
       : null;
+    if (projectId === null) return false;
     const preferenceField = BOT_NOTIFICATION_FIELDS[options.kind] || null;
     const selected = (
       await pool.query(
@@ -1790,14 +1827,16 @@ async function notifyUser(userId, text, buttons, options = {}) {
                 coalesce(user_control.enabled, true) as user_enabled,
                 coalesce(project_control.enabled, true) as project_enabled
            from users
-           left join user_project_preferences selected on selected.user_id = users.id
+           join project_members member on member.user_id = users.id
+             and member.project_id = $2 and member.status = 'active'
+           join projects project on project.id = member.project_id and project.is_archived = false
            left join bot_notification_preferences preference
              on preference.user_id = users.id
-            and preference.project_id = coalesce($2::bigint, selected.selected_project_id)
+            and preference.project_id = $2
            left join bot_user_controls user_control on user_control.user_id = users.id
            left join bot_project_controls project_control
-             on project_control.project_id = coalesce($2::bigint, selected.selected_project_id)
-          where users.id = $1`,
+             on project_control.project_id = $2
+          where users.id = $1 and users.blocked_at is null`,
         [userId, projectId],
       )
     ).rows[0];
@@ -1805,15 +1844,32 @@ async function notifyUser(userId, text, buttons, options = {}) {
     if (!chat) return false;
     if (selected.user_enabled === false || selected.project_enabled === false) return false;
     if (preferenceField && selected.enabled === false && options.force !== true) return false;
-    const res = await tgSend(chat, text, buttons);
-    if (res?.ok) return true;
-    // 403 = человек заблокировал бота. Забываем чат, иначе будем долбиться в стену вечно.
-    if (/bot was blocked|user is deactivated|chat not found/i.test(res?.description || "")) {
-      await pool.query(`update users set tg_chat_id = null where id = $1`, [userId]);
-      console.warn(`[bot] user ${userId} заблокировал бота — отвязал`);
-    } else {
-      console.error(`[bot] не доставлено user ${userId}:`, res?.description);
-    }
+    const payload = { chat_id: chat, text: toTelegramHtml(text), parse_mode: "HTML", disable_web_page_preview: true, reply_markup: keyboard(buttons) };
+    const outcome = await deliverTelegramBackgroundCall({
+      pool, userId, projectId, eventKey: options.eventKey,
+      botId: Number(String(TOKEN || "").split(":")[0]), chatId: Number(chat),
+      body: payload,
+      beforeSend: async () => {
+        const current = (await pool.query(
+          `select 1 from users actor
+             join project_members member on member.user_id=actor.id and member.project_id=$2 and member.status='active'
+             join projects project on project.id=member.project_id and project.is_archived=false
+             left join bot_user_controls user_control on user_control.user_id=actor.id
+             left join bot_project_controls project_control on project_control.project_id=$2
+             left join bot_notification_preferences preference on preference.project_id=$2 and preference.user_id=actor.id
+            where actor.id=$1 and actor.blocked_at is null and actor.tg_chat_id=$3
+              and coalesce(user_control.enabled,true) and coalesce(project_control.enabled,true)
+              and ($4::boolean or coalesce(preference.${preferenceField || "publication_failure_enabled"},true))`,
+          [userId,projectId,chat,!preferenceField || options.force === true],
+        )).rowCount;
+        return current === 1;
+      },
+      // This stable event has its own receipt; do not consume the interactive update part counter.
+      send: () => tgTransport("sendMessage", payload),
+    });
+    // true is confirmed, false is a proved denial/rejection, null is durable uncertainty.
+    if (outcome.kind === "accepted") return true;
+    if (outcome.kind === "unknown") return null;
     return false;
   } catch (err) {
     console.error(`[bot] ошибка отправки user ${userId}:`, err?.message);
@@ -1830,6 +1886,8 @@ async function notifyUser(userId, text, buttons, options = {}) {
 // и одновременно висит не больше одного вопроса — ИИ не превращается в интервьюера.
 async function maybeAskGap(userId, channelId, topic, question) {
   try {
+    const projectId = Number((await pool.query("select project_id from channels where id=$1", [channelId])).rows[0]?.project_id);
+    if (!Number.isSafeInteger(projectId) || projectId <= 0) return false;
     const dup = await pool.query(
       `select 1 from gap_questions where user_id = $1 and topic = $2
          and created_at > now() - interval '14 days' limit 1`,
@@ -1850,12 +1908,13 @@ async function maybeAskGap(userId, channelId, topic, question) {
     const id = Number(ins.rows[0].id);
     const sent = await notifyUser(userId, `🧠 ${question}`, [
       [{ text: "Отвечу позже", data: `gap:skip:${id}` }],
-    ]);
-    if (!sent) {
+    ], { projectId, eventKey: `gap:${id}` });
+    if (sent === false) {
       // Бот не привязан — вопрос не должен висеть pending вечно (блокировал бы следующие).
       await pool.query(`update gap_questions set status = 'skipped' where id = $1`, [id]);
       return false;
     }
+    if (sent === null) return false; // keep pending; the provider may have delivered the question
     console.log(`[gap] user ${userId}: спросил «${topic}»`);
     return true;
   } catch (err) {
@@ -2027,7 +2086,7 @@ const worker = AUTOPILOT_ONLY || MEDIA_ONLY ? null : new Worker(
           post.user_id,
           blockedNotice,
           undefined,
-          { kind: "failure", projectId },
+          { kind: "failure", projectId, eventKey: `post:${postId}:r${scheduleRevision}:unsupported` },
         );
       }
       return;
@@ -2036,12 +2095,12 @@ const worker = AUTOPILOT_ONLY || MEDIA_ONLY ? null : new Worker(
     // Канал подключён? Для каждой сети свой обязательный набор полей.
     // OAuth-сети (youtube/instagram/...) публикуют через oauth_tokens — нужен oauth_token_id.
     const OAUTH_NETWORKS = ["youtube", "instagram", "x", "tiktok", "linkedin"];
-    const connected =
+    const connected = channel?.status === "active" && (
       channel?.is_active && channel?.network === "vk"
         ? !!(channel.vk_group_id && channel.vk_token)
         : channel?.is_active && OAUTH_NETWORKS.includes(channel?.network)
           ? !!channel?.oauth_token_id
-          : !!(channel?.is_active && channel?.tg_chat_id);
+          : !!(channel?.is_active && channel?.tg_chat_id));
     if (!connected) {
       await pool.query(`update posts set status = 'failed', last_error = $2,
                                         publish_lease_token = null
@@ -2066,6 +2125,7 @@ const worker = AUTOPILOT_ONLY || MEDIA_ONLY ? null : new Worker(
       projectId,
       scheduleRevision,
       leaseToken,
+      expectedChannel: channel,
     });
     if (!providerCallStarted) {
       console.info("[publication_event]", {
@@ -2103,9 +2163,21 @@ const worker = AUTOPILOT_ONLY || MEDIA_ONLY ? null : new Worker(
         media,
         title: media?.title || firstLine.slice(0, 100) || "Видео из Авроры",
         privacyStatus: media?.privacyStatus || "private",
-      });
+      }, () => authorizeProviderStep(pool, {postId,projectId,scheduleRevision,leaseToken,expectedChannel:channel}));
     } else {
-      out = await publishTg(channel, post.id, post.text, post.media, post.publication_origin === "autopilot" && Number(post.publication_draft_version) > 0);
+      out = await publishTg(channel, post.id, post.text, post.media,
+        { scheduleRevision, leaseToken, expectedChannel: channel },
+        post.publication_origin === "autopilot" && Number(post.publication_draft_version) > 0);
+    }
+
+    if (out.authorityLost) {
+      await pool.query(
+        `update posts set status='failed', last_error='Право на публикацию изменилось',
+          verification_error_code='publication_authority_lost', publish_lease_token=null, next_attempt_at=null
+         where id=$1 and project_id=$2 and publish_lease_token=$3 and schedule_revision=$4`,
+        [postId,projectId,leaseToken,scheduleRevision],
+      );
+      return;
     }
 
     const channelFailure = channel.network === "vk"
@@ -2150,7 +2222,7 @@ const worker = AUTOPILOT_ONLY || MEDIA_ONLY ? null : new Worker(
         post.user_id,
         "⚠️ Публикация остановлена: канал нужно переподключить в настройках. Новые посты в него не ставятся в очередь.",
         undefined,
-        { kind: "failure", projectId },
+        { kind: "failure", projectId, eventKey: `post:${postId}:r${scheduleRevision}:auth-failed` },
       );
       recordPublicationOutcome({
         userId: post.user_id, projectId, postId, startedAt: jobStartedAt, attempt: post.attempts + 1,
@@ -2197,7 +2269,7 @@ const worker = AUTOPILOT_ONLY || MEDIA_ONLY ? null : new Worker(
         post.user_id,
         "⚠️ Внешняя сеть не подтвердила результат отправки. Проверь канал: повтор автоматически не запускаю, чтобы не создать дубль.",
         undefined,
-        { kind: "failure", projectId },
+        { kind: "failure", projectId, eventKey: `post:${postId}:r${scheduleRevision}:delivery-unknown` },
       );
       // Delivery is unknown, not failed: the stage is terminal but the outcome stays pending.
       recordPublicationOutcome({
@@ -2264,7 +2336,7 @@ const worker = AUTOPILOT_ONLY || MEDIA_ONLY ? null : new Worker(
         `✅ Пост вышел${channel.title ? ` в «${channel.title}»` : ""}. Посмотрим, как зайдёт — цифры пришлю позже.`;
       const okBtns = out.postUrl ? [[{ text: "Открыть пост", url: out.postUrl }]] : undefined;
       // Нет привязанного чата — выбор пользователя, владельцу чужой пост не шлём (была утечка).
-      await notifyUser(post.user_id, okText, okBtns, { kind: "success", projectId });
+      await notifyUser(post.user_id, okText, okBtns, { kind: "success", projectId, eventKey: `post:${postId}:r${scheduleRevision}:success` });
       try {
         const extras = await triggerPublicationExtrasAfterPublish({
           pool,
@@ -2346,7 +2418,7 @@ const worker = AUTOPILOT_ONLY || MEDIA_ONLY ? null : new Worker(
           `⚠️ Пост не ушёл — ${reason}. Пробую ещё раз через ${nextMin} минут, ничего делать не нужно. ` +
             `Если не получится за 3 попытки — скажу.`,
           undefined,
-          { kind: "failure", projectId },
+          { kind: "failure", projectId, eventKey: `post:${postId}:r${scheduleRevision}:retry` },
         );
       }
     } else {
@@ -2370,7 +2442,7 @@ const worker = AUTOPILOT_ONLY || MEDIA_ONLY ? null : new Worker(
       const failBtn = [[{ text: "Отправить снова", data: `retry:${postId}` }]];
       // Только автору поста: неудача публикации — событие пользователя, а не платформы.
       // Не привязал чат — его выбор, владельцу чужой пост не пересылаем (была утечка).
-      await notifyUser(post.user_id, failText, failBtn, { kind: "failure", projectId });
+      await notifyUser(post.user_id, failText, failBtn, { kind: "failure", projectId, eventKey: `post:${postId}:r${scheduleRevision}:failed` });
     }
   },
   { connection },
@@ -2533,6 +2605,7 @@ async function botProject(userId, explicitProjectId = null) {
               )::int as reconnect_count
          from project_members member
          join projects project on project.id = member.project_id and project.is_archived = false
+         join users actor on actor.id = member.user_id and actor.blocked_at is null
          left join bot_project_controls project_control on project_control.project_id = project.id
          left join user_project_preferences preference on preference.user_id = member.user_id
          left join channels channel on channel.project_id = project.id
@@ -2684,7 +2757,7 @@ function botConnectionButtons(input = {}) {
   return [
     ...(channelConnectUrl ? [[{
       text: input.activeChannels > 0 ? "Добавить ещё канал" : "Подключить Telegram-канал",
-      url: channelConnectUrl,
+      data: "connection:add",
     }]] : []),
     [{ text: "Проверить снова", data: "connection:status" }],
     [{ text: "Выбрать проект", data: "connection:projects" }, { text: "Настроить уведомления", data: "menu:notifications" }],
@@ -2870,7 +2943,7 @@ async function botSendConnectionOnboarding(chatId, from, options = {}) {
 /** Кто написал и разрешён ли ему bot-only доступ. */
 async function userByChat(chatId) {
   return (await pool.query(
-    `select app_user.id, coalesce(control.enabled, true) as enabled
+    `select app_user.id, (app_user.blocked_at is null and coalesce(control.enabled, true)) as enabled
        from users app_user left join bot_user_controls control on control.user_id = app_user.id
       where app_user.tg_chat_id = $1`,
     [chatId],
@@ -2878,7 +2951,7 @@ async function userByChat(chatId) {
 }
 
 async function botChannelConnectPrompt(userId, options = {}) {
-  const project = await botProject(userId);
+  const project = await botProject(userId, options.projectId);
   const url = telegramChannelAdminUrl(process.env.TG_BOT_USERNAME);
   if (
     !project
@@ -2886,6 +2959,15 @@ async function botChannelConnectPrompt(userId, options = {}) {
     || (!options.force && Number(project.channel_count || 0) > 0)
     || !url
   ) return null;
+  const intent = await createTelegramChannelProof(pool, { userId, projectId: Number(project.id), source: "telegram" });
+  if (intent.state !== "ready") return {
+    text: intent.state === "connection_pending_other_project"
+      ? "Сначала заверши подключение к предыдущему проекту или подожди пять минут. Ссылка сохраняет выбранный проект."
+      : intent.state === "access_denied"
+        ? "Доступ к аккаунту приостановлен. Канал не подключён."
+      : "Сначала подключи личный чат Telegram к аккаунту Авроры.",
+    buttons: [],
+  };
   return {
     text: formatBotChannelConnectPrompt({ projectName: project.name }),
     buttons: [[{ text: "Выбрать канал", url }]],
@@ -2938,29 +3020,36 @@ async function handleTelegramChannelMembership(update) {
     return true;
   }
 
-  const project = await botProject(userId);
-  if (!project) {
-    const projects = await botProjects(userId);
-    await tgSend(actorChatId, "Канал пока не подключён: сначала выбери проект для команд Telegram.", projects.buttons);
+  const proof = await pendingTelegramChannelProof(pool, { actorId: actorChatId, eventDate: Number(membership.date) });
+  if (!proof || Number(proof.user_id) !== userId) {
+    await tgSend(actorChatId, "Канал не подключён: открой свежее подключение в настройках Авроры или командой /connect, затем выбери канал.");
     return true;
   }
-  if (project.role !== "owner") {
-    await tgSend(
-      actorChatId,
-      `Канал пока не подключён к проекту «${project.name}». Подключать каналы может только владелец проекта.`,
-      [[{ text: "Выбрать другой проект", data: "connection:projects" }]],
-    );
+  const project = await botProject(userId, Number(proof.project_id));
+  if (!project || project.role !== "owner") {
+    await tgSend(actorChatId, "Права в проекте изменились, поэтому канал не подключён. Выбери проект заново.");
     return true;
   }
-
-  const verified = await tg("getChat", { chat_id: chatId }, 8_000).catch(() => null);
-  const chat = verified?.ok === true ? verified.result : membership.chat;
+  let chat;
+  try {
+    chat = await verifyTelegramChannelActor({ token: process.env.TG_BOT_TOKEN, actorId: actorChatId, chatRef: chatId });
+  } catch (error) {
+    const message = error.code === "telegram_actor_not_admin"
+      ? "Канал не подключён: у твоего Telegram-аккаунта нет права публикации в нём."
+      : error.code === "not_admin"
+        ? "Канал не подключён: выдай боту право «Публикация сообщений»."
+        : "Telegram временно не подтвердил права. Канал не подключён. Повтори подключение чуть позже.";
+    await tgSend(actorChatId, message);
+    return true;
+  }
   const saved = await saveVerifiedTelegramChannel(pool, {
-    userId,
-    projectId: Number(project.id),
-    chat,
-    requestId,
+    userId, projectId: Number(proof.project_id), actorId: actorChatId,
+    proofId: proof.proof_id, eventId: Number(update.update_id), chat, requestId,
   });
+  if (saved.state === "proof_required" || saved.state === "proof_invalid") {
+    await tgSend(actorChatId, "Подтверждение подключения истекло или уже использовано. Открой новое подключение в Авроре.");
+    return true;
+  }
 
   if (saved.state === "taken") {
     await tgSend(
@@ -2979,7 +3068,7 @@ async function handleTelegramChannelMembership(update) {
   if (statsProducerQueue && Number.isSafeInteger(channelId) && channelId > 0) {
     await statsProducerQueue.add(
       "discover",
-      { userId, channelId },
+      { userId, projectId: Number(proof.project_id), channelId },
       {
         jobId: `discover-${userId}-${channelId}`,
         removeOnComplete: true,
@@ -3034,6 +3123,7 @@ async function handleStart(chatId, from, code) {
   );
   const channelPrompt = await botChannelConnectPrompt(Number(link.userId), {
     force: startPayload.intent === "channel",
+    projectId: link.projectId,
   });
   if (channelPrompt) {
     await tgSend(chatId, channelPrompt.text, channelPrompt.buttons);
@@ -3065,13 +3155,14 @@ async function answerCb(id, text) {
 // вовсе, а прирост считался от позавчера — график роста врал (ревью).
 const mskToday = () => new Date().toLocaleDateString("en-CA", { timeZone: "Europe/Moscow" });
 
-async function tgMemberCount(chatId) {
+async function tgMemberCount(chatId, { restartable = false } = {}) {
   try {
     // POST через единый tg()-эгресс: параметры в теле, а не в query-string
     // (токен и chat_id не оседают в access-логах прокси).
-    const d = await tg("getChatMemberCount", { chat_id: chatId }, 15_000);
+    const d = await (restartable ? tgRead : tg)("getChatMemberCount", { chat_id: chatId }, 15_000);
     return d.ok ? d.result : null;
   } catch {
+    if (restartable) readOnlyWork.throwIfStopped();
     return null;
   }
 }
@@ -3561,6 +3652,7 @@ function parseTelegramPublicPage(html) {
 // afterPostId. Поиск по нише передаёт exhaustive=true и идёт назад через `before`, пока Telegram не вернёт
 // пустую/повторную страницу. Оба режима останавливаются по фактической границе, а не по лимиту постов.
 async function fetchCompetitorPage(handle, { exhaustive = false, afterPostId = null } = {}) {
+  readOnlyWork.throwIfStopped();
   const normalizedHandle = String(handle).replace(/^@/, "");
   const out = {
     ok: false,
@@ -3580,6 +3672,7 @@ async function fetchCompetitorPage(handle, { exhaustive = false, afterPostId = n
       const response = await fetchTgWithBackoff(url);
       if (!response?.ok) break;
       const html = await response.text();
+      readOnlyWork.throwIfStopped();
       if (!out.ok) {
         const subscribersMatch = html.match(/counter_value">([^<]+)<\/span>\s*<span class="counter_type">subscribers/);
         if (subscribersMatch) out.subscribers = parseCount(subscribersMatch[1].replace(/\s/g, ""));
@@ -3610,11 +3703,12 @@ async function fetchCompetitorPage(handle, { exhaustive = false, afterPostId = n
       }
       seenBoundaries.add(decision.nextBefore);
       before = decision.nextBefore;
-      await sleep(180);
+      await readOnlyWork.wait(180);
     }
     out.posts.sort((left, right) => right.msgId - left.msgId);
     return out;
   } catch (err) {
+    readOnlyWork.throwIfStopped();
     console.error("[recon] разбор t.me/s не удался:", err?.message);
     out.posts.sort((left, right) => right.msgId - left.msgId);
     return out;
@@ -3730,6 +3824,10 @@ async function upsertRadarPublicCorpus({ handle, page, activity, provider, embed
 }
 
 async function indexPendingRadarCorpus(limit = 24) {
+  return withSystemAiSpendScope(pool, () => indexPendingRadarCorpusScoped(limit));
+}
+
+async function indexPendingRadarCorpusScoped(limit = 24) {
   const rows = (
     await pool.query(
       `select id, content_sample
@@ -3759,6 +3857,7 @@ async function indexPendingRadarCorpus(limit = 24) {
 
 // Собрать досье одного конкурента: название + подписчики (Bot API) + посты (страница).
 async function collectTelegramCompetitor(comp) {
+  readOnlyWork.throwIfStopped();
   await pool.query(
     `update competitors set status = 'refreshing', sync_started_at = now()
       where id = $1 and is_active`,
@@ -3767,12 +3866,14 @@ async function collectTelegramCompetitor(comp) {
   const ref = "@" + comp.handle;
   let title = null;
   try {
-    const gc = await tg("getChat", { chat_id: ref }, 15_000);
+    const gc = await tgRead("getChat", { chat_id: ref }, 15_000);
     if (gc.ok && gc.result?.type === "channel") title = gc.result.title ?? null;
   } catch {
+    readOnlyWork.throwIfStopped();
     /* сеть — возьмём название со страницы */
   }
-  let subscribers = await tgMemberCount(ref);
+  await requireResearchWorkerScope(pool, comp.researchScope.userId, comp.channel_id, comp.researchScope.projectId);
+  let subscribers = await tgMemberCount(ref, { restartable: true });
 
   const latestStoredPostId = (
     await pool.query(
@@ -3780,10 +3881,13 @@ async function collectTelegramCompetitor(comp) {
       [comp.id],
     )
   ).rows[0]?.latest_post_id ?? null;
+  await requireResearchWorkerScope(pool, comp.researchScope.userId, comp.channel_id, comp.researchScope.projectId);
   const page = await fetchCompetitorPage(comp.handle, { afterPostId: latestStoredPostId });
+  readOnlyWork.throwIfStopped();
   if (title == null) title = page.title;
   if (subscribers == null) subscribers = page.subscribers;
 
+  const persisted = await withResearchWorkerWrite(pool, comp.researchScope, async (pool) => {
   // Ничего не собралось — канал закрыт/не существует. Честная ошибка в карточку.
   if (!page.ok && title == null && subscribers == null) {
     await pool.query(
@@ -3792,7 +3896,7 @@ async function collectTelegramCompetitor(comp) {
       [comp.id, "Канал не найден или закрыт — досье собирается только по публичным каналам."],
     );
     console.log(`[recon] @${comp.handle}: закрыт/не найден`);
-    return;
+    return false;
   }
 
   // Канал отвечает, но ленты в нём нет: t.me/s/ отдал только шапку (закрытая лента,
@@ -3811,7 +3915,7 @@ async function collectTelegramCompetitor(comp) {
       ],
     );
     console.log(`[recon] @${comp.handle}: лента закрыта, постов нет`);
-    return;
+    return false;
   }
 
   for (const p of page.posts) {
@@ -3856,6 +3960,10 @@ async function collectTelegramCompetitor(comp) {
   console.log(
     `[recon] @${comp.handle}: ${page.posts.length} постов, ${subscribers ?? "?"} подписчиков`,
   );
+  return true;
+  });
+  if (!persisted) return;
+  readOnlyWork.throwIfStopped();
   await upsertRadarPublicCorpus({
     handle: comp.handle,
     page: { ...page, title, subscribers },
@@ -3863,6 +3971,7 @@ async function collectTelegramCompetitor(comp) {
     provider: "competitor-collector",
   }).catch((error) => console.warn(`[radar-index] @${comp.handle}:`, error?.message));
 
+  readOnlyWork.throwIfStopped();
   // Д.7: сразу после сбора ищем залёты и генерируем идеи.
   await detectHits({
     id: comp.id,
@@ -3895,12 +4004,16 @@ async function collectInstagramCompetitor(comp) {
     )
   ).rows[0];
   const token = authChannel ? await loadOAuthToken(authChannel) : null;
+  await requireResearchWorkerScope(pool, comp.researchScope.userId, comp.channel_id, comp.researchScope.projectId);
   const result = await fetchInstagramBusinessDiscovery({
     accessToken: token?.accessToken,
     ownAccountId: token?.externalId,
     username: comp.handle,
+    fetchImpl: readOnlyWork.fetch,
   });
+  readOnlyWork.throwIfStopped();
 
+  await withResearchWorkerWrite(pool, comp.researchScope, async (pool) => {
   if (!result.ok) {
     await pool.query(
       `update competitors set status = 'error', last_error = $2, collected_at = now(),
@@ -3953,10 +4066,16 @@ async function collectInstagramCompetitor(comp) {
     [comp.id, profile.id, profile.name || `@${profile.username}`, profile.avatarUrl, profile.followersCount],
   );
   console.log(`[recon] Instagram @${comp.handle}: ${profile.posts.length} публикаций`);
+  });
 }
 
-async function collectCompetitor(comp) {
+async function collectCompetitor(comp, request = {}) {
   if (!comp?.is_active) return;
+  const researchScope = await requireResearchWorkerScope(pool, Number(request.userId ?? comp.collection_requested_by_user_id), Number(comp.channel_id), request.projectId ?? null);
+  return withChannelAiSpendScope(pool, researchScope.userId, researchScope.channelId, () => collectCompetitorScoped({ ...comp, researchScope }));
+}
+async function collectCompetitorScoped(comp) {
+  readOnlyWork.throwIfStopped();
   if (comp.network === "instagram") return collectInstagramCompetitor(comp);
   if (comp.network === "tg") return collectTelegramCompetitor(comp);
   await pool.query(
@@ -3999,7 +4118,7 @@ async function insertRadarResult({
   rank,
   rawData = {},
 }) {
-  const inserted = await pool.query(
+  const inserted = await radarRunQuery(runId, userId,
     `insert into radar_search_results
        (run_id, user_id, discovered_source_id, public_source_id, result_type, provider, canonical_key,
         url, handle, external_id, title, description, text, posted_at, subscribers,
@@ -4379,7 +4498,7 @@ async function runRadarWebOsint({ runId, userId, query, expandedQueries }) {
     return { count: 0, providers: [], partialReasons: [error?.code || "web_discovery_failed"] };
   }
   for (const candidate of candidates) {
-    await pool.query(
+    await radarRunQuery(runId, userId,
       `insert into radar_search_candidates
          (run_id, provider, raw_url, canonical_key, raw_data)
        values ($1, $2, $3, $4, $5::jsonb)
@@ -4442,7 +4561,7 @@ async function runRadarWebOsint({ runId, userId, query, expandedQueries }) {
         privacy: "public_professional_data_contacts_redacted",
       },
     })) count += 1;
-    await pool.query(
+    await radarRunQuery(runId, userId,
       `update radar_search_candidates
           set verification_status = 'verified', verified_at = now()
         where run_id = $1 and canonical_key = $2`,
@@ -4451,7 +4570,7 @@ async function runRadarWebOsint({ runId, userId, query, expandedQueries }) {
   }
 
   if (intent === "identity" && persistedSources.length > 0) {
-    await pool.query(
+    await radarRunQuery(runId, userId,
       `update radar_search_runs set stage = 'ranking', progress = 24, external_count = $2, updated_at = now()
         where id = $1 and status = 'running'`,
       [runId, count],
@@ -4467,8 +4586,18 @@ async function runRadarWebOsint({ runId, userId, query, expandedQueries }) {
 }
 
 async function runRadarSearch(runId, userId) {
+  const scope = await requireRadarWorkerScope(pool, runId, userId);
+  return withAiSpendScope({ pool,userId:scope.userId,projectId:scope.projectId }, () => runRadarSearchScoped(runId,userId));
+}
+
+async function radarRunQuery(runId, userId, sql, values) {
+  const scope = await requireRadarWorkerScope(pool, runId, userId);
+  return withResearchWorkerWrite(pool, scope, (client) => client.query(sql, values));
+}
+
+async function runRadarSearchScoped(runId, userId) {
   const claimed = (
-    await pool.query(
+    await radarRunQuery(runId, userId,
       `update radar_search_runs
           set status = 'running', stage = 'discovering', progress = 8,
               error_code = null, error_message = null, updated_at = now()
@@ -4497,7 +4626,7 @@ async function runRadarSearch(runId, userId) {
     // ни отдельный пост не повторяют слова запроса дословно.
     if (queryEmbedding) {
       const semanticSources = (
-        await pool.query(
+        await radarRunQuery(runId, userId,
           `select id, handle, canonical_url, title, description, subscribers,
                   last_post_at, posts_per_week, content_sample, indexed_posts_count,
                   1 - (content_embedding <=> $1::vector) as semantic_similarity
@@ -4544,7 +4673,7 @@ async function runRadarSearch(runId, userId) {
         })) resultCount += 1;
       }
       if (resultCount > 0) providerLabel = "semantic-directory";
-      await pool.query(
+      await radarRunQuery(runId, userId,
         `update radar_search_runs set progress = 18, external_count = $2, provider = $3, updated_at = now()
           where id = $1 and status = 'running'`,
         [runId, resultCount, providerLabel],
@@ -4563,7 +4692,7 @@ async function runRadarSearch(runId, userId) {
       ...(providerLabel ? providerLabel.split(",") : []),
       ...webOsint.providers,
     ])].filter(Boolean).join(",") || providerLabel;
-    await pool.query(
+    await radarRunQuery(runId, userId,
       `update radar_search_runs
           set stage = 'discovering', progress = 26, external_count = $2, provider = $3, updated_at = now()
         where id = $1 and status = 'running'`,
@@ -4596,7 +4725,7 @@ async function runRadarSearch(runId, userId) {
     ])].join(",") || "web";
 
     for (const candidate of candidates) {
-      await pool.query(
+      await radarRunQuery(runId, userId,
         `insert into radar_search_candidates
            (run_id, provider, raw_url, handle, canonical_key, raw_data)
          values ($1, $2, $3, $4, $5, $6::jsonb)
@@ -4612,7 +4741,7 @@ async function runRadarSearch(runId, userId) {
       );
     }
 
-    await pool.query(
+    await radarRunQuery(runId, userId,
       `update radar_search_runs
           set stage = 'verifying', progress = $2, provider = $3, updated_at = now()
         where id = $1 and status = 'running'`,
@@ -4625,7 +4754,7 @@ async function runRadarSearch(runId, userId) {
       try {
         page = await fetchCompetitorPage(candidate.handle, { exhaustive: true });
       } catch (error) {
-        await pool.query(
+        await radarRunQuery(runId, userId,
           `update radar_search_candidates
               set verification_status = 'error', rejection_reason = 'telegram_unavailable',
                   verified_at = now()
@@ -4637,7 +4766,7 @@ async function runRadarSearch(runId, userId) {
       }
 
       if (!page.ok || page.posts.length === 0) {
-        await pool.query(
+        await radarRunQuery(runId, userId,
           `update radar_search_candidates
               set verification_status = 'rejected', rejection_reason = 'not_public_or_empty',
                   verified_at = now()
@@ -4667,7 +4796,7 @@ async function runRadarSearch(runId, userId) {
         sourceRankingQuery = query;
       }
       if (!sourceRank.accepted) {
-        await pool.query(
+        await radarRunQuery(runId, userId,
           `update radar_search_candidates
               set verification_status = 'rejected', rejection_reason = 'off_topic',
                   verified_at = now()
@@ -4778,14 +4907,14 @@ async function runRadarSearch(runId, userId) {
         })) resultCount += 1;
       }
 
-      await pool.query(
+      await radarRunQuery(runId, userId,
         `update radar_search_candidates
             set verification_status = 'verified', verified_at = now()
           where run_id = $1 and canonical_key = $2`,
         [runId, candidate.canonicalKey],
       );
       const progress = 35 + Math.round(((index + 1) / Math.max(1, candidates.length)) * 55);
-      await pool.query(
+      await radarRunQuery(runId, userId,
         `update radar_search_runs set progress = $2, external_count = $3, updated_at = now()
           where id = $1 and status = 'running'`,
         [runId, progress, resultCount],
@@ -4794,7 +4923,7 @@ async function runRadarSearch(runId, userId) {
     }
 
     const visibleResultCount = Number((
-      await pool.query(
+      await radarRunQuery(runId, userId,
         `select count(distinct case when result_type = 'profile' then canonical_key else url end)::int as count
            from radar_search_results
           where run_id = $1 and user_id = $2 and verification_status = 'verified'`,
@@ -4805,7 +4934,7 @@ async function runRadarSearch(runId, userId) {
 
     const isPartial = incompleteHistories > 0 || partialReasons.length > 0;
     const finalStatus = isPartial ? "partial" : "ready";
-    await pool.query(
+    await radarRunQuery(runId, userId,
       `update radar_search_runs
           set status = $2, stage = 'ready', progress = 100,
               external_count = $3, provider = $4, completed_at = now(), updated_at = now(),
@@ -4827,7 +4956,7 @@ async function runRadarSearch(runId, userId) {
     const localCount = Number(claimed.local_count) || 0;
     const partial = localCount > 0 || resultCount > 0;
     const code = error instanceof RadarDiscoveryError ? error.code : "external_search_failed";
-    await pool.query(
+    await radarRunQuery(runId, userId,
       `update radar_search_runs
           set status = $2, stage = $3, progress = 100, external_count = $4,
               provider = coalesce($5, provider), error_code = $6,
@@ -4969,7 +5098,13 @@ function mentionsOnPage(html, self) {
  * одному брифу на человека — то есть у кого два канала, тому соседи канала про банкротство
  * оценивались брифом канала про ИИ в праве. Ниша — свойство канала, а не аккаунта.
  */
-async function discoverForChannel(userId, channelId) {
+async function discoverForChannel(userId, channelId, expectedProjectId = null) {
+  readOnlyWork.throwIfStopped();
+  const scope = await requireResearchWorkerScope(pool, userId, channelId, expectedProjectId);
+  return withChannelAiSpendScope(pool, userId, channelId, () => discoverForChannelScoped(userId, channelId, scope));
+}
+
+async function discoverForChannelScoped(userId, channelId, scope) {
   const seeds = (
     await pool.query(
       `select handle from competitors where channel_id = $1 and network = 'tg' and handle is not null
@@ -5002,7 +5137,7 @@ async function discoverForChannel(userId, channelId) {
 
   for (const h of seeds) {
     try {
-      const r = await fetch(`https://t.me/s/${String(h).replace(/^@/, "")}`, {
+      const r = await readOnlyWork.fetch(`https://t.me/s/${String(h).replace(/^@/, "")}`, {
         headers: { "user-agent": "Mozilla/5.0" },
         signal: AbortSignal.timeout(15_000),
       });
@@ -5013,9 +5148,10 @@ async function discoverForChannel(userId, channelId) {
         graph.get(m).add(String(h).toLowerCase());
       }
     } catch {
+      readOnlyWork.throwIfStopped();
       /* один недоступный сид не должен ронять весь обход */
     }
-    await sleep(250);
+    await readOnlyWork.wait(250);
   }
 
   // Уже добавленных и себя не предлагаем.
@@ -5048,7 +5184,7 @@ async function discoverForChannel(userId, channelId) {
     try {
       const found = await discoverTelegramCandidates(webQuery, {
         searxngUrl: process.env.RADAR_SEARXNG_URL,
-        fetchImpl: fetch,
+        fetchImpl: readOnlyWork.fetch,
       });
       for (const candidate of found) {
         const handle = String(candidate.handle || "").toLowerCase();
@@ -5057,10 +5193,12 @@ async function discoverForChannel(userId, channelId) {
         fromWeb.push({ handle, by: [], fromPool: false });
       }
     } catch (error) {
+      readOnlyWork.throwIfStopped();
       console.error("[поиск] web discovery:", error?.code || error?.message || error);
     }
   }
 
+  readOnlyWork.throwIfStopped();
   const fromPool = (await directoryPool(userId, channelId))
     .filter((h) => !known.has(h) && !dismissed.has(h) && !seen.has(h))
     .map((handle) => ({ handle, by: [], fromPool: true }));
@@ -5080,17 +5218,21 @@ async function discoverForChannel(userId, channelId) {
 
   let added = 0;
   for (const c of candidates) {
+    readOnlyWork.throwIfStopped();
     try {
       // Проверяем живьём: существует, публичный, пишет. Непроверенных не показываем.
+      await requireResearchWorkerScope(pool, userId, channelId, scope.projectId);
       const page = await fetchCompetitorPage(c.handle);
       if (!page.ok || page.posts.length < 5) continue;
       if (page.subscribers != null && page.subscribers > DISCOVER_MAX_SUBS) continue;
 
       const texts = page.posts.map((p) => p.text).filter(Boolean);
+      readOnlyWork.throwIfStopped();
       const onTopic = await sameNiche(brief, page.title, texts);
+      readOnlyWork.throwIfStopped();
       const activity = summarizeTelegramPostingActivity(page.posts);
 
-      const r = await pool.query(
+      const r = await withResearchWorkerWrite(pool, scope, (client) => client.query(
         `insert into competitor_suggestions (user_id, channel_id, handle, title, description, subscribers, posts, last_post_at, posts_per_week, mentioned_by, sources, on_topic)
          values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
          on conflict (channel_id, handle) do update set
@@ -5121,7 +5263,7 @@ async function discoverForChannel(userId, channelId) {
           c.by,
           onTopic,
         ],
-      );
+      ));
       if (r.rows[0]?.inserted && onTopic !== false) added++;
       console.log(
         `[поиск]   @${c.handle}: ${onTopic === true ? "своя ниша ✅" : onTopic === false ? "мимо ❌" : "судить нечем (нет ИИ)"}`,
@@ -5137,13 +5279,17 @@ async function discoverForChannel(userId, channelId) {
       if (autoLeft > 0 && onTopic === true) {
         const follows = await wouldReaderFollow(brief, page.title, texts);
         if (follows === true) {
-          const ins = await pool.query(
-            `insert into competitors (user_id, channel_id, network, handle, title, subscribers, status, auto_added)
-             values ($1, $2, 'tg', $3, $4, $5, 'pending', true)
+          const ins = await withResearchWorkerWrite(pool, scope, async (client) => {
+            const count = Number((await client.query("select count(*)::int as n from competitors where channel_id=$1", [channelId])).rows[0].n);
+            if (count >= MAX_COMPETITORS) return { rowCount: 0, rows: [] };
+            return client.query(
+            `insert into competitors (user_id, collection_requested_by_user_id, channel_id, network, handle, title, subscribers, status, auto_added)
+             values ($1, $1, $2, 'tg', $3, $4, $5, 'pending', true)
              on conflict (channel_id, network, handle) do nothing
              returning id`,
             [userId, channelId, c.handle, page.title, page.subscribers],
           );
+          }, { channelLock: "update" });
           if (ins.rowCount) {
             // Находку помечаем принятой: иначе она осталась бы висеть в списке «подтверди»
             // рядом с уже добавленным каналом.
@@ -5163,9 +5309,11 @@ async function discoverForChannel(userId, channelId) {
         }
       }
     } catch (err) {
+      readOnlyWork.throwIfStopped();
+      if (err instanceof ResearchProjectAccessError) throw err;
       console.error(`[поиск] @${c.handle}:`, err?.message);
     }
-    await sleep(250);
+    await readOnlyWork.wait(250);
   }
 
   console.log(
@@ -5176,6 +5324,7 @@ async function discoverForChannel(userId, channelId) {
 
 /** Разведка по всем каналам аккаунта: у каждого своя ниша — значит, свой проход. */
 async function discoverForUser(userId) {
+  readOnlyWork.throwIfStopped();
   const chans = (
     await pool.query(
       `select id from channels where user_id = $1 and network = 'tg' and is_active = true order by id`,
@@ -5253,6 +5402,7 @@ async function askAI(
       maxTokens: numPredict,
       acceptLengthLimitedOutput: options?.acceptLengthLimitedOutput === true,
     }, {
+      spendScope: options?.spendScope,
       timeoutMs: surface === "autopilot-plan"
         ? AUTOPILOT_AI_ATTEMPT_TIMEOUT_MS
         : WORKER_CLOUD_AI_TIMEOUT_MS,
@@ -5290,7 +5440,8 @@ async function askAI(
       errorName: error?.name || "Error",
       code: error?.code || "provider_error",
     });
-    if (options?.throwOnUnavailable === true && isRetryableAiCompletionError(error)) {
+    if (String(error?.code || "").startsWith("ai_spend_")
+      || (options?.throwOnUnavailable === true && isRetryableAiCompletionError(error))) {
       throw error;
     }
     return null;
@@ -5304,6 +5455,10 @@ const IDEA_SYSTEM = `Ты — контент-стратег. По залетев
 ПОЧЕМУ: <почему этот формат зашёл, 1-2 предложения>`;
 
 async function generateIdea(post, comp, usageReservationId) {
+  return withChannelAiSpendScope(pool, Number(comp.user_id), Number(comp.channel_id), () => generateIdeaScoped(post, comp, usageReservationId));
+}
+
+async function generateIdeaScoped(post, comp, usageReservationId) {
   const snippet = (post.text || "").replace(/\s+/g, " ").slice(0, 400) || "(пост без текста, только медиа)";
   const ratio = post.hit_ratio != null ? Number(post.hit_ratio).toFixed(1) : "5+";
   const prompt = `Конкурент «${comp.title || comp.handle}». У него залетел пост — в ${ratio} раза выше его нормы:\n"""${snippet}"""\nПредложи мне свой пост на эту тему.`;
@@ -5475,7 +5630,8 @@ async function detectHits(comp) {
       // Тот самый вау-момент из ТЗ: залёт → кнопка → готовый черновик. Теперь без ноутбука.
       const hitBtns = [[{ text: COMPETITOR_MECHANIC_ACTION_LABEL, data: `idea:${p.id}` }, { text: "Оригинал", url: link }]];
       // Нет привязанного чата — выбор пользователя, владельцу чужой залёт не шлём (была утечка).
-      await notifyUser(comp.user_id, hitText, hitBtns, { kind: "opportunity" });
+      const projectId = Number((await pool.query("select project_id from channels where id=$1", [channelId])).rows[0]?.project_id);
+      await notifyUser(comp.user_id, hitText, hitBtns, { kind: "opportunity", projectId, eventKey: `competitor-hit:${contentIdeaId}` });
       console.log(`[hits] @${comp.handle}: залёт ×${ratio}${idea ? " + идея" : " (идея позже)"}`);
     }
   }
@@ -5484,11 +5640,14 @@ async function detectHits(comp) {
 // Обойти конкурентов, которым пора обновиться: новые (pending) сразу, остальные — раз в ~2 часа
 // (свежие посты). Полный проход и так идёт каждые 2 часа по таймеру ниже.
 async function collectCompetitors() {
+  if (readOnlyWork.signal.aborted) return;
   const rows = await selectDueCompetitorSources(pool);
   await mapConcurrent(rows, RECON_CONCURRENCY, async (c) => {
+    if (readOnlyWork.signal.aborted) return;
     try {
       await collectCompetitor(c);
     } catch (err) {
+      if (readOnlyWork.isCancellation(err)) return;
       console.error(`[recon] @${c.handle} сбор упал:`, err?.message);
       await pool
         .query(`update competitors set status = 'error', last_error = $2,
@@ -5508,6 +5667,7 @@ async function collectCompetitors() {
  * чаще — верный способ получить 429 и потерять всю разведку разом.
  */
 async function discoverAll() {
+  if (readOnlyWork.signal.aborted) return;
   const users = (
     await pool.query(
       `select distinct u.id from users u
@@ -5516,9 +5676,11 @@ async function discoverAll() {
     )
   ).rows;
   await mapConcurrent(users, RECON_CONCURRENCY, async (u) => {
+    if (readOnlyWork.signal.aborted) return;
     try {
       await discoverForUser(u.id);
     } catch (err) {
+      if (readOnlyWork.isCancellation(err)) return;
       console.error(`[поиск] user ${u.id} упал:`, err?.message);
     }
   });
@@ -5531,6 +5693,10 @@ async function discoverAll() {
 // ============================================================================
 
 async function collectTrendSource(src) {
+  readOnlyWork.throwIfStopped();
+  return withSystemAiSpendScope(pool, () => collectTrendSourceScoped(src));
+}
+async function collectTrendSourceScoped(src) {
   const latestStoredPostId = (
     await pool.query(
       `select max(tg_msg_id)::text as latest_post_id from trend_posts where source_id = $1`,
@@ -5539,6 +5705,7 @@ async function collectTrendSource(src) {
   ).rows[0]?.latest_post_id ?? null;
   const page = await fetchCompetitorPage(src.handle, { afterPostId: latestStoredPostId });
 
+  readOnlyWork.throwIfStopped();
   if (!page.ok || (page.posts.length === 0 && page.title == null)) {
     await pool.query(
       `update trend_sources set status = 'error', last_error = $2, collected_at = now() where id = $1`,
@@ -5579,6 +5746,7 @@ async function collectTrendSource(src) {
 // на одной странице дают меньше 48ч истории, поэтому норму по ним не посчитать сразу —
 // но каждый заход дописывает свежее, и за несколько дней история накапливается сама.
 async function collectTrendSources() {
+  if (readOnlyWork.signal.aborted) return true;
   // cron и ручная кнопка живут в разных очередях и могут прийти одновременно. Один
   // advisory lock не даёт двум воркерам дважды обходить t.me; ручная job ниже повторится.
   const guard = await pool.connect();
@@ -5598,9 +5766,11 @@ async function collectTrendSources() {
       )
     ).rows;
     await mapConcurrent(rows, RECON_CONCURRENCY, async (s) => {
+      if (readOnlyWork.signal.aborted) return;
       try {
         await collectTrendSource(s);
       } catch (err) {
+        if (readOnlyWork.isCancellation(err)) return;
         console.error(`[насмотренность] @${s.handle} упал:`, err?.message);
         await pool
           .query(`update trend_sources set status = 'error', last_error = $2 where id = $1`, [
@@ -6159,7 +6329,12 @@ async function loadMonthlyAutopilotContext(projectId, monthlyPlanId, bestHour) {
 
 // План собирается ДЛЯ КАНАЛА. Раньше здесь стоял `limit 1` без order by: у кого два канала,
 // тот получал посты по брифу одного канала в (случайно выбранный) другой, а второй канал молчал.
-async function buildAutopilotPlan(
+async function buildAutopilotPlan(projectId, userId, channelId, ...args) {
+  return withAiSpendScope({ pool, userId: Number(userId), projectId: Number(projectId) },
+    () => buildAutopilotPlanScoped(projectId, userId, channelId, ...args));
+}
+
+async function buildAutopilotPlanScoped(
   projectId,
   userId,
   channelId,
@@ -7783,7 +7958,7 @@ async function buildAutopilotPlan(
       ? [[{ text: `Проверить и одобрить (${readyCount})`, data: `plan:approve:${ins.rows[0].id}` }]]
       : undefined;
   // Нет привязанного чата — выбор пользователя, владельцу чужой план не шлём (была утечка).
-  await notifyUser(userId, planText, planBtns, { kind: "opportunity", projectId });
+  await notifyUser(userId, planText, planBtns, { kind: "opportunity", projectId, eventKey: `autopilot-plan:${ins.rows[0].id}` });
 
   // ── Gap-доспрос: план собран, и теперь видно, чего ИИ не хватило ──
   // 1) База фактов пуста совсем — спрашиваем про услуги и цены одним вопросом.
@@ -8479,6 +8654,10 @@ async function botLoadLinkContext(input) {
 }
 
 async function botPrepareIntakeText(userId, conversation, text, metadata = {}) {
+  return withAiSpendScope({ pool,userId:Number(userId),projectId:Number(conversation.project_id) },
+    () => botPrepareIntakeTextScoped(userId,conversation,text,metadata));
+}
+async function botPrepareIntakeTextScoped(userId, conversation, text, metadata = {}) {
   const input = String(text || "").trim();
   const configuredMode = String(conversation?.data?.sourceMode || "");
   const inferredMode = metadata.forwarded
@@ -9072,7 +9251,8 @@ async function botPrepareClientReply(userId, inquiryId, expectedVersion) {
       usage.reservationId,
       prompt.system,
       prompt.user,
-      500,
+      500, null, null, null,
+      { spendScope: { pool,userId:Number(userId),projectId:Number(inquiry.project_id),permission:"audience.reply.send" } },
     );
     if (!reply?.trim()) {
       await releaseWorkerAiUsage(pool, userId, usage.reservationId).catch(() => {});
@@ -9256,7 +9436,16 @@ async function botDismissClientInquiry(userId, inquiryId, expectedVersion) {
   return updated.rowCount ? "dismissed" : "stale";
 }
 
-async function botTranscribeVoice(message) {
+async function botTranscribeVoice(message, userId) {
+  const conversation = (await pool.query(`select conversation.project_id from bot_conversations conversation
+    join project_members member on member.project_id=conversation.project_id and member.user_id=conversation.user_id
+    where conversation.user_id=$1 and conversation.state='waiting_text' and conversation.expires_at>now()
+      and conversation.channel_id is not null and member.status='active' and member.role in ('owner','author','approver')
+    order by conversation.updated_at desc limit 1`, [userId])).rows[0];
+  if (!conversation) return { error: "Сначала начни создание поста и выбери канал." };
+  return withAiSpendScope({ pool,userId:Number(userId),projectId:Number(conversation.project_id) }, () => botTranscribeVoiceScoped(message));
+}
+async function botTranscribeVoiceScoped(message) {
   const voice = message?.voice;
   if (!voice?.file_id) return { error: "Голосовое сообщение не найдено." };
   if (Number(voice.duration) > 600) return { error: "Голосовое длиннее 10 минут. Пришли более короткую запись или раздели её на части." };
@@ -9279,6 +9468,10 @@ async function botTranscribeVoice(message) {
   form.set("model", transcription.model);
   form.set("language", "ru");
   form.set("file", new Blob([bytes], { type: voice.mime_type || "audio/ogg" }), "voice.ogg");
+  const spend = await beginAiSpendAttempt({ provider: `${transcription.provider}-transcription`, model: transcription.model,
+    inputTokens: 0, outputTokens: 0, units: Math.max(1, Math.ceil(Number(voice.duration) || 600)) });
+  let succeeded = false;
+  try {
   const response = await fetch(`${transcription.baseUrl}/audio/transcriptions`, {
     method: "POST",
     headers: { authorization: `Bearer ${transcription.apiKey}` },
@@ -9288,7 +9481,9 @@ async function botTranscribeVoice(message) {
   if (!response.ok) return { error: "Сервис распознавания голоса сейчас недоступен. Можно прислать идею текстом." };
   const body = await response.json().catch(() => null);
   const transcript = String(body?.text || "").trim();
+  succeeded = Boolean(transcript);
   return transcript ? { text: transcript } : { error: "Не удалось разобрать речь. Попробуй записать голосовое в более тихом месте." };
+  } finally { await spend.finish({ outcome: succeeded ? "succeeded" : "unknown" }); }
 }
 
 async function botCloseConversation(userId, conversationId, token, cancelled = false) {
@@ -9656,7 +9851,7 @@ async function runBotPostResults() {
       Number(item.user_id),
       result.text,
       result.buttons,
-      { kind: "post_result", projectId: Number(item.project_id) },
+      { kind: "post_result", projectId: Number(item.project_id), eventKey: `post-results:${item.post_id}:24h` },
     );
     if (!ok) continue;
     delivered += 1;
@@ -9724,10 +9919,10 @@ async function runBotDigests() {
           Number(recipient.user_id),
           overview.text,
           overview.buttons,
-          { kind: "daily", projectId: Number(recipient.project_id) },
+          { kind: "daily", projectId: Number(recipient.project_id), eventKey: `digest:daily:${localDate}` },
         );
-        if (delivered) dailyDelivered += 1;
-        else {
+        if (delivered === true) dailyDelivered += 1;
+        else if (delivered === false) {
           await pool.query(
             `update bot_notification_preferences
                 set last_daily_digest_date = $4::date, updated_at = now()
@@ -9759,10 +9954,10 @@ async function runBotDigests() {
             projectId: Number(recipient.project_id),
           }),
           [[{ text: "Показать аналитику", data: "menu:stats" }, { text: "Вернуться в меню", data: "menu:home" }]],
-          { kind: "weekly", projectId: Number(recipient.project_id) },
+          { kind: "weekly", projectId: Number(recipient.project_id), eventKey: `digest:weekly:${localDate}` },
         );
-        if (delivered) weeklyDelivered += 1;
-        else {
+        if (delivered === true) weeklyDelivered += 1;
+        else if (delivered === false) {
           await pool.query(
             `update bot_notification_preferences
                 set last_weekly_digest_date = $4::date, updated_at = now()
@@ -10395,7 +10590,7 @@ async function botIdea(userId, competitorPostId, callbackUpdateId) {
   try {
     const mood = await userMood(userId);
     const samples = await loadBotIdeaStyleSamples(pool, userId, channelId, 8);
-    const draft = await askAI(
+    const draft = await withChannelAiSpendScope(pool, userId, channelId, () => askAI(
       "bot-idea",
       usage.reservationId,
       postSystem(samples) + "\n" + moodPromptW(mood),
@@ -10403,7 +10598,7 @@ async function botIdea(userId, competitorPostId, callbackUpdateId) {
         `Напиши МОЙ пост на эту тему — не копию, свой угол.`,
       350,
       mood,
-    );
+    ));
     if (!draft?.trim()) return { status: "unavailable" };
     const saved = await saveBotIdeaDraft(
       userId,
@@ -10542,7 +10737,7 @@ async function handleUpdate(u) {
         return void (await botSendPrimaryAction(chatId, userId, "help"));
       }
       if (u.message.voice) {
-        const transcript = await botTranscribeVoice(u.message);
+        const transcript = await botTranscribeVoice(u.message, userId);
         if (transcript.error) return void (await tgSend(chatId, transcript.error));
         const draftPreview = await botStoreDraftText(userId, transcript.text, { voice: true });
         if (draftPreview) return void (await tgSend(chatId, draftPreview.text, draftPreview.buttons));
@@ -10596,6 +10791,11 @@ async function handleUpdate(u) {
       const [kind, action, id, token] = String(cb.data || "").split(":");
 
       if (kind === "connection") {
+        if (action === "add") {
+          await answerCb(cb.id, "Готовлю подключение…");
+          const prompt = await botChannelConnectPrompt(userId, { force: true });
+          return void (await tgSend(chatId, prompt?.text || "Нет прав для подключения канала в этом проекте.", prompt?.buttons || []));
+        }
         if (action === "status" || action === "disconnect_cancel") {
           await answerCb(cb.id, "Проверяю подключение…");
           const status = await botConnectionStatus(userId);
@@ -10903,7 +11103,7 @@ async function handleUpdate(u) {
   } catch (err) {
     console.error("[bot] обновление упало:", err?.message);
     return {
-      retry: true,
+      retry: err?.deliveryUnknown !== true,
       retryAfterMs: Number(err?.retryAfterMs) || 1_500,
       errorCode: String(err?.code || err?.name || "bot_update_failed"),
     };
@@ -10980,7 +11180,7 @@ async function pollUpdates() {
       // conflict/stale until a successful response confirms the still-owned receive loop.
       await refreshTelegramPollingHeartbeat();
       for (const u of Array.isArray(r.result) ? r.result : []) {
-        const outcome = await handleUpdate(u);
+        const outcome = await telegramUpdateContext.run({ updateId: u.update_id, next: 0 }, () => handleUpdate(u));
         if (outcome?.retry) {
           const failure = nextTelegramUpdateFailure(updateFailures.get(u.update_id));
           if (failure.retry) {
@@ -11028,6 +11228,10 @@ function parseMonthlyCampaignRegenerationJson(value) {
 }
 
 async function generateMonthlyCampaignRegeneration(context, usageReservationId) {
+  return withAiSpendScope({ pool,userId:Number(context.campaign.requested_by_user_id),projectId:Number(context.projectId) },
+    () => generateMonthlyCampaignRegenerationScoped(context,usageReservationId));
+}
+async function generateMonthlyCampaignRegenerationScoped(context, usageReservationId) {
   const campaign = context.campaign;
   const rubrics = Array.isArray(campaign.rubrics) ? campaign.rubrics : JSON.parse(campaign.rubrics || "[]");
   const practiceMix = Array.isArray(campaign.practice_mix)
@@ -11735,13 +11939,16 @@ const statsWorker = MEDIA_ONLY || AUTOPILOT_ONLY || PUBLICATION_ONLY ? null : ne
       const delivered = await notifyUser(
         scope.userId,
         await buildWeeklyReport(pool, scope),
+        undefined,
+        { kind: "weekly", projectId: scope.projectId, eventKey: `stats-report:${job.id}` },
       );
       console.log(
         delivered
           ? `[stats] недельный отчёт проекта ${scope.projectId} отправлен user ${scope.userId}`
           : `[stats] недельный отчёт проекта ${scope.projectId} НЕ доставлен user ${scope.userId} — бот не привязан или недоступен`,
       );
-      if (!delivered) throw new Error("недельный отчёт не доставлен"); // пусть очередь повторит
+      if (delivered === null) throw new UnrecoverableError("telegram_background_delivery_unknown");
+      if (delivered === false) throw new Error("недельный отчёт не доставлен");
     } else if (job.name === "competitor") {
       // Первичный сбор сразу после добавления — досье готово за секунды, а не за час.
       const c = (
@@ -11751,7 +11958,10 @@ const statsWorker = MEDIA_ONLY || AUTOPILOT_ONLY || PUBLICATION_ONLY ? null : ne
           [job.data.id],
         )
       ).rows[0];
-      if (c) await collectCompetitor(c);
+      if (c) {
+        if (!Number.isSafeInteger(Number(job.data.userId)) || !Number.isSafeInteger(Number(job.data.projectId))) throw new UnrecoverableError("research_project_scope_required");
+        await collectCompetitor(c, { userId: Number(job.data.userId), projectId: Number(job.data.projectId) });
+      }
     } else if (job.name === "trend-now") {
       // Ручная проверка редакционной подборки. API заранее сбрасывает collected_at,
       // поэтому тот же безопасный сборщик заберёт все источники немедленно, не дожидаясь cron.
@@ -11765,7 +11975,9 @@ const statsWorker = MEDIA_ONLY || AUTOPILOT_ONLY || PUBLICATION_ONLY ? null : ne
       if (channelId != null && (!Number.isInteger(channelId) || channelId <= 0)) {
         throw new Error("rss-now: bad channelId");
       }
-      await collectRss(userId, channelId);
+      const projectId=Number(job.data.projectId);
+      if(!Number.isSafeInteger(projectId)||projectId<=0)throw new Error("rss-now: project scope required");
+      await collectRss(userId, channelId, projectId);
     } else if (job.name === KNOWLEDGE_INDEX_JOB) {
       // Человек добавил материал в базу знаний — считаем векторы сейчас, а не суточным
       // циклом: он вернётся на экран через минуту и должен увидеть «готово».
@@ -11774,8 +11986,8 @@ const statsWorker = MEDIA_ONLY || AUTOPILOT_ONLY || PUBLICATION_ONLY ? null : ne
     } else if (job.name === "discover") {
       // Человек нажал «Найти соседей» — идём по графу ниши сейчас. Канал указан (подключили
       // новый — ищем соседей ему) или нет (кнопка в кабинете — обходим все каналы).
-      if (job.data.channelId) await discoverForChannel(job.data.userId, job.data.channelId);
-      else await discoverForUser(job.data.userId);
+      if (!Number.isSafeInteger(Number(job.data.projectId)) || !Number.isSafeInteger(Number(job.data.channelId))) throw new UnrecoverableError("research_project_scope_required");
+      await discoverForChannel(Number(job.data.userId), Number(job.data.channelId), Number(job.data.projectId));
     } else if (job.name === "radar-search") {
       const runId = Number(job.data.runId);
       const userId = Number(job.data.userId);
@@ -11821,8 +12033,13 @@ statsWorker?.on("failed", (job, error) => {
 async function checkNicheAlerts() {
   const alerts = (
     await pool.query(
-      `select a.id, a.user_id, a.channel_id, a.keyword
-         from niche_alerts a where a.is_active = true`,
+      `select a.id, a.user_id, a.channel_id, a.keyword, channel.project_id
+         from niche_alerts a
+         join channels channel on channel.id=a.channel_id and channel.is_active and channel.status='active'
+         join projects project on project.id=channel.project_id and not project.is_archived
+         join project_members member on member.project_id=project.id and member.user_id=a.user_id and member.status='active'
+         join users actor on actor.id=a.user_id and actor.blocked_at is null
+        where a.is_active = true`,
     )
   ).rows;
   if (!alerts.length) return;
@@ -11835,7 +12052,12 @@ async function checkNicheAlerts() {
         `insert into niche_matches (alert_id, competitor_post_id)
          select $1, cp.id
            from competitor_posts cp
-           join competitors c on c.id = cp.competitor_id and c.user_id = $2
+           join competitors c on c.id = cp.competitor_id and c.channel_id = $2 and c.is_active
+           join channels channel on channel.id=c.channel_id and channel.is_active and channel.status='active'
+           join projects project on project.id=channel.project_id and not project.is_archived
+           join niche_alerts alert on alert.id=$1 and alert.channel_id=channel.id and alert.is_active
+           join project_members member on member.project_id=project.id and member.user_id=alert.user_id and member.status='active'
+           join users actor on actor.id=alert.user_id and actor.blocked_at is null
           where cp.tsv @@ plainto_tsquery('russian', $3)
             and cp.collected_at > now() - interval '3 hours'
             and not exists (
@@ -11844,7 +12066,7 @@ async function checkNicheAlerts() {
             )
          on conflict do nothing
          returning competitor_post_id`,
-        [alert.id, alert.user_id, alert.keyword],
+        [alert.id, alert.channel_id, alert.keyword],
       );
       if (!matches.rowCount) continue;
       total += matches.rowCount;
@@ -11859,19 +12081,20 @@ async function checkNicheAlerts() {
       );
       const post = sample.rows[0];
       const snippet = (post?.text || "").slice(0, 150);
-      await notifyUser(
+      const delivered = await notifyUser(
         alert.user_id,
         `🔔 <b>Радар: «${alert.keyword}»</b>\n\n${post?.title || "@" + post?.handle}: ${snippet}…\n\nНайдено совпадений: ${matches.rowCount}`,
         undefined,
-        { kind: "opportunity" },
+        { kind: "opportunity", projectId: Number(alert.project_id), eventKey: `niche:${alert.id}:post:${matches.rows[0].competitor_post_id}` },
       );
+      if (delivered !== true) continue;
       await pool.query(
         `update niche_alerts set last_notified_at = now() where id = $1`,
         [alert.id],
       );
       await pool.query(
-        `update niche_matches set notified = true where alert_id = $1 and notified = false`,
-        [alert.id],
+        `update niche_matches set notified = true where alert_id = $1 and competitor_post_id=any($2::bigint[]) and notified = false`,
+        [alert.id, matches.rows.map((row) => row.competitor_post_id)],
       );
     } catch (err) {
       console.error(`[radar] алерт ${alert.id} (${alert.keyword}):`, err?.message);
@@ -11884,6 +12107,10 @@ async function checkNicheAlerts() {
 // Для каждого активного фида: fetch XML → parseRss → новые записи в rss_items →
 // если ai_summarize → ИИ-суммаризация → создать пост (scheduled) → обновить статус.
 async function billableRssSummary(item, feed, system, prompt) {
+  return withChannelAiSpendScope(pool, Number(feed.user_id), Number(feed.channel_id), () => billableRssSummaryScoped(item, feed, system, prompt));
+}
+
+async function billableRssSummaryScoped(item, feed, system, prompt) {
   const guidHash = createHash("sha256").update(String(item.guid || item.link || item.title || "item")).digest("hex").slice(0, 20);
   const usage = await acquireWorkerAiUsage(pool, {
     userId: Number(feed.user_id),
@@ -11946,11 +12173,12 @@ async function billableRssSummary(item, feed, system, prompt) {
   }
 }
 
-async function collectRss(userId = null, channelId = null) {
+async function collectRss(userId = null, channelId = null, projectId = null) {
   return collectRssPipeline({
     pool,
     userId,
     channelId,
+    projectId,
     enqueuePost,
     summarize: (item, feed) => {
       const channelContext = [
@@ -11980,7 +12208,7 @@ async function collectRss(userId = null, channelId = null) {
 async function refreshProfiles() {
   const channels = (
     await pool.query(
-      `select c.id, c.user_id, c.handle, c.title
+      `select c.id, c.user_id, c.project_id, c.handle, c.title
          from channels c
         where c.network = 'tg' and c.handle is not null and c.is_active
           and exists (select 1 from knowledge_sources ks
@@ -12002,7 +12230,7 @@ async function refreshProfiles() {
       if (posts.length < 3) return;
 
       const { system, user } = buildExtractionMessages(ch.title || ch.handle, posts);
-      const raw = await askAI("profile-refresh", null, system, user, 700, null, 0.2);
+      const raw = await askAI("profile-refresh", null, system, user, 700, null, 0.2, null, { spendScope: { pool,userId:Number(ch.user_id),projectId:Number(ch.project_id) } });
       const profile = raw && parseProfile(raw);
       // Движок лёг или вернул мусор — тоже оставляем старый профиль.
       if (!profile) return;
@@ -12150,7 +12378,7 @@ const cronWorker = AUTOPILOT_ONLY || MEDIA_ONLY || PUBLICATION_ONLY ? null : new
   async (job) => {
     switch (job.name) {
       case "stats":    return collectAllProjectStats();
-      case "recon":    await collectCompetitors(); return checkNicheAlerts();
+      case "recon":    await collectCompetitors(); if (!readOnlyWork.signal.aborted) return checkNicheAlerts(); return;
       case "trend":    return collectTrendSources();
       case "today-opportunities": return materializeAllOpportunitySnapshots(pool);
       case "knowledge-index": return reconcilePendingKnowledgeSources(pool, statsProducerQueue);
@@ -12171,11 +12399,8 @@ const cronWorker = AUTOPILOT_ONLY || MEDIA_ONLY || PUBLICATION_ONLY ? null : new
 cronWorker?.on("failed", (job, err) => console.error(`[cron] ${job?.name} упала:`, err?.message));
 cronWorker?.on("error", (err) => console.error("[cron] ошибка:", err));
 
-// Восстановление после падения/деплоя (ревью, критично): пост, застрявший в 'publishing'
-// (процесс убили во время отправки), иначе теряется навсегда. Но он МОГ уже выйти в канал —
-// из потерянного ответа Telegram не узнать. Авто-переотправка рискует ДУБЛЕМ, поэтому НЕ
-// публикуем молча: помечаем 'failed' с честной ошибкой (виден в календаре с кнопкой «Отправить
-// снова») и зовём владельца проверить. Так нет ни тихой потери, ни тихого дубля (ревью регрессии).
+// A provider-started operation may already exist externally. Restart preserves
+// uncertainty and blocks retry; work fenced before provider delivery is quarantined.
 async function reclaimStuckPosts() {
   const safeRows = (
     await pool.query(
@@ -12316,6 +12541,8 @@ async function shutdown(sig) {
   // restart look like two live consumers.
   if (shutdownStarted) return;
   shutdownStarted = true;
+  // Cancel restartable reads before waiting for publication workers to drain.
+  readOnlyWork.stop();
   console.log(`[worker] ${sig} — завершаюсь аккуратно…`);
   clearInterval(workerDatabasePoolReportTimer);
   reportWorkerDatabasePool();

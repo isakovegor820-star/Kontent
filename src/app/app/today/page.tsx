@@ -1,5 +1,7 @@
 "use client";
 
+import { projectFetch as fetch } from "@/lib/project-fetch";
+
 import { Suspense, useCallback, useEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from "react";
 import Link from "next/link";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
@@ -532,7 +534,7 @@ function TodayItemCard({ item, featured, actionsDisabled, actionLoading, error, 
   );
 }
 
-function ChannelSelector({ board, id, onChange }: { board: TodayBoard; id: string; onChange: (value: string) => void }) {
+function ChannelSelector({ board, id, disabled, onChange }: { board: TodayBoard; id: string; disabled: boolean; onChange: (value: string) => void }) {
   if (board.channels.length <= 1) {
     return <div className="flex flex-wrap items-center gap-x-4 gap-y-1"><p className="type-caption font-semibold text-text-2">Канал</p><p className="break-words text-[15px] font-semibold text-text">{board.channelLabel}</p></div>;
   }
@@ -542,13 +544,19 @@ function ChannelSelector({ board, id, onChange }: { board: TodayBoard; id: strin
       <select
         id={id}
         value={board.channelId ?? ""}
+        disabled={disabled}
         onChange={(event) => onChange(event.target.value)}
-        className="h-12 w-full min-w-0 rounded-xs border border-line bg-surface px-4 text-base font-semibold text-text transition-colors hover:border-line-strong focus:border-brand focus:outline-none focus-visible:ring-4 focus-visible:ring-brand/15 sm:w-72 sm:text-sm"
+        className="h-12 w-full min-w-0 rounded-xs border border-line bg-surface px-4 text-base font-semibold text-text transition-colors hover:border-line-strong focus:border-brand focus:outline-none focus-visible:ring-4 focus-visible:ring-brand/15 disabled:cursor-not-allowed disabled:opacity-45 sm:w-72 sm:text-sm"
       >
         {board.channels.map((channel) => <option key={channel.id} value={channel.id}>{channel.label}{channel.enabled ? "" : " — временно приостановлен"}</option>)}
       </select>
     </label>
   );
+}
+
+async function requireMutationAck(response: Response, code: string) {
+  const body = await response.json().catch(() => null) as { ok?: unknown } | null;
+  if (!response.ok || body?.ok !== true) throw new Error(code);
 }
 
 function TodayPageContent() {
@@ -684,7 +692,7 @@ function TodayPageContent() {
       method: "POST", headers: { "content-type": "application/json" },
       body: JSON.stringify({ channelId, fingerprint: item.fingerprint, state }), signal,
     });
-    if (!response.ok) throw new Error("state_unavailable");
+    await requireMutationAck(response, "state_unavailable");
   }, []);
 
   const changeState = useCallback(async (item: TodayItem, nextState: ItemState) => {
@@ -705,20 +713,24 @@ function TodayPageContent() {
     commitBoard({
       ...current,
       items: current.items.filter((candidate) => candidate.fingerprint !== item.fingerprint),
-      completedItems: nextState === "done"
-        ? [completedItemForClient(item, new Date().toISOString()), ...current.completedItems.filter((candidate) => candidate.fingerprint !== item.fingerprint)]
-        : current.completedItems,
+      completedItems: current.completedItems,
     });
     setUndo({ kind: "state", item, channelId, state: nextState });
-    if (quickMode) setQuickCompleted((value) => Math.min(quickTotal, value + 1));
-    setAnnouncement(nextState === "done"
-      ? `«${item.title}» отмечено готовым.`
-      : nextState === "dismissed"
-        ? `«${item.title}» отклонено и убрано из активного списка.`
-        : `«${item.title}» отложено до завтра, 09:00.`);
+    setAnnouncement(`Сохраняем изменение для «${item.title}».`);
     try {
       await postState(item, channelId, nextState, controller.signal);
       if (controller.signal.aborted || sequence !== stateSequence.current) return;
+      const latest = boardRef.current;
+      if (nextState === "done" && latest?.channelId === channelId) {
+        commitBoard({ ...latest, completedItems: [completedItemForClient(item, new Date().toISOString()),
+          ...latest.completedItems.filter((candidate) => candidate.fingerprint !== item.fingerprint)] });
+      }
+      if (quickMode) setQuickCompleted((value) => Math.min(quickTotal, value + 1));
+      setAnnouncement(nextState === "done"
+        ? `«${item.title}» отмечено готовым.`
+        : nextState === "dismissed"
+          ? `«${item.title}» отклонено и убрано из активного списка.`
+          : `«${item.title}» отложено до завтра, 09:00.`);
       void load({ channelId });
     } catch {
       if (controller.signal.aborted || sequence !== stateSequence.current) return;
@@ -755,7 +767,7 @@ function TodayPageContent() {
           method: "POST", headers: { "content-type": "application/json" }, signal: controller.signal,
           body: JSON.stringify({ channelId: notice.channelId, recommendationKind: notice.recommendationKind, state: "active" }),
         });
-        if (!response.ok) throw new Error("feedback_unavailable");
+        await requireMutationAck(response, "feedback_unavailable");
         if (controller.signal.aborted || sequence !== feedbackSequence.current) return;
         const current = boardRef.current;
         if (current?.channelId === notice.channelId) {
@@ -885,22 +897,22 @@ function TodayPageContent() {
     setPendingFocus(next?.fingerprint ?? "summary");
     commitBoard({ ...current, items: remaining });
     setUndo({ kind: "feedback", item, channelId: current.channelId, recommendationKind, hiddenItems });
-    setAnnouncement(`Рекомендации типа «${ITEM_LABELS[item.type]}» больше не будут показываться.`);
-    if (quickMode) setQuickCompleted((value) => Math.min(quickTotal, value + hiddenItems.length));
+    setAnnouncement(`Сохраняем предпочтение для «${item.title}».`);
     try {
       const response = await fetch("/api/today/feedback", {
         method: "POST", headers: { "content-type": "application/json" }, signal: controller.signal,
         body: JSON.stringify({ channelId: current.channelId, recommendationKind, state: "hidden" }),
       });
-      if (!response.ok) throw new Error("feedback_unavailable");
+      await requireMutationAck(response, "feedback_unavailable");
       if (controller.signal.aborted || sequence !== feedbackSequence.current) return;
+      setAnnouncement(`Рекомендации типа «${ITEM_LABELS[item.type]}» больше не будут показываться.`);
+      if (quickMode) setQuickCompleted((value) => Math.min(quickTotal, value + hiddenItems.length));
       void load({ channelId: current.channelId });
     } catch {
       if (controller.signal.aborted || sequence !== feedbackSequence.current) return;
       const latest = boardRef.current;
       if (latest?.channelId === current.channelId) commitBoard({ ...latest, items: stableClientRank([...latest.items, ...hiddenItems]) });
       setUndo(null); setPendingFocus(item.fingerprint);
-      if (quickMode) setQuickCompleted((value) => Math.max(0, value - hiddenItems.length));
       setItemErrors((errors) => ({ ...errors, [item.fingerprint]: "Не удалось скрыть тип рекомендаций. Карточка возвращена — попробуйте ещё раз." }));
       setAnnouncement("Не удалось сохранить предпочтение. Карточка возвращена.");
     } finally { if (sequence === feedbackSequence.current) setBusy(null); }
@@ -946,6 +958,7 @@ function TodayPageContent() {
   }, [busy, load]);
 
   const handleChannelChange = (value: string) => {
+    if (busy !== null || refreshing) return;
     const channelId = safeChannelId(value); if (channelId == null) return;
     mutationController.current?.abort(); stateController.current?.abort(); feedbackController.current?.abort(); actionController.current?.abort();
     setBusy(null); setUndo(null); setItemErrors({}); setRefreshNotice(""); setQuickMode(false); setQuickCompleted(0);
@@ -953,6 +966,9 @@ function TodayPageContent() {
     router.replace(`${pathname}?${params.toString()}`, { scroll: false });
   };
 
+  const undoPending = undo != null && busy != null && [undo.item.fingerprint,
+    `feedback:${undo.item.fingerprint}`, `undo:${undo.item.fingerprint}`, `undo-feedback:${undo.item.fingerprint}`].includes(busy);
+  const undoReturning = busy?.startsWith("undo:") || busy?.startsWith("undo-feedback:");
   const actionableItems = board?.items.filter((item) => item.type !== "onboarding") ?? [];
   const orderedActionableItems = orderedItems(actionableItems);
   const firstItem = orderedActionableItems[0];
@@ -964,7 +980,7 @@ function TodayPageContent() {
     setAnnouncement(`Начат быстрый разбор: ${actionableItems.length} ${plural(actionableItems.length, "решение", "решения", "решений")}.`);
   };
   const stopQuickMode = () => {
-    setQuickMode(false); setQuickCompleted(0); setAnnouncement("Быстрый разбор завершён."); setPendingFocus("summary");
+    setQuickMode(false); setQuickCompleted(0); setAnnouncement("Открыта сводка решений."); setPendingFocus("summary");
   };
   const problemSources = board ? [...new Map([
     ...board.partialErrors,
@@ -997,7 +1013,7 @@ function TodayPageContent() {
 
         {status === "ready" && board && !board.enabled ? (
           <Card className="p-6 sm:p-8">
-            <ChannelSelector board={board} id="today-disabled-channel" onChange={handleChannelChange} />
+            <ChannelSelector board={board} id="today-disabled-channel" disabled={busy !== null || refreshing} onChange={handleChannelChange} />
             <h2 className="mt-5">Сегодня временно приостановлено</h2>
             <p className="mt-3 max-w-[65ch] text-pretty text-[15px] leading-relaxed text-text-2">Решения снова появятся здесь после восстановления сервиса. Пока можно продолжить работу с материалами в календаре.</p>
             <div className="mt-5 flex flex-col gap-3 sm:flex-row">
@@ -1012,7 +1028,7 @@ function TodayPageContent() {
             <Card className="p-4 sm:p-5">
               <div className="flex flex-col gap-5 lg:flex-row lg:items-end lg:justify-between">
                 <div className="min-w-0">
-                  <ChannelSelector board={board} id="today-channel" onChange={handleChannelChange} />
+                  <ChannelSelector board={board} id="today-channel" disabled={busy !== null || refreshing} onChange={handleChannelChange} />
                   <h2 ref={summaryRef} tabIndex={-1} className="mt-4 text-[15px] font-semibold text-text focus-visible:rounded-xs focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-brand">
                     {actionableItems.length} {plural(actionableItems.length, "решение", "решения", "решений")} в фокусе
                   </h2>
@@ -1058,11 +1074,11 @@ function TodayPageContent() {
             {refreshError ? <div role="alert" className="rounded-sm border border-danger/25 bg-danger-soft px-4 py-3 text-[14px] text-danger-text">{refreshError}</div> : null}
 
             {undo ? (
-              <Card className="border-success/25 bg-success-soft p-4" role="status">
+              <Card className={undoPending ? "border-line bg-surface-inset p-4" : "border-success/25 bg-success-soft p-4"} role="status">
                 <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
                   <div className="min-w-0">
-                    <p className="font-semibold text-success-text">
-                      {undo.kind === "feedback" ? "Тип рекомендаций скрыт" : undo.state === "done" ? "Решение отмечено готовым" : undo.state === "dismissed" ? "Решение отклонено" : "Напомним завтра в 09:00"}
+                    <p className={undoPending ? "font-semibold text-text-2" : "font-semibold text-success-text"}>
+                      {undoPending ? (undoReturning ? "Возвращаем решение…" : "Сохраняем изменение…") : undo.kind === "feedback" ? "Тип рекомендаций скрыт" : undo.state === "done" ? "Решение отмечено готовым" : undo.state === "dismissed" ? "Решение отклонено" : "Напомним завтра в 09:00"}
                     </p>
                     <p className="mt-1 break-words text-[13px] text-text-2">{undo.item.title}</p>
                     {itemErrors[undo.item.fingerprint] ? <p className="mt-2 text-[13px] font-semibold text-danger-text" role="alert">{itemErrors[undo.item.fingerprint]}</p> : null}
@@ -1086,7 +1102,7 @@ function TodayPageContent() {
               </Card>
             ) : null}
 
-            {board.availability !== "unavailable" && actionableItems.length === 0 && !quickMode ? (
+            {board.availability !== "unavailable" && actionableItems.length === 0 && !quickMode && busy === null ? (
               <Card className="p-7 text-center sm:p-10">
                 {board.readiness.state === "need_competitors" ? (
                   <><Compass className="mx-auto h-8 w-8 text-brand" aria-hidden /><h2 className="mt-4">Добавьте конкурентов</h2><p className="mx-auto mt-2 max-w-[55ch] text-pretty text-[15px] leading-relaxed text-text-2">Для поиска устойчивых возможностей нужны минимум два конкурента. Сейчас добавлено: {board.readiness.competitorCount}.</p><Link className={buttonClassName({ className: "mt-5 min-h-11" })} href={`/app/competitors?channel=${board.channelId ?? ""}`}>Добавить конкурентов</Link></>
@@ -1132,9 +1148,9 @@ function TodayPageContent() {
                   />
                 ) : (
                   <Card className="p-7 text-center sm:p-10" role="status">
-                    <CheckCircle2 className="mx-auto h-8 w-8 text-success-text" aria-hidden />
-                    <h3 className="mt-4">Быстрый разбор завершён</h3>
-                    <p className="mx-auto mt-2 max-w-[55ch] text-[15px] leading-relaxed text-text-2">Все решения из этой сессии разобраны. Новые данные появятся после следующего обновления.</p>
+                    {busy !== null ? <Clock3 className="mx-auto h-8 w-8 text-text-2" aria-hidden /> : <CheckCircle2 className="mx-auto h-8 w-8 text-success-text" aria-hidden />}
+                    <h3 className="mt-4">{busy !== null ? "Сохраняем последнее решение…" : "Быстрый разбор завершён"}</h3>
+                    <p className="mx-auto mt-2 max-w-[55ch] text-[15px] leading-relaxed text-text-2">{busy !== null ? "Результат появится после подтверждения сохранения." : "Все решения из этой сессии разобраны. Новые данные появятся после следующего обновления."}</p>
                     <Button variant="secondary" className="mt-5" onClick={stopQuickMode}>Вернуться к сводке</Button>
                   </Card>
                 )}

@@ -1,8 +1,15 @@
+vi.mock("@/lib/ai-spend-ledger.mjs", async (importOriginal) => ({
+  ...await importOriginal(),
+  beginAiSpendAttempt: vi.fn(async () => ({ id: "unit-spend", finish: vi.fn(async () => {}) })),
+}));
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { NextRequest } from "next/server";
+import { AiSpendError, beginAiSpendAttempt } from "@/lib/ai-spend-ledger.mjs";
+import { ProjectAccessError } from "@/lib/project-permissions";
 
 const mocks = vi.hoisted(() => ({
   getSessionUser: vi.fn(),
+  requireAiChannelAccess: vi.fn(),
   query: vi.fn(),
   channelAiContextFor: vi.fn(),
   styleSamplesFor: vi.fn(),
@@ -22,8 +29,12 @@ const mocks = vi.hoisted(() => ({
   recordProductEvent: vi.fn(),
 }));
 
+vi.mock("@/lib/ai-project-access", async (importOriginal) => ({
+  ...await importOriginal<typeof import("@/lib/ai-project-access")>(),
+  requireAiChannelAccess: mocks.requireAiChannelAccess,
+}));
 vi.mock("@/lib/session", () => ({ getSessionUser: mocks.getSessionUser }));
-vi.mock("@/lib/db", () => ({ getPool: () => ({ query: mocks.query }) }));
+vi.mock("@/lib/db", () => ({ getPool: () => ({ query: mocks.query, connect: vi.fn() }) }));
 vi.mock("@/lib/server-product-events.mjs", () => ({
   recordChannelProductEvent: mocks.recordProductEvent,
   productDurationMs: () => 5,
@@ -400,6 +411,7 @@ describe("POST /api/ai/generate prerequisites", () => {
       styleSamples: [],
     });
     mocks.styleSamplesFor.mockResolvedValue([]);
+    mocks.requireAiChannelAccess.mockResolvedValue(3);
     mocks.lookupAiUsageRequest.mockResolvedValue({ state: "missing", reservationId: null, result: null });
     mocks.acquireAiUsageRequest.mockResolvedValue({
       allowed: true,
@@ -457,6 +469,60 @@ describe("POST /api/ai/generate prerequisites", () => {
     expect(body).toMatchObject({ error: "forbidden_origin", requestId: expect.any(String) });
     expect(body.requestId).toBe(response.headers.get("x-ai-request-id"));
     expect(mocks.getSessionUser).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["ai_spend_cap_exceeded", 429, true],
+    ["ai_spend_concurrency_exceeded", 429, true],
+    ["ai_spend_configuration_required", 503, true],
+    ["ai_spend_scope_forbidden", 403, false],
+  ] as const)("N50 reports %s as local policy and never opens a provider", async (code, status, retryable) => {
+    vi.mocked(beginAiSpendAttempt).mockRejectedValueOnce(new AiSpendError(code, "user"));
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+    const response = await POST(studioRequest());
+    const events = (await response.text()).trim().split("\n").map(line => JSON.parse(line));
+    expect(response.status).toBe(200); // The accepted NDJSON stream has its own terminal error status.
+    expect(events.find(event => event.type === "error"))
+      .toMatchObject({ error: code, code, status, retryable, suggestedEngine: null });
+    expect(events.some(event => ["delta", "replace", "done", "fallback"].includes(event.type))).toBe(false);
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(mocks.failGenerationOperation).toHaveBeenCalledWith(7, expect.any(String), code, retryable);
+    expect(mocks.releaseAiUsageRequest).toHaveBeenCalledOnce();
+  });
+
+  it("checks current channel permission before replay, quota, or provider work", async () => {
+    mocks.requireAiChannelAccess.mockRejectedValue(new ProjectAccessError("membership_required"));
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+    const response = await POST(studioRequest());
+    expect(response.status).toBe(403);
+    await expect(response.json()).resolves.toMatchObject({ error: "channel_forbidden", retryable: false });
+    expect(mocks.lookupTerminalGenerationFailure).not.toHaveBeenCalled();
+    expect(mocks.lookupAiUsageRequest).not.toHaveBeenCalled();
+    expect(mocks.acquireAiUsageRequest).not.toHaveBeenCalled();
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("withholds new stream content when membership is revoked during the provider call", async () => {
+    let checks = 0;
+    mocks.requireAiChannelAccess.mockImplementation(async () => {
+      checks += 1;
+      if (checks >= 3) throw new ProjectAccessError("membership_required");
+      return 3;
+    });
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(
+      '{"message":{"content":"FRESH_AFTER_REVOKE"},"done":true}\n',
+      { status: 200, headers: { "content-type": "application/x-ndjson" } },
+    )));
+    const response = await POST(studioRequest());
+    const body = await response.text();
+    const events = body.trim().split("\n").map(line => JSON.parse(line));
+    expect(checks).toBeGreaterThanOrEqual(3);
+    expect(body).not.toContain("FRESH_AFTER_REVOKE");
+    expect(events.some(event => ["delta", "replace", "done"].includes(event.type))).toBe(false);
+    expect(events.some(event => event.type === "error")).toBe(true);
+    expect(mocks.stageGenerationArtifact).not.toHaveBeenCalled();
   });
 
   it("reports session storage failure as a retryable 503", async () => {
@@ -804,6 +870,53 @@ describe("POST /api/ai/generate prerequisites", () => {
 
     await vi.waitFor(() => expect(mocks.releaseAiUsageRequest).toHaveBeenCalledOnce());
     expect(mocks.commitAiUsageResult).not.toHaveBeenCalled();
+  });
+
+  it("N48 makes a cancelled accepted request terminal before refund and never starts it again", async () => {
+    let terminal = false;
+    mocks.failGenerationOperation.mockImplementation(async (_user, _id, code, retryable) => {
+      if (code === "ai_generation_cancelled" && retryable === false) terminal = true;
+    });
+    mocks.lookupTerminalGenerationFailure.mockImplementation(async () => terminal
+      ? { code: "ai_generation_cancelled", retryable: false } : null);
+    const fetchMock = vi.fn(async (_url: string, init?: RequestInit) => new Response(
+      new ReadableStream<Uint8Array>({ start(controller) {
+        init?.signal?.addEventListener("abort", () => controller.error(
+          init.signal?.reason ?? new DOMException("cancelled", "AbortError")), { once: true });
+      } }), { status: 200 },
+    ));
+    vi.stubGlobal("fetch", fetchMock);
+    const first = await POST(studioRequest());
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledOnce());
+    await first.body!.cancel();
+    await vi.waitFor(() => expect(mocks.releaseAiUsageRequest).toHaveBeenCalledOnce());
+    const repeated = await POST(studioRequest());
+    try {
+      expect(repeated.status).toBe(422);
+      expect(await repeated.json()).toMatchObject({ error: "ai_generation_cancelled", retryable: false });
+      expect(fetchMock).toHaveBeenCalledOnce();
+      expect(mocks.failGenerationOperation).toHaveBeenCalledWith(7, expect.any(String), "ai_generation_cancelled", false);
+      expect(mocks.failGenerationOperation.mock.invocationCallOrder[0])
+        .toBeLessThan(mocks.releaseAiUsageRequest.mock.invocationCallOrder[0]);
+    } finally { await repeated.body?.cancel().catch(() => {}); }
+  });
+
+  it("N48 retains the reservation when terminal cancellation cannot be persisted", async () => {
+    mocks.failGenerationOperation.mockRejectedValue(new Error("database unavailable"));
+    const fetchMock = vi.fn(async (_url: string, init?: RequestInit) => new Response(
+      new ReadableStream<Uint8Array>({ start(controller) {
+        init?.signal?.addEventListener("abort", () => controller.error(
+          init.signal?.reason ?? new DOMException("cancelled", "AbortError")), { once: true });
+      } }), { status: 200 },
+    ));
+    vi.stubGlobal("fetch", fetchMock);
+    const response = await POST(studioRequest());
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledOnce());
+    await response.body!.cancel();
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(mocks.failGenerationOperation).toHaveBeenCalledOnce();
+    expect(mocks.releaseAiUsageRequest).not.toHaveBeenCalled();
+    expect(mocks.stageGenerationArtifact).not.toHaveBeenCalled();
   });
 
   it("returns the ready draft when an optional editorial pass is interrupted", async () => {

@@ -1,4 +1,4 @@
-import type { Pool } from "pg";
+import type { Pool, PoolClient } from "pg";
 
 export type ChannelHealthStatus =
   | "active"
@@ -27,7 +27,7 @@ export function transitionChannelHealth(pool: Pool, input: {
   errorCode?: string | null;
   action?: string;
   requestId?: string | null;
-}): Promise<{
+}, options?: { client?: PoolClient }): Promise<{
   channelId: number;
   fromStatus: ChannelHealthStatus;
   status: ChannelHealthStatus;

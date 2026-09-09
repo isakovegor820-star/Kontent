@@ -4,9 +4,10 @@
 --
 -- Как применить (один раз):
 --   Neon → твой проект → вкладка «SQL Editor» → вставь этот файл → Run.
---   Или из терминала:  psql "$DATABASE_URL" -f db/schema.sql
+--   Или из терминала:  psql "$DATABASE_URL" --single-transaction --set=ON_ERROR_STOP=1 -f db/schema.sql
 --
--- Файл идемпотентный: повторный запуск ничего не сломает (IF NOT EXISTS).
+-- Только для доказанно пустой БД. Для существующей БД используйте scripts/migrate.mjs.
+-- Bootstrap выполняется одной транзакцией: counters и trigger должны появиться вместе.
 -- Каждый следующий шаг Д.2–Д.9 будет ДОБАВЛЯТЬ сюда свои таблицы рядом —
 -- база одна на весь проект, данные не переносятся, а наследуются.
 -- ============================================================================
@@ -6503,6 +6504,337 @@ end $$;
 create index if not exists site_reports_interpretation_pending_idx
   on site_reports (interpretation_status, created_at) where interpretation_status = 'pending';
 
+
+-- Telegram ownership proof contract (20261011).
+
+-- No ownership backfill: existing bindings require a read-only review first.
+create table if not exists telegram_channel_connection_proofs (
+  id uuid primary key,
+  user_id bigint not null references users(id) on delete cascade,
+  project_id bigint not null references projects(id) on delete cascade,
+  actor_id bigint not null check (actor_id > 0),
+  chat_id bigint check (chat_id < 0),
+  source text not null check (source in ('web', 'telegram')),
+  event_id bigint unique,
+  created_at timestamptz not null default now(),
+  expires_at timestamptz not null default now() + interval '5 minutes',
+  used_at timestamptz,
+  check (expires_at > created_at)
+);
+create index if not exists telegram_channel_connection_proofs_actor_idx
+  on telegram_channel_connection_proofs(actor_id, expires_at) where used_at is null;
+
+-- Accepted legacy installations may predate the bootstrap-only bot link table.
+create table if not exists bot_links (
+  code text primary key,
+  user_id bigint not null references users(id) on delete cascade,
+  used_at timestamptz,
+  expires_at timestamptz not null,
+  created_at timestamptz not null default now()
+);
+create index if not exists bot_links_user_idx on bot_links(user_id);
+alter table bot_links add column if not exists channel_project_id bigint references projects(id) on delete cascade;
+
+
+
+-- Durable bot update delivery receipts (20261013).
+
+-- Persist the handoff before an interactive bot update can create a message. The
+-- polling offset may be replayed after crashes; a sending row is never a retry proof.
+create table if not exists telegram_update_deliveries (
+  bot_id bigint not null,
+  update_id bigint not null,
+  part_index integer not null check (part_index >= 0),
+  payload_hash char(64) not null check (payload_hash ~ '^[0-9a-f]{64}$'),
+  send_status text not null check (send_status in ('sending','sent','rejected','unknown')),
+  receipt jsonb,
+  retry_not_before timestamptz,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  primary key (bot_id, update_id, part_index)
+);
+
+comment on table telegram_update_deliveries is
+  'Bot update replay receipts. Contains payload hashes and minimal provider IDs only. Sending/unknown must not be resent; keep across worker restart and restore reconciliation.';
+
+
+-- Verified mailbox evidence for email-based administration; never inferred from registration.
+alter table users add column if not exists verified_email text;
+
+
+-- Monetary AI attempt ledger (20261012).
+
+-- Monetary exposure is independent of the refundable user-visible generation allowance.
+-- No tariffs or budgets are seeded: operators must supply explicit accepted values.
+create table if not exists ai_spend_attempts (
+  id uuid primary key,
+  user_id bigint not null references users(id) on delete restrict,
+  project_id bigint not null references projects(id) on delete restrict,
+  provider varchar(80) not null,
+  model varchar(160) not null,
+  budget_date date not null default (now() at time zone 'UTC')::date,
+  status text not null default 'reserved' check (status in ('reserved','succeeded','failed','unknown')),
+  reserved_microusd bigint not null check (reserved_microusd > 0),
+  charged_microusd bigint check (charged_microusd >= 0),
+  tariff jsonb not null check (jsonb_typeof(tariff) = 'object'),
+  input_token_bound bigint not null check (input_token_bound >= 0),
+  output_token_bound bigint not null check (output_token_bound >= 0),
+  unit_bound bigint not null default 0 check (unit_bound >= 0),
+  input_tokens bigint check (input_tokens >= 0),
+  output_tokens bigint check (output_tokens >= 0),
+  usage_known boolean not null default false,
+  created_at timestamptz not null default now(),
+  lease_expires_at timestamptz not null default now() + interval '10 minutes',
+  finalized_at timestamptz,
+  check (usage_known = (input_tokens is not null and output_tokens is not null)),
+  check ((status = 'reserved') = (finalized_at is null))
+);
+create index if not exists ai_spend_attempts_budget_idx on ai_spend_attempts(budget_date,user_id,project_id);
+create index if not exists ai_spend_attempts_active_idx on ai_spend_attempts(lease_expires_at) where status='reserved';
+
+
+
+-- Existing queued Radar runs can be attributed only by their explicit channel; no selected-project backfill.
+alter table radar_search_runs add column if not exists project_id bigint references projects(id) on delete restrict;
+create index if not exists radar_search_runs_project_idx on radar_search_runs(project_id,created_at desc);
+
+
+
+-- Atomic cumulative media storage quotas (20261014).
+
+create table if not exists media_storage_policy (
+  id smallint primary key check (id = 1),
+  user_max_bytes bigint not null check (user_max_bytes > 0),
+  project_max_bytes bigint not null check (project_max_bytes > 0),
+  global_max_bytes bigint not null check (global_max_bytes > 0),
+  updated_at timestamptz not null default now()
+);
+comment on table media_storage_policy is 'Explicit operator-approved cumulative media limits; no default budget is invented. Missing policy blocks growth, never reads or deletion.';
+
+create table if not exists media_storage_usage (
+  scope text not null check (scope in ('global','user','project')),
+  scope_id bigint not null check ((scope = 'global' and scope_id = 0) or (scope <> 'global' and scope_id > 0)),
+  bytes_used bigint not null check (bytes_used >= 0),
+  updated_at timestamptz not null default now(),
+  primary key (scope, scope_id)
+);
+
+-- Counter initialization and trigger installation form one transaction. Count real
+-- postgres payload bytes even when a legacy row understated its declared size.
+lock table media_assets in share row exclusive mode;
+insert into media_storage_usage(scope,scope_id,bytes_used)
+select 'global',0,coalesce(sum(greatest(bytes,coalesce(octet_length(data),0))),0) from media_assets
+on conflict (scope,scope_id) do nothing;
+insert into media_storage_usage(scope,scope_id,bytes_used)
+select 'user',user_id,sum(greatest(bytes,coalesce(octet_length(data),0))) from media_assets group by user_id
+on conflict (scope,scope_id) do nothing;
+insert into media_storage_usage(scope,scope_id,bytes_used)
+select 'project',project_id,sum(greatest(bytes,coalesce(octet_length(data),0))) from media_assets group by project_id
+on conflict (scope,scope_id) do nothing;
+
+create or replace function enforce_media_storage_quota() returns trigger language plpgsql as $$
+declare
+  old_bytes bigint := 0;
+  new_bytes bigint := 0;
+  old_user bigint;
+  new_user bigint;
+  old_project bigint;
+  new_project bigint;
+  policy media_storage_policy%rowtype;
+  item record;
+  quota bigint;
+begin
+  if tg_op <> 'INSERT' then
+    old_bytes := greatest(old.bytes,coalesce(octet_length(old.data),0));
+    old_user := old.user_id;
+    old_project := old.project_id;
+  end if;
+  if tg_op <> 'DELETE' then
+    new_bytes := greatest(new.bytes,coalesce(octet_length(new.data),0));
+    new_user := new.user_id;
+    new_project := new.project_id;
+  end if;
+  -- A shared policy lock prevents a concurrent configuration change from racing a
+  -- charge. All counters are locked in the same global/user/project order.
+  if new_bytes > old_bytes or (new_bytes > 0 and (new_user is distinct from old_user or new_project is distinct from old_project)) then
+    select * into policy from media_storage_policy where id=1 for share;
+    if not found then raise exception using message='media_storage_limits_not_configured',errcode='P0001'; end if;
+  end if;
+  for item in
+    select scope,scope_id,sum(delta)::bigint as delta
+      from (values ('global',0::bigint,new_bytes-old_bytes),
+                   ('user',old_user,-old_bytes),('user',new_user,new_bytes),
+                   ('project',old_project,-old_bytes),('project',new_project,new_bytes)) as changes(scope,scope_id,delta)
+     where scope_id is not null
+     group by scope,scope_id having sum(delta) <> 0
+     order by case scope when 'global' then 0 when 'user' then 1 else 2 end,scope_id
+  loop
+    quota := case item.scope when 'global' then policy.global_max_bytes when 'user' then policy.user_max_bytes else policy.project_max_bytes end;
+    insert into media_storage_usage(scope,scope_id,bytes_used) values(item.scope,item.scope_id,0)
+      on conflict(scope,scope_id) do nothing;
+    update media_storage_usage set bytes_used=bytes_used+item.delta,updated_at=now()
+     where scope=item.scope and scope_id=item.scope_id
+       and bytes_used+item.delta >= 0
+       and (item.delta <= 0 or bytes_used+item.delta <= quota);
+    if not found then
+      if item.delta > 0 then raise exception using message='media_storage_quota_exceeded:'||item.scope,errcode='P0001'; end if;
+      raise exception using message='media_storage_usage_inconsistent',errcode='P0001';
+    end if;
+  end loop;
+  return null;
+end;
+$$;
+
+create or replace trigger media_assets_storage_quota
+  after insert or update or delete on media_assets
+  for each row execute function enforce_media_storage_quota();
+
+
+-- D03 persistent Sites AI accounting attribution (20261012).
+alter table site_reports add column if not exists requested_by_user_id bigint references users(id) on delete restrict;
+alter table site_articles add column if not exists generation_requested_by_user_id bigint references users(id) on delete restrict;
+
+
+-- Calendar pagination snapshot fence (20261016).
+
+ALTER TABLE projects ADD COLUMN IF NOT EXISTS calendar_version bigint NOT NULL DEFAULT 1;
+
+CREATE OR REPLACE FUNCTION advance_project_calendar_version() RETURNS trigger LANGUAGE plpgsql AS $$
+DECLARE
+  project_ids bigint[];
+  target_project bigint;
+BEGIN
+  IF TG_OP = 'INSERT' THEN
+    SELECT array_agg(project_id ORDER BY project_id) INTO project_ids
+      FROM (SELECT DISTINCT project_id FROM new_calendar_posts WHERE project_id IS NOT NULL) changed;
+  ELSIF TG_OP = 'DELETE' THEN
+    SELECT array_agg(project_id ORDER BY project_id) INTO project_ids
+      FROM (SELECT DISTINCT project_id FROM old_calendar_posts WHERE project_id IS NOT NULL) changed;
+  ELSE
+    SELECT array_agg(project_id ORDER BY project_id) INTO project_ids
+      FROM (SELECT project_id FROM old_calendar_posts WHERE project_id IS NOT NULL
+            UNION SELECT project_id FROM new_calendar_posts WHERE project_id IS NOT NULL) changed;
+  END IF;
+  FOREACH target_project IN ARRAY coalesce(project_ids, ARRAY[]::bigint[]) LOOP
+    UPDATE projects SET calendar_version = calendar_version + 1 WHERE id = target_project;
+  END LOOP;
+  RETURN NULL;
+END;
+$$;
+
+CREATE OR REPLACE TRIGGER posts_calendar_insert
+  AFTER INSERT ON posts REFERENCING NEW TABLE AS new_calendar_posts
+  FOR EACH STATEMENT EXECUTE FUNCTION advance_project_calendar_version();
+CREATE OR REPLACE TRIGGER posts_calendar_update
+  AFTER UPDATE ON posts REFERENCING OLD TABLE AS old_calendar_posts NEW TABLE AS new_calendar_posts
+  FOR EACH STATEMENT EXECUTE FUNCTION advance_project_calendar_version();
+CREATE OR REPLACE TRIGGER posts_calendar_delete
+  AFTER DELETE ON posts REFERENCING OLD TABLE AS old_calendar_posts
+  FOR EACH STATEMENT EXECUTE FUNCTION advance_project_calendar_version();
+
+-- Historical delivery receipts remain unchanged. A pending legacy operation without
+-- its actual publisher cannot infer authority from the author or approver.
+alter table site_article_publications
+  add column if not exists requested_by_user_id bigint
+    references users (id) on delete restrict;
+
+-- Durable admin alert transition and per-recipient receipt contract (20261018).
+create table if not exists admin_alert_conditions (
+  alert_id text primary key check (alert_id in ('database','redis','publication_worker','telegram_worker','overdue_publications')),
+  firing boolean not null,
+  generation bigint not null default 0 check (generation >= 0),
+  since_ms bigint not null,
+  current_notification_id bigint,
+  updated_at timestamptz not null default now()
+);
+create table if not exists admin_alert_notifications (
+  id bigint generated always as identity primary key,
+  alert_id text not null references admin_alert_conditions(alert_id),
+  generation bigint not null check (generation > 0),
+  kind text not null check (kind in ('fired','still_firing','recovered')),
+  severity text not null check (severity in ('critical','warning')),
+  detail varchar(500) not null,
+  since_ms bigint not null,
+  created_at timestamptz not null default now(),
+  completed_at timestamptz,
+  superseded_at timestamptz,
+  unique(alert_id,generation)
+);
+create table if not exists admin_alert_deliveries (
+  notification_id bigint not null references admin_alert_notifications(id),
+  user_id bigint not null references users(id) on delete cascade,
+  chat_id bigint not null,
+  bot_id bigint not null check (bot_id > 0),
+  send_status text not null default 'pending' check (send_status in ('pending','sending','sent','rejected','unknown')),
+  attempt_token uuid,
+  attempts integer not null default 0 check (attempts >= 0),
+  sending_at timestamptz,
+  retry_not_before timestamptz,
+  receipt jsonb,
+  last_error_code text,
+  updated_at timestamptz not null default now(),
+  primary key(notification_id,user_id),
+  unique(notification_id,chat_id)
+);
+create index if not exists admin_alert_notifications_pending_idx
+  on admin_alert_notifications(id) where completed_at is null and superseded_at is null;
+comment on table admin_alert_deliveries is
+  'Per-recipient admin alert receipts. Sending/unknown are never retry evidence; preserve across restart and restore.';
+
+-- 20261019_rss_project_identity.sql
+
+-- The accepted sparse legacy schema has feed identities but no recoverable URL.
+-- Preserve those rows with NULL URL/project; never invent a provider URL or bind
+-- incomplete source data merely because an old channel has acquired a project.
+alter table rss_feeds add column if not exists url text;
+
+-- Bind existing feeds only to their actual channel. Unassigned legacy channels do
+-- not acquire a guessed personal/current project and stay unavailable to runtimes.
+alter table rss_feeds add column if not exists project_id bigint references projects(id) on delete restrict;
+update rss_feeds feed set project_id=channel.project_id
+  from channels channel where channel.id=feed.channel_id and feed.project_id is null
+    and channel.project_id is not null and feed.url is not null;
+create unique index if not exists rss_feeds_user_project_url_uniq on rss_feeds(user_id,project_id,url);
+do $$ begin
+  if not exists(select 1 from pg_constraint where conrelid='rss_feeds'::regclass and conname='rss_feeds_channel_project_fk') then
+    alter table rss_feeds add constraint rss_feeds_channel_project_fk foreign key(channel_id,project_id)
+      references channels(id,project_id) on delete cascade;
+  end if;
+end $$;
+-- Cutover must drain old web/workers: their ON CONFLICT(user_id,url) is obsolete.
+-- Restoring that global key after two projects use one URL is not a safe rollback.
+alter table rss_feeds drop constraint if exists rss_feeds_user_id_url_key;
+comment on column rss_feeds.project_id is 'Explicit RSS project identity; NULL legacy rows are held, never selected through a user preference.';
+
+
+-- Telegram background notification receipts (20261020).
+
+create table if not exists telegram_background_deliveries (
+  project_id bigint not null references projects(id),
+  user_id bigint not null references users(id),
+  event_key varchar(200) not null check (event_key ~ '^[a-zA-Z0-9:_-]{1,200}$'),
+  part_index integer not null check (part_index >= 0),
+  bot_id bigint not null check (bot_id > 0),
+  chat_id bigint not null check (chat_id <> 0),
+  payload_hash char(64) not null check (payload_hash ~ '^[0-9a-f]{64}$'),
+  send_status text not null check (send_status in ('sending','sent','rejected','unknown','cancelled')),
+  receipt jsonb,
+  retry_not_before timestamptz,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  primary key (project_id,user_id,event_key,part_index)
+);
+comment on table telegram_background_deliveries is
+  'Durable per-event Telegram background receipts. Preserve sent/unknown/sending across retries and restart; never infer absent delivery from absent receipt. Restore quarantine holds all unfinished sends.';
+
+
+-- N21: explicit actor for periodic competitor collection; no legacy inference.
+
+alter table competitors
+  add column if not exists collection_requested_by_user_id bigint references users(id) on delete set null;
+
+comment on column competitors.collection_requested_by_user_id is
+  'Actual actor who explicitly enabled or refreshed this collection. Creator identity is unchanged. Legacy null rows require an authorized explicit refresh/resume; never infer an actor or backfill from the creator.';
 
 -- Studio / Sites background ownership; mirror of 20261011_studio_sites_worker_leases.sql
 -- Additive ownership fences for recoverable Studio / Sites background work.

@@ -10,6 +10,14 @@ const mocks = vi.hoisted(() => ({
 
 vi.mock("@/lib/session", () => ({ getSessionUser: mocks.getSessionUser }));
 vi.mock("@/lib/db", () => ({ getPool: () => ({ query: mocks.query, connect: mocks.connect }) }));
+// SQL authorization/locking is exercised by legacy-content-project.integration.ts.
+// These contract fixtures isolate response and idempotency behavior.
+vi.mock("@/lib/selected-project-transaction", () => ({
+  withSelectedProjectPermission: async (_pool: unknown, _user: number, _permission: string, action: (client: unknown, membership: unknown) => Promise<unknown>) => {
+    try { return await action({ query: mocks.query }, { projectId: 3 }); }
+    finally { mocks.release(); }
+  },
+}));
 
 import { GET, POST } from "./route";
 
@@ -84,6 +92,7 @@ describe("settings profile route", () => {
 
   it("replays the same key and rejects a changed payload without updates", async () => {
     mocks.query.mockImplementation(async (sql: string) => {
+      if (sql.includes("select id from channels")) return { rows: [{ id: "42" }] };
       if (sql === "begin" || sql === "rollback" || sql.includes("pg_advisory_xact_lock")) return { rows: [] };
       if (sql.includes("from profile_update_operations")) {
         return { rows: [{ request_fingerprint: "different", result_payload: { ok: true } }] };

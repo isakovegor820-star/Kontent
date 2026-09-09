@@ -25,6 +25,10 @@ export const STABLE_RELEASE_CAPABILITIES = Object.freeze([
   "site-analysis",
   "growth",
   "knowledge",
+  "vk",
+  "sites-and-wordpress",
+  "admin",
+  "legal-visuals-and-video",
 ] as const);
 
 export const EXPERIMENTAL_APP_PATH_PREFIXES = Object.freeze([] as const);

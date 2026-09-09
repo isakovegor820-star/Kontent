@@ -172,7 +172,7 @@ export async function consumePasswordReset(
     }
     await client.query(
       `update users
-          set password_hash = $2, credential_epoch = credential_epoch + 1
+          set password_hash = $2, credential_epoch = credential_epoch + 1, verified_email = email
         where id = $1 and password_reset_generation = $3`, [
       row.user_id,
       passwordHash,

@@ -1,3 +1,4 @@
+import { beginAiSpendAttempt } from "./ai-spend-ledger.mjs";
 // Единый переходник ИИ. Пользовательский выбор движка передаётся сюда явно, а фактический
 // резервный маршрут сохраняется в диагностике; интерфейс показывает результат Авроры.
 
@@ -776,7 +777,44 @@ async function* streamOllama(
   throw new AiProviderError(runtime.id, 502, "stream_truncated");
 }
 
+async function* budgetedProviderStream(
+  runtime: EngineRuntime,
+  params: GenerateParams,
+  maxOutputTokens: number,
+  source: (parameters: GenerateParams) => AsyncGenerator<string>,
+): AsyncGenerator<string> {
+  const spend = await beginAiSpendAttempt({
+    provider: runtime.id,
+    model: runtime.model,
+    // UTF-8 bytes bound token count more conservatively than the UI token estimate.
+    inputTokens: Buffer.byteLength(JSON.stringify(messagesFor(params)), "utf8") + 1024,
+    outputTokens: maxOutputTokens,
+  });
+  let usage: { inputTokens: number; outputTokens: number } | null = null;
+  let succeeded = false;
+  try {
+    yield* source({ ...params, onProviderUsage: (value) => {
+      usage = value;
+      params.onProviderUsage?.(value);
+    } });
+    succeeded = true;
+  } finally {
+    await spend.finish({ outcome: succeeded ? "succeeded" : "unknown", usage });
+  }
+}
+
 async function* streamOpenAiAttempt(
+  runtime: EngineRuntime & { baseUrl: string },
+  params: GenerateParams,
+  signal: AbortSignal | undefined,
+  options: { maxTokens: number; reasoningEffort?: "minimal" | "none"; idempotencySuffix?: string },
+  requestTimeoutMs: number | null,
+): AsyncGenerator<string> {
+  yield* budgetedProviderStream(runtime, params, options.maxTokens,
+    (scoped) => streamOpenAiAttemptRaw(runtime, scoped, signal, options, requestTimeoutMs));
+}
+
+async function* streamOpenAiAttemptRaw(
   runtime: EngineRuntime & { baseUrl: string },
   p: GenerateParams,
   signal: AbortSignal | undefined,
@@ -991,6 +1029,7 @@ async function* streamAnthropic(
   const decoder = new TextDecoder();
   let buffer = "";
   let terminal = false;
+  let anthropicInputTokens: number | null = null;
   while (true) {
     const { done, value } = await reader.read();
     if (done) break;
@@ -1005,7 +1044,13 @@ async function* streamAnthropic(
           type?: string;
           delta?: { type?: string; text?: string };
           error?: { message?: string };
+          message?: { usage?: { input_tokens?: number } };
+          usage?: { output_tokens?: number };
         };
+        if (Number.isSafeInteger(event.message?.usage?.input_tokens)) anthropicInputTokens = Number(event.message?.usage?.input_tokens);
+        if (anthropicInputTokens !== null && Number.isSafeInteger(event.usage?.output_tokens)) {
+          p.onProviderUsage?.({ engine: runtime.id, model: runtime.model, inputTokens: anthropicInputTokens, outputTokens: Number(event.usage?.output_tokens) });
+        }
         if (event.type === "error") throw new AiProviderError(runtime.id, 502, "stream_error");
         if (event.type === "message_stop") {
           terminal = true;
@@ -1079,9 +1124,9 @@ export function generateText(
   assertUsable(runtime);
   const requestTimeoutMs = options.requestTimeoutMs === undefined ? 60_000 : options.requestTimeoutMs;
   const source = runtime.protocol === "ollama"
-    ? streamOllama(runtime, p, signal, requestTimeoutMs)
+    ? budgetedProviderStream(runtime, p, outputTokens(p), (scoped) => streamOllama(runtime, scoped, signal, requestTimeoutMs))
     : runtime.protocol === "anthropic"
-      ? streamAnthropic(runtime, p, signal, requestTimeoutMs)
+      ? budgetedProviderStream(runtime, p, outputTokens(p), (scoped) => streamAnthropic(runtime, scoped, signal, requestTimeoutMs))
       : streamOpenAi(runtime, p, signal, requestTimeoutMs, options.allowEmptyRetry);
   return runtime.protocol === "openai" ? source : streamVisibleContent(runtime, source);
 }

@@ -1,3 +1,4 @@
+import { mediaAssetUrl } from "./project-native-url";
 import { createHash, randomUUID } from "node:crypto";
 import type { Pool, PoolClient } from "pg";
 
@@ -695,7 +696,7 @@ export async function getLegalVisualRender(input: {
     completedAt: row.completed_at == null ? null : iso(row.completed_at),
     cards: cards.map((card) => ({
       id: String(card.card_id), order: Number(card.card_order), assetId: Number(card.media_asset_id),
-      url: `/api/media/assets/${card.media_asset_id}`, sha256: String(card.sha256),
+      url: mediaAssetUrl(String(card.media_asset_id), membership.projectId), sha256: String(card.sha256),
       width: Number(card.width), height: Number(card.height),
     })),
   };

@@ -8,7 +8,7 @@ import {
 } from "@/lib/autopilot-review.mjs";
 import { getPool } from "@/lib/db";
 import { ProjectAccessError, requireSelectedProjectPermission } from "@/lib/project-permissions";
-import { getAutopilotQueue } from "@/lib/queue";
+import { getAutopilotQueue, hasAutopilotWorker } from "@/lib/queue";
 import { hasTrustedMutationOrigin } from "@/lib/request-origin";
 import { getSessionUser } from "@/lib/session";
 import { BoundedBodyError, readRequestBodyLimited } from "@/lib/bounded-request-body";
@@ -273,7 +273,7 @@ export async function POST(req: NextRequest) {
     if (!operationId) throw new Error("repair operation was not created");
 
     const queue = getAutopilotQueue();
-    if ((await queue.getWorkersCount()) === 0) {
+    if (!(await hasAutopilotWorker(queue))) {
       await pool.query(
         `update autopilot_repair_operations
             set status = 'failed', terminal_outcome = 'worker_unavailable',

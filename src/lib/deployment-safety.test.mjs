@@ -5,7 +5,7 @@ import { join, resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 
 import { verifyRequiredChecks } from "../../scripts/verify-required-ci-checks.mjs";
-import { evaluateRollbackBoundary } from "../../scripts/verify-rollback-boundary.mjs";
+import { evaluateForwardOnlyBoundary } from "../../scripts/verify-forward-only-boundary.mjs";
 
 const previousSha = "a".repeat(40);
 const targetSha = "b".repeat(40);
@@ -26,23 +26,35 @@ describe("production deployment safety gates", () => {
     ] }, "tests")).toThrow("in_progress/none");
   });
 
-  it("allows unchanged schema rollback without an attestation", () => {
+  it("requires an exact attestation even when a forward-only cutover keeps the schema unchanged", () => {
     const manifest = { migrations: [migration("one.sql")] };
-    expect(evaluateRollbackBoundary({ previousManifest: manifest, targetManifest: manifest,
-      previousSha, targetSha, attestation: "" })).toMatchObject({ compatible: true, reason: "schema_unchanged" });
+    expect(evaluateForwardOnlyBoundary({ previousManifest: manifest, targetManifest: manifest,
+      previousSha, targetSha, attestation: "" })).toMatchObject({ safe: false });
+    expect(evaluateForwardOnlyBoundary({ previousManifest: manifest, targetManifest: manifest,
+      previousSha, targetSha, attestation: `${previousSha}:${targetSha}:forward-only` })).toMatchObject({
+        safe: true,
+        reason: "schema_unchanged_forward_only_attested",
+      });
   });
 
-  it("blocks schema-changing rollback unless the protected audit names the exact SHA pair", () => {
+  it("accepts only an additive schema and the exact protected forward-only SHA pair", () => {
     const previousManifest = { migrations: [migration("one.sql")] };
     const targetManifest = { migrations: [migration("one.sql"), migration("two.sql")] };
-    expect(evaluateRollbackBoundary({ previousManifest, targetManifest, previousSha, targetSha,
-      attestation: "" })).toMatchObject({ compatible: false });
-    expect(evaluateRollbackBoundary({ previousManifest, targetManifest, previousSha, targetSha,
-      attestation: `${previousSha}:${"d".repeat(40)}` })).toMatchObject({ compatible: false });
-    expect(evaluateRollbackBoundary({ previousManifest, targetManifest, previousSha, targetSha,
-      attestation: `${previousSha}:${targetSha}` })).toMatchObject({
-        compatible: true,
-        reason: "externally_audited_schema_boundary",
+    expect(evaluateForwardOnlyBoundary({ previousManifest, targetManifest, previousSha, targetSha,
+      attestation: "" })).toMatchObject({ safe: false });
+    expect(evaluateForwardOnlyBoundary({ previousManifest, targetManifest, previousSha, targetSha,
+      attestation: `${previousSha}:${"d".repeat(40)}:forward-only` })).toMatchObject({ safe: false });
+    expect(evaluateForwardOnlyBoundary({ previousManifest, targetManifest, previousSha, targetSha,
+      attestation: `${previousSha}:${targetSha}:forward-only` })).toMatchObject({
+        safe: true,
+        reason: "additive_schema_forward_only_attested",
+      });
+    expect(evaluateForwardOnlyBoundary({
+      previousManifest: targetManifest,
+      targetManifest: previousManifest, previousSha, targetSha,
+      attestation: `${previousSha}:${targetSha}:forward-only` })).toMatchObject({
+        safe: false,
+        reason: "migration_history_not_additive",
       });
   });
 

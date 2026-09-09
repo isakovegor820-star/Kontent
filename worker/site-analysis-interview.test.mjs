@@ -33,6 +33,8 @@ function harness() {
   const query = vi.fn(async (sql, values) => {
     const normalized = String(sql).replace(/\s+/gu, " ").trim();
     const key = `${values?.[0]}:${values?.[1]}:${values?.[2]}`;
+    if (["begin","commit","rollback"].includes(normalized)) return {rows:[]};
+    if (normalized.startsWith("select analysis.id, analysis.user_id")) return {rows:[{id:41,user_id:7,project_id:3,site_id:null}]};
     if (normalized.startsWith("select status, request_fingerprint")) return { rows: rows.has(key) ? [rows.get(key)] : [] };
     if (normalized.startsWith("insert into site_analysis_ai_batches")) {
       rows.set(key, { status: "generating", request_fingerprint: values[5], response_payload: null });
@@ -45,7 +47,7 @@ function harness() {
     if (normalized.startsWith("update site_analysis_ai_batches") && normalized.includes("set status = 'failed'")) return { rows: [], rowCount: 1 };
     throw new Error(`unexpected query: ${normalized}`);
   });
-  return { pool: { query }, rows, query };
+  return { pool: { query, connect: vi.fn(async()=>({query,release:vi.fn()})) }, rows, query };
 }
 
 describe("site analysis AI interview worker", () => {
@@ -69,7 +71,7 @@ describe("site analysis AI interview worker", () => {
     const result = await runSiteInterview(h.pool, {
       analysisId: 41,
       runRevision: 2,
-      userId: 7,
+      userId: 7, projectId: 3,
       requestId: "req-41",
       snapshot: snapshot(),
     }, {
@@ -119,7 +121,7 @@ describe("site analysis AI interview worker", () => {
     const result = await runSiteInterview(h.pool, {
       analysisId: 41,
       runRevision: 2,
-      userId: 7,
+      userId: 7, projectId: 3,
       requestId: "req-41",
       snapshot: snapshot(),
       engine: "navy-deepseek-pro",
@@ -152,7 +154,7 @@ describe("site analysis AI interview worker", () => {
       heartbeatUsage: vi.fn(async () => true),
       completeAiText,
     };
-    const input = { analysisId: 41, runRevision: 2, userId: 7, requestId: "req-41", snapshot: snapshot() };
+    const input = { analysisId: 41, runRevision: 2, userId: 7, projectId: 3, requestId: "req-41", snapshot: snapshot() };
     await runSiteInterview(h.pool, input, deps);
     await runSiteInterview(h.pool, input, deps);
     expect(completeAiText).toHaveBeenCalledTimes(26);
@@ -167,7 +169,7 @@ describe("site analysis AI interview worker", () => {
     const error = await runSiteInterview(h.pool, {
       analysisId: 41,
       runRevision: 2,
-      userId: 7,
+      userId: 7, projectId: 3,
       requestId: "req-41",
       snapshot: snapshot(),
     }, {
@@ -193,7 +195,7 @@ describe("site analysis AI interview worker", () => {
     const result = await runSiteInterview(h.pool, {
       analysisId: 41,
       runRevision: 2,
-      userId: 7,
+      userId: 7, projectId: 3,
       requestId: "req-41",
       snapshot: snapshot(),
       engine: "navy-gpt-5-4",
@@ -229,7 +231,7 @@ describe("site analysis AI interview worker", () => {
     const result = await runSiteInterview(h.pool, {
       analysisId: 41,
       runRevision: 2,
-      userId: 7,
+      userId: 7, projectId: 3,
       requestId: "req-41",
       snapshot: snapshot(),
       engine: "navy-gpt-5-4",

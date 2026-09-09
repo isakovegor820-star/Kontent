@@ -1,8 +1,21 @@
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
+import { assertE2eTraceSet } from "../../scripts/e2e-artifact-contract.mjs";
 
 describe("real E2E runtime isolation", () => {
+  it("requires each context trace and rejects missing, duplicate or substituted artifacts", () => {
+    const complete = ["/isolated/main-trace.zip", "/isolated/reviewer-trace.zip", "/isolated/editor-safety-trace.zip"];
+    expect(() => assertE2eTraceSet(complete)).not.toThrow();
+    expect(() => assertE2eTraceSet([...complete].reverse())).not.toThrow();
+    for (let missing = 0; missing < complete.length; missing += 1) {
+      expect(() => assertE2eTraceSet(complete.filter((_, index) => index !== missing))).toThrow(/expected main/);
+      const duplicate = [...complete]; duplicate[missing] = complete[(missing + 1) % complete.length];
+      expect(() => assertE2eTraceSet(duplicate)).toThrow(/expected main/);
+    }
+    expect(() => assertE2eTraceSet([...complete, "/isolated/unexpected-trace.zip"])).toThrow(/expected main/);
+  });
+
   it("builds or validates one isolated artifact and restarts the production entrypoint", () => {
     const source = readFileSync(resolve("scripts/test-e2e-real.mjs"), "utf8");
 
@@ -23,7 +36,9 @@ describe("real E2E runtime isolation", () => {
     expect(source).toContain("Math.min(2_000, remainingMs)");
     expect(source).toContain('await stopChild(buildProcess, "production build")');
     expect(source).toContain("const buildFailureDetail = logs");
-    expect(source).toContain('["run", "start", "--", "-H", "127.0.0.1"');
+    expect(source).toContain('["run", "start", "--", "-H", "localhost"');
+    expect(source).toContain('const runtimeBaseUrl = `http://localhost:${nextPort}`');
+    expect(source).toContain('hostname: "localhost"');
     expect(source).not.toContain('["run", "dev"');
     expect(source).not.toContain(".next-e2e-real-${distSuffix}");
   });
@@ -204,7 +219,7 @@ describe("real E2E runtime isolation", () => {
     expect(source.match(/tracing.start\(E2E_EVIDENCE_TRACE_OPTIONS\)/gu)).toHaveLength(2);
     expect(source).toContain('resolve(artifactDir, "network-log.json")');
     expect(source).toContain("sanitizeE2eNetworkUrl(request.url(), baseUrl)");
-    expect(source).toContain("assert(traces.length === 2");
+    expect(source).toContain("assertE2eTraceSet(traces)");
     expect(source).toContain("assert(videos.length >= 2");
   });
 
@@ -220,8 +235,11 @@ describe("real E2E runtime isolation", () => {
     expect(harness).toContain("!botConnectNetworkUrls.some");
     expect(harness).toContain('reusedBotConfirm.status === 410');
     expect(harness).toContain('entry.status === 401 && entry.body?.error === "unauthorized"');
-    expect(harness).toContain("async function withExpectedBrowserConsoleErrors(labels, operation)");
-    expect(harness.match(/withExpectedBrowserConsoleErrors\(\["main"\]/gu)).toHaveLength(2);
+    expect(harness).not.toContain("expectedBrowserConsoleScopes");
+    expect(harness).toContain('withExpectedBotConnectionFailure([page, botConnectSecondPage], 401, "unauthorized"');
+    expect(harness).toContain('withExpectedBotConnectionFailure([page], 410, "link_unavailable"');
+    expect(harness).toContain('expiryFaultEvidence.beginScope(labels[index], { page: pages[index], rules: [');
+    expect(harness).toContain('{ method: "POST", url: `${baseUrl}/api/bot/connect`, status, jsonError }');
     expect(harness).toContain('kind: "expected.bot-connect-unauthorized"');
     expect(harness).toContain('kind: "expected.bot-connect-unavailable"');
     expect(harness).toContain('states: ["unknown", "malformed", "expired", "pending", "unauthorized", "connected", "reused-unavailable"]');
@@ -263,7 +281,7 @@ describe("real E2E runtime isolation", () => {
     expect(source).toContain('E2E_CAPTURE_ARTIFACTS: "1"');
     expect(source).toContain("for (const journey of plan.journeys)");
     expect(source).toContain("await runJourney(journey, directory)");
-    expect(source).toContain("if (traces.length !== 2)");
+    expect(source).toContain("assertE2eTraceSet(traces)");
     expect(source).toContain("if (videos.length < 2)");
     expect(source).toContain("if (screenshots.length < 5)");
     expect(source).toContain("async function failedJourneyDetail(directory, output, journeyStartedAtMs)");
@@ -306,7 +324,7 @@ describe("real E2E runtime isolation", () => {
 
   it("settles the login auth loader before beginning the token history transition", () => {
     const source = readFileSync(resolve("scripts/test-e2e-real.mjs"), "utf8");
-    const loginSeed = source.indexOf('await page.goto("/login", { waitUntil: "domcontentloaded", timeout: 90_000 })');
+    const loginSeed = source.indexOf('await navigateWithSettledReads(page, "/login", { waitUntil: "domcontentloaded", timeout: 90_000 })');
     const loginIdle = source.indexOf('waitForFirstPartyNetworkIdle(page, "bot connection login history seed")');
     const pendingToken = source.indexOf('E2E_BOT_CONNECT_TOKEN_CANARIES.lifecycle', loginSeed);
 
@@ -315,15 +333,16 @@ describe("real E2E runtime isolation", () => {
     expect(loginIdle).toBeLessThan(pendingToken);
   });
 
-  it("drains Studio first-party loaders before the intentional provider replay reload", () => {
+  it("settles reads before the intentional reload without waiting for the held paid operation", () => {
     const source = readFileSync(resolve("scripts/test-e2e-real.mjs"), "utf8");
-    const studioIdle = source.indexOf(
-      'waitForFirstPartyNetworkIdle(page, "Library create Studio before reload")',
-    );
-    const studioReload = source.indexOf("await reloadInBrowser(page);", studioIdle);
+    const departure = source.indexOf("const firstStudioDeparture = await studioSessionEvidence.departureTicket");
+    const studioReload = source.indexOf("await reloadInBrowser(page, 60_000);", departure);
+    const reloadHelper = source.slice(source.indexOf("async function reloadInBrowser("), source.indexOf("async function reloadInBrowser(") + 1500);
 
-    expect(studioIdle).toBeGreaterThan(-1);
-    expect(studioReload).toBeGreaterThan(studioIdle);
+    expect(departure).toBeGreaterThan(-1);
+    expect(studioReload).toBeGreaterThan(departure);
+    expect(reloadHelper).toContain("{ settleReads = true }");
+    expect(reloadHelper).toContain("if (settleReads) await mainRequestEvidence.settleReads(targetPage, { timeoutMs: UI_WAIT_TIMEOUT_MS })");
   });
 
   it("drains restored first-party loaders before closing the runtime-restart error window", () => {
@@ -338,7 +357,7 @@ describe("real E2E runtime isolation", () => {
       mainIdle,
     );
     const closeRestartWindow = source.indexOf(
-      'expectedBrowserConsoleScopes.delete("main")',
+      'mainFaultEvidence.endScope("main")',
       reviewerIdle,
     );
 

@@ -311,7 +311,7 @@ export function EditorialReviewPanel({
   return (
     <section aria-labelledby={`${descriptionId}-title`} aria-describedby={descriptionId} className="space-y-5">
       <div className="flex flex-wrap items-start gap-3">
-        <div className="min-w-0 flex-1">
+        <div className="min-w-0 flex-1 basis-48">
           <h2 id={`${descriptionId}-title`} className="text-[15px] leading-snug font-semibold text-text">
             {personalProject ? "Готовность поста" : "Согласование материала"}
           </h2>
@@ -387,8 +387,10 @@ export function EditorialReviewPanel({
 
           {!personalProject && capabilities.canSubmit && ["draft", "changes_requested"].includes(snapshot.workflow.state) && (
             <Button type="button" variant="solid" size="sm" loading={busy === "submit"} disabled={interactionDisabled} className="h-auto max-w-full whitespace-normal text-center" onClick={() => void submit()}>
-              <Send className="h-4 w-4" aria-hidden />
-              {snapshot.workflow.state === "changes_requested" ? "Сохранить и отправить повторно" : "Сохранить и отправить на согласование"}
+              <Send className="h-4 w-4 shrink-0" aria-hidden />
+              <span className="min-w-0 whitespace-normal">
+                {snapshot.workflow.state === "changes_requested" ? "Сохранить и отправить повторно" : "Сохранить и отправить на согласование"}
+              </span>
             </Button>
           )}
 

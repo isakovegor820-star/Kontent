@@ -69,7 +69,7 @@ export async function PATCH(req: NextRequest) {
         await client.query<{ id: string }>(
           `select id
              from rss_feeds
-            where user_id = $1 and channel_id = $2
+            where user_id = $1 and channel_id = $2 and project_id is not null
               and source_kind = 'legal_opportunity' and is_active = true
             order by id
             for update`,
@@ -101,7 +101,7 @@ export async function PATCH(req: NextRequest) {
         await client.query(
           `update rss_feeds
               set auto_publish_enabled = false
-            where user_id = $1 and channel_id = $2
+            where user_id = $1 and channel_id = $2 and project_id is not null
               and source_kind = 'legal_opportunity'`,
           [user.id, channelId],
         );

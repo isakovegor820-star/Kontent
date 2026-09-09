@@ -3,10 +3,12 @@ import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/re
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { MediaGenerator } from "./media-generator";
 
-afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
+const { fetcher } = vi.hoisted(() => ({ fetcher: vi.fn<typeof fetch>() }));
+vi.mock("@/lib/project-fetch", () => ({ projectFetch: fetcher }));
+afterEach(() => { cleanup(); fetcher.mockReset(); vi.unstubAllGlobals(); });
 describe("image settings", () => {
   it("sends the displayed format and shows only image creation controls", async () => {
-    const fetch = vi.fn(async (url: string, init?: RequestInit) => {
+    const fetch = fetcher.mockImplementation(async (url, init) => {
       if (url === "/api/media/capabilities") return Response.json({
         checked: true, configured: true, enabled: true,
         models: [{ kind: "image", id: "nano-banana-2", label: "Nano Banana 2", available: true }],
@@ -14,7 +16,6 @@ describe("image settings", () => {
       if (init?.method === "POST") return Response.json({ error: "worker_unavailable" }, { status: 503 });
       return Response.json({ generations: [] });
     });
-    vi.stubGlobal("fetch", fetch);
     render(<MediaGenerator channelId={18} onUse={vi.fn()} />);
     await waitFor(() => expect(fetch).toHaveBeenCalledTimes(2));
     fireEvent.click(screen.getByRole("button", { name: "Настройки" }));

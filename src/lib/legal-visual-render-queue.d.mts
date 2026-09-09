@@ -1,3 +1,4 @@
+import type { QueueWorkerProbe } from "./queue-worker-availability.mjs";
 import type { Queue } from "bullmq";
 
 export const LEGAL_VISUAL_RENDER_QUEUE: "legal-visual-render";
@@ -12,6 +13,6 @@ export function enqueueLegalVisualRenderJob(
   timeoutMs?: number,
 ): Promise<{ jobId: string; recovered: boolean }>;
 export function hasLegalVisualRenderWorker(
-  queue?: Pick<Queue, "getWorkersCount">,
+  queue?: QueueWorkerProbe,
   timeoutMs?: number,
 ): Promise<boolean>;

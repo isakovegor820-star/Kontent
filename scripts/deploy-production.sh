@@ -36,8 +36,8 @@ if [[ -n "$CLEANUP_RELEASE_SHA" && ! "$CLEANUP_RELEASE_SHA" =~ ^[0-9a-f]{40}$ ]]
   echo "AURORA_INCOMPLETE_RELEASE_SHA must be empty or an exact 40-character git SHA" >&2
   exit 1
 fi
-if [[ "$DEPLOY_ACTION" != "deploy" && "$DEPLOY_ACTION" != "rollback" ]]; then
-  echo "AURORA_DEPLOY_ACTION must be deploy or rollback" >&2
+if [[ "$DEPLOY_ACTION" != "deploy" && "$DEPLOY_ACTION" != "hold" ]]; then
+  echo "AURORA_DEPLOY_ACTION must be deploy or hold" >&2
   exit 1
 fi
 if [[ "$DEPLOY_ACTION" == "deploy" ]]; then
@@ -116,35 +116,38 @@ wait_for_health() {
   [[ "$ok" -eq 1 ]]
 }
 
-rollback_to() {
-  local target="$1"
-  echo "ROLLBACK $target" >&2
-  swap_current "$target"
-  systemctl restart aurora-web.service aurora-worker.service
-  wait_for_health
-  services_active
+services_stopped() {
+  ! systemctl is-active --quiet aurora-worker.service \
+    && ! systemctl is-active --quiet aurora-web.service
+}
+
+hold_services() {
+  echo "FORWARD_ONLY_HOLD" >&2
+  systemctl stop aurora-worker.service || true
+  systemctl stop aurora-web.service || true
+  services_stopped
 }
 
 state_file="${RELEASES_DIR}/.deploy-state-${DEPLOY_SHA}"
-if [[ "$DEPLOY_ACTION" == "rollback" ]]; then
+if [[ "$DEPLOY_ACTION" == "hold" ]]; then
   if [[ ! -f "$state_file" ]]; then
-    echo "rollback state missing for $DEPLOY_SHA" >&2
+    echo "forward-only hold state missing for $DEPLOY_SHA" >&2
     exit 1
   fi
   mapfile -t deploy_state < "$state_file"
   previous="${deploy_state[0]:-}"
   target="${deploy_state[1]:-}"
   boundary="${deploy_state[2]:-}"
-  if [[ "$boundary" != "rollback-compatible" \
+  if [[ "$boundary" != "forward-only" \
     || -z "$previous" || -z "$target" \
     || ! -d "$previous" || ! -d "$target" \
     || "$(readlink -f "$CURRENT_LINK")" != "$target" ]]; then
-    echo "rollback state is invalid or no longer current" >&2
+    echo "forward-only hold state is invalid or no longer current" >&2
     exit 1
   fi
-  rollback_to "$previous"
-  printf '%s\n' "rolled-back" >> "$state_file"
-  echo "ROLLBACK_OK sha=$DEPLOY_SHA release=$previous"
+  hold_services
+  printf '%s\n' "held" >> "$state_file"
+  echo "HOLD_OK sha=$DEPLOY_SHA release=$target previous=$previous"
   exit 0
 fi
 
@@ -152,12 +155,12 @@ short_sha="$(printf '%s' "$DEPLOY_SHA" | cut -c1-7)"
 
 # A failed build can leave a full node_modules tree and a partial .next cache behind.
 # Cleanup is opt-in and bound to an exact operator-provided SHA. A completed deploy
-# records both rollback participants before switching the symlink, so those stay safe.
+# records both cutover participants before switching the symlink, so those stay safe.
 release_is_recorded() {
   local candidate="$1" state
   for state in "${RELEASES_DIR}"/.deploy-state-*; do
     [[ -f "$state" ]] || continue
-    if [[ "$(sed -n '3p' "$state")" == "rollback-compatible" ]] \
+    if [[ "$(sed -n '3p' "$state")" == "forward-only" ]] \
       && sed -n '1,2p' "$state" | grep -Fxq "$candidate"; then
       return 0
     fi
@@ -239,7 +242,7 @@ fi
 cp --preserve=mode,ownership "${CURRENT_LINK}/.env.production" "${release}/.env.production"
 
 # Runtime capacity and ingress contracts are release-specific. Keep the previous
-# release's env untouched so rollback boots against its original configuration.
+# release's env untouched for incident comparison and forward repair.
 runtime_env="${release}/.env.production"
 runtime_env_next="$(mktemp "${release}/.env.production.next.XXXXXX")"
 # The web unit launches `next start` directly, so no npm script injects a runtime role
@@ -267,6 +270,7 @@ awk -v avatar="$AVATAR_BODY_LIMIT_BYTES" -v web_pool="$DB_POOL_MAX_WEB" -v worke
     ai_semantic_written = 0; ai_semantic_fallbacks_written = 0
   }
   /^AURORA_RELEASE=/ || /^AURORA_RELEASE_SHA=/ || /^AURORA_DEPLOYED_AT=/ { next }
+  /^AURORA_ENVIRONMENT=/ { next }
   /^AI_SERVICE_ENGINE=/ {
     if (ai_service == "") { print; next }
     if (!ai_service_written) print "AI_SERVICE_ENGINE=" ai_service
@@ -324,6 +328,7 @@ awk -v avatar="$AVATAR_BODY_LIMIT_BYTES" -v web_pool="$DB_POOL_MAX_WEB" -v worke
       print "AI_SEMANTIC_FALLBACK_ENGINES=" ai_semantic_fallbacks
     }
     print "AURORA_RELEASE=" release_key
+    print "AURORA_ENVIRONMENT=production"
     print "AURORA_RELEASE_SHA=" release_sha
     print "AURORA_DEPLOYED_AT=" release_deployed_at
   }
@@ -332,12 +337,11 @@ chmod --reference="$runtime_env" "$runtime_env_next"
 chown --reference="$runtime_env" "$runtime_env_next"
 mv -f -- "$runtime_env_next" "$runtime_env"
 
-if [[ -n "${AURORA_SCHEMA_ROLLBACK_AUDIT:-}" \
-  && ! "${AURORA_SCHEMA_ROLLBACK_AUDIT}" =~ ^[0-9a-f]{40}:[0-9a-f]{40}$ ]]; then
-  echo "AURORA_SCHEMA_ROLLBACK_AUDIT must be an exact previous:target SHA pair" >&2
+if [[ ! "${AURORA_SCHEMA_FORWARD_ONLY_AUDIT:-}" =~ ^[0-9a-f]{40}:[0-9a-f]{40}:forward-only$ ]]; then
+  echo "AURORA_SCHEMA_FORWARD_ONLY_AUDIT must be an exact previous:target:forward-only attestation" >&2
   exit 1
 fi
-node "${release}/scripts/verify-rollback-boundary.mjs" \
+node "${release}/scripts/verify-forward-only-boundary.mjs" \
   "${previous}/src/lib/schema-manifest.mjs" \
   "${release}/src/lib/schema-manifest.mjs" \
   "$previous_sha" "$DEPLOY_SHA"
@@ -370,6 +374,21 @@ if [[ ! -f "${release}/.next/BUILD_ID" ]]; then
 fi
 
 migration_allow_local_peer="${AURORA_ALLOW_LOCAL_PEER_MIGRATIONS:-false}"
+
+echo "PREVIOUS=$previous"
+echo "TARGET=$release"
+printf '%s\n%s\n%s\n' "$previous" "$release" "forward-only" > "$state_file"
+
+# The previous web and worker must never overlap the first target migration. Once the
+# cutover begins, the target symlink stays current even if migration or readiness fails;
+# recovery is a forward repair while both services remain held.
+echo "STOP_FOR_FORWARD_ONLY_CUTOVER"
+if ! hold_services; then
+  echo "unable to stop both services before schema cutover" >&2
+  exit 1
+fi
+swap_current "$release"
+
 (
   echo "LOAD_RUNTIME_ENV"
   set -a
@@ -381,27 +400,20 @@ migration_allow_local_peer="${AURORA_ALLOW_LOCAL_PEER_MIGRATIONS:-false}"
     bash scripts/run-production-migrations.sh
 )
 
-echo "PREVIOUS=$previous"
-echo "TARGET=$release"
-
-printf '%s\n%s\n%s\n' "$previous" "$release" "rollback-compatible" > "$state_file"
-
-swap_current "$release"
-
 if ! systemctl restart aurora-web.service aurora-worker.service; then
-  rollback_to "$previous" || true
+  hold_services || true
   echo "systemd restart failed" >&2
   exit 1
 fi
 
 if ! wait_for_health; then
-  rollback_to "$previous" || true
+  hold_services || true
   echo "health check failed: $HEALTH_URL" >&2
   exit 1
 fi
 
 if ! services_active; then
-  rollback_to "$previous" || true
+  hold_services || true
   echo "systemd services are not active after deploy" >&2
   exit 1
 fi
@@ -410,7 +422,7 @@ fi
 # written by earlier releases carry the previous digest and would read as outdated. This
 # re-baseline only rewrites rows that still match that exact digest, runs on the runtime
 # identity because it touches no schema, and stays recoverable from Autopilot -> Month, so a
-# failure here must not roll a healthy release back.
+# failure here must not hold an otherwise healthy release.
 echo "REBASE_MONTHLY_PROFILE_HASHES"
 if ! (
   set -a

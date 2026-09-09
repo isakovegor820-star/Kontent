@@ -58,20 +58,20 @@ describe("bot link client responses", () => {
     ).rejects.toThrow("bot_unlink_failed");
   });
 
-  it("opens the native picker immediately for an already linked account", async () => {
-    const fetcher = vi.fn().mockResolvedValue(Response.json({
+  it("requests a fresh project-bound handshake even for an already linked account", async () => {
+    const fetcher = vi.fn().mockResolvedValueOnce(Response.json({
       linked: true,
       bot: "aurora_bot",
       channelConnectUrl: "https://t.me/aurora_bot?startchannel&admin=post_messages",
       botStatus: "up",
-    }));
+    })).mockResolvedValueOnce(Response.json({ ok: true, url: "https://t.me/aurora_bot?start=code_channel" }));
 
     await expect(requestTelegramChannelConnection(fetcher)).resolves.toEqual({
-      url: "https://t.me/aurora_bot?startchannel&admin=post_messages",
+      url: "https://t.me/aurora_bot?start=code_channel",
       bot: "aurora_bot",
       linkingAccount: false,
     });
-    expect(fetcher).toHaveBeenCalledOnce();
+    expect(fetcher).toHaveBeenCalledTimes(2);
   });
 
   it("requests a channel-intent start link when the private chat is not linked", async () => {

@@ -450,6 +450,58 @@ try {
     throw new Error(`failed migration was not rolled back: ${JSON.stringify(rollbackState)}`);
   }
 
+  // Real concurrent runners must fail closed at the advisory lock; the winner commits once.
+  const namedPool = (name) => (config) => new pg.Pool({ ...config, application_name: name });
+  const awaitSleeping = async (name) => {
+    const deadline = Date.now() + 15_000;
+    while (Date.now() < deadline) {
+      const row = (await pool.query(
+        "select pid from pg_stat_activity where datname = current_database() and application_name = $1 and wait_event = 'PgSleep'",
+        [name],
+      )).rows[0];
+      if (row) return row.pid;
+      await new Promise((resolveWait) => setTimeout(resolveWait, 25));
+    }
+    throw new Error(`migration probe did not reach transaction boundary: ${name}`);
+  };
+  const concurrentProbe = {
+    name: "20991230_concurrent_probe.sql",
+    sql: "begin; create table migration_concurrent_probe(id int primary key); insert into migration_concurrent_probe values (1); select pg_sleep(2); commit;",
+  };
+  const firstRunner = migrate({ env, migrations: [concurrentProbe], poolFactory: namedPool("aurora_concurrent_probe"), logger: { log() {} } });
+  await awaitSleeping("aurora_concurrent_probe");
+  await migrate({ env, migrations: [concurrentProbe], logger: { log() {} } })
+    .then(() => { throw new Error("competing migration runner unexpectedly succeeded"); })
+    .catch((error) => {
+      if (!String(error?.message || "").includes("another migration runner holds")) throw error;
+    });
+  await firstRunner;
+  await migrate({ env, migrations: [concurrentProbe], logger: { log() {} } });
+  const concurrentState = (await pool.query(
+    "select (select count(*)::int from migration_concurrent_probe) as effects, (select count(*)::int from schema_migrations where name = $1) as receipts",
+    [concurrentProbe.name],
+  )).rows[0];
+  if (concurrentState?.effects !== 1 || concurrentState?.receipts !== 1) throw new Error("concurrent migration applied twice");
+
+  // Interrupt the active PostgreSQL statement after DDL, then safely resume the same bytes.
+  const interruptedProbe = {
+    name: "20991230_interrupted_probe.sql",
+    sql: "begin; create table migration_interrupted_probe(id int primary key); insert into migration_interrupted_probe values (1); select pg_sleep(case when current_setting('application_name') = 'aurora_interrupt_probe' then 30 else 0 end); commit;",
+  };
+  const interruptedRunner = migrate({ env, migrations: [interruptedProbe], poolFactory: namedPool("aurora_interrupt_probe"), logger: { log() {} } })
+    .then(() => ({ unexpectedSuccess: true }), (error) => ({ code: error?.code }));
+  const interruptedPid = await awaitSleeping("aurora_interrupt_probe");
+  const cancelled = (await pool.query("select pg_cancel_backend($1) as cancelled", [interruptedPid])).rows[0]?.cancelled;
+  const interruption = await interruptedRunner;
+  if (!cancelled || interruption.code !== "57014") throw new Error("migration interruption was not exercised");
+  const interruptedState = (await pool.query(
+    "select to_regclass('public.migration_interrupted_probe') as relation, exists(select 1 from schema_migrations where name = $1) as recorded",
+    [interruptedProbe.name],
+  )).rows[0];
+  if (interruptedState?.relation !== null || interruptedState?.recorded !== false) throw new Error("interrupted DDL or receipt survived rollback");
+  await migrate({ env, migrations: [interruptedProbe], logger: { log() {} } });
+  if ((await pool.query("select count(*)::int as n from migration_interrupted_probe")).rows[0]?.n !== 1) throw new Error("interrupted migration did not resume exactly once");
+
   // An applied filename with different bytes must fail closed without changing its row.
   const firstName = migrationFiles[0];
   const firstSql = await readFile(resolve("db/migrations", firstName), "utf8");
@@ -464,7 +516,7 @@ try {
     });
 
   console.log(
-    `[migrate:integration] ${summary.migrations}/${migrationFiles.length} migrations; legacy, partial and fresh schemas preserved; rollback/checksum fail closed`,
+    `[migrate:integration] ${summary.migrations}/${migrationFiles.length} migrations; legacy, partial and fresh schemas preserved; concurrent/interrupted/rollback/checksum fail closed`,
   );
 } finally {
   await pool.end();

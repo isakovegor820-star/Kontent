@@ -1,3 +1,4 @@
+import { beginAiSpendAttempt } from "../src/lib/ai-spend-ledger.mjs";
 import { assertWorkerAiCallPolicy } from "./ai-call-policy.mjs";
 
 export const EMBED_DIM = 1024;
@@ -14,12 +15,17 @@ export function createEmbedder(env = process.env, { fetchImpl = fetch, timeoutMs
   const localModel = env.EMBED_MODEL || "bge-m3";
   const cloudModel = env.EMBED_CLOUD_MODEL || "text-embedding-3-small";
 
-  return async function embed(text) {
+  return async function embed(text, spendScope) {
     assertWorkerAiCallPolicy("knowledge-embedding");
     const input = String(text || "").trim();
     if (!input) return null;
     try {
       if (cloudKey) {
+        const spend = await beginAiSpendAttempt({ provider: "openai-embedding",model:cloudModel,
+          inputTokens:Buffer.byteLength(input,"utf8") + 256,outputTokens:0 }, { env, ...(spendScope ? { scope:spendScope } : {}) });
+        let usage = null;
+        let succeeded = false;
+        try {
         const response = await fetchImpl(`${cloudUrl}/embeddings`, {
           method: "POST",
           headers: { "content-type": "application/json", authorization: `Bearer ${cloudKey}` },
@@ -29,8 +35,13 @@ export function createEmbedder(env = process.env, { fetchImpl = fetch, timeoutMs
         if (!response.ok) return null;
         const data = await response.json();
         const vector = data?.data?.[0]?.embedding ?? null;
-        return Array.isArray(vector) && vector.length === EMBED_DIM ? vector : null;
+        if (Number.isSafeInteger(data.usage?.prompt_tokens)) usage = { inputTokens:data.usage.prompt_tokens,outputTokens:0 };
+        succeeded = Array.isArray(vector) && vector.length === EMBED_DIM;
+        return succeeded ? vector : null;
+        } finally { await spend.finish({ outcome:succeeded ? "succeeded" : "unknown",usage }); }
       }
+      await beginAiSpendAttempt({ provider: "local", model: localModel,
+        inputTokens: Buffer.byteLength(input,"utf8"), outputTokens: 0 }, { env, ...(spendScope ? {scope:spendScope} : {}) });
       const response = await fetchImpl(`${ollamaUrl}/api/embed`, {
         method: "POST",
         headers: { "content-type": "application/json" },
@@ -45,7 +56,8 @@ export function createEmbedder(env = process.env, { fetchImpl = fetch, timeoutMs
         return null;
       }
       return vector;
-    } catch {
+    } catch (error) {
+      if (/^ai_(?:work|spend)_/u.test(String(error?.code || ""))) throw error;
       return null;
     }
   };

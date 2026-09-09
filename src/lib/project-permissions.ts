@@ -1,22 +1,10 @@
+import { requestProjectId } from "./request-project";
 import type { PoolClient } from "pg";
 
-export const PROJECT_ROLES = ["owner", "author", "approver", "publisher"] as const;
-export type ProjectRole = (typeof PROJECT_ROLES)[number];
-
-export const PROJECT_PERMISSIONS = [
-  "project.read",
-  "project.manage",
-  "members.manage",
-  "content.create",
-  "content.edit",
-  "content.submit",
-  "content.review",
-  "content.approve",
-  "content.publish",
-  "audience.reply.send",
-  "audit.read",
-] as const;
-export type ProjectPermission = (typeof PROJECT_PERMISSIONS)[number];
+import { PROJECT_ROLES, roleAllows } from "./project-role-policy.mjs";
+import type { ProjectRole, ProjectPermission } from "./project-role-policy.mjs";
+export { PROJECT_ROLES, PROJECT_PERMISSIONS, roleAllows } from "./project-role-policy.mjs";
+export type { ProjectRole, ProjectPermission } from "./project-role-policy.mjs";
 
 type Queryable = Pick<PoolClient, "query">;
 
@@ -25,30 +13,6 @@ export type ActiveProjectMembership = {
   userId: number;
   role: ProjectRole;
   version: number;
-};
-
-const ROLE_PERMISSIONS: Readonly<Record<ProjectRole, ReadonlySet<ProjectPermission>>> = {
-  owner: new Set(PROJECT_PERMISSIONS),
-  author: new Set([
-    "project.read",
-    "content.create",
-    "content.edit",
-    "content.submit",
-  ]),
-  approver: new Set([
-    "project.read",
-    "content.create",
-    "content.edit",
-    "content.submit",
-    "content.review",
-    "content.approve",
-    "audience.reply.send",
-  ]),
-  publisher: new Set([
-    "project.read",
-    "content.publish",
-    "audience.reply.send",
-  ]),
 };
 
 export class ProjectAccessError extends Error {
@@ -61,16 +25,20 @@ export class ProjectAccessError extends Error {
   }
 }
 
+export async function selectedRequestProjectId(): Promise<number | null> {
+  try { return await requestProjectId(); }
+  catch (error) {
+    if ((error as { code?: string }).code === "invalid_project_selector") throw new ProjectAccessError("invalid_project_selector");
+    throw error;
+  }
+}
+
 function positiveId(value: number): boolean {
   return Number.isSafeInteger(value) && value > 0;
 }
 
 function isProjectRole(value: unknown): value is ProjectRole {
   return PROJECT_ROLES.includes(value as ProjectRole);
-}
-
-export function roleAllows(role: ProjectRole, permission: ProjectPermission): boolean {
-  return ROLE_PERMISSIONS[role].has(permission);
 }
 
 /**
@@ -117,7 +85,12 @@ export async function requireProjectPermission(
   userId: number,
   projectId: number,
   permission: ProjectPermission,
+  options: { allowProjectSelection?: boolean } = {},
 ): Promise<ActiveProjectMembership> {
+  const expectedProjectId = await selectedRequestProjectId();
+  if (!options.allowProjectSelection && expectedProjectId !== null && expectedProjectId !== projectId) {
+    throw new ProjectAccessError("invalid_project_selector");
+  }
   const membership = await getActiveProjectMembership(db, userId, projectId);
   if (!membership) throw new ProjectAccessError("membership_required");
   if (!roleAllows(membership.role, permission)) {
@@ -127,7 +100,8 @@ export async function requireProjectPermission(
 }
 
 /**
- * Resolves the server-owned selected project and rechecks its membership in one query.
+ * Resolves the request-bound project and rechecks its current membership.
+ * Background/legacy callers without a selector retain the server preference.
  * This is the normal guard for routes that do not implement the dedicated switcher.
  */
 export async function requireSelectedProjectPermission(
@@ -136,6 +110,8 @@ export async function requireSelectedProjectPermission(
   permission: ProjectPermission,
 ): Promise<ActiveProjectMembership> {
   if (!positiveId(userId)) throw new ProjectAccessError("invalid_project_selector");
+  const expectedProjectId = await selectedRequestProjectId();
+  if (expectedProjectId !== null) return requireProjectPermission(db, userId, expectedProjectId, permission);
   const result = await db.query<{
     project_id: number | string;
     user_id: number | string;

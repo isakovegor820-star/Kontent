@@ -5,7 +5,7 @@ import { readJsonBodyValue } from "@/lib/bounded-request-body";
 import { NextRequest, NextResponse } from "next/server";
 import { getPool } from "@/lib/db";
 import { getSessionUser } from "@/lib/session";
-import { getAutopilotQueue } from "@/lib/queue";
+import { getAutopilotQueue, hasAutopilotWorker } from "@/lib/queue";
 import { ensureSettings, loadBrief, resolveChannel } from "@/lib/autopilot";
 import { briefComplete } from "@/lib/brief";
 import { isAutopilotBuildStale } from "@/lib/autopilot-build";
@@ -146,7 +146,7 @@ export async function POST(req: NextRequest) {
 
     // Next.js only enqueues this work; worker.mjs executes it. Previously we returned `ok`
     // even when no worker existed, creating a perfectly valid job that nobody would ever take.
-    if ((await autopilotQueue.getWorkersCount()) === 0) {
+    if (!(await hasAutopilotWorker(autopilotQueue))) {
       return NextResponse.json(
         { ok: false, error: "worker_unavailable" },
         { status: 503 },

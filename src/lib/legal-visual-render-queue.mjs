@@ -1,4 +1,5 @@
 import { Queue } from "bullmq";
+import { hasQueueWorker } from "./queue-worker-availability.mjs";
 
 export const LEGAL_VISUAL_RENDER_QUEUE = "legal-visual-render";
 
@@ -101,7 +102,7 @@ export async function hasLegalVisualRenderWorker(
   timeoutMs = 1_500,
 ) {
   try {
-    return (await within(queue.getWorkersCount(), timeoutMs)) > 0;
+    return await hasQueueWorker(queue, timeoutMs);
   } catch {
     return false;
   }

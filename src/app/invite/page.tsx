@@ -11,6 +11,7 @@ import {
   readProjectInvite,
   saveProjectInviteToken,
 } from "@/lib/project-invite-client";
+import { setClientProjectId } from "@/lib/project-fetch";
 import { useStore } from "@/lib/store";
 
 type InviteState = "loading" | "ready" | "accepting" | "switching" | "accepted" | "missing" | "unavailable";
@@ -132,7 +133,7 @@ export default function ProjectInvitePage() {
         body: JSON.stringify({ token }),
         signal: AbortSignal.timeout(15_000),
       });
-      const body = await response.json().catch(() => null) as { ok?: boolean; error?: string } | null;
+      const body = await response.json().catch(() => null) as { error?: string; ok?: boolean; membership?: { projectId?: number } } | null;
       if (sequence !== sequenceRef.current) return;
       if (!response.ok) {
         const code = response.status === 401 ? "unauthorized" : body?.error ?? "server";
@@ -147,7 +148,12 @@ export default function ProjectInvitePage() {
         if (code === "unauthorized") await refreshAuth();
         return;
       }
-      if (body?.ok !== true) throw new Error("invalid_response");
+      const projectId = Number(body?.membership?.projectId);
+      if (body?.ok !== true || !Number.isSafeInteger(projectId) || projectId <= 0) {
+        throw new Error("invalid_response");
+      }
+      // Acceptance selects the project on the server; bind this tab before navigation.
+      setClientProjectId(projectId);
       clearProjectInviteToken(undefined, token);
       tokenRef.current = null;
       if (window.location.hash) window.history.replaceState(window.history.state, "", "/invite");

@@ -1,5 +1,6 @@
 import type { GenerateParams } from "./ai-provider";
 import type { TopicAlignmentResult } from "./reference-adaptation";
+import { editorialValidationTopic } from "./ai-topic-contract";
 
 export type EditorialIntent = {
   topic: string;
@@ -21,7 +22,7 @@ export function studioEditorialIntent(params: GenerateParams): EditorialIntent |
     ? params.conversation?.filter((turn) => turn.role === "assistant").at(-1)?.content
     : undefined;
   return {
-    topic: task.slice(0, 1800),
+    topic: editorialValidationTopic(task),
     semanticGoal: [
       "Выполни именно текущий запрос: сохрани действующее лицо, предмет, событие или действие и смысл результата. Общий текст об отрасли вместо новости конкретного бренда не соответствует задаче.",
       namesChannel ? `«${channel}» в запросе — название активного канала/бренда, а не общее понятие или название отрасли. Сохрани это название и его роль в событии.` : "",

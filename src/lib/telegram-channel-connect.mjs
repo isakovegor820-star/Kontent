@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { normalizeTelegramBotUsername } from "./bot-connection.mjs";
 
 export const TELEGRAM_CHANNEL_ADMIN_RIGHTS = Object.freeze(["post_messages"]);
@@ -48,8 +49,72 @@ function channelUsername(value) {
   return String(value || "").replace(/^@/u, "").trim().slice(0, 64) || null;
 }
 
+/** Begin a short-lived intent after the existing private-chat identity handshake.
+ * Keep a pending Telegram picker bound to its first project until used/expired:
+ * Telegram's startchannel URL cannot echo a nonce, so silently replacing it is unsafe.
+ */
+export async function createTelegramChannelProof(pool, input) {
+  const userId = positiveId(input.userId, "user_id");
+  const projectId = positiveId(input.projectId, "project_id");
+  const source = input.source === "telegram" ? "telegram" : "web";
+  const client = await pool.connect();
+  try {
+    await client.query("begin");
+    const user = (await client.query("select tg_chat_id, blocked_at from users where id = $1 for update", [userId])).rows[0];
+    if (user?.blocked_at) {
+      await client.query("rollback");
+      return { state: "access_denied" };
+    }
+    const actorId = Number(user?.tg_chat_id);
+    if (!Number.isSafeInteger(actorId) || actorId <= 0) {
+      await client.query("rollback");
+      return { state: "telegram_identity_required" };
+    }
+    if (source === "telegram") {
+      const pending = (await client.query(
+        `select id, project_id, actor_id from telegram_channel_connection_proofs
+          where user_id = $1 and actor_id = $2 and source = 'telegram'
+            and used_at is null and expires_at > now() order by created_at desc limit 1 for update`,
+        [userId, actorId],
+      )).rows[0];
+      if (pending) {
+        await client.query("rollback");
+        return Number(pending.project_id) === projectId
+          ? { state: "ready", proofId: pending.id, actorId, projectId }
+          : { state: "connection_pending_other_project" };
+      }
+    }
+    const proofId = randomUUID();
+    await client.query(
+      `insert into telegram_channel_connection_proofs (id, user_id, project_id, actor_id, chat_id, source)
+       values ($1, $2, $3, $4, $5, $6)`,
+      [proofId, userId, projectId, actorId, input.chatId ?? null, source],
+    );
+    await client.query("commit");
+    return { state: "ready", proofId, actorId, projectId };
+  } catch (error) {
+    await client.query("rollback").catch(() => {});
+    throw error;
+  } finally { client.release(); }
+}
+
+export async function pendingTelegramChannelProof(pool, input) {
+  const actorId = positiveId(input.actorId, "actor_id");
+  const eventDate = Number(input.eventDate);
+  if (!Number.isSafeInteger(eventDate) || eventDate <= 0) return null;
+  return (await pool.query(
+    `select proof.id as proof_id, proof.user_id, proof.project_id, proof.actor_id
+       from telegram_channel_connection_proofs proof
+       join users app_user on app_user.id = proof.user_id and app_user.tg_chat_id = proof.actor_id
+      where proof.actor_id = $1 and proof.source = 'telegram' and proof.used_at is null
+        and proof.expires_at > now() and proof.created_at <= to_timestamp($2) + interval '1 second'
+        and to_timestamp($2) > now() - interval '5 minutes'
+      order by proof.created_at desc limit 1`, [actorId, eventDate],
+  )).rows[0] ?? null;
+}
+
 /**
- * Persists a channel only after Telegram has proved that the bot can publish there.
+ * Persists a channel after fresh human and bot permission checks and consumes the bound proof.
  * The selected project and the global one-channel/one-project invariant are rechecked
  * inside the same transaction so a delayed Telegram update cannot cross workspaces.
  */
@@ -61,6 +126,9 @@ export async function saveVerifiedTelegramChannel(pool, input) {
   const username = channelUsername(input?.chat?.username);
   const discussionChatId = optionalTelegramChatId(input?.chat?.linked_chat_id);
   const requestId = String(input?.requestId || "").trim().slice(0, 200) || null;
+  const proofId = String(input?.proofId || "");
+  const actorId = Number(input?.actorId);
+  if (!/^[0-9a-f-]{36}$/u.test(proofId) || !Number.isSafeInteger(actorId) || actorId <= 0) return { state: "proof_required" };
   const client = await pool.connect();
 
   try {
@@ -72,15 +140,42 @@ export async function saveVerifiedTelegramChannel(pool, input) {
         `select member.role
            from project_members member
            join projects project on project.id = member.project_id and project.is_archived = false
+           join users actor on actor.id = member.user_id and actor.blocked_at is null
           where member.project_id = $1 and member.user_id = $2
             and member.status = 'active'
-          for update of member`,
+          for update of member, project, actor`,
         [projectId, userId],
       )
     ).rows[0];
     if (membership?.role !== "owner") {
       await client.query("rollback");
       return { state: "access_denied" };
+    }
+
+    const proof = (await client.query(
+      `select proof.id, proof.source, proof.chat_id
+         from telegram_channel_connection_proofs proof
+         join users app_user on app_user.id = proof.user_id and app_user.tg_chat_id = proof.actor_id
+        where proof.id = $1 and proof.user_id = $2 and proof.project_id = $3 and proof.actor_id = $4
+          and proof.used_at is null and proof.expires_at > now()
+          and (proof.chat_id = $5 or (proof.source = 'telegram' and proof.chat_id is null))
+        for update of proof, app_user`,
+      [proofId, userId, projectId, actorId, chatId],
+    )).rows[0];
+    if (!proof) {
+      await client.query("rollback");
+      return { state: "proof_invalid" };
+    }
+    const eventId = input.eventId == null ? null : Number(input.eventId);
+    if (proof.source === "telegram" && (!Number.isSafeInteger(eventId) || eventId < 0)) {
+      await client.query("rollback");
+      return { state: "proof_invalid" };
+    }
+    if (eventId != null && (await client.query(
+      "select id from telegram_channel_connection_proofs where event_id = $1", [eventId],
+    )).rows.length) {
+      await client.query("rollback");
+      return { state: "proof_invalid" };
     }
 
     const taken = (
@@ -145,6 +240,10 @@ export async function saveVerifiedTelegramChannel(pool, input) {
        values ($1, $2, $3, $4, 'active', $5)
        on conflict (channel_id, request_id) where request_id is not null do nothing`,
       [channelId, userId, action, fromStatus, requestId],
+    );
+    await client.query(
+      "update telegram_channel_connection_proofs set used_at = now(), chat_id = $2, event_id = $3 where id = $1",
+      [proofId, chatId, eventId],
     );
     await client.query("commit");
     return {

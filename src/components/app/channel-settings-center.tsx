@@ -1,5 +1,7 @@
 "use client";
 
+import { projectFetch as fetch } from "@/lib/project-fetch";
+
 import { createContext, useContext, useEffect, useRef, useState, type CSSProperties } from "react";
 import { useSearchParams } from "next/navigation";
 import {

@@ -4,21 +4,21 @@ import { NextRequest } from "next/server";
 const mocks = vi.hoisted(() => ({
   getSessionUser: vi.fn(),
   query: vi.fn(),
-  requireSelectedProjectPermission: vi.fn(),
+  requireProjectPermission: vi.fn(),
 }));
 
 vi.mock("@/lib/session", () => ({ getSessionUser: mocks.getSessionUser }));
 vi.mock("@/lib/db", () => ({ getPool: () => ({ query: mocks.query }) }));
 vi.mock("@/lib/project-permissions", () => ({
   ProjectAccessError: class ProjectAccessError extends Error {},
-  requireSelectedProjectPermission: mocks.requireSelectedProjectPermission,
+  requireProjectPermission: mocks.requireProjectPermission,
 }));
 
 import { GET } from "./route";
 
 function request(id = "41") {
   return GET(
-    new NextRequest(`http://localhost/api/media/assets/${id}`),
+    new NextRequest(`http://localhost/api/media/assets/${id}?projectId=23`),
     { params: Promise.resolve({ id }) },
   );
 }
@@ -27,7 +27,7 @@ describe("GET /api/media/assets/:id", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mocks.getSessionUser.mockResolvedValue({ id: 7 });
-    mocks.requireSelectedProjectPermission.mockResolvedValue({ projectId: 23 });
+    mocks.requireProjectPermission.mockResolvedValue({ projectId: 23 });
   });
 
   it("serves only the authenticated owner's signature-validated media types", async () => {

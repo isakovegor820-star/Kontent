@@ -1,4 +1,5 @@
 import { Queue } from "bullmq";
+import { hasQueueWorker, type QueueWorkerProbe } from "./queue-worker-availability.mjs";
 
 import { redisProducerConnectionOptions } from "./queue";
 
@@ -37,9 +38,9 @@ async function within<T>(work: Promise<T>, timeoutMs: number): Promise<T> {
   }
 }
 
-export async function hasSiteArticlesWorker(queue: Pick<Queue, "getWorkersCount"> = getSiteArticlesQueue(), timeoutMs = 1_500): Promise<boolean> {
+export async function hasSiteArticlesWorker(queue: QueueWorkerProbe = getSiteArticlesQueue(), timeoutMs = 1_500): Promise<boolean> {
   try {
-    return (await within(queue.getWorkersCount(), timeoutMs)) > 0;
+    return await hasQueueWorker(queue, timeoutMs);
   } catch {
     return false;
   }

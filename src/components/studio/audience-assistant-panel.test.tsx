@@ -3,6 +3,11 @@ import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/re
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { AudienceAssistantPanel } from "./audience-assistant-panel";
 
+// Component fixture owns projectFetch; account/bootstrap isolation has separate integration coverage.
+vi.mock("@/lib/project-fetch", () => ({
+  projectFetch: (input: RequestInfo | URL, init?: RequestInit) => globalThis.fetch(input, init),
+}));
+
 const inquiry = {
   id: 41, projectId: 7, sourceType: "comment", sourceLabel: "Telegram",
   incomingText: "А сколько это стоит?", suggestedReply: "Уточним стоимость.",

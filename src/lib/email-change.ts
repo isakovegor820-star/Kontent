@@ -206,7 +206,7 @@ export async function consumeEmailChange(
       // only the verifier presented by this confirmation may move to the new epoch.
       const updatedUser = await client.query<{ credential_epoch: string }>(
         `update users
-            set email = $2, credential_epoch = credential_epoch + 1
+            set email = $2, credential_epoch = credential_epoch + 1, verified_email = $2
           where id = $1
           returning credential_epoch`,
         [request.user_id, request.target_email],

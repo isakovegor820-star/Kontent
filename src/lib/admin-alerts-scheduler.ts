@@ -5,9 +5,26 @@ import {
   evaluateAdminAlertConditions,
 } from "./admin-alerts";
 import { getPool } from "./db";
+import type { Pool } from "pg";
+import type { probeRedisAndPublicationWorker } from "./readiness-probes";
 
 const SCHEDULER_KEY = Symbol.for("aurora.admin-alerts.scheduler");
 type SchedulerGlobal = typeof globalThis & { [SCHEDULER_KEY]?: { stop: () => void } };
+
+/** One bounded scheduler evaluation, also exercised with an isolated DB/fake provider. */
+export async function runAdminAlertsTick(input: {
+  pool: Pick<Pool, "query">;
+  tracker: AdminAlertTracker;
+  env: Record<string, string | undefined>;
+  probe?: typeof probeRedisAndPublicationWorker;
+  fetchImpl?: typeof fetch;
+  nowMs?: number;
+}) {
+  const conditions = await evaluateAdminAlertConditions({ pool: input.pool, overdueThreshold: adminAlertsConfig(input.env).overdueThreshold, probe: input.probe });
+  const notifications = await input.tracker.transition(conditions, input.nowMs);
+  const delivery = await deliverAdminAlerts({ ...input, notifications });
+  return { notifications: notifications.map((item) => `${item.id}:${item.kind}`), ...delivery };
+}
 
 /**
  * Runs in the web process: the worker cannot report its own death, and the web process
@@ -24,19 +41,15 @@ export function startAdminAlertsScheduler(
   if (env.NEXT_PHASE === "phase-production-build" || env.NODE_ENV === "test" || env.VITEST) return null;
   if (env.AURORA_RUNTIME_ROLE && env.AURORA_RUNTIME_ROLE !== "web") return null;
 
-  const tracker = new AdminAlertTracker({ repeatMs: config.repeatMs });
+  const tracker = new AdminAlertTracker({ pool: getPool(), repeatMs: config.repeatMs });
   let running = false;
   const tick = async () => {
     if (running) return;
     running = true;
     try {
       const pool = getPool();
-      const conditions = await evaluateAdminAlertConditions({ pool, overdueThreshold: config.overdueThreshold });
-      const notifications = tracker.transition(conditions);
-      if (notifications.length > 0) {
-        const delivery = await deliverAdminAlerts({ pool, notifications, env });
-        console.info("[admin-alerts]", { notifications: notifications.map((item) => `${item.id}:${item.kind}`), ...delivery });
-      }
+      const result = await runAdminAlertsTick({ pool, tracker, env });
+      if (result.notifications.length > 0) console.info("[admin-alerts]", result);
     } catch (error) {
       console.error("[admin-alerts]", { code: "tick_failed", errorName: error instanceof Error ? error.name : "Error" });
     } finally {
@@ -46,7 +59,7 @@ export function startAdminAlertsScheduler(
 
   const timer = setInterval(() => void tick(), config.intervalMs);
   timer.unref?.();
-  // First evaluation shortly after boot so a broken deploy is reported within a minute.
+  // Evaluate shortly after boot; external monitoring must cover database/web outages.
   const initial = setTimeout(() => void tick(), Math.min(60_000, config.intervalMs));
   initial.unref?.();
   const handle = {

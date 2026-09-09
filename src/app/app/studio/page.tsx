@@ -1,5 +1,7 @@
 "use client";
 
+import { projectFetch as fetch } from "@/lib/project-fetch";
+
 // А9. ИИ-студия (ТЗ 5.6, Приложение А).
 // Диалог + быстрые команды. ИИ помнит стиль пользователя и следует настройкам платформы.
 // Главное действие — сгенерировать и отправить в календарь.
@@ -35,7 +37,7 @@ import { PostSettingsMenu } from "@/components/studio/post-settings-menu";
 import { requiresBriefConfirmation } from "@/lib/brief-confirmation";
 import { type AiCommand } from "@/lib/ai";
 import { acknowledgeAiTerminal, AiTerminalAckError } from "@/lib/ai-client-idempotency";
-import { aiFailureRecoveryRu, type AiFailureInfo } from "@/lib/ai-client-recovery";
+import { aiFailureRecoveryRu, aiTerminalRestartAllowed, type AiFailureInfo } from "@/lib/ai-client-recovery";
 import {
   aiDraftPhaseLabel,
   createAiDraftProjection,
@@ -61,7 +63,7 @@ import {
   monthlyCampaignStudioPrompt,
   parseMonthlyCampaignDetail,
 } from "@/lib/monthly-campaign-client";
-import { studioReferenceGenerationIdentity } from "@/lib/studio-reference-generation";
+import { studioReferenceGenerationIdentity, recoverStudioReferenceGenerationIdentity } from "@/lib/studio-reference-generation";
 import { readyStudioEngines } from "@/lib/studio-engine-options";
 import {
   DEFAULT_POST_SETTINGS,
@@ -81,6 +83,7 @@ import {
   studioChatStorageKey,
   type StudioChatGeneration,
   type StudioChatMessage,
+  type StudioChatSession,
 } from "@/lib/studio-chat-session";
 import {
   abortStudioStream,
@@ -94,6 +97,46 @@ import type { RealChannel } from "@/lib/types";
 import { cn, uid } from "@/lib/utils";
 
 /* --------------------------------------------------------------- ОСНОВЫ */
+
+type StudioSessionSnapshot = {
+  owner: number;
+  session: StudioChatSession;
+  serialized: string;
+  content: string;
+  /** Local recovery intent only; never sent as part of the server session. */
+  draftPending: boolean;
+  recoveryId: string;
+};
+
+function studioSessionSnapshot(owner: number, session: StudioChatSession, draftPending = false): StudioSessionSnapshot {
+  const serialized = serializeStudioChatSession(owner, session);
+  return { owner, session, serialized, draftPending, recoveryId: globalThis.crypto.randomUUID(), content: JSON.stringify({ ...JSON.parse(serialized), savedAt: null }) };
+}
+
+function storeStudioSnapshot(snapshot: StudioSessionSnapshot) {
+  try {
+    const key = studioChatStorageKey(snapshot.owner);
+    localStorage.setItem(key, snapshot.draftPending
+      ? JSON.stringify({ ...JSON.parse(snapshot.serialized), localDraftPending: true, localSnapshotId: snapshot.recoveryId })
+      : snapshot.serialized);
+    sessionStorage.removeItem(key);
+  } catch {
+    // Storage can be unavailable; the server save remains independent.
+  }
+}
+
+function studioDraftReceiptKey(owner: number, snapshotId: string): string {
+  return `${studioChatStorageKey(owner)}:draft-ack:${snapshotId}`;
+}
+
+function acknowledgeStudioSnapshot(snapshot: StudioSessionSnapshot) {
+  if (!snapshot.draftPending) return;
+  try {
+    // The shared recovery key may already belong to another tab. An ACK writes
+    // only its immutable receipt, never an older snapshot over that tab's text.
+    localStorage.setItem(studioDraftReceiptKey(snapshot.owner, snapshot.recoveryId), "1");
+  } catch { /* Keep the clear pending if the browser cannot retain its ACK. */ }
+}
 
 type Msg = StudioChatMessage;
 
@@ -115,6 +158,7 @@ type AskOptions = {
   history?: ConversationTurn[];
   skipBrief?: boolean;
   requestKey?: string;
+  requestCreatedAt?: number;
   autoOpenComposer?: boolean;
   referenceDraftId?: number;
   referenceDraftVersion?: number;
@@ -315,11 +359,11 @@ function MessageRow({
         )}
 
 
-        {!msg.streaming && msg.retryable && (
+        {!msg.streaming && (msg.retryable || msg.restartable) && (
           <div className="mt-2 flex flex-wrap gap-1.5">
             <Button variant="soft" size="sm" onClick={onRetry}>
               <RefreshCw className="h-3.5 w-3.5" strokeWidth={2} aria-hidden />
-              Повторить запрос
+              {msg.restartable ? "Начать новый запуск" : "Повторить запрос"}
             </Button>
             {msg.text.trim() && (
               <Button variant="ghost" size="sm" onClick={onCopy}>
@@ -775,7 +819,10 @@ function StudioPageInner() {
   const sessionSaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const sessionSaveQueueRef = useRef<Promise<void>>(Promise.resolve());
   const sessionPersistenceOwnerRef = useRef<number | null>(null);
-  const latestSessionSnapshotRef = useRef<{ owner: number; serialized: string } | null>(null);
+  const sessionPersistenceEpochRef = useRef(0);
+  const latestSessionSnapshotRef = useRef<StudioSessionSnapshot | null>(null);
+  const acknowledgedSessionSnapshotRef = useRef<StudioSessionSnapshot | null>(null);
+  const sessionSaveInFlightRef = useRef<object | null>(null);
 
   const parsedSessionOwner = Number(s.user?.id);
   const sessionOwner = Number.isSafeInteger(parsedSessionOwner) && parsedSessionOwner > 0
@@ -790,13 +837,116 @@ function StudioPageInner() {
     }
   }, [chatSessionOwner, sessionOwner]);
 
+  // A user id alone does not identify a login lifetime: a late response from
+  // before logout must also be fenced when the same account signs in again.
+  useEffect(() => {
+    sessionPersistenceOwnerRef.current = s.authReady ? sessionOwner : null;
+    sessionPersistenceEpochRef.current += 1;
+    sessionRevisionRef.current = 0;
+    acknowledgedSessionSnapshotRef.current = null;
+    latestSessionSnapshotRef.current = null;
+    sessionSaveQueueRef.current = Promise.resolve();
+    sessionSaveInFlightRef.current = null;
+    if (sessionSaveTimerRef.current) clearTimeout(sessionSaveTimerRef.current);
+    genRef.current = new Map();
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- discard the previous authentication lifetime's visible chat
+    setMessages([]);
+    setDraft("");
+    setChatPersistenceStatus("loading");
+    if (!s.authReady || !sessionOwner) setChatSessionOwner(null);
+    return () => {
+      sessionPersistenceOwnerRef.current = null;
+      sessionPersistenceEpochRef.current += 1;
+      if (sessionSaveTimerRef.current) clearTimeout(sessionSaveTimerRef.current);
+    };
+  }, [s.authReady, sessionOwner]);
+
+  // Both autosave and pagehide use one queue. Acknowledging a revision also has
+  // to acknowledge its exact content; an older local snapshot must never inherit it.
+  const persistChatSession = useCallback((keepalive = false) => {
+    const owner = sessionPersistenceOwnerRef.current;
+    const epoch = sessionPersistenceEpochRef.current;
+    const isCurrentOwner = () => sessionPersistenceOwnerRef.current === owner
+      && sessionPersistenceEpochRef.current === epoch;
+    if (!owner) return Promise.resolve();
+    sessionSaveQueueRef.current = sessionSaveQueueRef.current.catch(() => undefined).then(async () => {
+      if (!isCurrentOwner()) return;
+      const snapshot = latestSessionSnapshotRef.current;
+      if (!snapshot || snapshot.owner !== owner) return;
+      if (acknowledgedSessionSnapshotRef.current?.owner === owner
+        && acknowledgedSessionSnapshotRef.current.content === snapshot.content) return;
+      const operation = {};
+      sessionSaveInFlightRef.current = operation;
+      setChatPersistenceStatus("saving");
+      try {
+        let expectedRevision = sessionRevisionRef.current;
+        for (let attempt = 0; attempt < 2; attempt += 1) {
+          if (!isCurrentOwner()) return;
+          // A queued save or a conflict retry uses the latest edits, never its old closure.
+          const pending = latestSessionSnapshotRef.current;
+          if (!pending || pending.owner !== owner) return;
+          if (keepalive && new Blob([pending.serialized]).size > 60_000) return;
+          const response = await fetch("/api/studio/session", {
+            method: "PUT",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ expectedRevision, session: JSON.parse(pending.serialized) as unknown }),
+            ...(keepalive ? { credentials: "same-origin" as const, keepalive: true } : {}),
+          });
+          const body = (await response.json().catch(() => null)) as { session?: unknown; revision?: number } | null;
+          if (!isCurrentOwner()) return;
+          if (response.ok && Number.isSafeInteger(body?.revision)) {
+            sessionRevisionRef.current = Number(body?.revision);
+            acknowledgedSessionSnapshotRef.current = pending;
+            if (latestSessionSnapshotRef.current?.content === pending.content) {
+              // Clear the durable intent only for the exact acknowledged content.
+              latestSessionSnapshotRef.current = { ...pending, draftPending: false };
+            }
+            acknowledgeStudioSnapshot(pending);
+            setChatPersistenceStatus(latestSessionSnapshotRef.current?.content === pending.content ? "saved" : "saving");
+            return;
+          }
+          if (response.status !== 409 || !body?.session || !Number.isSafeInteger(body.revision)) {
+            throw new Error("session_save_failed");
+          }
+          const remote = parseStudioChatSession(JSON.stringify(body.session), owner);
+          const latest = latestSessionSnapshotRef.current;
+          if (!remote || !latest || latest.owner !== owner) throw new Error("session_conflict_invalid");
+          const merged = mergeStudioChatSessions(remote, latest.session, { localDraftPending: latest.draftPending });
+          const acknowledged = acknowledgedSessionSnapshotRef.current;
+          // An intentional edit/clear since the acknowledged snapshot wins; an
+          // untouched empty local draft can still recover the other tab's draft.
+          if (latest.session.draft !== snapshot.session.draft
+            || (acknowledged?.owner === owner && latest.session.draft !== acknowledged.session.draft)) {
+            merged.draft = latest.session.draft;
+          }
+          // Keep live streaming objects and the newest genRef entries. Parsing the
+          // local snapshot here would incorrectly turn an active stream into a retry.
+          merged.generations = [...new Map([...remote.generations, ...genRef.current.entries()])];
+          genRef.current = new Map(merged.generations);
+          latestSessionSnapshotRef.current = studioSessionSnapshot(owner, merged, merged.draft !== remote.draft);
+          storeStudioSnapshot(latestSessionSnapshotRef.current);
+          setMessages((current) => mergeStudioChatSessions(remote, { ...merged, messages: current }).messages);
+          setDraft((current) => current === latest.session.draft ? merged.draft : current);
+          expectedRevision = Number(body.revision);
+        }
+        throw new Error("session_conflict_repeated");
+      } catch {
+        if (isCurrentOwner()) setChatPersistenceStatus("local");
+      } finally {
+        if (sessionSaveInFlightRef.current === operation) sessionSaveInFlightRef.current = null;
+      }
+    });
+    return sessionSaveQueueRef.current;
+  }, []);
+
   // История диалога относится к аккаунту и хранится на сервере. localStorage — аварийная
   // копия, а старый sessionStorage читаем один раз для бесшовной миграции уже созданных чатов.
   useEffect(() => {
     if (!s.authReady || !sessionOwner || chatSessionOwner === sessionOwner) return;
     let cancelled = false;
-    sessionPersistenceOwnerRef.current = sessionOwner;
     sessionRevisionRef.current = 0;
+    acknowledgedSessionSnapshotRef.current = null;
+    latestSessionSnapshotRef.current = null;
     if (sessionSaveTimerRef.current) clearTimeout(sessionSaveTimerRef.current);
     // eslint-disable-next-line react-hooks/set-state-in-effect -- начало асинхронного восстановления нового аккаунта
     setChatPersistenceStatus("loading");
@@ -821,10 +971,22 @@ function StudioPageInner() {
       }
 
       let localSession = null;
+      let localDraftPending = false;
       try {
         const key = studioChatStorageKey(sessionOwner);
-        localSession = parseStudioChatSession(localStorage.getItem(key), sessionOwner)
-          ?? parseStudioChatSession(sessionStorage.getItem(key), sessionOwner);
+        let localRaw = localStorage.getItem(key);
+        localSession = parseStudioChatSession(localRaw, sessionOwner);
+        if (!localSession) {
+          localRaw = sessionStorage.getItem(key);
+          localSession = parseStudioChatSession(localRaw, sessionOwner);
+        }
+        // Empty text is a real edit when its previous save was not acknowledged.
+        // Older snapshots without this marker retain the existing remote fallback.
+        const localRecovery = localSession && localRaw ? JSON.parse(localRaw) : null;
+        const localSnapshotId = typeof localRecovery?.localSnapshotId === "string"
+          && /^[0-9a-f-]{36}$/u.test(localRecovery.localSnapshotId) ? localRecovery.localSnapshotId : null;
+        localDraftPending = Boolean(localRecovery?.localDraftPending === true
+          && (!localSnapshotId || localStorage.getItem(studioDraftReceiptKey(sessionOwner, localSnapshotId)) !== "1"));
       } catch {
         // В приватном режиме storage может быть запрещён — сервер остаётся источником правды.
       }
@@ -833,15 +995,19 @@ function StudioPageInner() {
       // перезагрузил страницу между локальной записью и отложенным PUT. Объединяем оба
       // снимка, чтобы свежий пост из чата не исчезал за более старой серверной версией.
       const restored = remoteSession && localSession
-        ? mergeStudioChatSessions(remoteSession, localSession)
+        ? mergeStudioChatSessions(remoteSession, localSession, { localDraftPending })
         : remoteSession ?? localSession;
       sessionRevisionRef.current = revision;
+      acknowledgedSessionSnapshotRef.current = remoteSession ? studioSessionSnapshot(sessionOwner, remoteSession) : null;
       setMessages(restored?.messages ?? []);
       setDraft(restored?.draft ?? "");
       setWorkspaceMode(requestedWorkspaceMode ?? restored?.workspaceMode ?? "chat");
       genRef.current = new Map(restored?.generations ?? []);
       setChatSessionOwner(sessionOwner);
-      setChatPersistenceStatus(serverUnavailable ? "local" : localSession ? "saving" : "saved");
+      const restoredSnapshot = restored ? studioSessionSnapshot(sessionOwner, restored, localDraftPending) : null;
+      latestSessionSnapshotRef.current = restoredSnapshot;
+      setChatPersistenceStatus(serverUnavailable ? "local"
+        : restoredSnapshot?.content === acknowledgedSessionSnapshotRef.current?.content ? "saved" : "saving");
     })();
 
     return () => {
@@ -849,100 +1015,50 @@ function StudioPageInner() {
     };
   }, [chatSessionOwner, requestedWorkspaceMode, s.authReady, sessionOwner]);
 
-  // Локальную копию обновляем сразу, а PostgreSQL — после короткой паузы и строго
-  // последовательно. Так streaming не создаёт запрос на каждый токен, но готовый текст
-  // уже не зависит от жизни вкладки. Revision защищает историю от устаревшей вкладки.
+  // Persist locally immediately; debounce the server without queuing stale snapshots.
   useEffect(() => {
     if (!sessionOwner || chatSessionOwner !== sessionOwner) return;
-    const session = {
-      messages,
-      draft,
-      workspaceMode,
-      generations: [...genRef.current.entries()],
-    };
-    const serialized = serializeStudioChatSession(sessionOwner, session);
-    latestSessionSnapshotRef.current = { owner: sessionOwner, serialized };
-    try {
-      const key = studioChatStorageKey(sessionOwner);
-      localStorage.setItem(key, serialized);
-      sessionStorage.removeItem(key);
-    } catch {
-      // Недоступный storage не должен ломать серверное сохранение.
-    }
+    const session = { messages, draft, workspaceMode, generations: [...genRef.current.entries()] };
+    const acknowledged = acknowledgedSessionSnapshotRef.current;
+    const previous = latestSessionSnapshotRef.current;
+    const draftPending = draft === "" && (acknowledged?.owner === sessionOwner
+      ? draft !== acknowledged.session.draft
+      : previous?.owner === sessionOwner && (previous.draftPending || draft !== previous.session.draft));
+    const snapshot = studioSessionSnapshot(sessionOwner, session, draftPending);
+    latestSessionSnapshotRef.current = snapshot;
+    storeStudioSnapshot(snapshot);
     if (sessionSaveTimerRef.current) clearTimeout(sessionSaveTimerRef.current);
-    sessionSaveTimerRef.current = setTimeout(() => {
-      const owner = sessionOwner;
-      setChatPersistenceStatus("saving");
-      sessionSaveQueueRef.current = sessionSaveQueueRef.current
-        .catch(() => undefined)
-        .then(async () => {
-          if (sessionPersistenceOwnerRef.current !== owner) return;
-          let payload = JSON.parse(serialized) as unknown;
-          let expectedRevision = sessionRevisionRef.current;
-          for (let attempt = 0; attempt < 2; attempt += 1) {
-            const response = await fetch("/api/studio/session", {
-              method: "PUT",
-              headers: { "content-type": "application/json" },
-              body: JSON.stringify({ expectedRevision, session: payload }),
-            });
-            const body = (await response.json().catch(() => null)) as {
-              session?: unknown;
-              revision?: number;
-            } | null;
-            if (response.ok && Number.isSafeInteger(body?.revision)) {
-              if (sessionPersistenceOwnerRef.current === owner) {
-                sessionRevisionRef.current = Number(body?.revision);
-                setChatPersistenceStatus("saved");
-              }
-              return;
-            }
-            if (response.status !== 409 || !body?.session || !Number.isSafeInteger(body.revision)) {
-              throw new Error("session_save_failed");
-            }
-            const remote = parseStudioChatSession(JSON.stringify(body.session), owner);
-            const local = parseStudioChatSession(JSON.stringify(payload), owner);
-            if (!remote || !local) throw new Error("session_conflict_invalid");
-            expectedRevision = Number(body.revision);
-            payload = JSON.parse(serializeStudioChatSession(owner, mergeStudioChatSessions(remote, local))) as unknown;
-          }
-          throw new Error("session_conflict_repeated");
-        })
-        .catch(() => {
-          if (sessionPersistenceOwnerRef.current === owner) setChatPersistenceStatus("local");
-        });
-    }, 600);
+    if (acknowledgedSessionSnapshotRef.current?.owner === sessionOwner
+      && acknowledgedSessionSnapshotRef.current.content === snapshot.content) return;
+    sessionSaveTimerRef.current = setTimeout(() => { void persistChatSession(); }, 600);
     return () => {
       if (sessionSaveTimerRef.current) clearTimeout(sessionSaveTimerRef.current);
     };
-  }, [chatSessionOwner, draft, messages, sessionOwner, workspaceMode]);
+  }, [chatSessionOwner, draft, messages, persistChatSession, sessionOwner, workspaceMode]);
 
-  // Последняя синхронная страховка на случай Fast Refresh, рестарта dev-сервера или
-  // перезагрузки браузера. localStorage записывается до ухода страницы; небольшой снимок
-  // дополнительно отправляем с keepalive, не задерживая навигацию.
   useEffect(() => {
     const persistOnPageHide = () => {
       const snapshot = latestSessionSnapshotRef.current;
       if (!snapshot || snapshot.owner !== sessionPersistenceOwnerRef.current) return;
-      try {
-        localStorage.setItem(studioChatStorageKey(snapshot.owner), snapshot.serialized);
-      } catch {
-        // Серверное сохранение всё равно могло завершиться до закрытия страницы.
-      }
-      if (new Blob([snapshot.serialized]).size > 60_000) return;
-      void fetch("/api/studio/session", {
-        method: "PUT",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({
-          expectedRevision: sessionRevisionRef.current,
-          session: JSON.parse(snapshot.serialized) as unknown,
-        }),
-        credentials: "same-origin",
-        keepalive: true,
-      }).catch(() => undefined);
+      storeStudioSnapshot(snapshot);
+      if (sessionSaveTimerRef.current) clearTimeout(sessionSaveTimerRef.current);
+      // The active request already owns the revision. Newer unsent edits remain in
+      // local recovery storage; a parallel beacon must not race it with an old CAS.
+      if (sessionSaveInFlightRef.current || new Blob([snapshot.serialized]).size > 60_000) return;
+      void persistChatSession(true);
+    };
+    const persistOnPageShow = (event: PageTransitionEvent) => {
+      // BFCache resumes this component without remounting or changing dependencies.
+      // Edits held locally during an in-flight pagehide still need their queued save.
+      if (event.persisted) void persistChatSession();
     };
     window.addEventListener("pagehide", persistOnPageHide);
-    return () => window.removeEventListener("pagehide", persistOnPageHide);
-  }, []);
+    window.addEventListener("pageshow", persistOnPageShow);
+    return () => {
+      window.removeEventListener("pagehide", persistOnPageHide);
+      window.removeEventListener("pageshow", persistOnPageShow);
+    };
+  }, [persistChatSession]);
 
   useEffect(() => () => {
     if (sessionSaveTimerRef.current) clearTimeout(sessionSaveTimerRef.current);
@@ -991,7 +1107,14 @@ function StudioPageInner() {
   // Уходим с экрана — печать останавливается.
   useEffect(() => {
     const box = streamRef.current;
+    // A full document navigation may reject fetch before React unmounts. Retire
+    // the owner first so its catch cannot start another request from the old page.
+    const onPageHide = () => {
+      if (abortStudioStream(box)) setMessages(stopStudioStreamingMessages);
+    };
+    window.addEventListener("pagehide", onPageHide);
     return () => {
+      window.removeEventListener("pagehide", onPageHide);
       abortStudioStream(box);
     };
   }, []);
@@ -1239,12 +1362,14 @@ function StudioPageInner() {
       .finally(() => setPostSettingsReady(true));
   }, []);
 
-  // Чат должен быть ФИКСИРОВАННОЙ коробки: сообщения ездят внутри, поле ввода не двигается.
-  // Раньше стояли min-h/max-h — контейнер рос под содержимое и толкал ввод вниз при каждом
-  // новом сообщении. Высоту считаем от реального положения блока, а не магическим числом:
-  // подзаголовок может перенестись на две строки, и константа сразу бы соврала.
+  // При достаточной высоте история прокручивается рядом с закреплённым вводом.
+  // Если ввод оставляет меньше шести строк истории, используем прокрутку страницы:
+  // zoom, экранная клавиатура и длинный черновик не должны схлопывать сообщения.
   const shellRef = useRef<HTMLDivElement | null>(null);
   const designShellRef = useRef<HTMLDivElement | null>(null);
+  const composerRef = useRef<HTMLDivElement | null>(null);
+  const composerObserverRef = useRef<ResizeObserver | null>(null);
+  const [chatPageScroll, setChatPageScroll] = useState(false);
 
   const fit = useCallback(() => {
     for (const el of [shellRef.current, designShellRef.current]) {
@@ -1252,13 +1377,18 @@ function StudioPageInner() {
       const viewport = window.visualViewport;
       const viewportHeight = viewport?.height ?? window.innerHeight;
       const viewportTop = viewport?.offsetTop ?? 0;
-      const top = Math.max(0, el.getBoundingClientRect().top - viewportTop);
+      // Координата в документе стабильна, пока пользователь прокручивает историю.
+      const top = Math.max(0, el.getBoundingClientRect().top + (el === shellRef.current ? window.scrollY : 0) - viewportTop);
       // Нижний отступ берём у main, а не константой: на телефоне там pb-24 под нижнее меню,
       // на десктопе pb-10. Зашитое число увело бы ввод под панель навигации.
       const main = el.closest("main");
       const bottom = main ? parseFloat(getComputedStyle(main).paddingBottom) || 0 : 40;
-      const available = Math.max(240, viewportHeight - top - bottom);
-      el.style.setProperty("--studio-h", `${available}px`);
+      const available = viewportHeight - top - bottom;
+      if (el === shellRef.current) {
+        const composerHeight = composerRef.current?.getBoundingClientRect().height ?? 0;
+        setChatPageScroll(available - composerHeight < 160);
+      }
+      el.style.setProperty("--studio-h", `${Math.max(240, available)}px`);
     }
   }, []);
 
@@ -1269,6 +1399,22 @@ function StudioPageInner() {
     (el: HTMLDivElement | null) => {
       shellRef.current = el;
       if (el) fit();
+    },
+    [fit],
+  );
+
+  const attachComposer = useCallback(
+    (el: HTMLDivElement | null) => {
+      composerObserverRef.current?.disconnect();
+      composerObserverRef.current = null;
+      composerRef.current = el;
+      if (el) {
+        // Размер меняется также при ошибке модели и уточняющем вопросе, без resize окна.
+        const observer = new ResizeObserver(fit);
+        observer.observe(el);
+        composerObserverRef.current = observer;
+        fit();
+      }
     },
     [fit],
   );
@@ -1479,8 +1625,9 @@ function StudioPageInner() {
         if (generation?.autoOpenComposer && generation.referenceDraftId) {
           // Only now is it safe to consume the one-shot intent: the generated text already
           // has a durable, idempotent draft. A native navigation creates one deterministic
-          // browser-history entry, so Back returns to Studio without starting again.
+          // browser-history entry and emits pagehide for the durable recovery checkpoint.
           window.history.replaceState(window.history.state, "", `/app/studio?draft=${generation.referenceDraftId}`);
+          // eslint-disable-next-line @next/next/no-location-assign-relative-destination -- pagehide is the recovery durability boundary for this one-shot flow.
           window.location.assign(composerHref);
           return;
         }
@@ -1538,6 +1685,7 @@ function StudioPageInner() {
       return true;
     };
     const failureText = aiFailureRecoveryRu;
+    setMsg({ restartable: false });
 
     try {
       const res = await fetch("/api/ai/generate", {
@@ -1614,6 +1762,7 @@ function StudioPageInner() {
           reviewable: false,
           interrupted: true,
           retryable: res.status === 429 || info?.retryable === true,
+          restartable: aiTerminalRestartAllowed(failureInfo),
         });
         clearCancel();
         void s.refreshAiUsage();
@@ -1766,6 +1915,7 @@ function StudioPageInner() {
             ) throw new AiTerminalAckError(409, terminalRequestId ?? null, false);
           } catch (error) {
             if ((error as Error)?.name === "AbortError") throw error;
+            if (!ownsStream()) return;
             const ackRequestId = error instanceof AiTerminalAckError ? error.requestId : null;
             setMsg({
               text: completion.text,
@@ -1780,9 +1930,12 @@ function StudioPageInner() {
               retryable: true,
             });
             clearCancel();
-            void s.refreshAiUsage();
+            // A failed ACK is not evidence of the final allowance, even after
+            // HTTP 200 when its body was lost. Recover via normal polling.
+            s.invalidateAiUsage();
             return;
           }
+          if (!ownsStream()) return;
           setMsg({
             text: completion.text,
             // Готовый черновик говорит сам за себя. Требование ручной проверки остаётся —
@@ -1839,6 +1992,7 @@ function StudioPageInner() {
       clearCancel();
       void s.refreshAiUsage();
     } catch (err) {
+      if (!ownsStream()) return;
       // «Стоп» пользователя = AbortError: просто фиксируем, что успело напечататься.
       const aborted = (err as Error)?.name === "AbortError";
       if (ownsStream()) {
@@ -1864,7 +2018,11 @@ function StudioPageInner() {
         );
         clearCancel();
       }
-      void s.refreshAiUsage();
+      // A transport failure has no confirmed outcome and may arrive before
+      // pagehide. Do not start another request from the departing document.
+      // The normal visible-workspace refresh recovers the unknown counter.
+      if (aborted) void s.refreshAiUsage();
+      else s.invalidateAiUsage();
     }
   };
 
@@ -1909,6 +2067,7 @@ function StudioPageInner() {
       variant: 0,
       history,
       requestKey: opts?.requestKey ?? crypto.randomUUID(),
+      requestCreatedAt: opts?.requestCreatedAt,
       referenceText: contextDraft ? undefined : pendingLibraryReference?.text,
       referenceSource: contextDraft ? undefined : pendingLibraryReference?.source,
       sourceRef: contextDraft?.source_ref ?? undefined,
@@ -1965,19 +2124,23 @@ function StudioPageInner() {
 
     startedReferenceDraftsRef.current.add(pending.draftId);
     setPendingReferenceGeneration(null);
+    const recovered = recoverStudioReferenceGenerationIdentity({
+      draftId: pending.draftId, version: pending.version, channelId: pending.channelId,
+    }, genRef.current.values());
     ask(pending.prompt, {
       cmd: "write",
       input: pending.prompt,
       skipBrief: true,
-      requestKey: pending.requestKey,
+      requestKey: recovered.requestKey,
+      requestCreatedAt: recovered.generation?.requestCreatedAt,
       autoOpenComposer: true,
       referenceDraftId: pending.draftId,
       referenceDraftVersion: pending.version,
-      resultClientKey: pending.resultClientKey,
+      resultClientKey: recovered.resultClientKey,
       channelId: pending.channelId,
-      postSettings: pending.variant
+      postSettings: recovered.generation?.postSettings ?? (pending.variant
         ? legalOpportunityPostSettings(postSettings, pending.variant, pending.network)
-        : undefined,
+        : undefined),
       suggestMedia: pending.suggestMedia,
     });
     // `ask` intentionally consumes the reference/context captured by this render.
@@ -2016,6 +2179,7 @@ function StudioPageInner() {
     const stopped = abortStudioStream(streamRef.current);
     if (!stopped) return;
     setMessages(stopStudioStreamingMessages);
+    void s.refreshAiUsage();
   };
 
   const regenerate = (id: string) => {
@@ -2057,7 +2221,7 @@ function StudioPageInner() {
     void startStream(id, next);
   };
 
-  const retryGeneration = (id: string) => {
+  const retryGeneration = (id: string, requestCreatedAt: number) => {
     if (streamRef.current.current) return;
     const gen = genRef.current.get(id);
     if (!gen) return;
@@ -2065,10 +2229,16 @@ function StudioPageInner() {
       limitToast();
       return;
     }
+    const restart = messages.find((message) => message.id === id)?.restartable === true;
+    const requestKey = restart ? crypto.randomUUID() : gen.requestKey;
+    const next: Gen = restart ? { ...gen, requestKey, requestCreatedAt,
+      resultClientKey: gen.referenceIntent === "create" ? `draft_result_${requestKey}` : gen.resultClientKey } : gen;
+    if (restart) genRef.current.set(id, next);
     setMessages((prev) => prev.map((message) => message.id === id ? {
       ...message,
       streaming: true,
-      progressLabel: "Пробую ещё раз…",
+      restartable: false,
+      progressLabel: restart ? "Начинаю новый запуск — предыдущий текст сохранён…" : "Повторяю тот же запрос — сохранённый текст остаётся на месте…",
       postable: false,
       reviewable: false,
       requiresReview: false,
@@ -2084,7 +2254,7 @@ function StudioPageInner() {
       fallbackUsed: false,
       replayed: false,
     } : message));
-    void startStream(id, gen);
+    void startStream(id, next);
   };
 
   const improve = (text: string) => {
@@ -2226,15 +2396,18 @@ function StudioPageInner() {
             aria-label="Режим Чат"
             ref={attachShell}
             className={cn(
-              "mx-auto h-[var(--studio-h)] w-full max-w-[1180px]",
+              "mx-auto w-full max-w-[1180px]",
+              chatPageScroll ? "h-auto" : "h-[var(--studio-h)]",
               workspaceMode === "chat" ? "flex" : "hidden",
             )}
           >
-            {/* min-h-0 обязателен: лента сжимается и прокручивается внутри, а поле ввода
-                остаётся закреплённым внизу рабочей области. */}
+            {/* На коротком экране обе области остаются в обычном потоке документа. */}
             <section aria-label="Диалог с ИИ" className="flex min-h-0 min-w-0 flex-1 flex-col">
               {/* Одна прокрутка для всей истории; сам текст держим в комфортной ширине. */}
-              <div ref={feedRef} className="min-h-0 flex-1 overflow-y-auto">
+              <div
+                ref={feedRef}
+                className={chatPageScroll ? "flex-none overflow-visible" : "min-h-0 flex-1 overflow-y-auto"}
+              >
                 <div
                   className={cn(
                     "mx-auto flex min-h-full w-full max-w-[820px] flex-col px-4 py-6 md:px-6 md:py-8",
@@ -2250,7 +2423,7 @@ function StudioPageInner() {
                       onSchedule={() => openAsPost(message.id, primaryPublication(message.text))}
                       onCopy={() => void copy(message.text)}
                       onRegenerate={() => regenerate(message.id)}
-                      onRetry={() => retryGeneration(message.id)}
+                      onRetry={() => retryGeneration(message.id, Date.now())}
                       onImprove={() => improve(message.text)}
                       onShorten={() => ask("Сократить выбранный текст", { cmd: "shorten", input: primaryPublication(message.text), history: [], skipBrief: true })}
                       creatingPost={creatingPostId === message.id}
@@ -2273,7 +2446,7 @@ function StudioPageInner() {
               </div>
 
               {/* Единый composer: текст сверху, все вторичные действия — в одной строке снизу. */}
-              <div className="shrink-0 px-3 pb-3 md:px-5 md:pb-4">
+              <div ref={attachComposer} className="shrink-0 px-3 pb-3 md:px-5 md:pb-4">
                 <div className="mx-auto w-full max-w-[820px] rounded-[24px] border border-line/70 bg-surface shadow-[0_12px_40px_rgb(17_17_17/0.10)] transition-shadow focus-within:shadow-[0_14px_44px_rgb(17_17_17/0.14)] focus-within:ring-2 focus-within:ring-brand/15">
                   {engineStatusError && (
                     <div role="alert" className="border-b border-danger-text/20 bg-danger-soft px-4 py-2.5 text-[11px] text-danger-text">

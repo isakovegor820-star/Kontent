@@ -1,4 +1,6 @@
 import { randomUUID } from "node:crypto";
+import { readFile } from "node:fs/promises";
+import { migrate } from "../../scripts/migrate.mjs";
 
 import pg, { type PoolClient } from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
@@ -11,8 +13,8 @@ import {
 const databaseUrl = String(process.env.MIGRATION_TEST_DATABASE_URL || "").trim();
 const target = databaseUrl ? new URL(databaseUrl) : null;
 if (!target || !["localhost", "127.0.0.1", "::1"].includes(target.hostname)
-  || target.pathname.slice(1) !== "aurora_migration_test") {
-  throw new Error("Admin operations integration requires local aurora_migration_test");
+  || target.pathname.slice(1) !== "aurora_admin_gate_test") {
+  throw new Error("Admin operations integration requires local aurora_admin_gate_test");
 }
 
 const pool = new pg.Pool({ connectionString: databaseUrl, ssl: false, max: 1 });
@@ -51,6 +53,10 @@ async function insertEvent(input: {
 }
 
 beforeAll(async () => {
+  await pool.query("drop schema public cascade");
+  await pool.query("create schema public");
+  await pool.query(await readFile(new URL("../../db/schema.sql", import.meta.url), "utf8"));
+  await migrate({ env: { DATABASE_URL: databaseUrl }, logger: { log() {} } });
   client = await pool.connect();
   await client.query("begin");
   const migration = await client.query(
@@ -111,7 +117,10 @@ describe.sequential("admin operations analytics SQL", () => {
     const analytics = await loadAdminAuroraAnalytics(transactionalDb as never, filters, { now });
     const studio = analytics.sections.find((section) => section.id === "studio");
 
-    expect(analytics.sections).toHaveLength(15);
+    expect(analytics.sections.map((section) => section.id).sort()).toEqual([
+      "today", "calendar", "studio", "autopilot", "composer", "library", "rss", "knowledge",
+      "recon", "opportunities", "radar", "siteAnalysis", "sites", "growth", "analytics", "settings",
+    ].sort());
     expect(studio?.activity.launches.current).toBe(1);
     expect(studio?.outcome.timeToResultP50Ms.current).toBe(60_000);
     expect(analytics.detail?.errors).toEqual(expect.arrayContaining([

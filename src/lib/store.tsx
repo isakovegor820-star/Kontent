@@ -1,5 +1,7 @@
 "use client";
 
+import { projectFetch as fetch, setClientProjectUser } from "@/lib/project-fetch";
+
 // Состояние платформы. Без бэкенда: localStorage + React Context.
 // Публикация «исполняется сервером» — здесь это таймер, который двигает статусы постов,
 // чтобы поведение из ТЗ (5.3, Б1, Б3) было видно вживую.
@@ -45,6 +47,7 @@ import {
   writeWorkspaceState,
   type ClientWorkspaceIdentity,
 } from "./client-workspace-isolation";
+import { loadAllPosts, type PostsRange } from "./posts-client";
 import { uid } from "./utils";
 import { appendToastStack, stableToastDedupeKey } from "./toast-stack";
 
@@ -68,7 +71,9 @@ interface StoreValue extends AppState {
 
   /** Перечитать, кто вошёл, с сервера. Зовём после входа и при загрузке. */
   refreshAuth: () => Promise<void>;
-  signOut: () => void;
+  signOut: () => Promise<boolean>;
+  signOutStatus: "idle" | "pending" | "failed" | "complete";
+  signOutError: string | null;
   finishOnboarding: (input: { channelId: number; draftId: number }) => Promise<boolean>;
 
   /* --- Настоящий постинг (Д.3): каналы и посты из базы --- */
@@ -77,7 +82,8 @@ interface StoreValue extends AppState {
   realReady: boolean;
   realError: boolean;
   refreshReal: () => Promise<void>;
-  connectChannel: (handle: string) => Promise<{ ok: boolean; error?: string; title?: string }>;
+  setRealPostsRange: (range: PostsRange | null) => void;
+  connectChannel: (handle: string) => Promise<{ ok: boolean; error?: string; title?: string; retryAfter?: number }>;
   /** Подключить VK-сообщество по ключу доступа сообщества (право «Стена»). */
   connectVkChannel: (token: string) => Promise<{ ok: boolean; error?: string; title?: string }>;
   createRealPost: (input: {
@@ -119,6 +125,7 @@ interface StoreValue extends AppState {
   aiLimit: number;
   aiUsageStatus: AiUsageStatus;
   refreshAiUsage: () => Promise<void>;
+  invalidateAiUsage: () => void;
 
   addPost: (p: Partial<Post> & { text: string }) => Post;
   updatePost: (id: string, patch: Partial<Post>) => void;
@@ -182,10 +189,14 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
   const [ready, setReady] = useState(false);
   const [authReady, setAuthReady] = useState(false);
   const [authError, setAuthError] = useState(false);
+  const [signOutStatus, setSignOutStatus] = useState<StoreValue["signOutStatus"]>("idle");
+  const [signOutError, setSignOutError] = useState<string | null>(null);
+  const signOutRequestRef = useRef<Promise<boolean> | null>(null);
   const [toasts, setToasts] = useState<Toast[]>([]);
   const timers = useRef<Set<ReturnType<typeof setTimeout>>>(new Set());
 
   const [realChannels, setRealChannels] = useState<RealChannel[]>([]);
+  const realPostsRangeRef = useRef<PostsRange | null>(null);
   const [realPosts, setRealPosts] = useState<RealPost[]>([]);
   const [realReady, setRealReady] = useState(false);
   const [realError, setRealError] = useState(false);
@@ -200,6 +211,7 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
   const stateRef = useRef(state);
   const projectChangeQueuedRef = useRef(false);
   const [selectedProjectFence] = useState(createWorkspaceRequestFence);
+  const [authRequestFence] = useState(createWorkspaceRequestFence);
   const [realRequestFence] = useState(createWorkspaceRequestFence);
   const [aiUsageRequestFence] = useState(createWorkspaceRequestFence);
 
@@ -238,15 +250,24 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
 
   // Кто вошёл — спрашиваем сервер (сессия в cookie). Зовём при загрузке и после входа.
   const refreshAuth = useCallback(async () => {
+    if (signOutRequestRef.current) return;
+    const ticket = authRequestFence.start("session");
+    const isCurrent = () => authRequestFence.isCurrent(ticket, "session");
     try {
-      const res = await fetch("/api/auth/me", { cache: "no-store" });
+      const res = await fetch("/api/auth/me", { cache: "no-store", signal: ticket.signal });
       const data = (await res.json().catch(() => null)) as { user: ServerUser | null } | null;
+      if (!isCurrent()) return;
       const credentialRejected = res.status === 401;
       if (!res.ok && !credentialRejected) throw new Error("auth_unavailable");
       const nextUser = !credentialRejected && data?.user ? mapUser(data.user) : null;
       const accountChanged = (activeUserRef.current?.id ?? null) !== (nextUser?.id ?? null);
       if (accountChanged) beginWorkspaceTransition();
+      setClientProjectUser(nextUser?.id ?? null);
       activeUserRef.current = nextUser;
+      if (nextUser) {
+        setSignOutStatus("idle");
+        setSignOutError(null);
+      }
       setAuthError(false);
       setState((current) => {
         if (!accountChanged) {
@@ -264,12 +285,14 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
       });
       if (accountChanged && !nextUser) setReady(true);
     } catch {
-      setAuthError(true);
+      if (isCurrent()) setAuthError(true);
     } finally {
-      authReadyRef.current = true;
-      setAuthReady(true);
+      if (isCurrent()) {
+        authReadyRef.current = true;
+        setAuthReady(true);
+      }
     }
-  }, [beginWorkspaceTransition]);
+  }, [authRequestFence, beginWorkspaceTransition]);
 
   useEffect(() => {
     // Загрузка сессии с сервера — side-effect; setState происходит внутри async-колбэка.
@@ -297,16 +320,18 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
       );
     };
     try {
-      const [chRes, poRes] = await Promise.all([
-        fetch("/api/channels", { cache: "no-store", signal: ticket.signal }),
-        fetch("/api/posts", { cache: "no-store", signal: ticket.signal }),
+      const [channels, posts] = await Promise.all([
+        fetch("/api/channels", { cache: "no-store", signal: ticket.signal }).then(async response => {
+          if (!response.ok) throw new Error("real_data_unavailable");
+          const body = await response.json() as { channels?: RealChannel[] } | null;
+          if (!Array.isArray(body?.channels)) throw new Error("real_data_unavailable");
+          return body.channels;
+        }),
+        loadAllPosts({projectId: identity.projectId, range: realPostsRangeRef.current, signal: ticket.signal}),
       ]);
-      if (!chRes.ok || !poRes.ok) throw new Error("real_data_unavailable");
-      const ch = (await chRes.json().catch(() => null)) as { channels?: RealChannel[] } | null;
-      const po = (await poRes.json().catch(() => null)) as { posts?: RealPost[] } | null;
       if (!isCurrent()) return;
-      setRealChannels(ch?.channels ?? []);
-      setRealPosts(po?.posts ?? []);
+      setRealChannels(channels);
+      setRealPosts(posts);
       setRealError(false);
     } catch (error) {
       if (isAbortError(error) || !isCurrent()) return;
@@ -317,24 +342,34 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
     }
   }, [realRequestFence]);
 
+  const setRealPostsRange = useCallback((range: PostsRange | null) => {
+    const previous = realPostsRangeRef.current;
+    if (previous?.from === range?.from && previous?.to === range?.to) return;
+    realPostsRangeRef.current = range;
+    realRequestFence.invalidate();
+    setRealReady(false);
+    void refreshReal();
+  }, [realRequestFence, refreshReal]);
+
   const connectChannel = useCallback<StoreValue["connectChannel"]>(
     async (handle) => {
       try {
         const res = await fetch("/api/channels/connect", {
           method: "POST",
+          signal: AbortSignal.timeout(12_000),
           headers: { "content-type": "application/json" },
           body: JSON.stringify({ handle }),
         });
         const data = (await res.json().catch(() => null)) as
-          | { ok: boolean; error?: string; title?: string }
+          | { ok: boolean; error?: string; title?: string; retryAfter?: number }
           | null;
         if (res.ok && data?.ok) {
           await refreshReal();
           return { ok: true, title: data.title };
         }
-        return { ok: false, error: data?.error };
-      } catch {
-        return { ok: false, error: "network" };
+        return { ok: false, error: data?.error, retryAfter: data?.retryAfter };
+      } catch (error) {
+        return { ok: false, error: error instanceof Error && ["TimeoutError", "AbortError"].includes(error.name) ? "provider_timeout" : "network" };
       }
     },
     [refreshReal],
@@ -450,6 +485,13 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
   );
 
   /* ---------------------------- ИИ-студия (Д.8): реальный дневной лимит */
+
+  const invalidateAiUsage = useCallback(() => {
+    // An uncertain generation is not a confirmed allowance update. Revoke a
+    // pre-failure read; the normal visible-workspace refresh will recover it.
+    aiUsageRequestFence.invalidate();
+    setAiUsageStatus("unknown");
+  }, [aiUsageRequestFence]);
 
   const refreshAiUsage = useCallback(async () => {
     const identity = workspaceRef.current;
@@ -569,9 +611,14 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
     return startVisibleWorkspacePolling({
       refreshReal,
       refreshAiUsage,
+      cancelReads: () => {
+        realRequestFence.invalidate();
+        aiUsageRequestFence.invalidate();
+      },
       visibility: document,
+      lifecycle: window,
     });
-  }, [pathname, workspaceKey, refreshReal, refreshAiUsage]);
+  }, [pathname, workspaceKey, refreshReal, refreshAiUsage, realRequestFence, aiUsageRequestFence]);
 
   useEffect(() => {
     const identity = workspaceRef.current;
@@ -607,14 +654,43 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
 
   /* ------------------------------------------------------------ ВХОД */
 
-  // Выход: оптимистично убираем пользователя сразу, сессию на сервере гасим в фоне.
+  // Only a server receipt confirms revocation. A lost response leaves a safe,
+  // explicit retry of this idempotent operation; it must not erase local work.
   const signOut = useCallback(() => {
-    beginWorkspaceTransition();
-    activeUserRef.current = null;
-    setState({ ...seedState(), user: null, onboarded: false });
-    setReady(true);
-    fetch("/api/auth/logout", { method: "POST" }).catch(() => {});
-  }, [beginWorkspaceTransition]);
+    if (signOutRequestRef.current) return signOutRequestRef.current;
+    authRequestFence.invalidate();
+    setSignOutStatus("pending");
+    setSignOutError(null);
+    const request = (async () => {
+      try {
+        const response = await fetch("/api/auth/logout", {
+          method: "POST",
+          cache: "no-store",
+          signal: AbortSignal.timeout(8_000),
+        });
+        const body: unknown = await response.json().catch(() => null);
+        if (!response.ok || !body || typeof body !== "object" || !("ok" in body) || body.ok !== true) {
+          throw new Error("logout_unconfirmed");
+        }
+        authRequestFence.invalidate();
+        beginWorkspaceTransition();
+        setClientProjectUser(null);
+        activeUserRef.current = null;
+        setState({ ...seedState(), user: null, onboarded: false });
+        setReady(true);
+        setSignOutStatus("complete");
+        return true;
+      } catch {
+        setSignOutStatus("failed");
+        setSignOutError("Не удалось подтвердить выход. Сессия может оставаться активной. Проверь соединение и повтори выход.");
+        return false;
+      } finally {
+        signOutRequestRef.current = null;
+      }
+    })();
+    signOutRequestRef.current = request;
+    return request;
+  }, [authRequestFence, beginWorkspaceTransition]);
 
   const finishOnboarding = useCallback<StoreValue["finishOnboarding"]>(
     async (input) => {
@@ -948,12 +1024,15 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
       dismissToast,
       refreshAuth,
       signOut,
+      signOutStatus,
+      signOutError,
       finishOnboarding,
       realChannels,
       realPosts,
       realReady,
       realError,
       refreshReal,
+      setRealPostsRange,
       connectChannel,
       connectVkChannel,
       createRealPost,
@@ -963,6 +1042,7 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
       aiLimit,
       aiUsageStatus,
       refreshAiUsage,
+      invalidateAiUsage,
       addPost,
       updatePost,
       removePost,
@@ -989,12 +1069,15 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
       dismissToast,
       refreshAuth,
       signOut,
+      signOutStatus,
+      signOutError,
       finishOnboarding,
       realChannels,
       realPosts,
       realReady,
       realError,
       refreshReal,
+      setRealPostsRange,
       connectChannel,
       connectVkChannel,
       createRealPost,
@@ -1004,6 +1087,7 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
       aiLimit,
       aiUsageStatus,
       refreshAiUsage,
+      invalidateAiUsage,
       addPost,
       updatePost,
       removePost,

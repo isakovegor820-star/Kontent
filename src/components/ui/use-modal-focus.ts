@@ -35,7 +35,12 @@ export function useModalFocus<T extends HTMLElement = HTMLDivElement>({
     }
     const previousOverflow = document.body.style.overflow;
     document.body.style.overflow = "hidden";
-    const frame = requestAnimationFrame(() => (initialFocusRef.current ?? dialogRef.current)?.focus());
+    const frame = requestAnimationFrame(() => {
+      const dialog = dialogRef.current;
+      // A user may choose a control before this frame; keep that choice for Enter.
+      if (dialog?.contains(document.activeElement)) return;
+      (initialFocusRef.current ?? dialog)?.focus();
+    });
     return () => {
       cancelAnimationFrame(frame);
       document.body.style.overflow = previousOverflow;

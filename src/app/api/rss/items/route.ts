@@ -32,7 +32,7 @@ export async function GET(req: NextRequest) {
                 opportunity.state as opportunity_state, reading.read_at
            from rss_items i
            join rss_feeds f on f.id = i.feed_id
-           join channels c on c.id = f.channel_id and c.user_id = f.user_id
+           join channels c on c.id = f.channel_id and c.project_id=f.project_id
            left join legal_opportunity_states opportunity
              on opportunity.rss_item_id = i.id and opportunity.user_id = $1
            left join legal_opportunity_reads reading
@@ -57,7 +57,7 @@ export async function GET(req: NextRequest) {
                   ) as feed_rank
              from rss_items i
              join rss_feeds f on f.id = i.feed_id
-             join channels c on c.id = f.channel_id and c.user_id = f.user_id
+             join channels c on c.id = f.channel_id and c.project_id=f.project_id
              left join posts p on p.id = i.post_id
              left join legal_opportunity_states opportunity
                on opportunity.rss_item_id = i.id and opportunity.user_id = $1

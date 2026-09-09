@@ -27,7 +27,7 @@ settings_rows as (
          s.approvals_streak,
          s.generation_engine,
          jsonb_array_length(coalesce(s.news_sources, '[]'::jsonb)) as news_source_count,
-         s.quick_settings,
+         jsonb_typeof(s.quick_settings) = 'object' as quick_settings_configured,
          s.updated_at
     from public.autopilot_settings as s
    order by s.updated_at desc
@@ -90,10 +90,16 @@ plan_rows as (
          p.expected_post_count,
          p.planning_weeks,
          p.generation_engine,
-         -- `rules` carries the machine diagnosis for failed builds. Truncate hard: the
-         -- successful-build variant of the same column holds editorial prose.
-         left(coalesce(p.rules, ''), 300) as rules_head,
-         (to_jsonb(p) - 'items' - 'candidate_items' - 'rules') as meta
+         -- Truncation does not make editorial prose safe for a public workflow log.
+         -- Preserve only known machine codes in failure context and explicit metadata.
+         case when p.status in ('partial', 'error') then case when p.rules in ('provider_error', 'ai_unavailable', 'ai_usage_limit', 'quality_gate_unsatisfied', 'content_variety_insufficient', 'no_sources_found', 'no_brief', 'no_channel', 'overall_timeout', 'first_token_timeout', 'provider_timeout', 'circuit_open', 'empty_generation', 'network_error', 'rate_limited', 'quota_exceeded', 'stream_truncated', 'stream_error', 'reasoning_without_content') then p.rules else null end else null end as rules_code,
+         length(coalesce(p.rules, '')) > 0 as rules_present,
+         jsonb_build_object(
+           'project_id', p.project_id,
+           'channel_id', p.channel_id,
+           'terminal_outcome', p.terminal_outcome,
+           'repair_strategy', p.repair_strategy
+         ) as meta
     from public.autopilot_plan as p
    order by p.created_at desc
    limit 12
@@ -112,7 +118,10 @@ ai_usage_today as (
    where usage_date = current_date
 ),
 ai_usage_recent as (
-  select usage_date, kind, count(*)::bigint as calls
+  select usage_date,
+         case when kind in ('autopilot-plan', 'post', 'rewrite', 'chat', 'generate', 'semantic', 'site-analysis') then kind else null end as kind,
+         encode(sha256(convert_to(kind, 'UTF8')), 'hex') as kind_sha256,
+         count(*)::bigint as calls
     from public.ai_usage
    where usage_date >= current_date - 7
    group by usage_date, kind
@@ -209,7 +218,7 @@ recovery_visibility as (
            select 1 from public.autopilot_settings s
             where s.project_id = p.project_id and s.channel_id = p.channel_id
          ) as settings_join_ok,
-         (p.build_report -> 'autoRecovery' ->> 'jobId') as auto_recovery_job_id
+         encode(sha256(convert_to(p.build_report -> 'autoRecovery' ->> 'jobId', 'UTF8')), 'hex') as auto_recovery_job_id_sha256
     from public.autopilot_plan as p
    where p.status in ('building', 'partial')
    order by p.id desc
@@ -221,47 +230,48 @@ recovery_visibility as (
 -- `confirmation_required`, `reviewRequired` or `qualityBlocked`, because the cause histogram
 -- counts blocker violations exclusively. A build that produced ten drafts and delivered four
 -- therefore reports "4/10 (без разбора)" and offers the reader no reason and no next step.
--- These are flags and violation codes only — never draft text.
+-- JSON strings are untrusted even when they resemble codes. Export known enums,
+-- booleans/counts or SHA256 fingerprints for correlation; never arbitrary text.
 plan_item_verdicts as (
   select p.id as plan_id,
          p.channel_id,
          p.status,
          (item.ordinality - 1) as item_index,
-         (item.value ->> 'buildState') as build_state,
+         case when (item.value ->> 'buildState') in ('queued', 'building', 'ready', 'failed', 'waiting_provider', 'confirmation_required') then (item.value ->> 'buildState') else null end as build_state,
          (item.value ->> 'aiReady') = 'true' as ai_ready,
          length(coalesce(item.value ->> 'draft', '')) as draft_chars,
          (item.value -> 'quality' ->> 'passed') = 'true' as quality_passed,
-         (item.value -> 'quality' ->> 'publicationDisposition') as disposition,
+         case when (item.value -> 'quality' ->> 'publicationDisposition') in ('ready', 'confirmation_required', 'blocked') then (item.value -> 'quality' ->> 'publicationDisposition') else null end as disposition,
          (item.value ->> 'qualityBlocked') = 'true' as quality_blocked,
          (item.value ->> 'reviewRequired') = 'true' as review_required,
-         (item.value -> '_providerFailure' ->> 'code') as provider_failure_code,
-         (item.value -> '_providerFailure' ->> 'engine') as provider_failure_engine,
+         case when (item.value -> '_providerFailure' ->> 'code') in ('provider_error', 'ai_unavailable', 'ai_usage_limit', 'quality_gate_unsatisfied', 'content_variety_insufficient', 'no_sources_found', 'no_brief', 'no_channel', 'overall_timeout', 'first_token_timeout', 'provider_timeout', 'circuit_open', 'empty_generation', 'network_error', 'rate_limited', 'quota_exceeded', 'stream_truncated', 'stream_error', 'reasoning_without_content') then (item.value -> '_providerFailure' ->> 'code') else null end as provider_failure_code,
+         case when (item.value -> '_providerFailure' ->> 'engine') in ('navy-deepseek-pro', 'navy-deepseek-flash', 'navy-gpt-5-4', 'navy-qwen-3-6', 'navy-minimax-m3', 'openai', 'deepseek', 'ollama') then (item.value -> '_providerFailure' ->> 'engine') else null end as provider_failure_engine,
          -- `isAutopilotHumanReviewItem` lets a post through to a human only when the semantic
          -- fact-check could not run at all, and it demands an exact shape to prove that. Any
          -- single mismatch here demotes an otherwise clean post to `failed`, which is why six
          -- posts that passed every editorial gate were dropped from the week. These are the
          -- fields it reads, in the order it reads them — verdict codes only, never claim text.
-         (item.value ->> 'reviewState') as review_state,
-         (item.value ->> 'reviewReason') as review_reason,
+         case when (item.value ->> 'reviewState') in ('semantic_only_review', 'editorial_review', 'quality_review') then (item.value ->> 'reviewState') else null end as review_state,
+         case when (item.value ->> 'reviewReason') in ('deterministic_format', 'rewrite', 'add_knowledge', 'human_review', 'provider_retry', 'settings_change') then (item.value ->> 'reviewReason') else null end as review_reason,
          jsonb_array_length(
            case when jsonb_typeof(item.value -> 'invented') = 'array'
                 then item.value -> 'invented' else '[]'::jsonb end
          ) as invented_count,
-         (item.value -> 'quality' -> 'metadata' -> 'provenance' ->> 'validator') as quality_validator,
-         (item.value -> 'quality' -> 'metadata' -> 'provenance' ->> 'trigger') as quality_trigger,
-         (item.value -> 'quality' -> 'metadata' -> 'rules' ->> 'version') as quality_rules_version,
+         case when (item.value -> 'quality' -> 'metadata' -> 'provenance' ->> 'validator') in ('validatePostQuality') then (item.value -> 'quality' -> 'metadata' -> 'provenance' ->> 'validator') else null end as quality_validator,
+         case when (item.value -> 'quality' -> 'metadata' -> 'provenance' ->> 'trigger') in ('direct', 'generation', 'rewrite', 'edit_recheck') then (item.value -> 'quality' -> 'metadata' -> 'provenance' ->> 'trigger') else null end as quality_trigger,
+         case when (item.value -> 'quality' -> 'metadata' -> 'rules' ->> 'version') in ('1') then (item.value -> 'quality' -> 'metadata' -> 'rules' ->> 'version') else null end as quality_rules_version,
          jsonb_array_length(
            case when jsonb_typeof(item.value -> 'quality' -> 'blockers') = 'array'
                 then item.value -> 'quality' -> 'blockers' else '[]'::jsonb end
          ) as quality_blocker_count,
-         (item.value -> 'quality' -> 'semantic' ->> 'status') as semantic_status,
-         (item.value -> 'quality' -> 'semantic' ->> 'version') as semantic_version,
-         (item.value -> 'quality' -> 'semantic' ->> 'passed') as semantic_passed,
-         (item.value -> 'quality' -> 'semantic' ->> 'requiresReview') as semantic_requires_review,
-         (item.value -> 'quality' -> 'semantic' -> 'provenance' ->> 'provider') as semantic_provider,
-         (item.value -> 'quality' -> 'semantic' -> 'provenance' ->> 'validatorVersion')
+         case when (item.value -> 'quality' -> 'semantic' ->> 'status') in ('passed', 'blocked', 'not_checked') then (item.value -> 'quality' -> 'semantic' ->> 'status') else null end as semantic_status,
+         case when (item.value -> 'quality' -> 'semantic' ->> 'version') in ('1') then (item.value -> 'quality' -> 'semantic' ->> 'version') else null end as semantic_version,
+         (item.value -> 'quality' -> 'semantic' ->> 'passed') = 'true' as semantic_passed,
+         (item.value -> 'quality' -> 'semantic' ->> 'requiresReview') = 'true' as semantic_requires_review,
+         encode(sha256(convert_to((item.value -> 'quality' -> 'semantic' -> 'provenance' ->> 'provider'), 'UTF8')), 'hex') as semantic_provider_sha256,
+         case when (item.value -> 'quality' -> 'semantic' -> 'provenance' ->> 'validatorVersion') in ('semantic-publication-v1') then (item.value -> 'quality' -> 'semantic' -> 'provenance' ->> 'validatorVersion') else null end
            as semantic_validator_version,
-         (item.value -> 'quality' -> 'semantic' -> 'provenance' ->> 'terminalVerdict')
+         case when (item.value -> 'quality' -> 'semantic' -> 'provenance' ->> 'terminalVerdict') in ('passed', 'blocked', 'not_checked') then (item.value -> 'quality' -> 'semantic' -> 'provenance' ->> 'terminalVerdict') else null end
            as semantic_terminal_verdict,
          jsonb_array_length(
            case when jsonb_typeof(item.value -> 'quality' -> 'semantic' -> 'claimVerdicts') = 'array'
@@ -269,7 +279,7 @@ plan_item_verdicts as (
          ) as semantic_claim_count,
          (
            select string_agg(distinct
-                    coalesce(v ->> 'verdict', 'null') || '/' || coalesce(v ->> 'reasonCode', 'null'),
+                    coalesce(case when v ->> 'verdict' in ('supported', 'unsupported', 'unknown', 'non_factual') then v ->> 'verdict' else null end, 'unknown') || '/sha256:' || coalesce(encode(sha256(convert_to(v ->> 'reasonCode', 'UTF8')), 'hex'), 'null'),
                     ', ')
              from jsonb_array_elements(
                     case when jsonb_typeof(item.value -> 'quality' -> 'semantic' -> 'claimVerdicts') = 'array'
@@ -278,7 +288,7 @@ plan_item_verdicts as (
                   ) as v
          ) as semantic_verdicts,
          (
-           select string_agg(distinct v ->> 'code', ',')
+           select string_agg(distinct case when v ->> 'code' in ('empty', 'too_short', 'too_long', 'hook', 'address', 'profanity', 'profanity_required', 'forbidden_phrase', 'forbidden_topic', 'dense_paragraph', 'structure', 'list', 'bold', 'emoji', 'hashtags', 'disclaimer', 'meta_labels', 'punctuation', 'truncated', 'no_sources', 'weak_sources', 'invented', 'unsupported_semantic_claim', 'semantic_review_required', 'insufficient_content', 'platform_limit', 'quality_threshold', 'duplicate') then v ->> 'code' else null end, ',')
              from jsonb_array_elements(
                     case when jsonb_typeof(item.value -> 'quality' -> 'violations') = 'array'
                          then item.value -> 'quality' -> 'violations' else '[]'::jsonb end
@@ -286,7 +296,7 @@ plan_item_verdicts as (
             where (v ->> 'blocker') = 'true'
          ) as blocker_codes,
          (
-           select string_agg(distinct v ->> 'code', ',')
+           select string_agg(distinct case when v ->> 'code' in ('empty', 'too_short', 'too_long', 'hook', 'address', 'profanity', 'profanity_required', 'forbidden_phrase', 'forbidden_topic', 'dense_paragraph', 'structure', 'list', 'bold', 'emoji', 'hashtags', 'disclaimer', 'meta_labels', 'punctuation', 'truncated', 'no_sources', 'weak_sources', 'invented', 'unsupported_semantic_claim', 'semantic_review_required', 'insufficient_content', 'platform_limit', 'quality_threshold', 'duplicate') then v ->> 'code' else null end, ',')
              from jsonb_array_elements(
                     case when jsonb_typeof(item.value -> 'quality' -> 'violations') = 'array'
                          then item.value -> 'quality' -> 'violations' else '[]'::jsonb end

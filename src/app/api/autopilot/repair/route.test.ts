@@ -10,6 +10,7 @@ const mocks = vi.hoisted(() => ({
   release: vi.fn(),
   queueAdd: vi.fn(),
   getWorkersCount: vi.fn(),
+  getWorkers: vi.fn(),
 }));
 
 vi.mock("@/lib/session", () => ({ getSessionUser: mocks.getSessionUser }));
@@ -24,8 +25,14 @@ vi.mock("@/lib/db", () => ({
     connect: async () => ({ query: mocks.txQuery, release: mocks.release }),
   }),
 }));
-vi.mock("@/lib/queue", () => ({
-  getAutopilotQueue: () => ({ add: mocks.queueAdd, getWorkersCount: mocks.getWorkersCount }),
+vi.mock("@/lib/queue", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/queue")>()),
+  getAutopilotQueue: () => ({
+    add: mocks.queueAdd,
+    client: Promise.resolve({ options: { db: 13 } }),
+    getWorkers: mocks.getWorkers,
+    getWorkersCount: mocks.getWorkersCount,
+  }),
 }));
 
 import { POST } from "./route";
@@ -55,6 +62,7 @@ describe("POST /api/autopilot/repair", () => {
     mocks.requireSelectedProjectPermission.mockResolvedValue({ projectId: 88, role: "author" });
     mocks.resolveChannel.mockResolvedValue(22);
     mocks.getWorkersCount.mockResolvedValue(1);
+    mocks.getWorkers.mockResolvedValue([{ db: "13" }]);
     mocks.queueAdd.mockResolvedValue({ id: "repair-job" });
     mocks.txQuery.mockImplementation(async (sqlValue: string) => {
       const sql = sqlValue.replace(/\s+/gu, " ").trim();
@@ -81,6 +89,15 @@ describe("POST /api/autopilot/repair", () => {
       }
       return { rows: [], rowCount: 0 };
     });
+  });
+
+  it("rejects a foreign-database worker and terminalizes the unserved repair", async () => {
+    mocks.getWorkers.mockResolvedValue([{ db: "15" }]);
+    const response = await POST(request(validBody()));
+    expect(response.status).toBe(503);
+    await expect(response.json()).resolves.toMatchObject({ ok: false, error: "worker_unavailable" });
+    expect(mocks.queueAdd).not.toHaveBeenCalled();
+    expect(mocks.poolQuery).toHaveBeenCalledWith(expect.stringContaining("terminal_outcome = 'worker_unavailable'"), [701, 88]);
   });
 
   it("scopes the repair to project, channel, plan revision, and selected indexes", async () => {

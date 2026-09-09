@@ -1,3 +1,4 @@
+import { ProjectAccessError, requireSelectedProjectPermission } from "@/lib/project-permissions";
 // Профиль канала: ИИ сам читает посты и вытаскивает «что это за бизнес» — человеку
 // заполнять базу знаний руками больше не нужно (она стала невидимой).
 //
@@ -6,6 +7,7 @@
 //        и читать нечего). Различаем kind: авто-извлечённый 'profile' еженедельный крон
 //        может перезаписать свежим; 'profile_edit' — слова самого человека, его НЕ трогаем.
 
+import { AI_CONTENT_ROLES_SQL } from "@/lib/ai-project-access";
 import { readJsonBodyValue } from "@/lib/bounded-request-body";
 import { NextRequest, NextResponse } from "next/server";
 import { getPool } from "@/lib/db";
@@ -49,10 +51,16 @@ async function saveProfileSource(
   let sourceId: number;
   try {
     await tx.query("begin");
+    const access = await tx.query(`select channel.id from channels channel
+      join projects project on project.id=channel.project_id
+      join project_members member on member.project_id=project.id and member.user_id=$2
+      where channel.id=$1 and channel.is_active=true and channel.status='active'
+        and project.is_archived=false and member.status='active'
+        and member.role in (${AI_CONTENT_ROLES_SQL}) for update of channel for share of project,member`, [channelId,userId]);
+    if (!access.rowCount) throw new ProjectAccessError("permission_denied");
     await tx.query(
-      `delete from knowledge_sources
-        where user_id = $1 and channel_id = $2 and kind = any($3)`,
-      [userId, channelId, wipe],
+      `delete from knowledge_sources where channel_id = $1 and kind = any($2)`,
+      [channelId, wipe],
     );
     const ins = await tx.query<{ id: number }>(
       `insert into knowledge_sources (user_id, channel_id, kind, title, raw_text)
@@ -97,15 +105,16 @@ export async function POST(req: NextRequest) {
   let committed = false;
   try {
     const pool = getPool();
-    const channelId = await resolveChannel(user.id, body.channelId ?? null);
+    const membership = await requireSelectedProjectPermission(pool, user.id, "content.create");
+    const channelId = await resolveChannel({ actorUserId: user.id, projectId: membership.projectId }, body.channelId ?? null);
     if (!channelId) return NextResponse.json({ ok: false, error: "no_channel" }, { status: 422 });
 
     const ch = (
       await pool.query<{ handle: string | null; title: string | null; ai_engine: string | null }>(
         `select c.handle, c.title, u.ai_engine
            from channels c join users u on u.id = c.user_id
-          where c.id = $1 and c.user_id = $2`,
-        [channelId, user.id],
+          where c.id = $1 and c.project_id = $2`,
+        [channelId, membership.projectId],
       )
     ).rows[0];
     if (!ch?.handle) return NextResponse.json({ ok: false, error: "no_handle" }, { status: 422 });
@@ -133,7 +142,7 @@ export async function POST(req: NextRequest) {
         engine: isEngineId(ch.ai_engine) ? ch.ai_engine : null,
         temperature: 0.2,
         maxTokens: 700,
-      }, { signal: req.signal });
+      }, { signal: req.signal, spendScope: { pool, userId: user.id, projectId: membership.projectId } });
       profile = parseProfile(completed.text);
     } catch (err) {
       console.error("[/api/knowledge/extract-profile] generation failed", {
@@ -156,6 +165,7 @@ export async function POST(req: NextRequest) {
     committed = true;
     return NextResponse.json({ ok: true, profile, posts: posts.length });
   } catch (err) {
+    if (err instanceof ProjectAccessError) return NextResponse.json({ ok: false, error: "forbidden" }, { status: 403 });
     console.error("[/api/knowledge/extract-profile] POST", {
       errorName: (err as Error)?.name || "Error",
     });
@@ -186,7 +196,8 @@ export async function PUT(req: NextRequest) {
 
   try {
     const pool = getPool();
-    const channelId = await resolveChannel(user.id, body.channelId ?? null);
+    const membership = await requireSelectedProjectPermission(pool, user.id, "content.create");
+    const channelId = await resolveChannel({ actorUserId: user.id, projectId: membership.projectId }, body.channelId ?? null);
     if (!channelId) return NextResponse.json({ ok: false, error: "no_channel" }, { status: 422 });
 
     const ch = (
@@ -200,7 +211,8 @@ export async function PUT(req: NextRequest) {
     await saveProfileSource(user.id, channelId, `Профиль канала «${ch?.title || "без названия"}»`, profile, "profile_edit");
     return NextResponse.json({ ok: true });
   } catch (err) {
-    console.error("[/api/knowledge/extract-profile] PUT", err);
+    if (err instanceof ProjectAccessError) return NextResponse.json({ ok: false, error: "forbidden" }, { status: 403 });
+    console.error("[/api/knowledge/extract-profile] PUT", { errorName: (err as Error)?.name || "Error" });
     return NextResponse.json({ ok: false, error: "server" }, { status: 500 });
   }
 }

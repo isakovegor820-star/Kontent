@@ -14,8 +14,8 @@ describe("legal visual studio brand-kit interface", () => {
   });
 
   it("shows the selected logo and font in both brand and card previews", () => {
-    expect(source).toContain('src={`/api/media/assets/${brand.logo.assetId}`}');
-    expect(source).toContain('src={`/api/media/assets/${config.brand.logo.assetId}`}');
+    expect(source).toContain('src={projectNativeUrl(`/api/media/assets/${brand.logo.assetId}`)}');
+    expect(source).toContain('src={projectNativeUrl(`/api/media/assets/${config.brand.logo.assetId}`)}');
     expect(source).toContain("fontFamily: legalVisualFontFamily(config.brand.font)");
     expect(source).toContain("Применить стиль проекта");
   });
@@ -45,7 +45,7 @@ describe("legal visual studio brand-kit interface", () => {
   });
 
   it("marks the private production brief as a same-origin download in every browser", () => {
-    expect(source).toContain('href={`/api/legal-video-scripts/${selected.id}/production-brief`}');
+    expect(source).toContain('href={projectNativeUrl(`/api/legal-video-scripts/${selected.id}/production-brief`)}');
     expect(source).toContain('download={`legal-video-${selected.id}-r${selected.revision}.txt`}');
   });
 });

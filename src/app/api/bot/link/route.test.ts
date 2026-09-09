@@ -3,11 +3,15 @@ import { NextRequest } from "next/server";
 
 const mocks = vi.hoisted(() => ({
   getSessionUser: vi.fn(),
+  checkRateLimit: vi.fn(),
+  requireSelectedProjectPermission: vi.fn(),
   query: vi.fn(),
   createLegacyBotLink: vi.fn(),
   probeRedisAndPublicationWorker: vi.fn(),
 }));
 
+vi.mock("@/lib/rate-limit", () => ({ checkRateLimit: mocks.checkRateLimit }));
+vi.mock("@/lib/project-permissions", async (original) => ({ ...await original<typeof import("@/lib/project-permissions")>(), requireSelectedProjectPermission: mocks.requireSelectedProjectPermission }));
 vi.mock("@/lib/session", () => ({ getSessionUser: mocks.getSessionUser }));
 vi.mock("@/lib/db", () => ({ getPool: () => ({ query: mocks.query }) }));
 vi.mock("@/lib/bot-connection.mjs", () => ({
@@ -32,6 +36,8 @@ describe("GET /api/bot/link", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     vi.stubEnv("TG_BOT_USERNAME", "aurora_bot");
+    mocks.checkRateLimit.mockResolvedValue({ allowed: true });
+    mocks.requireSelectedProjectPermission.mockResolvedValue({ projectId: 12 });
     mocks.getSessionUser.mockResolvedValue({ id: 7 });
     mocks.query.mockResolvedValue({ rows: [{ tg_chat_id: "123" }] });
     mocks.createLegacyBotLink.mockResolvedValue({
@@ -114,6 +120,7 @@ describe("GET /api/bot/link", () => {
     await expect(response.json()).resolves.toMatchObject({
       url: `https://t.me/aurora_bot?start=${"a".repeat(32)}_channel`,
     });
+    expect(mocks.createLegacyBotLink).toHaveBeenCalledWith(expect.anything(), { userId: 7, projectId: 12 });
   });
 
   it("does not create a broken link for an invalid configured bot username", async () => {

@@ -122,7 +122,7 @@ export async function POST(req: NextRequest) {
       engine: isEngineId(ch.ai_engine) ? ch.ai_engine : null,
       temperature: 0.3,
       maxTokens: 700,
-    }, { signal: req.signal });
+    }, { signal: req.signal, spendScope: { pool, userId: user.id, projectId } });
     const raw = completed.text;
     const parsed = parseJsonLoose(raw);
     if (!parsed) {

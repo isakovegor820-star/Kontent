@@ -9,6 +9,7 @@ import {
   rejectSiteArticle,
   requestPublication,
   serializeSiteArticle,
+  type SiteArticleRow,
 } from "@/lib/sites/articles-service";
 import { findSiteForProject, SiteServiceError } from "@/lib/sites/service";
 import type { ProjectPermission } from "@/lib/project-permissions";
@@ -28,6 +29,15 @@ const ACTION_PERMISSION: Record<Action, ProjectPermission> = {
   unpublish: "content.publish",
   regenerate: "content.create",
 };
+
+function requireReviewedRevision(body: Record<string, unknown>, article: SiteArticleRow) {
+  if (!Number.isSafeInteger(body.version) || Number(body.version) < 1 || typeof body.status !== "string") {
+    throw new SiteServiceError("article_revision_required", 400);
+  }
+  if (body.version !== Number(article.version) || body.status !== article.status) {
+    throw new SiteServiceError("article_revision_conflict", 409);
+  }
+}
 
 export async function GET(req: NextRequest, context: Context) {
   const resolved = await resolveSiteRoute(req, "project.read", { label: "/api/sites/:id/articles/:articleId GET" });
@@ -80,6 +90,7 @@ export async function PATCH(req: NextRequest, context: Context) {
     if (!found.ok) return found.response;
     const article = await findSiteArticle(pool, Number(found.site.id), articleId);
     if (!article) return jsonWithRequest({ error: "not_found" }, 404, requestId);
+    requireReviewedRevision(body, article);
     const profile = found.site.latest_profile_id
       ? await pool.query<{ linkable_pages: Array<{ url: string }> }>(`select linkable_pages from site_profiles where id = $1`, [found.site.latest_profile_id])
       : { rows: [] as Array<{ linkable_pages: Array<{ url: string }> }> };
@@ -117,7 +128,7 @@ export async function POST(req: NextRequest, context: Context) {
     body = {};
   }
   const action = String(body.action || "") as Action;
-  if (!(action in ACTION_PERMISSION)) {
+  if (!Object.hasOwn(ACTION_PERMISSION, action)) {
     const bad = await resolveSiteRoute(req, "project.read", { mutation: true, label: "/api/sites/:id/articles/:articleId POST" });
     return bad.ok ? jsonWithRequest({ error: "bad_request" }, 400, bad.context.requestId) : bad.response;
   }
@@ -132,16 +143,20 @@ export async function POST(req: NextRequest, context: Context) {
     if (!found.ok) return found.response;
     const article = await findSiteArticle(pool, Number(found.site.id), articleId);
     if (!article) return jsonWithRequest({ error: "not_found" }, 404, requestId);
+    requireReviewedRevision(body, article);
 
     if (action === "regenerate") {
       if (!["failed", "rejected", "needs_review"].includes(article.status)) throw new SiteServiceError("article_not_regenerable", 409);
       const updated = await pool.query<{ version: number | string }>(
         `update site_articles set status = 'draft', status_reason = null, version = version + 1, generation = null,
-                approved_by = null, approved_version = null, approved_at = null, worker_lease_token = null, worker_heartbeat_at = null, updated_at = now()
-          where id = $1 and site_id = $2 and version = $3 and status in ('failed','rejected','needs_review') returning version`,
-        [articleId, found.site.id, article.version],
+                approved_by = null, approved_version = null, approved_at = null,
+                generation_requested_by_user_id = $5, worker_lease_token = null,
+                worker_heartbeat_at = null, updated_at = now()
+          where id = $1 and site_id = $2 and project_id = $3 and version = $4 and status = $6
+          returning version`,
+        [articleId, found.site.id, found.site.project_id, article.version, userId, article.status],
       );
-      if (!updated.rows[0]) throw new SiteServiceError("article_changed", 409);
+      if (!updated.rows[0]) throw new SiteServiceError("article_revision_conflict", 409);
       const version = Number(updated.rows[0].version);
       await enqueueSiteArticleJob("generate", { articleId, version }, { jobId: `site-articles-generate-${articleId}-v${version}` });
       return jsonWithRequest({ ok: true, status: "draft" }, 202, requestId);
@@ -164,7 +179,7 @@ export async function POST(req: NextRequest, context: Context) {
         const rejected = await rejectSiteArticle(client, { site, article, userId, reason: body.reason });
         result = { article: serializeSiteArticle(rejected) };
       } else {
-        publications = await requestPublication(client, { site, article, action });
+        publications = await requestPublication(client, { site, article, action, userId });
         result = { publications: publications.length };
       }
       await client.query(

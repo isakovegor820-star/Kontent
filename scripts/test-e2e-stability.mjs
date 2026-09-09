@@ -15,6 +15,7 @@ import {
 } from "./e2e-evidence-safety.mjs";
 import { captureE2eInputSnapshot, changedE2eInputPaths } from "./e2e-input-snapshot.mjs";
 import { createE2eStabilityPlan } from "./e2e-stability-config.mjs";
+import { assertE2eTraceSet } from "./e2e-artifact-contract.mjs";
 
 const plan = createE2eStabilityPlan({
   runs: process.env.E2E_STABILITY_RUNS,
@@ -252,7 +253,7 @@ async function verifyJourney(directory) {
   if (result.ok !== true) throw new Error(`result is not green: ${result.error || "unknown"}`);
   if (diagnostics.issues?.length !== 0) throw new Error("browser diagnostics contains unexpected issues");
   if (result.artifacts?.enabled !== true) throw new Error("heavy browser artifacts were not enabled");
-  if (traces.length !== 2) throw new Error(`expected 2 traces, found ${traces.length}`);
+  assertE2eTraceSet(traces);
   if (videos.length < 2) throw new Error(`expected at least 2 videos, found ${videos.length}`);
   if (screenshots.length < 5) throw new Error(`expected at least 5 screenshots, found ${screenshots.length}`);
   if (!Array.isArray(network.events) || network.events.length === 0) {

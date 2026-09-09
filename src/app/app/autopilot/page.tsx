@@ -1,5 +1,9 @@
 "use client";
 
+import { projectNativeUrl } from "@/lib/project-native-url";
+
+import { projectFetch as fetch } from "@/lib/project-fetch";
+
 // А10. Автопилот (ТЗ 5.6, Д.9). ИИ собирает план недели по аналитике (Д.5) и залётам (Д.7),
 // в стиле пользователя. Одобрил — посты уходят в ту же очередь публикации (Д.3). Настоящие
 // данные, никаких фейков: нет движка/аналитики — честно помечаем.
@@ -480,7 +484,7 @@ function RecentPublicationCard({ post }: { post: RealPost }) {
         </div>
         {mediaUrl ? (
           <Image
-            src={mediaUrl}
+            src={projectNativeUrl(mediaUrl)}
             alt=""
             width={80}
             height={80}

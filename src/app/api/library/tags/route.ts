@@ -4,9 +4,12 @@ import { readJsonBodyValue } from "@/lib/bounded-request-body";
 import { NextRequest, NextResponse } from "next/server";
 import { getPool } from "@/lib/db";
 import { normalizeLibraryTags } from "@/lib/library";
-import { resolveLibraryChannel } from "@/lib/library-server";
+import { findLibraryChannel, resolveLibraryChannel } from "@/lib/library-server";
 import { getSessionUser } from "@/lib/session";
 import { hasTrustedMutationOrigin } from "@/lib/request-origin";
+
+import { ProjectAccessError } from "@/lib/project-permissions";
+import { withSelectedProjectPermission } from "@/lib/selected-project-transaction";
 
 export const runtime = "nodejs";
 
@@ -27,6 +30,7 @@ export async function GET(req: NextRequest) {
     );
     return NextResponse.json({ channelId, sets: r.rows });
   } catch (err) {
+    if (err instanceof ProjectAccessError) return NextResponse.json({ ok: false, error: "access_denied" }, { status: 403 });
     console.error("[/api/library/tags] GET", err);
     return NextResponse.json({ error: "server" }, { status: 500 });
   }
@@ -52,16 +56,19 @@ export async function POST(req: NextRequest) {
   if (!tags.length) return NextResponse.json({ ok: false, error: "no_tags" }, { status: 422 });
 
   try {
-    const channelId = await resolveLibraryChannel(user.id, Number(body.channelId) || null);
+    return await withSelectedProjectPermission(getPool(), user.id, "content.create", async (pool, membership) => {
+    const channelId = await findLibraryChannel(pool, membership.projectId, Number(body.channelId) || null);
     if (!channelId) return NextResponse.json({ ok: false, error: "no_channel" }, { status: 422 });
-    const r = await getPool().query(
+    const r = await pool.query(
       `insert into hashtag_sets (user_id, channel_id, name, tags) values ($1, $2, $3, $4)
        on conflict (user_id, channel_id, name) do update set tags = excluded.tags
        returning id`,
       [user.id, channelId, name, tags],
     );
     return NextResponse.json({ ok: true, id: r.rows[0]?.id, channelId });
+    });
   } catch (err) {
+    if (err instanceof ProjectAccessError) return NextResponse.json({ ok: false, error: "access_denied" }, { status: 403 });
     console.error("[/api/library/tags] POST", err);
     return NextResponse.json({ ok: false, error: "server" }, { status: 500 });
   }
@@ -78,9 +85,14 @@ export async function DELETE(req: NextRequest) {
   if (!id) return NextResponse.json({ ok: false, error: "bad_request" }, { status: 400 });
 
   try {
-    await getPool().query(`delete from hashtag_sets where id = $1 and user_id = $2`, [id, user.id]);
-    return NextResponse.json({ ok: true });
+    return await withSelectedProjectPermission(getPool(), user.id, "content.edit", async (pool, membership) => {
+      const removed = await pool.query(`delete from hashtag_sets tag_set using channels channel
+        where tag_set.id = $1 and tag_set.user_id = $2 and tag_set.channel_id = channel.id and channel.project_id = $3`, [id, user.id, membership.projectId]);
+      if (!removed.rowCount) return NextResponse.json({ ok: false, error: "not_found" }, { status: 404 });
+      return NextResponse.json({ ok: true });
+    });
   } catch (err) {
+    if (err instanceof ProjectAccessError) return NextResponse.json({ ok: false, error: "access_denied" }, { status: 403 });
     console.error("[/api/library/tags] DELETE", err);
     return NextResponse.json({ ok: false, error: "server" }, { status: 500 });
   }

@@ -93,12 +93,17 @@ describe("telegram polling heartbeat", () => {
     { name: "successful empty poll", response: { ok: true, result: [] }, lease: true, expected: ["up"] },
     { name: "conflict", response: { ok: false, description: "Conflict: another getUpdates request" }, lease: true, expected: ["conflict"] },
     { name: "timeout", response: null, lease: true, expected: [] },
+    { name: "provider unavailable", response: { ok: false, error_code: 503 }, lease: true, expected: [] },
+    { name: "successful owned batch", response: { ok: true, result: [{ update_id: 17 }] }, lease: true, expected: ["up"], delivered: [17] },
+    { name: "lost lease with updates", response: { ok: true, result: [{ update_id: 17 }] }, lease: false, expected: [], delivered: [] },
     { name: "lost lease", response: { ok: true, result: [] }, lease: false, expected: [] },
     { name: "recovery after conflict", response: [{ ok: false, description: "Conflict" }, { ok: true, result: [] }], lease: true, expected: ["conflict", "up"] },
-  ])("records only confirmed outcomes for $name", async ({ response, lease, expected }) => {
+  ])("records only confirmed outcomes for $name", async ({ response, lease, expected, delivered = [] }) => {
     const source = readFileSync(new URL("../worker.mjs", import.meta.url), "utf8");
     const polling = source.slice(source.indexOf("async function pollUpdates()"), source.indexOf("function parseMonthlyCampaignRegenerationJson"));
     const heartbeats = [];
+    const handled = [];
+    const acknowledged = [];
     const heartbeatBeforeResponse = [];
     const responses = Array.isArray(response) ? [...response] : [response];
     const context = {
@@ -106,7 +111,12 @@ describe("telegram polling heartbeat", () => {
       telegramPollingQueueOpen: true, telegramPollingLeaseHeld: true,
       TELEGRAM_BOT_COMMANDS: [], TELEGRAM_POLLING_GUARD: { allowed_updates: [] },
       console: { log() {}, error() {} },
-      pool: { query: async () => ({ rows: [{ last_update: 0 }] }) },
+      pool: { query: async (sql, values) => {
+        if (sql.startsWith("update bot_state")) acknowledged.push(values[0]);
+        return { rows: [{ last_update: 0 }] };
+      } },
+      telegramUpdateContext: { run: async (_context, action) => action() },
+      handleUpdate: async (update) => { handled.push(update.update_id); return {}; },
       syncTelegramDiscussionChats: async () => null,
       ensureTelegramPollingLease: async () => true,
       openTelegramPollingQueue: async () => true,
@@ -129,5 +139,7 @@ describe("telegram polling heartbeat", () => {
     expect(heartbeatBeforeResponse[0]).toEqual([]);
     if (heartbeatBeforeResponse.length > 1) expect(heartbeatBeforeResponse[1]).toEqual(["conflict"]);
     expect(heartbeats).toEqual(expected);
+    expect(handled).toEqual(delivered);
+    expect(acknowledged).toEqual(delivered);
   });
 });

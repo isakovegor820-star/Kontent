@@ -44,13 +44,14 @@ export function classifyOAuthChannelFailure(result) {
     : null;
 }
 
-export async function transitionChannelHealth(pool, input) {
+export async function transitionChannelHealth(pool, input, options = {}) {
   if (!CHANNEL_STATUSES.has(input.status)) throw new TypeError("channel_status_invalid");
   const channelId = Number(input.channelId);
   if (!Number.isSafeInteger(channelId) || channelId <= 0) throw new TypeError("channel_id_invalid");
-  const client = await pool.connect();
+  const ownsTransaction = !options.client;
+  const client = options.client ?? await pool.connect();
   try {
-    await client.query("begin");
+    if (ownsTransaction) await client.query("begin");
     const current = (await client.query(
       `select id, user_id, status from channels
         where id = $1 and ($2::bigint is null or user_id = $2)
@@ -58,7 +59,7 @@ export async function transitionChannelHealth(pool, input) {
       [channelId, input.userId == null ? null : Number(input.userId)],
     )).rows[0];
     if (!current) {
-      await client.query("rollback");
+      if (ownsTransaction) await client.query("rollback");
       return null;
     }
     const errorCode = input.status === "active"
@@ -91,12 +92,12 @@ export async function transitionChannelHealth(pool, input) {
         ],
       );
     }
-    await client.query("commit");
+    if (ownsTransaction) await client.query("commit");
     return { channelId, fromStatus: current.status, status: input.status, errorCode };
   } catch (error) {
-    await client.query("rollback").catch(() => {});
+    if (ownsTransaction) await client.query("rollback").catch(() => {});
     throw error;
   } finally {
-    client.release();
+    if (ownsTransaction) client.release();
   }
 }

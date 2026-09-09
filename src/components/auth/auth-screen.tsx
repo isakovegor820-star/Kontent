@@ -61,9 +61,6 @@ export function AuthScreen({ mode, intent = "platform" }: { mode: AuthMode; inte
   const emailRef = useRef<HTMLInputElement>(null);
   const passwordRef = useRef<HTMLInputElement>(null);
 
-  const [name, setName] = useState("");
-  const [email, setEmail] = useState("");
-  const [password, setPassword] = useState("");
   const [showPassword, setShowPassword] = useState(false);
   const [nameError, setNameError] = useState<string>();
   const [emailError, setEmailError] = useState<string>();
@@ -84,6 +81,12 @@ export function AuthScreen({ mode, intent = "platform" }: { mode: AuthMode; inte
     event.preventDefault();
     if (pending) return;
 
+    // Native values also include input before hydration and browser autofill.
+    // Keep them in the form so a render cannot replace them with stale state.
+    const values = new FormData(event.currentTarget);
+    const name = String(values.get("name") ?? "");
+    const email = String(values.get("email") ?? "");
+    const password = String(values.get("password") ?? "");
     const nextNameError =
       isRegistration && name.trim().length < 2
         ? "Введите имя — хотя бы 2 символа."
@@ -214,12 +217,10 @@ export function AuthScreen({ mode, intent = "platform" }: { mode: AuthMode; inte
                   type="text"
                   autoComplete="name"
                   placeholder="Как к вам обращаться"
-                  value={name}
                   disabled={pending}
                   aria-invalid={nameError ? true : undefined}
                   aria-describedby={nameError ? "name-error" : undefined}
-                  onChange={(event) => {
-                    setName(event.target.value);
+                  onChange={() => {
                     if (nameError) setNameError(undefined);
                     if (formError) setFormError(undefined);
                   }}
@@ -238,15 +239,14 @@ export function AuthScreen({ mode, intent = "platform" }: { mode: AuthMode; inte
                 inputMode="email"
                 autoComplete="email"
                 placeholder="name@example.com"
-                value={email}
                 disabled={pending}
                 aria-invalid={emailError ? true : undefined}
                 aria-describedby={emailError ? "email-error" : undefined}
-                onBlur={() => {
-                  if (email.trim()) setEmailError(validateEmail(email));
+                onBlur={(event) => {
+                  const value = event.currentTarget.value;
+                  if (value.trim()) setEmailError(validateEmail(value));
                 }}
-                onChange={(event) => {
-                  setEmail(event.target.value);
+                onChange={() => {
                   if (emailError) setEmailError(undefined);
                   if (formError) setFormError(undefined);
                 }}
@@ -267,14 +267,12 @@ export function AuthScreen({ mode, intent = "platform" }: { mode: AuthMode; inte
                   type={showPassword ? "text" : "password"}
                   autoComplete={isRegistration ? "new-password" : "current-password"}
                   placeholder={isRegistration ? "Минимум 8 символов" : "Введите пароль"}
-                  value={password}
                   minLength={isRegistration ? PASSWORD_MIN : undefined}
                   maxLength={isRegistration ? PASSWORD_MAX : undefined}
                   disabled={pending}
                   aria-invalid={passwordError ? true : undefined}
                   aria-describedby={passwordError ? "password-error" : isRegistration ? "password-hint" : undefined}
-                  onChange={(event) => {
-                    setPassword(event.target.value);
+                  onChange={() => {
                     if (passwordError) setPasswordError(undefined);
                     if (formError) setFormError(undefined);
                   }}
