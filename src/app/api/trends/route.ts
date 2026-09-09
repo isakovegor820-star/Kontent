@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { resolveChannel } from "@/lib/autopilot";
+import { radarMeasuredMedianSql, radarMeasuredRatioSql } from "@/lib/trend-dataset";
 import { getPool } from "@/lib/db";
 import { getStatsQueue } from "@/lib/queue";
 import { getSessionUser } from "@/lib/session";
@@ -36,7 +37,7 @@ interface ItemRow {
   competitor_title: string | null;
   tg_msg_id: number;
   text: string | null;
-  views: number;
+  views: number | null;
   reactions: number | null;
   photo_url: string | null;
   media: string | null;
@@ -292,7 +293,7 @@ async function internetScope(
            result.id,
            coalesce(nullif(result.handle, ''), split_part(replace(result.url, 'https://t.me/s/', 'https://t.me/'), '/', 4)) as handle,
            result.title, result.subscribers, result.verified_at,
-           coalesce(result.posted_at, result.verified_at) as posted_at
+           result.posted_at
       from radar_search_results result
       join radar_search_runs run on run.id = result.run_id and run.user_id = $1
      where result.user_id = $1
@@ -324,10 +325,12 @@ async function internetScope(
                 result.result_type,
                 coalesce(nullif(result.handle, ''), split_part(replace(result.url, 'https://t.me/s/', 'https://t.me/'), '/', 4)) as handle,
                 result.title, result.text, result.url, result.external_id,
-                coalesce(result.views, 0)::int as views,
+                result.views,
                 result.reactions,
-                coalesce(result.posted_at, result.verified_at) as posted_at,
+                result.posted_at,
                 result.quality_score,
+                ${radarMeasuredMedianSql("result")} as measured_median,
+                ${radarMeasuredRatioSql("result")} as measured_ratio,
                 result.verified_at
            from radar_search_results result
            join radar_search_runs run on run.id = result.run_id and run.user_id = $1
@@ -348,9 +351,9 @@ async function internetScope(
                   else id::int
                 end as tg_msg_id,
                 text, views, reactions, null::text as photo_url, null::text as media,
-                posted_at, null::numeric as median, null::int as matured,
-                case when result_type = 'trend' then 1.5::numeric end as ratio,
-                true as is_mature,
+                posted_at, measured_median as median, null::int as matured,
+                measured_ratio as ratio,
+                (verified_at >= posted_at + interval '48 hours') as is_mature,
                 null::bigint as idea_id, null::text as topic, null::text as hook,
                 null::text as structure, null::text as why_it_worked, null::text as ai_status,
                 url, result_type, quality_score

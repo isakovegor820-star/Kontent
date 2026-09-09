@@ -797,14 +797,18 @@ export function createSearxngTelegramProvider({ endpoint, fetchImpl = fetch } = 
   };
 }
 
-export function createBraveHtmlTelegramProvider({ fetchImpl = fetch } = {}) {
+function telegramDiscoveryQuery(query, sitePosts) {
+  return sitePosts ? `site:t.me/s/ ${query}` : `${query} Telegram каналы`;
+}
+
+export function createBraveHtmlTelegramProvider({ fetchImpl = fetch, sitePosts = false } = {}) {
   return {
     name: "brave-html",
     async search(query, context = {}) {
       const budget = context.budget;
       if (budget && !budget.takePage()) return [];
       const url = new URL("https://search.brave.com/search");
-      url.searchParams.set("q", `${query} Telegram каналы`);
+      url.searchParams.set("q", telegramDiscoveryQuery(query, sitePosts));
       url.searchParams.set("source", "web");
       const payload = await readSearchResponse(
         fetchImpl,
@@ -821,14 +825,14 @@ export function createBraveHtmlTelegramProvider({ fetchImpl = fetch } = {}) {
   };
 }
 
-export function createYahooHtmlTelegramProvider({ fetchImpl = fetch } = {}) {
+export function createYahooHtmlTelegramProvider({ fetchImpl = fetch, sitePosts = false } = {}) {
   return {
     name: "yahoo-html",
     async search(query, context = {}) {
       const budget = context.budget;
       if (budget && !budget.takePage()) return [];
       const url = new URL("https://search.yahoo.com/search");
-      url.searchParams.set("p", `${query} Telegram каналы`);
+      url.searchParams.set("p", telegramDiscoveryQuery(query, sitePosts));
       const payload = await readSearchResponse(
         fetchImpl,
         providerRequest(url, {}, budget),
@@ -844,9 +848,9 @@ export function createYahooHtmlTelegramProvider({ fetchImpl = fetch } = {}) {
   };
 }
 
-export function createPublicHtmlTelegramProvider({ fetchImpl = fetch } = {}) {
-  const yahoo = createYahooHtmlTelegramProvider({ fetchImpl });
-  const brave = createBraveHtmlTelegramProvider({ fetchImpl });
+export function createPublicHtmlTelegramProvider({ fetchImpl = fetch, sitePosts = false } = {}) {
+  const yahoo = createYahooHtmlTelegramProvider({ fetchImpl, sitePosts });
+  const brave = createBraveHtmlTelegramProvider({ fetchImpl, sitePosts });
   return {
     name: "public-html",
     async search(query, context = {}) {
@@ -868,7 +872,7 @@ export function createPublicHtmlTelegramProvider({ fetchImpl = fetch } = {}) {
   };
 }
 
-export function createBingRssTelegramProvider({ fetchImpl = fetch } = {}) {
+export function createBingRssTelegramProvider({ fetchImpl = fetch, sitePosts = false } = {}) {
   return {
     name: "bing-rss",
     async search(query, context = {}) {
@@ -878,7 +882,7 @@ export function createBingRssTelegramProvider({ fetchImpl = fetch } = {}) {
       // Bing часто игнорирует site:t.me для русскоязычной RSS-выдачи. Широкая
       // формулировка находит также каталоги и подборки, а ниже мы всё равно принимаем
       // только реальные t.me-ссылки и отдельно проверяем сам публичный канал.
-      url.searchParams.set("q", `${query} Telegram каналы`);
+      url.searchParams.set("q", telegramDiscoveryQuery(query, sitePosts));
       url.searchParams.set("count", "50");
       const found = new Map();
       const seenPages = new Set();
@@ -918,13 +922,13 @@ export function createBingRssTelegramProvider({ fetchImpl = fetch } = {}) {
   };
 }
 
-export function createDuckDuckGoTelegramProvider({ fetchImpl = fetch } = {}) {
+export function createDuckDuckGoTelegramProvider({ fetchImpl = fetch, sitePosts = false } = {}) {
   return {
     name: "duckduckgo-html",
     async search(query, context = {}) {
       const budget = context.budget;
       const url = new URL("https://html.duckduckgo.com/html/");
-      url.searchParams.set("q", `${query} Telegram каналы`);
+      url.searchParams.set("q", telegramDiscoveryQuery(query, sitePosts));
       const found = new Map();
       const seenOffsets = new Set();
       let offset = "0";
@@ -1231,9 +1235,9 @@ export async function discoverTelegramCandidates(query, options = {}) {
   if (normalized.length < 2) throw new RadarDiscoveryError("query_too_short");
   const providers = options.providers || [
     createSearxngTelegramProvider({ endpoint: options.searxngUrl, fetchImpl: options.fetchImpl }),
-    createPublicHtmlTelegramProvider({ fetchImpl: options.fetchImpl }),
-    createBingRssTelegramProvider({ fetchImpl: options.fetchImpl }),
-    createDuckDuckGoTelegramProvider({ fetchImpl: options.fetchImpl }),
+    createPublicHtmlTelegramProvider({ fetchImpl: options.fetchImpl, sitePosts: options.sitePosts }),
+    createBingRssTelegramProvider({ fetchImpl: options.fetchImpl, sitePosts: options.sitePosts }),
+    createDuckDuckGoTelegramProvider({ fetchImpl: options.fetchImpl, sitePosts: options.sitePosts }),
   ].filter(Boolean);
   if (providers.length === 0) throw new RadarDiscoveryError("provider_not_configured");
 

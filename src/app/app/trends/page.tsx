@@ -1,21 +1,11 @@
 "use client";
 
-// Свежая лента выбранных Telegram-источников + отдельный рейтинг проверенных постов.
-//
-// Почему это лента-рейтинг, а не «детектор залётов»: в Telegram нет алгоритмической ленты,
-// подписчик видит каждый пост канала, поэтому просмотры почти не гуляют. На живых каналах
-// потолок — ×2–4 к медиане (даже у @durov ×3.85), а порог ×5 не берётся никогда. Страница,
-// которая ждёт ×5, стоит пустой при полной базе постов. Поэтому показываем рейтинг всегда,
-// а огонёк ставим на настоящие выбросы. Порог — в руках пользователя, а не в env.
-
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { motion, useReducedMotion } from "motion/react";
 import {
   AlertTriangle,
   BarChart3,
-  Clock,
   ExternalLink,
   Eye,
   FileText,
@@ -25,11 +15,10 @@ import {
   RefreshCw,
   Search,
   Sparkles,
-  Users,
 } from "lucide-react";
 import { AppShell } from "@/components/app/shell";
 import { ChannelPicker, channelName, useChannelChoice } from "@/components/app/channel-picker";
-import { TrendStatistics } from "@/app/app/trends/trend-statistics";
+import { TrendStatistics, TrendMetrics, TrendDataDetails } from "@/app/app/trends/trend-statistics";
 import { Button } from "@/components/ui/button";
 import { Badge, Card, Checkbox, EmptyState, Input, Tabs } from "@/components/ui/primitives";
 import { appDraftActionHref } from "@/lib/app-routes";
@@ -48,106 +37,41 @@ import {
 } from "@/lib/trend-draft-review";
 import { buildTrendReferenceDraft } from "@/lib/trend-reference";
 import {
-  TREND_PERIODS,
   parseTrendFeedScope,
   type TrendFeedScope,
-  type TrendPeriod,
 } from "@/lib/trend-period";
-import type { TrendStatSource } from "@/lib/trend-statistics";
-import { cn, fmtAgo, fmtCompact, plural } from "@/lib/utils";
+import {
+  TREND_STAT_PERIODS, parseTrendStatPeriod, parseTrendSort, TREND_PAGE_SIZE,
+  type TrendStatSource, type TrendStatPeriod, type TrendSort, type TrendStatsData, type TrendFeedItem,
+} from "@/lib/trend-statistics";
+import { cn, fmtCompact, plural } from "@/lib/utils";
 
 const EASE = [0.22, 1, 0.36, 1] as const;
 
-interface Idea {
-  id: number;
-  topic: string | null;
-  hook: string | null;
-  structure: string | null;
-  why: string | null;
-}
-
-interface Item {
-  id: number;
-  competitorId: number;
-  handle: string;
-  competitorTitle: string | null;
-  category: string | null;
-  msgId: number;
-  text: string | null;
-  views: number;
-  reactions: number | null;
-  photoUrl: string | null;
-  media: string | null;
-  postedAt: string;
-  median: number | null;
-  ratio: number | null;
-  isMature: boolean;
-  link: string;
-  idea: Idea | null;
-}
-
-interface Competitor {
-  id: number;
-  handle: string;
-  title: string | null;
-  subscribers: number | null;
-  status: string;
-  lastError: string | null;
-  category: string | null;
-  posts: number;
-  median: number | null;
-  matured: number;
-  link: string;
-}
-
-interface Data {
-  status: {
-    competitors: number;
-    ready: number;
-    pending: number;
-    error: number;
-    posts: number;
-    periodPosts: number;
-    lastCollectedAt: string | null;
-    latestPostAt: string | null;
-    refreshEveryHours: number;
-    matureHours: number;
-    minMature: number;
-    /** Находок по теме канала, ждущих подтверждения */
-    waiting: number;
-    /** Тема канала из брифа — по ней и искали */
-    niche: string | null;
-  };
-  competitors: Competitor[];
-  items: Item[];
-  period: TrendPeriod;
-  meta: (typeof TREND_PERIODS)[TrendPeriod];
-}
+type Item = TrendFeedItem;
+type Data = TrendStatsData;
 
 type TrendView = "feed" | "statistics";
-type InternetSearchState = "idle" | "invalid" | "searching" | "ready" | "error";
+type InternetSearchState = "idle" | "invalid" | "searching" | "ready" | "partial" | "error";
 
 function trendStatSourceFromScope(scope: TrendFeedScope): TrendStatSource {
   return scope === "internet" ? "internet" : scope === "global" ? "collection" : "own";
 }
 
-function trendFeedScopeFromStatSource(source: TrendStatSource): TrendFeedScope {
-  return source === "internet" ? "internet" : source === "collection" ? "global" : "niche";
-}
-
 function trendsInternetQueryFromUrl(): string {
   if (typeof window === "undefined") return "";
   const params = new URLSearchParams(window.location.search);
-  if (parseTrendFeedScope(params.get("scope")) !== "internet") return "";
   return params.get("q")?.trim().slice(0, 200) ?? "";
 }
 
-function writeTrendsSearch(scope: TrendFeedScope, query = "") {
+function writeTrendsSearch(scope: TrendFeedScope, query = "", runId: number | null = null) {
   const url = new URL(window.location.href);
   if (scope === "niche") url.searchParams.delete("scope");
   else url.searchParams.set("scope", scope);
-  if (scope === "internet" && query) url.searchParams.set("q", query);
+  if (query) url.searchParams.set("q", query);
   else url.searchParams.delete("q");
+  if (scope === "internet" && runId) url.searchParams.set("run", String(runId));
+  else url.searchParams.delete("run");
   window.history.replaceState(window.history.state, "", url);
 }
 
@@ -158,15 +82,6 @@ interface RadarSearchRun {
   progress: number;
   errorMessage?: string | null;
 }
-
-// Пороги — то, что раньше было env-переменной HIT_RATIO=5 и молча решало за пользователя.
-const THRESHOLDS = [
-  { value: "all", label: "Всё", min: 0 },
-  { value: "1.5", label: "×1,5+", min: 1.5 },
-  { value: "2", label: "×2+", min: 2 },
-  { value: "3", label: "×3+", min: 3 },
-] as const;
-type ThresholdValue = (typeof THRESHOLDS)[number]["value"];
 
 const fmtRatio = (r: number) => `×${r.toFixed(1).replace(".", ",")}`;
 
@@ -180,130 +95,6 @@ const postDateFormatter = new Intl.DateTimeFormat("ru-RU", {
 });
 
 const fmtPostDate = (iso: string) => postDateFormatter.format(new Date(iso));
-
-/* ------------------------------------------------------------ СТРОКА СОСТОЯНИЯ */
-// Отвечает на «что вообще происходит»: за кем слежу, сколько собрано, когда проверяли.
-
-function StatusStrip({
-  status,
-  period,
-  scope,
-  onCheck,
-  checking,
-  actionLabel = "Проверить сейчас",
-}: {
-  status: Data["status"];
-  period: TrendPeriod;
-  scope: TrendFeedScope;
-  onCheck: () => void;
-  checking: boolean;
-  actionLabel?: string;
-}) {
-  const periodLabel =
-    period === "today" ? "сегодня" : period === "week" ? "за 7 дней" : "проверенных за 30 дней";
-  return (
-    <Card className="flex flex-wrap items-center gap-x-5 gap-y-2 px-4 py-3">
-      <span className="inline-flex items-center gap-2 text-[14px] font-semibold text-text">
-        <Radar className="h-4 w-4 text-brand" aria-hidden />
-        {scope === "internet"
-          ? `${status.competitors} ${plural(status.competitors, "проверенный источник", "проверенных источника", "проверенных источников")} из интернета`
-          : `Слежу за ${status.competitors} ${plural(status.competitors, "каналом", "каналами", "каналами")}`}
-      </span>
-      <span className="text-[13px] font-semibold text-text-2">
-        {status.periodPosts} {plural(status.periodPosts, "пост", "поста", "постов")} {periodLabel}
-      </span>
-      {status.latestPostAt && (
-        <span className="text-[13px] text-text-3">последняя публикация {fmtAgo(status.latestPostAt)}</span>
-      )}
-      {status.lastCollectedAt && (
-        <span className="text-[13px] text-text-3">все источники проверены {fmtAgo(status.lastCollectedAt)}</span>
-      )}
-      {status.pending > 0 && (
-        <span className="inline-flex items-center gap-1.5 text-[13px] font-semibold text-brand">
-          <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden />
-          собираю {status.pending}
-        </span>
-      )}
-      {status.error > 0 && (
-        <span className="inline-flex items-center gap-1.5 text-[13px] font-semibold text-danger-text">
-          <AlertTriangle className="h-3.5 w-3.5" aria-hidden />
-          {status.error} не собрался
-        </span>
-      )}
-      <Button size="sm" variant="soft" onClick={onCheck} loading={checking} className="ml-auto">
-        {scope === "internet" ? (
-          <Radar className="h-4 w-4" aria-hidden />
-        ) : (
-          <RefreshCw className="h-4 w-4" aria-hidden />
-        )}
-        {actionLabel}
-      </Button>
-    </Card>
-  );
-}
-
-/* ------------------------------------------------------------- ЗА КЕМ СЛЕЖУ */
-// Норма канала показана явно — иначе «×2,2 к норме» это число из воздуха.
-
-function WatchList({ competitors, internet = false }: { competitors: Competitor[]; internet?: boolean }) {
-  // 12 источников — это три ряда чипов, которые съедали весь первый экран до самой ленты.
-  // Показываем шесть, остальные по клику: список важен для доверия, но не важнее контента.
-  const [all, setAll] = useState(false);
-  const shown = all ? competitors : competitors.slice(0, 6);
-  const rest = competitors.length - shown.length;
-
-  return (
-    <div className="flex flex-wrap items-center gap-2">
-      {shown.map((c) => (
-        <a
-          key={c.id}
-          href={c.link}
-          target="_blank"
-          rel="noopener noreferrer"
-          className="group inline-flex items-center gap-2 rounded-full border border-line bg-surface px-3 py-1.5 text-[12px] transition-colors hover:border-line-strong"
-        >
-          <span className="font-semibold text-text">{c.title || `@${c.handle}`}</span>
-          {c.subscribers != null && (
-            <span className="inline-flex items-center gap-1 text-text-3">
-              <Users className="h-3 w-3" aria-hidden />
-              {fmtCompact(c.subscribers)}
-            </span>
-          )}
-          {internet ? (
-            <span className="text-success-text">проверен</span>
-          ) : c.status === "error" ? (
-            <span className="text-danger-text">не собрался</span>
-          ) : c.median != null ? (
-            <span className="text-text-3">норма {fmtCompact(c.median)}</span>
-          ) : (
-            // Нормы ещё нет: либо канал новый, либо все его посты моложе 48ч.
-            <span className="text-text-3">
-              норма считается ({c.matured}/5)
-            </span>
-          )}
-        </a>
-      ))}
-      {rest > 0 && (
-        <button
-          type="button"
-          onClick={() => setAll(true)}
-          className="cursor-pointer rounded-full border border-dashed border-line-strong px-3 py-1.5 text-[12px] font-semibold text-text-3 transition-colors hover:text-text"
-        >
-          ещё {rest}
-        </button>
-      )}
-      {all && competitors.length > 6 && (
-        <button
-          type="button"
-          onClick={() => setAll(false)}
-          className="cursor-pointer px-2 py-1.5 text-[12px] font-semibold text-text-3 transition-colors hover:text-text"
-        >
-          свернуть
-        </button>
-      )}
-    </div>
-  );
-}
 
 /* -------------------------------------------------------------- ФОТО ПОСТА */
 // Кадр показываем ЦЕЛИКОМ (object-contain), а не куском: у Telegram половина картинок
@@ -363,8 +154,6 @@ function PostPhoto({ src, link }: { src: string; link: string }) {
 
 function ItemCard({
   item,
-  period,
-  internet = false,
   draft,
   generating,
   generationError,
@@ -377,8 +166,6 @@ function ItemCard({
   onToComposer,
 }: {
   item: Item;
-  period: TrendPeriod;
-  internet?: boolean;
   draft: string | undefined;
   generating: boolean;
   generationError: string | undefined;
@@ -408,14 +195,7 @@ function ItemCard({
             {hot && <Flame className="h-3 w-3" strokeWidth={2.5} aria-hidden />}
             {fmtRatio(ratio!)} к норме
           </Badge>
-        ) : item.isMature ? (
-          <Badge tone="neutral">Проверенный пост</Badge>
-        ) : (
-          <Badge tone="brand">
-            <Clock className="h-3 w-3" aria-hidden />
-            Набирает просмотры
-          </Badge>
-        )}
+        ) : null}
         {item.media && item.media !== "text" && (
           <Badge tone="neutral">{item.media === "video" ? "Видео" : "Фото"}</Badge>
         )}
@@ -427,15 +207,10 @@ function ItemCard({
         </time>
       </div>
 
-      <p className="mt-2.5 text-[12px] text-text-3">
-        {evaluated
-          ? `норма канала ${fmtCompact(median!)} · этот пост ${fmtCompact(item.views)}`
-          : internet
-            ? `${fmtCompact(item.views)} ${plural(item.views, "просмотр", "просмотра", "просмотров")} · источник проверен Авророй`
-          : item.isMature
-            ? `${fmtCompact(item.views)} ${plural(item.views, "просмотр", "просмотра", "просмотров")} · пока мало сопоставимой истории для нормы`
-            : `${fmtCompact(item.views)} ${plural(item.views, "просмотр", "просмотра", "просмотров")} сейчас · результат оценим через 48 часов`}
+      <p className="mt-2.5 text-[12px] text-text-3" title={item.measuredAt ? `Счётчики собраны ${fmtPostDate(item.measuredAt)} МСК` : undefined}>
+        {item.views == null ? "Просмотры недоступны" : `${item.views == null ? "—" : fmtCompact(item.views)} ${plural(item.views, "просмотр", "просмотра", "просмотров")}`}
         {item.reactions != null && ` · ${fmtCompact(item.reactions)} ${plural(item.reactions, "реакция", "реакции", "реакций")}`}
+        {evaluated && ` · медиана ${fmtCompact(median!)} по ${item.baselinePosts} постам`}
       </p>
 
       {snippet ? (
@@ -521,7 +296,7 @@ function ItemCard({
         ) : (
           <Button
             size="sm"
-            variant={hot || period !== "hits" ? "brand" : "soft"}
+            variant="brand"
             onClick={onSnap}
             loading={generating}
             disabled={generationLocked || !hasGenerationTopic}
@@ -541,7 +316,7 @@ function ItemCard({
           className="inline-flex items-center gap-1.5 text-[13px] font-semibold text-text-3 transition-colors hover:text-brand"
         >
           <Eye className="h-4 w-4" aria-hidden />
-          {fmtCompact(item.views)}
+          {item.views == null ? "—" : fmtCompact(item.views)}
           <span className="inline-flex items-center gap-1">
             оригинал
             <ExternalLink className="h-3.5 w-3.5" aria-hidden />
@@ -573,14 +348,16 @@ export default function TrendsPage() {
     if (typeof window === "undefined") return "niche";
     return parseTrendFeedScope(new URLSearchParams(window.location.search).get("scope"));
   });
-  const [period, setPeriod] = useState<TrendPeriod>("today");
+  const [period, setPeriod] = useState<TrendStatPeriod>(() => typeof window === "undefined" ? "week"
+    : parseTrendStatPeriod(new URLSearchParams(window.location.search).get("period")));
+  const [sort, setSort] = useState<TrendSort>(() => typeof window === "undefined" ? "recent"
+    : parseTrendSort(new URLSearchParams(window.location.search).get("sort")));
   const [internetQuery, setInternetQuery] = useState(trendsInternetQueryFromUrl);
   const [internetAppliedQuery, setInternetAppliedQuery] = useState(trendsInternetQueryFromUrl);
   const [internetSearchState, setInternetSearchState] = useState<InternetSearchState>("idle");
   const [internetSearchMessage, setInternetSearchMessage] = useState(
-    "Нажми «Найти публикации»: пустое поле возьмёт тему из брифа, затем пойду в интернет и проверю каналы на t.me.",
+    "Публичные Telegram-публикации. Введи тему, чтобы начать поиск.",
   );
-  const [threshold, setThreshold] = useState<ThresholdValue>("all");
   const [checking, setChecking] = useState(false);
   const [drafts, setDrafts] = useState<Record<number, string>>({});
   const [draftFailures, setDraftFailures] = useState<Record<number, string>>({});
@@ -594,6 +371,12 @@ export default function TrendsPage() {
   const transferInFlightRef = useRef<Set<number>>(new Set());
   const refreshRequestRef = useRef<{ fingerprint: string; key: string } | null>(null);
   const internetQueryRef = useRef(trendsInternetQueryFromUrl());
+  const runIdRef = useRef<number | null>(typeof window === "undefined" ? null
+    : Number(new URLSearchParams(window.location.search).get("run")) || null);
+  const offsetRef = useRef(0);
+  const sortRef = useRef(sort);
+  const searchSubmittingRef = useRef(false);
+  const searchControllerRef = useRef<AbortController | null>(null);
   const internetSearchInputRef = useRef<HTMLInputElement>(null);
   const internetSearchTokenRef = useRef(0);
   const internetSearchRequestRef = useRef<{ fingerprint: string; key: string } | null>(null);
@@ -617,21 +400,40 @@ export default function TrendsPage() {
   channelRef.current = channelId;
 
   const load = useCallback(async () => {
+    if (searchSubmittingRef.current) return;
     requestRef.current?.abort();
     const controller = new AbortController();
     requestRef.current = controller;
     try {
       const ch = channelRef.current;
-      const query = scopeRef.current === "internet" ? internetQueryRef.current : "";
-      const r = await fetch(
-        `/api/trends?scope=${scopeRef.current}&period=${periodRef.current}${ch ? `&channel=${ch}` : ""}${query ? `&q=${encodeURIComponent(query)}` : ""}`,
-        { cache: "no-store", signal: controller.signal },
-      );
+      if (!ch && scopeRef.current !== "global") {
+        setData(null);
+        setLoadError(false);
+        return;
+      }
+      const params = new URLSearchParams({ source: trendStatSourceFromScope(scopeRef.current),
+        period: periodRef.current, topic: internetQueryRef.current, sort: sortRef.current,
+        offset: String(offsetRef.current) });
+      if (ch) params.set("channel", String(ch));
+      if (scopeRef.current === "internet" && runIdRef.current) params.set("run", String(runIdRef.current));
+      const r = await fetch(`/api/trends/stats?${params}`, { cache: "no-store", signal: controller.signal });
       if (!r.ok) throw new Error(`trends: ${r.status}`);
       const next = (await r.json()) as Data;
       if (!controller.signal.aborted) {
         setData(next);
         setLoadError(false);
+        if (scopeRef.current === "internet" && next.search && !searchSubmittingRef.current) {
+          runIdRef.current = next.search.id;
+          writeTrendsSearch("internet", internetQueryRef.current, next.search.id);
+          const busy = next.search.status === "queued" || next.search.status === "running";
+          setInternetSearchState(busy ? "searching" : next.search.status === "failed" ? "error" : next.search.status === "partial" ? "partial" : "ready");
+          setInternetSearchMessage(busy
+            ? `${next.search.stage === "verifying" ? "Проверяю публикации" : "Ищу источники"} · ${next.search.progress}%`
+            : next.search.status === "partial" ? "Собрано частично. Некоторые источники недоступны или история ограничена."
+              : next.search.status === "failed" ? "Не удалось завершить поиск. Можно повторить; доступные результаты сохранены."
+                : next.summary.posts > 0 ? `Поиск завершён: ${next.summary.posts} ${plural(next.summary.posts, "публикация", "публикации", "публикаций")} за выбранный период.`
+                  : "Поиск завершён. Публикаций за выбранный период не найдено.");
+        }
       }
     } catch (error) {
       // Навигация и размонтирование могут прийти в тот же цикл событий, что и сетевой
@@ -648,12 +450,13 @@ export default function TrendsPage() {
         setLoadError(true);
       }
     } finally {
-      if (mountedRef.current && requestRef.current === controller) setLoading(false);
+      if (mountedRef.current && requestRef.current === controller && !searchSubmittingRef.current) setLoading(false);
     }
   }, []);
 
   useEffect(() => {
-    load();
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- load synchronizes the active project and server filters, including the no-channel state.
+    void load();
   }, [load]);
 
   useEffect(() => {
@@ -662,6 +465,8 @@ export default function TrendsPage() {
     const cancelPendingLoad = () => {
       pageLeavingRef.current = true;
       requestRef.current?.abort();
+      searchControllerRef.current?.abort();
+      searchSubmittingRef.current = false;
       internetSearchTokenRef.current += 1;
     };
     const resumePage = (event: PageTransitionEvent) => {
@@ -699,10 +504,15 @@ export default function TrendsPage() {
   const switchScope = (v: TrendFeedScope) => {
     if (v === scopeRef.current) return;
     internetSearchTokenRef.current += 1;
-    if (v !== "internet") setInternetSearchState("idle");
+    searchControllerRef.current?.abort();
+    searchSubmittingRef.current = false;
+    setInternetSearchState("idle");
+    setInternetSearchMessage("Публичные Telegram-публикации. Введи тему, чтобы начать поиск.");
+    runIdRef.current = null;
+    offsetRef.current = 0;
     scopeRef.current = v;
     setScope(v);
-    writeTrendsSearch(v, v === "internet" ? internetQueryRef.current : "");
+    writeTrendsSearch(v, internetQueryRef.current);
     setLoading(true);
     setLoadError(false);
     setData(null);
@@ -722,158 +532,122 @@ export default function TrendsPage() {
     window.history.replaceState(window.history.state, "", url);
   };
 
-  const loadInternetQuery = (query: string) => {
+  const applyLocalTopic = (query: string) => {
     internetQueryRef.current = query;
     setInternetAppliedQuery(query);
-    writeTrendsSearch("internet", query);
+    runIdRef.current = null;
+    offsetRef.current = 0;
+    writeTrendsSearch(scopeRef.current, query);
     setLoading(true);
     setLoadError(false);
     setData(null);
-    load();
+    void load();
   };
 
   const clearInternetQuery = () => {
     internetSearchTokenRef.current += 1;
-    internetQueryRef.current = "";
+    searchControllerRef.current?.abort();
+    searchSubmittingRef.current = false;
     internetSearchRequestRef.current = null;
     setInternetQuery("");
-    setInternetAppliedQuery("");
     setInternetSearchState("idle");
-    writeTrendsSearch("internet");
-    setInternetSearchMessage("Нажми «Найти публикации»: пустое поле возьмёт тему из брифа, затем пойду в интернет и проверю каналы на t.me.");
-    setLoading(true);
-    setLoadError(false);
-    setData(null);
-    load();
+    setInternetSearchMessage("Публичные Telegram-публикации. Введи тему, чтобы начать поиск.");
+    applyLocalTopic("");
   };
 
-  const searchInternet = async (event: React.FormEvent<HTMLFormElement>) => {
-    event.preventDefault();
-    const query = (internetQuery.replace(/\s+/gu, " ").trim() || String(data?.status.niche || "").trim())
-      .slice(0, 200);
+  const searchTopic = async (rawQuery: string) => {
+    const query = rawQuery.replace(/\s+/gu, " ").trim().slice(0, 200);
     if (query.length < 2) {
       setInternetSearchState("invalid");
       setInternetSearchMessage("Введи минимум два символа.");
       internetSearchInputRef.current?.focus();
       return;
     }
-    const destinationChannelId = Number(channelId);
+    const destinationChannelId = Number(channelRef.current);
     if (!Number.isSafeInteger(destinationChannelId) || destinationChannelId <= 0) {
       setInternetSearchState("error");
-      setInternetSearchMessage("Сначала выбери активный канал.");
+      setInternetSearchMessage("Сначала выбери активный канал проекта.");
       internetSearchInputRef.current?.focus();
       return;
     }
-
-    if (!internetQuery.trim()) setInternetQuery(query);
+    const fingerprint = `${destinationChannelId}:${query.toLocaleLowerCase("ru-RU")}:${periodRef.current}`;
+    if (searchSubmittingRef.current && internetSearchRequestRef.current?.fingerprint === fingerprint) return;
+    searchControllerRef.current?.abort();
+    const searchController = new AbortController();
+    searchControllerRef.current = searchController;
+    searchSubmittingRef.current = true;
+    requestRef.current?.abort();
     const token = ++internetSearchTokenRef.current;
-    loadInternetQuery(query);
+    internetQueryRef.current = query;
+    setInternetQuery(query);
+    setInternetAppliedQuery(query);
+    runIdRef.current = null;
+    offsetRef.current = 0;
+    writeTrendsSearch("internet", query);
+    setData(null);
+    setLoading(true);
+    setLoadError(false);
     setInternetSearchState("searching");
-    setInternetSearchMessage("Показываю совпадения из базы и проверяю новые источники…");
-
-    const fingerprint = `${destinationChannelId}:${query.toLocaleLowerCase("ru-RU")}`;
-    if (
-      !internetSearchRequestRef.current
-      || internetSearchRequestRef.current.fingerprint !== fingerprint
-    ) {
+    setInternetSearchMessage("Запускаю поиск публичных Telegram-публикаций…");
+    if (internetSearchRequestRef.current?.fingerprint !== fingerprint) {
       internetSearchRequestRef.current = { fingerprint, key: crypto.randomUUID() };
     }
-
-    const finish = async (state: "ready" | "error", message: string) => {
-      if (internetSearchTokenRef.current !== token) return;
-      await load();
-      if (internetSearchTokenRef.current !== token) return;
-      setInternetSearchState(state);
-      setInternetSearchMessage(message);
-    };
-
     try {
       const response = await fetch("/api/radar/search", {
-        method: "POST",
-        headers: {
-          "content-type": "application/json",
-          "idempotency-key": internetSearchRequestRef.current.key,
-        },
-        body: JSON.stringify({ q: query, channelId: destinationChannelId }),
+        method: "POST", signal: searchController.signal,
+        headers: { "content-type": "application/json", "idempotency-key": internetSearchRequestRef.current.key },
+        body: JSON.stringify({ q: query, channelId: destinationChannelId, scope: "telegram", period: periodRef.current, force: true }),
       });
-      const payload = (await response.json().catch(() => null)) as {
-        cached?: boolean;
-        run?: RadarSearchRun | null;
-      } | null;
+      const payload = await response.json().catch(() => null) as { run?: RadarSearchRun | null } | null;
       if (internetSearchTokenRef.current !== token) return;
-
-      if (!response.ok || !payload) {
-        await finish(
-          "error",
-          "Совпадения из базы показаны, но новые источники сейчас недоступны. Повтори поиск позже.",
-        );
-        return;
-      }
-
-      if (payload.cached || payload.run?.status === "ready" || payload.run?.status === "partial") {
-        await finish("ready", "Поиск завершён. Проверенные публикации добавлены в ленту.");
-        return;
-      }
-
-      const runId = Number(payload.run?.id);
-      if (!Number.isSafeInteger(runId) || runId <= 0) {
-        await finish("ready", "Совпадения из проверенной базы показаны в ленте.");
-        return;
-      }
-
-      for (let attempt = 0; attempt < 40; attempt += 1) {
-        await new Promise((resolve) => window.setTimeout(resolve, 1_500));
-        if (internetSearchTokenRef.current !== token) return;
-        const statusResponse = await fetch(`/api/radar/search?run=${runId}`, { cache: "no-store" });
-        const statusPayload = (await statusResponse.json().catch(() => null)) as {
-          run?: RadarSearchRun | null;
-        } | null;
-        if (!statusResponse.ok || !statusPayload?.run) continue;
-        if (statusPayload.run.status === "ready" || statusPayload.run.status === "partial") {
-          await finish("ready", "Поиск завершён. Проверенные публикации добавлены в ленту.");
-          return;
-        }
-        if (statusPayload.run.status === "failed") {
-          await finish(
-            "error",
-            "Совпадения из базы показаны, но новые источники сейчас недоступны. Повтори поиск позже.",
-          );
-          return;
-        }
-        setInternetSearchMessage(
-          statusPayload.run.stage === "verifying"
-            ? `Проверяю найденные ссылки — ${statusPayload.run.progress}%`
-            : statusPayload.run.stage === "ranking"
-              ? `Ранжирую проверенные публикации — ${statusPayload.run.progress}%`
-              : `Ищу публичные источники — ${statusPayload.run.progress}%`,
-        );
-      }
-
-      await finish(
-        "error",
-        "Поиск продолжается в фоне. Уже проверенные совпадения остаются в ленте.",
-      );
+      if (!payload?.run || (!response.ok && payload.run.status !== "failed")) throw new Error("search_unavailable");
+      internetSearchRequestRef.current = null;
+      runIdRef.current = payload.run.id;
+      writeTrendsSearch("internet", query, payload.run.id);
+      searchSubmittingRef.current = false;
+      await load();
     } catch {
-      await finish(
-        "error",
-        "Совпадения из базы показаны, но новые источники сейчас недоступны. Проверь соединение и повтори поиск.",
-      );
+      if (internetSearchTokenRef.current !== token) return;
+      setInternetSearchState("error");
+      setInternetSearchMessage("Поиск не подтвердил запуск. Повтори запрос.");
+      setLoading(false);
+    } finally {
+      if (internetSearchTokenRef.current === token) searchSubmittingRef.current = false;
     }
   };
 
-  const switchPeriod = (value: TrendPeriod) => {
+  const searchInternet = (event: React.FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    if (scopeRef.current === "internet") void searchTopic(internetQuery);
+    else applyLocalTopic(internetQuery.trim().slice(0, 200));
+  };
+
+  const switchPeriod = (value: TrendStatPeriod) => {
     if (value === periodRef.current) return;
     periodRef.current = value;
     setPeriod(value);
-    setThreshold("all");
+    offsetRef.current = 0;
+    const url = new URL(window.location.href);
+    url.searchParams.set("period", value);
+    window.history.replaceState(window.history.state, "", url);
+    if (scopeRef.current === "internet" && internetQueryRef.current) {
+      void searchTopic(internetQueryRef.current);
+    } else {
+      setLoading(true);
+      setData(null);
+      void load();
+    }
+  };
+
+  const switchSort = (value: TrendSort) => {
+    sortRef.current = value;
+    setSort(value);
+    offsetRef.current = 0;
+    const url = new URL(window.location.href);
+    url.searchParams.set("sort", value);
+    window.history.replaceState(window.history.state, "", url);
     setLoading(true);
-    setLoadError(false);
-    setData(null);
-    setDrafts({});
-    setDraftFailures({});
-    setDraftReviews({});
-    setDraftAcknowledgements({});
-    load();
+    void load();
   };
 
   // Смена канала — тоже действие пользователя, и ведёт себя так же: сбрасываем показанное
@@ -881,15 +655,20 @@ export default function TrendsPage() {
   const switchChannel = (id: number) => {
     if (id === channelRef.current) return;
     internetSearchTokenRef.current += 1;
+    searchControllerRef.current?.abort();
+    searchSubmittingRef.current = false;
     channelRef.current = id;
     setPicked(id);
+    runIdRef.current = null;
+    offsetRef.current = 0;
     if (scopeRef.current === "internet") {
       internetQueryRef.current = "";
       internetSearchRequestRef.current = null;
       setInternetQuery("");
       setInternetAppliedQuery("");
+      writeTrendsSearch("internet");
       setInternetSearchState("idle");
-      setInternetSearchMessage("Нажми «Найти публикации»: пустое поле возьмёт тему из брифа, затем пойду в интернет и проверю каналы на t.me.");
+      setInternetSearchMessage("Публичные Telegram-публикации. Введи тему, чтобы начать поиск.");
     }
     const url = new URL(window.location.href);
     url.searchParams.set("channel", String(id));
@@ -904,13 +683,13 @@ export default function TrendsPage() {
     load();
   };
 
-  // Пока воркер собирает досье — подтягиваем.
   const pending = data?.status.pending ?? 0;
+  const searchRunning = data?.search?.status === "queued" || data?.search?.status === "running";
   useEffect(() => {
-    if (!pending) return;
-    const t = setInterval(load, 5000);
-    return () => clearInterval(t);
-  }, [pending, load]);
+    if (!pending && !searchRunning) return;
+    const timer = setInterval(() => void load(), 2500);
+    return () => clearInterval(timer);
+  }, [pending, searchRunning, load]);
 
   const check = async () => {
     if (checking) return;
@@ -1264,430 +1043,121 @@ export default function TrendsPage() {
   };
 
   const items = useMemo(() => data?.items ?? [], [data]);
-  const counts = useMemo(
-    () => THRESHOLDS.map((t) => items.filter((i) => (i.ratio ?? 0) >= t.min).length),
-    [items],
-  );
-  const minRatio = THRESHOLDS.find((t) => t.value === threshold)?.min ?? 0;
-  const shown = period === "hits" ? items.filter((i) => (i.ratio ?? 0) >= minRatio) : items;
-  const best = items.find((item) => item.ratio != null)?.ratio ?? null;
-
-  const st = data?.status;
   const global = scope === "global";
   const internet = scope === "internet";
-  const statisticsSource = trendStatSourceFromScope(scope);
   const selectedChannel = tgChannels.find((channel) => channel.id === channelId) ?? null;
-  const noCompetitors = !!st && st.competitors === 0;
-  // Находки ждут подтверждения — только у «своей ниши»: у глобальных источников
-  // канала нет, и находок для них не бывает.
-  const waiting = global ? 0 : (st?.waiting ?? 0);
-  const niche = st?.niche ?? null;
-  const noPeriodData = !!st && st.competitors > 0 && items.length === 0;
+  const niche = data?.status.niche ?? null;
+  const needsChannel = !global && !channelId;
+  const busy = internet && (internetSearchState === "searching" || searchRunning);
+  const sameQuery = internetQuery.trim().toLocaleLowerCase("ru-RU") === internetAppliedQuery.toLocaleLowerCase("ru-RU");
 
   return (
-    <AppShell
-      title="Тренды"
-      subtitle="Сравнивай динамику тем и находи публикации, которые набирают интерес."
-    >
-      <Tabs
-        items={[
-          {
-            value: "feed",
-            label: "Лента",
-            icon: <FileText className="h-4 w-4" aria-hidden />,
-          },
-          {
-            value: "statistics",
-            label: "Статистика",
-            icon: <BarChart3 className="h-4 w-4" aria-hidden />,
-          },
-        ]}
-        value={view}
-        onChange={switchView}
-      />
-
-      {view === "statistics" ? (
-        <div className="mt-5">
-          <TrendStatistics
-            channelId={channelId}
-            channelTopic={niche}
-            channelLabel={selectedChannel ? channelName(selectedChannel) : null}
-            channelControl={(
-              <ChannelPicker
-                channels={tgChannels}
-                value={channelId}
-                onChange={switchChannel}
-                label="Выбранный канал"
-                className="mt-2"
-              />
-            )}
-            source={statisticsSource}
-            initialTopic={internet ? internetAppliedQuery : ""}
-            onSourceChange={(nextSource) => switchScope(trendFeedScopeFromStatSource(nextSource))}
-            onOpenFeed={(nextSource) => {
-              const nextScope = trendFeedScopeFromStatSource(nextSource);
-              if (nextScope !== scopeRef.current) switchScope(nextScope);
-              switchView("feed");
-            }}
-          />
+    <AppShell title="Тренды" subtitle="Найди тему. Посмотри публикации и их реальные показатели.">
+      <Card className="p-4 sm:p-5">
+        <div className="flex flex-wrap items-start justify-between gap-4">
+          <Tabs items={[{ value: "niche", label: "Мои конкуренты" }, { value: "internet", label: "Поиск по теме" }]}
+            value={scope === "niche" ? "niche" : "internet"} onChange={(value) => switchScope(value)} ariaLabel="Режим трендов" />
+          {!global && <ChannelPicker channels={tgChannels} value={channelId} onChange={switchChannel}
+            label="Канал проекта" className="min-w-0 sm:max-w-xs" />}
         </div>
-      ) : (
-        <>
-          <div className="mt-7 max-w-3xl">
-            <h2 className="text-[19px] font-bold text-text">Лента публикаций</h2>
-            <p className="mt-1.5 text-[13px] leading-relaxed text-text-3">
-              Просматривай посты конкурентов, проверенные находки из интернета или редакционную подборку и создавай собственные публикации по найденным темам.
-            </p>
+        <form onSubmit={searchInternet} className="mt-5" noValidate>
+          <label htmlFor="internet-feed-search" className="sr-only">Тема публикаций</label>
+          <div className="flex gap-2">
+            <Input ref={internetSearchInputRef} id="internet-feed-search" type="search" autoComplete="off"
+              value={internetQuery} onChange={(event) => { setInternetQuery(event.target.value); if (internetSearchState === "invalid") setInternetSearchState("idle"); }}
+              placeholder={niche ? `Например: ${niche}` : "Какая тема тебя интересует?"}
+              aria-describedby="internet-feed-search-status" aria-invalid={internetSearchState === "invalid" || undefined}
+              className="min-w-0 flex-1" />
+            <Button type="submit" variant="brand" disabled={needsChannel || (busy && sameQuery)}>
+              {busy && sameQuery ? <Loader2 className="h-4 w-4 animate-spin" aria-hidden /> : <Search className="h-4 w-4" aria-hidden />}
+              {internet ? sameQuery && data?.search && !busy ? "Обновить" : "Найти" : "Показать"}
+            </Button>
           </div>
-
-          <Tabs
-            className="mt-5"
-            items={[
-              { value: "niche", label: "Моя ниша" },
-              { value: "internet", label: "Интернет" },
-              { value: "global", label: "Подборка платформы" },
-            ]}
-            value={scope}
-            onChange={switchScope}
-          />
-
-          {global && (
-        <p className="mt-3 max-w-2xl text-[13px] leading-relaxed text-text-3">
-          Сейчас это общая редакционная подборка про право и ИИ. Она одинакова для всех каналов и не зависит от выбора ниши.
-        </p>
-      )}
-
-          {internet && (
-            <p className="mt-3 max-w-2xl text-[13px] leading-relaxed text-text-3">
-              По запросу Аврора ищет публикации в открытом интернете и проверяет их на t.me. Соседей по нише добавляй в{" "}
-              <Link
-                href="/app/competitors"
-                className="font-semibold text-brand underline-offset-2 hover:underline focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-brand/15"
-              >
-                конкурентах
-              </Link>
-              . Без «Найти публикации» новых источников не будет.
-            </p>
-          )}
-
-      {/* У общей подборки канала нет по определению. Своя и интернет-базы всегда
-          изолированы выбранным каналом, поэтому для них селектор обязателен. */}
-          {!global && (
-        <ChannelPicker
-          channels={tgChannels}
-          value={channelId}
-          onChange={switchChannel}
-          label="Ниша какого канала"
-          className="mt-5"
-        />
-      )}
-
-          {internet && (
-            <form
-              className="mt-5 max-w-4xl rounded-md bg-surface p-4 shadow-soft"
-              onSubmit={searchInternet}
-              noValidate
-            >
-              <label
-                htmlFor="internet-feed-search"
-                className="block text-[13px] font-semibold text-text-2"
-              >
-                Поиск публикаций в интернете
-              </label>
-              <div className="mt-2 flex flex-col gap-3 sm:flex-row sm:items-center">
-                <Input
-                  ref={internetSearchInputRef}
-                  id="internet-feed-search"
-                  name="internetFeedSearch"
-                  type="search"
-                  autoComplete="off"
-                  value={internetQuery}
-                  onChange={(event) => {
-                    setInternetQuery(event.target.value);
-                    if (internetSearchState === "invalid") {
-                      setInternetSearchState("idle");
-                      setInternetSearchMessage(
-                        "Нажми «Найти публикации»: пустое поле возьмёт тему из брифа, затем пойду в интернет и проверю каналы на t.me.",
-                      );
-                    }
-                  }}
-                  aria-describedby="internet-feed-search-status"
-                  aria-invalid={internetSearchState === "invalid" || undefined}
-                  placeholder={niche || "Например: рыбалка, садоводство или банкротство"}
-                  className="min-w-0 flex-1"
-                />
-                <Button type="submit" variant="brand" className="shrink-0">
-                  {internetSearchState === "searching" ? (
-                    <Loader2 className="h-4 w-4 animate-spin" aria-hidden />
-                  ) : (
-                    <Search className="h-4 w-4" aria-hidden />
-                  )}
-                  Найти публикации
-                </Button>
-                {internetAppliedQuery && (
-                  <Button
-                    type="button"
-                    variant="soft"
-                    className="shrink-0"
-                    onClick={clearInternetQuery}
-                  >
-                    Показать всю базу
-                  </Button>
-                )}
-              </div>
-              <p
-                id="internet-feed-search-status"
-                role="status"
-                aria-live="polite"
-                className={cn(
-                  "mt-2 text-[12px] leading-relaxed",
-                  internetSearchState === "invalid" || internetSearchState === "error"
-                    ? "text-danger-text"
-                    : "text-text-3",
-                )}
-              >
-                {internetSearchMessage}
-              </p>
-            </form>
-          )}
-
-          <div className="mt-5 flex flex-wrap items-center gap-x-4 gap-y-2">
-        <Tabs
-          items={(Object.keys(TREND_PERIODS) as TrendPeriod[]).map((value) => ({
-            value,
-            label: TREND_PERIODS[value].label,
-          }))}
-          value={period}
-          onChange={switchPeriod}
-        />
-        <p className="max-w-2xl text-[13px] leading-relaxed text-text-3">
-          {TREND_PERIODS[period].description}{" "}
-          {internet
-            ? "Интернет-база обновляется после каждого проверенного поиска."
-            : "Источники обновляются каждые 2 часа."}
-        </p>
-      </div>
-
-          {loading ? (
-        <div className="mt-5 grid gap-5">
-          <div className="skeleton h-14 rounded-md" />
-          <div className="grid gap-5 lg:grid-cols-2">
-            {[0, 1].map((i) => (
-              <div key={i} className="skeleton h-56 rounded-lg" />
-            ))}
-          </div>
+        </form>
+        <div className="mt-4 flex flex-wrap items-center gap-3">
+          <Tabs items={(Object.keys(TREND_STAT_PERIODS) as TrendStatPeriod[]).map((value) => ({ value, label: TREND_STAT_PERIODS[value].label }))}
+            value={period} onChange={switchPeriod} ariaLabel="Период публикаций" />
+          {scope !== "niche" && <label className="flex min-w-0 items-center gap-2 text-[12px] text-text-3 sm:ml-auto">
+            <span>Источники</span>
+            <select aria-label="Источники поиска" value={scope} onChange={(event) => switchScope(event.target.value as TrendFeedScope)}
+              className="min-h-9 min-w-0 rounded-md border border-line bg-surface px-2 text-[12px] font-medium text-text-2">
+              <option value="internet">Открытые Telegram-каналы</option><option value="global">Подборка Авроры</option>
+            </select>
+          </label>}
+          {internetAppliedQuery && <button type="button" onClick={clearInternetQuery} className="min-h-9 text-[12px] text-text-3 underline-offset-4 hover:underline">Сбросить тему</button>}
         </div>
-      ) : loadError && !data ? (
-        <Card className="mt-5 py-4">
-          <EmptyState
-            icon={<AlertTriangle className="h-6 w-6" strokeWidth={1.75} aria-hidden />}
-            title="Не получилось загрузить публикации"
-            body="Данные не пропали. Проверь соединение и попробуй загрузить экран ещё раз."
-            action={
-              <Button
-                variant="soft"
-                onClick={() => {
-                  setLoading(true);
-                  setLoadError(false);
-                  load();
-                }}
-              >
-                <RefreshCw className="h-4 w-4" aria-hidden />
-                Повторить
-              </Button>
-            }
-          />
-        </Card>
-      ) : (
-        <div className="mt-5 grid gap-5">
-          {st && (
-            <StatusStrip
-              status={st}
-              period={period}
-              scope={scope}
-              onCheck={internet ? () => internetSearchInputRef.current?.focus() : check}
-              checking={internet ? false : checking}
-              actionLabel={internet
-                ? internetAppliedQuery
-                  ? "Изменить поиск"
-                  : "Найти тему"
-                : "Проверить сейчас"}
-            />
-          )}
+        <div className="mt-3 flex flex-wrap items-center gap-x-4 gap-y-2 text-[11px] text-text-3">
+          <p id="internet-feed-search-status" role="status" className={cn(
+            internet && ["error", "invalid"].includes(internetSearchState) && "text-danger-text",
+            internet && internetSearchState === "partial" && "text-warning-text",
+          )}>
+            {internet ? internetSearchMessage : global ? "Публикации из каналов, отобранных Авророй." : "Публикации добавленных тобой Telegram-конкурентов."}
+          </p>
+          {!internet && !needsChannel && <button type="button" onClick={() => void check()} disabled={checking}
+            className="inline-flex min-h-8 items-center gap-1.5 font-medium text-brand">
+            <RefreshCw className={cn("h-3 w-3", checking && "animate-spin")} aria-hidden />{checking ? "Обновляю…" : "Обновить источники"}
+          </button>}
+        </div>
+      </Card>
 
-          {data && data.competitors.length > 0 && (
-            <WatchList competitors={data.competitors} internet={internet} />
-          )}
-
-          {period === "hits" && items.length > 0 && !internet && (
-            <div className="flex flex-wrap items-center gap-3">
-              <span className="text-[13px] font-semibold text-text-2">Что считать залётом:</span>
-              <Tabs
-                items={THRESHOLDS.map((t, i) => ({
-                  value: t.value,
-                  label: `${t.label} · ${counts[i]}`,
-                }))}
-                value={threshold}
-                onChange={setThreshold}
-              />
-            </div>
-          )}
-
-          {noCompetitors ? (
-            <Card className="py-4">
-              {/* Пустое состояние обязано говорить правду. Раньше оно всегда звало добавлять
-                  руками — даже когда разведка уже прошла и находки по теме лежали в одном
-                  клике. Человек видел «не за кем следить» и решал, что платформа не работает. */}
-              <EmptyState
-                icon={<Radar className="h-6 w-6" strokeWidth={1.75} aria-hidden />}
-                title={
-                  global
-                    ? "Редакционная подборка ещё не собрана"
-                    : internet
-                      ? internetAppliedQuery
-                        ? `По запросу «${internetAppliedQuery}» публикаций пока нет`
-                        : "В интернет-базе пока нет публикаций"
-                    : waiting > 0
-                      ? `Нашёл ${waiting} ${plural(waiting, "канал", "канала", "каналов")} по теме — подтверди`
-                      : "Пока не за кем следить"
-                }
-                body={
-                  global
-                    ? "Мы уже подготовили список открытых каналов про право и ИИ. Нажми «Проверить сейчас» — публикации появятся после сбора."
-                    : internet
-                      ? internetSearchState === "searching"
-                        ? "Аврора проверяет публичные Telegram-источники. Новые публикации появятся здесь автоматически."
-                        : internetAppliedQuery
-                          ? "Попробуй другую формулировку или покажи всю уже собранную интернет-базу."
-                          : "Нажми «Найти публикации»: пустое поле возьмёт тему из брифа, затем Аврора пойдёт в интернет и проверит каналы на t.me."
-                    : waiting > 0
-                      ? `Разведка уже прошла по теме${niche ? ` «${niche}»` : ""} и отобрала кандидатов. Оставь тех, кто правда твой сосед, — дальше я сам посчитаю их норму и поймаю посты, которые её обошли.`
-                      : "Добавь каналы конкурентов — и я начну считать их норму и ловить посты, которые её обошли. Данные беру только открытые: посты, просмотры, реакции."
-                }
-                action={
-                  global ? undefined : (
-                    <Button
-                      variant="brand"
-                      onClick={() => {
-                        if (!internet) router.push("/app/competitors");
-                        else if (internetAppliedQuery) clearInternetQuery();
-                        else internetSearchInputRef.current?.focus();
-                      }}
-                    >
-                      <Radar className="h-4 w-4" aria-hidden />
-                      {internet
-                        ? internetAppliedQuery
-                          ? "Показать всю базу"
-                          : "Найти публикации"
-                        : waiting > 0
-                          ? "Посмотреть находки"
-                          : "Добавить конкурента"}
-                    </Button>
-                  )
-                }
-              />
-            </Card>
-          ) : noPeriodData ? (
-            <Card className="py-4">
-              <EmptyState
-                icon={period === "hits" ? <Flame className="h-6 w-6" strokeWidth={1.75} aria-hidden /> : <Clock className="h-6 w-6" strokeWidth={1.75} aria-hidden />}
-                title={
-                  internet
-                    ? period === "today"
-                      ? "Сегодня новых интернет-публикаций пока нет"
-                      : period === "week"
-                        ? "За 7 дней интернет-публикаций нет"
-                        : "За 30 дней интернет-находок нет"
-                  : period === "today"
-                    ? "Сегодня новых публикаций пока нет"
-                    : period === "week"
-                      ? "За последние 7 дней публикаций нет"
-                      : "За 30 дней подтверждённых залётов нет"
-                }
-                body={
-                  internet
-                    ? "Измени период или найди новые публичные Telegram-публикации по нужной теме."
-                  : period === "hits"
-                    ? `Залётом считаем только пост, который обновлялся спустя ${st?.matureHours ?? 48} часов и сравним минимум с ${st?.minMature ?? 5} постами своего канала. Посмотри свежую ленту или добавь больше источников.`
-                    : st?.latestPostAt
-                      ? `Последняя публикация у отслеживаемых каналов вышла ${fmtPostDate(st.latestPostAt)}. Проверим их снова автоматически или по кнопке выше.`
-                      : "У этих источников ещё нет собранных публикаций. Запусти проверку или добавь больше каналов-конкурентов."
-                }
-                action={
-                  internet ? (
-                    <Button
-                      variant="soft"
-                      onClick={() => internetSearchInputRef.current?.focus()}
-                    >
-                      Изменить поиск
-                    </Button>
-                  ) : period === "hits" ? (
-                    <Button variant="soft" onClick={() => switchPeriod("today")}>Показать свежие</Button>
-                  ) : global ? undefined : (
-                    <Button variant="primary" onClick={() => router.push("/app/competitors")}>Добавить источники</Button>
-                  )
-                }
-              />
-            </Card>
-          ) : shown.length === 0 ? (
-            <Card className="py-4">
-              <EmptyState
-                icon={<Flame className="h-6 w-6" strokeWidth={1.75} aria-hidden />}
-                title={`Постов ${THRESHOLDS.find((t) => t.value === threshold)?.label} сейчас нет`}
-                body={
-                  best != null
-                    ? `Лучшее у твоих конкурентов сейчас — ${fmtRatio(best)} к норме. В Telegram посты редко обгоняют норму канала в разы: подписчики видят их все, алгоритм ничего не разгоняет. Понизь порог — и увидишь, что заходит лучше остального.`
-                    : "Понизь порог, чтобы увидеть ленту."
-                }
-                action={
-                  <Button variant="soft" onClick={() => setThreshold("all")}>
-                    Показать всё
-                  </Button>
-                }
-              />
-            </Card>
-          ) : (
-            // Кладка, а не грид: у грида строка тянется по самой высокой карточке, и под
-            // короткими остаются дыры. Колонки укладывают карточки вплотную. Три колонки на
-            // широком экране — ещё и польза для чёткости: карточка уже картинки, значит кадр
-            // уменьшается, а не растягивается.
+      <div className="mt-5 grid min-w-0 grid-cols-1 gap-5" aria-busy={loading}>
+        {needsChannel ? <Card className="py-4"><EmptyState icon={<Radar className="h-6 w-6" aria-hidden />}
+          title="Выбери канал проекта" body="Подключи Telegram-канал, чтобы искать темы и следить за конкурентами в этом проекте." /></Card>
+        : loadError ? <Card className="py-4"><EmptyState icon={<AlertTriangle className="h-6 w-6" aria-hidden />}
+          title="Не удалось загрузить данные" body="Повтори загрузку: публикации и статистика появятся вместе."
+          action={<Button variant="soft" onClick={() => { setLoading(true); setLoadError(false); void load(); }}>Повторить</Button>} /></Card>
+        : loading ? <div className="grid gap-3"><div className="grid grid-cols-2 gap-3 lg:grid-cols-4">{[0, 1, 2, 3].map((n) => <div key={n} className="skeleton h-28 rounded-md" />)}</div><div className="skeleton h-80 rounded-md" /></div>
+        : internet && !internetAppliedQuery ? <Card className="py-8"><EmptyState icon={<Search className="h-6 w-6" aria-hidden />}
+          title="Начни с темы" body="Например, «ремонт квартиры» или «искусственный интеллект». Найдём публичные посты и посчитаем их показатели."
+          action={niche ? <Button variant="soft" onClick={() => void searchTopic(niche)}>Искать тему канала</Button> : undefined} /></Card>
+        : data ? <>
+          <div className="flex flex-wrap items-baseline justify-between gap-2">
+            <h2 className="text-[16px] font-semibold text-text">{internetAppliedQuery ? `Тема: ${internetAppliedQuery}` : "Все темы"}</h2>
+            <span className="text-[11px] text-text-3">{data.sourceLabel}{selectedChannel && !global ? ` · ${channelName(selectedChannel)}` : ""} · {data.periodLabel}</span>
+          </div>
+          {data.status.error > 0 && <p className="text-[12px] text-warning-text">Не удалось обновить {data.status.error} {plural(data.status.error, "источник", "источника", "источников")}. Показаны доступные данные.</p>}
+          {data.coverage.latestMeasurementAt && <p className="-mt-3 text-[11px] text-text-3">
+            Счётчики собраны {fmtPostDate(data.coverage.latestMeasurementAt)} МСК{data.coverage.oldestMeasurementAt !== data.coverage.latestMeasurementAt ? "; у части публикаций данные старше" : ""}.
+          </p>}
+          <TrendMetrics data={data} />
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <Tabs items={[{ value: "feed", label: "Публикации", icon: <FileText className="h-4 w-4" aria-hidden /> },
+              { value: "statistics", label: "Статистика", icon: <BarChart3 className="h-4 w-4" aria-hidden /> }]}
+              value={view} onChange={switchView} ariaLabel="Представление результатов" />
+            {view === "feed" && data.summary.posts > 0 && <select aria-label="Порядок публикаций" value={sort}
+              onChange={(event) => switchSort(event.target.value as TrendSort)} className="min-h-9 rounded-md border border-line bg-surface px-3 text-[12px] text-text-2">
+              <option value="recent">Сначала новые</option><option value="views">По просмотрам</option><option value="ratio">Выше нормы канала</option>
+            </select>}
+          </div>
+          {data.summary.posts === 0 ? <Card className="py-5"><EmptyState icon={busy ? <Loader2 className="h-6 w-6 animate-spin" aria-hidden /> : <Search className="h-6 w-6" aria-hidden />}
+            title={busy ? "Собираем публикации" : internet && !data.search ? "Запусти поиск по этой теме" : "Публикаций за этот период нет"}
+            body={busy ? "Проверенные результаты и статистика появятся автоматически." : scope === "niche" && data.status.competitors === 0
+              ? "Добавь Telegram-каналы конкурентов, чтобы видеть их публикации." : "Попробуй другую формулировку, расширь период или обнови поиск."}
+            action={scope === "niche" && data.status.competitors === 0 ? <Button variant="brand" onClick={() => router.push("/app/competitors")}>Добавить конкурента</Button> : undefined} /></Card>
+          : view === "statistics" ? <TrendStatistics data={data} /> : <>
             <ul className="columns-1 gap-5 md:columns-2 xl:columns-3">
-              {shown.map((item, i) => (
-                <motion.li
-                  key={item.id}
-                  className="mb-5 break-inside-avoid"
-                  initial={reduce ? { opacity: 0 } : { opacity: 0, y: -6 }}
-                  animate={{ opacity: 1, y: 0 }}
-                  transition={{ duration: 0.24, ease: EASE, delay: Math.min(i * 0.03, 0.2) }}
-                >
-                  <ItemCard
-                    item={item}
-                    period={period}
-                    internet={internet}
-                    draft={drafts[item.id]}
-                    generating={generating === item.id}
-                    generationError={draftFailures[item.id]}
-                    generationLocked={generating !== null}
-                    requiresReview={draftReviews[item.id] === true}
-                    reviewAcknowledged={draftAcknowledgements[item.id] === true}
-                    transferring={transferring === item.id}
-                    onSnap={() => snap(item)}
-                    onReviewAcknowledged={(checked) =>
-                      setDraftAcknowledgements((reviews) => ({
-                        ...reviews,
-                        [item.id]: checked,
-                      }))
-                    }
-                    onToComposer={() => void toComposer(item)}
-                  />
-                </motion.li>
-              ))}
+              {items.map((item, i) => <motion.li key={`${scope}:${item.id}`} className="mb-5 break-inside-avoid"
+                initial={reduce ? { opacity: 0 } : { opacity: 0, y: -6 }} animate={{ opacity: 1, y: 0 }}
+                transition={{ duration: 0.24, ease: EASE, delay: Math.min(i * 0.03, 0.2) }}>
+                <ItemCard item={item} draft={drafts[item.id]} generating={generating === item.id}
+                  generationError={draftFailures[item.id]} generationLocked={generating !== null} requiresReview={draftReviews[item.id] === true}
+                  reviewAcknowledged={draftAcknowledgements[item.id] === true} transferring={transferring === item.id} onSnap={() => snap(item)}
+                  onReviewAcknowledged={(checked) => setDraftAcknowledgements((reviews) => ({ ...reviews, [item.id]: checked }))}
+                  onToComposer={() => void toComposer(item)} />
+              </motion.li>)}
             </ul>
-          )}
-        </div>
-          )}
-        </>
-      )}
+            <div className="flex flex-wrap items-center justify-between gap-3 text-[12px] text-text-3">
+              <span>Показаны {data.pagination.offset + 1}–{data.pagination.offset + items.length} из {data.pagination.total}. Статистика учитывает все найденные публикации.</span>
+              {(data.pagination.offset > 0 || data.pagination.hasMore) && <div className="flex gap-2">
+                <Button size="sm" variant="soft" disabled={data.pagination.offset === 0} onClick={() => { offsetRef.current = Math.max(0, data.pagination.offset - TREND_PAGE_SIZE); setLoading(true); void load(); }}>Назад</Button>
+                <Button size="sm" variant="soft" disabled={!data.pagination.hasMore} onClick={() => { offsetRef.current = data.pagination.offset + TREND_PAGE_SIZE; setLoading(true); void load(); }}>Далее</Button>
+              </div>}
+            </div>
+          </>}
+          <TrendDataDetails data={data} />
+        </> : internetSearchState === "error" ? <Card className="py-4"><EmptyState icon={<AlertTriangle className="h-6 w-6" aria-hidden />}
+          title="Поиск не запустился" body="Нажми «Найти», чтобы повторить запрос." /></Card> : null}
+      </div>
     </AppShell>
   );
 }
