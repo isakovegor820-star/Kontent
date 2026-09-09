@@ -9,6 +9,7 @@ import { randomUUID } from "node:crypto";
 import { NextRequest, NextResponse } from "next/server";
 
 import { resolveChannel } from "@/lib/autopilot";
+import { parseTrendStatPeriod } from "@/lib/trend-statistics";
 import { getPool } from "@/lib/db";
 import {
   normalizeRadarQuery,
@@ -25,8 +26,11 @@ type Db = ReturnType<typeof getPool>;
 
 type RunRow = {
   id: string | number;
+  channel_id?: number | string | null;
   query: string;
   normalized_query: string;
+  search_scope?: string;
+  search_period?: string;
   status: "queued" | "running" | "ready" | "partial" | "failed";
   stage: "queued" | "discovering" | "verifying" | "ranking" | "ready" | "failed";
   progress: number | string;
@@ -53,6 +57,8 @@ function serializeRun(row: RunRow | undefined) {
     id: Number(row.id),
     query: row.query,
     normalizedQuery: row.normalized_query,
+    scope: row.search_scope || "all",
+    period: row.search_period || "month",
     status: row.status,
     stage: row.stage,
     progress: Number(row.progress),
@@ -292,7 +298,7 @@ async function searchLocal(pool: Db, userId: number, projectId: number, channelI
 async function loadRunResults(pool: Db, userId: number, projectId: number, runId: number, afterId = 0) {
   const run = (
     await pool.query<RunRow>(
-      `select id, query, normalized_query, status, stage, progress, provider,
+      `select id, query, normalized_query, search_scope, search_period, status, stage, progress, provider,
               local_count, external_count, error_code, error_message,
               cache_expires_at, created_at, updated_at, completed_at
          from radar_search_runs where id = $1 and user_id = $2 and project_id = $3`,
@@ -353,7 +359,7 @@ async function handleGET(req: NextRequest) {
     const results = await searchLocal(pool, user.id, projectId, channelId, query);
     const latest = (
       await pool.query<RunRow>(
-        `select id, query, normalized_query, status, stage, progress, provider,
+        `select id, query, normalized_query, search_scope, search_period, status, stage, progress, provider,
                 local_count, external_count, error_code, error_message,
                 cache_expires_at, created_at, updated_at, completed_at
           from radar_search_runs
@@ -417,6 +423,8 @@ async function handlePOST(req: NextRequest) {
     .slice(0, 128);
   if (!/^[a-zA-Z0-9:_-]{8,128}$/u.test(requestKey)) return json({ error: "bad_request_key" }, 422);
   const force = body.force === true;
+  const searchScope = body.scope === "telegram" ? "telegram" : "all";
+  const searchPeriod = searchScope === "telegram" ? parseTrendStatPeriod(String(body.period || "")) : "month";
   const pool = getPool();
 
   try {
@@ -424,14 +432,15 @@ async function handlePOST(req: NextRequest) {
     if (!force) {
       const cached = (
         await pool.query<RunRow>(
-          `select id, query, normalized_query, status, stage, progress, provider,
+          `select id, query, normalized_query, search_scope, search_period, status, stage, progress, provider,
                   local_count, external_count, error_code, error_message,
                   cache_expires_at, created_at, updated_at, completed_at
              from radar_search_runs
             where user_id = $1 and channel_id is not distinct from $2 and normalized_query = $3 and project_id = $4
-              and status in ('ready','partial') and cache_expires_at > now()
+              and status = 'ready' and cache_expires_at > now()
+              and search_scope = $5 and search_period = $6
             order by completed_at desc nulls last limit 1`,
-          [user.id, channelId, query, projectId],
+          [user.id, channelId, query, projectId, searchScope, searchPeriod],
         )
       ).rows[0];
       if (cached) {
@@ -442,7 +451,7 @@ async function handlePOST(req: NextRequest) {
 
     const replay = (
       await pool.query<RunRow>(
-        `select id, query, normalized_query, status, stage, progress, provider,
+        `select id, channel_id, query, normalized_query, search_scope, search_period, status, stage, progress, provider,
                 local_count, external_count, error_code, error_message,
                 cache_expires_at, created_at, updated_at, completed_at
            from radar_search_runs where user_id = $1 and request_key = $2 and project_id = $3`,
@@ -450,20 +459,21 @@ async function handlePOST(req: NextRequest) {
       )
     ).rows[0];
     if (replay) {
-      if (replay.normalized_query !== query) return json({ error: "idempotency_conflict" }, 409);
+      if (replay.normalized_query !== query || (replay.search_scope || "all") !== searchScope
+        || (replay.search_period || "month") !== searchPeriod || (replay.channel_id == null ? null : Number(replay.channel_id)) !== channelId) return json({ error: "idempotency_conflict" }, 409);
       const payload = await loadRunResults(pool, user.id, projectId, Number(replay.id));
       return json({ ok: true, replayed: true, ...payload }, replay.status === "ready" ? 200 : 202);
     }
 
-    const local = await searchLocal(pool, user.id, projectId, channelId, query);
+    const local = searchScope === "telegram" ? [] : await searchLocal(pool, user.id, projectId, channelId, query);
     const inserted = await pool.query<RunRow>(
       `insert into radar_search_runs
-         (user_id, channel_id, request_key, query, normalized_query, local_count, project_id)
-       values ($1, $2, $3, $4, $5, $6, $7)
-       returning id, query, normalized_query, status, stage, progress, provider,
+         (user_id, channel_id, request_key, query, normalized_query, local_count, project_id, search_scope, search_period)
+       values ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+       returning id, query, normalized_query, search_scope, search_period, status, stage, progress, provider,
                  local_count, external_count, error_code, error_message,
                  cache_expires_at, created_at, updated_at, completed_at`,
-      [user.id, channelId, requestKey, String(body.q).trim().slice(0, 200), query, local.length, projectId],
+      [user.id, channelId, requestKey, String(body.q).trim().slice(0, 200), query, local.length, projectId, searchScope, searchPeriod],
     );
     let run = inserted.rows[0];
     try {
@@ -472,7 +482,7 @@ async function handlePOST(req: NextRequest) {
         await pool.query<RunRow>(
           `update radar_search_runs set queue_confirmed_at = now(), updated_at = now()
             where id = $1 and user_id = $2 and status = 'queued'
-          returning id, query, normalized_query, status, stage, progress, provider,
+          returning id, query, normalized_query, search_scope, search_period, status, stage, progress, provider,
                     local_count, external_count, error_code, error_message,
                     cache_expires_at, created_at, updated_at, completed_at`,
           [run.id, user.id],
@@ -487,7 +497,7 @@ async function handlePOST(req: NextRequest) {
                   error_message = 'Поиск в интернете временно недоступен. Локальные результаты сохранены.',
                   completed_at = now(), updated_at = now()
             where id = $1 and user_id = $2
-          returning id, query, normalized_query, status, stage, progress, provider,
+          returning id, query, normalized_query, search_scope, search_period, status, stage, progress, provider,
                     local_count, external_count, error_code, error_message,
                     cache_expires_at, created_at, updated_at, completed_at`,
           [run.id, user.id],

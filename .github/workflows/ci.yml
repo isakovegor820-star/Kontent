@@ -191,6 +191,11 @@ jobs:
       - name: Test
         run: npm test
 
+      - name: Test query-specific Trends datasets
+        run: node scripts/test-trends-dashboard.mjs --sql-only
+        env:
+          TRENDS_QA_ADMIN_URL: "postgres://postgres:postgres@localhost:5432/postgres"
+
       - name: Test critical journey contracts
         run: npm run test:contracts
 

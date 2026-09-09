@@ -1,3 +1,8 @@
+import { parseTelegramPublicPage } from "./worker/telegram-public-page.mjs";
+import {
+  matureTrendBaseline, matureTrendRatio, trendHistoryBoundary,
+  TREND_SEARCH_MAX_CHANNELS, TREND_SEARCH_MAX_PAGES, TREND_SEARCH_DEADLINE_MS,
+} from "./worker/trend-search.mjs";
 import { createMediaGenerationStore, recoverMediaDeliveries } from "./worker/media-generation-store.mjs";
 import { startTaskHeartbeat, WorkerTaskLeaseLost } from "./worker/task-heartbeat.mjs";
 import { CRON_SCHEDULES } from "./worker/cron-schedules.mjs";
@@ -239,7 +244,6 @@ import {
   detectRadarQueryIntent,
   discoverRadarWebCandidates,
   discoverTelegramCandidates,
-  median as radarMedian,
   normalizeRadarWebCandidate,
   normalizeTelegramCandidate,
   parseRadarOsintProfile,
@@ -1702,19 +1706,21 @@ const WORKER_LOCAL_AI_TIMEOUT_MS = 240_000;
 // Теперь при 429 читаем Retry-After, ждём и повторяем; при сетевой ошибке — экспоненциальный
 // бэкофф. Не-429 ответы (включая 404) возвращаем как есть — вызывающий код сам проверяет r.ok.
 const TG_FETCH_ATTEMPTS = 3;
-async function fetchTgWithBackoff(url) {
+async function fetchTgWithBackoff(url, deadlineAt = Infinity) {
   let delay = 2000;
   for (let attempt = 1; attempt <= TG_FETCH_ATTEMPTS; attempt++) {
+    const remaining = deadlineAt - Date.now();
+    if (remaining <= 0) throw new Error("telegram_search_deadline");
     let res;
     try {
       res = await fetch(url, {
         headers: { "user-agent": "Mozilla/5.0" },
-        signal: AbortSignal.timeout(15_000),
+        signal: AbortSignal.timeout(Math.min(15_000, remaining)),
       });
     } catch (err) {
-      if (attempt === TG_FETCH_ATTEMPTS) throw err;
+      if (attempt === TG_FETCH_ATTEMPTS || Date.now() >= deadlineAt) throw err;
       console.warn(`[recon] сеть: ${err?.message}; повтор через ${Math.round(delay / 1000)}с (попытка ${attempt})`);
-      await sleep(delay);
+      await sleep(Math.max(0, Math.min(delay, deadlineAt - Date.now())));
       delay *= 2;
       continue;
     }
@@ -1725,7 +1731,7 @@ async function fetchTgWithBackoff(url) {
         return res; // r.ok = false → вызывающий обработает как пустой результат
       }
       console.warn(`[recon] 429 от t.me, ждём ${Math.round(wait / 1000)}с (попытка ${attempt})`);
-      await sleep(wait);
+      await sleep(Math.max(0, Math.min(wait, deadlineAt - Date.now())));
       delay *= 2;
       continue;
     }
@@ -3536,44 +3542,11 @@ async function recordTodayResultsRefresh(projectId, state = "success", channelId
 // Закрытых данных не собираем. Тот же всегда-включённый воркер.
 // ============================================================================
 
-function parseTelegramPublicPage(html) {
-  const posts = [];
-  const parts = String(html || "").split('data-post="');
-  for (let i = 1; i < parts.length; i++) {
-    const block = parts[i];
-    const messageMatch = block.match(/^[^/]+\/(\d+)"/);
-    if (!messageMatch) continue;
-    const timeMatch = block.match(/datetime="([^"]+)"/);
-    const viewsMatch = block.match(/tgme_widget_message_views">([^<]+)</);
-    const textMatch = block.match(/tgme_widget_message_text[^>]*>([\s\S]*?)<\/div>/);
-    let text = null;
-    if (textMatch) {
-      text = decodeEntities(textMatch[1].replace(/<br\s*\/?>/gi, "\n").replace(/<[^>]+>/g, "")).trim();
-      if (!text) text = null;
-    }
-    const media = /tgme_widget_message_video/.test(block)
-      ? "video"
-      : /tgme_widget_message_photo/.test(block)
-        ? "photo"
-        : "text";
-    const photoMatch = block.match(/tgme_widget_message_photo_wrap[^>]*background-image:url\('([^']+)'\)/);
-    posts.push({
-      msgId: Number(messageMatch[1]),
-      text,
-      media,
-      photoUrl: photoMatch ? photoMatch[1] : null,
-      views: viewsMatch ? parseCount(viewsMatch[1]) : null,
-      reactions: sumReactions(block),
-      postedAt: timeMatch ? timeMatch[1] : null,
-    });
-  }
-  return posts;
-}
 
 // Обычная разведка читает одну свежую страницу, но при разрыве догружает историю до
 // afterPostId. Поиск по нише передаёт exhaustive=true и идёт назад через `before`, пока Telegram не вернёт
 // пустую/повторную страницу. Оба режима останавливаются по фактической границе, а не по лимиту постов.
-async function fetchCompetitorPage(handle, { exhaustive = false, afterPostId = null } = {}) {
+async function fetchCompetitorPage(handle, { exhaustive = false, afterPostId = null, since = null, maxPages = Infinity, deadlineAt = Infinity } = {}) {
   const normalizedHandle = String(handle).replace(/^@/, "");
   const out = {
     ok: false,
@@ -3582,15 +3555,16 @@ async function fetchCompetitorPage(handle, { exhaustive = false, afterPostId = n
     subscribers: null,
     posts: [],
     historyComplete: false,
+    windowComplete: false,
   };
   const seenPostIds = new Set();
   const seenBoundaries = new Set();
   let before = null;
   try {
-    for (;;) {
+    for (let pageIndex = 0; pageIndex < maxPages && Date.now() < deadlineAt; pageIndex++) {
       const url = new URL(`https://t.me/s/${normalizedHandle}`);
       if (before != null) url.searchParams.set("before", String(before));
-      const response = await fetchTgWithBackoff(url);
+      const response = await fetchTgWithBackoff(url, deadlineAt);
       if (!response?.ok) break;
       const html = await response.text();
       if (!out.ok) {
@@ -3609,6 +3583,10 @@ async function fetchCompetitorPage(handle, { exhaustive = false, afterPostId = n
         seenPostIds.add(post.msgId);
         out.posts.push(post);
         added += 1;
+      }
+      if (since != null && trendHistoryBoundary(pagePosts, since)) {
+        out.windowComplete = true;
+        break;
       }
       const decision = telegramHistoryPageDecision({
         pagePostIds: pagePosts.map((post) => post.msgId),
@@ -4490,7 +4468,7 @@ async function runRadarSearch(runId, userId) {
             join projects project on project.id = member.project_id and project.is_archived = false
             where member.project_id = radar_search_runs.project_id and member.user_id = $2
               and member.status = 'active' and member.role in ('owner','author','approver'))
-      returning id, query, normalized_query, local_count`,
+      returning id, channel_id, project_id, query, normalized_query, local_count, search_scope, search_period`,
       [runId, userId],
     )
   ).rows[0];
@@ -4512,15 +4490,43 @@ async function runRadarSearch(runId, userId) {
   const rawQuery = String(claimed.query || claimed.normalized_query).trim();
   const query = claimed.normalized_query;
   const intent = detectRadarQueryIntent(rawQuery);
+  const telegramOnly = claimed.search_scope === "telegram";
+  const searchDeadline = telegramOnly ? Date.now() + TREND_SEARCH_DEADLINE_MS : Infinity;
+  const knownCandidates = [];
+  let completedCandidates = 0;
   let resultCount = 0;
   let providerLabel = null;
   let incompleteHistories = 0;
   const partialReasons = [];
   try {
-    const [expandedQueries, queryEmbedding] = await Promise.all([
+    // A topic search starts immediately; optional AI/indexing must not block its first results.
+    const [expandedQueries, queryEmbedding] = telegramOnly ? [[], null] : await Promise.all([
       expandRadarQueries(rawQuery),
       intent === "topic" ? radarEmbedding(query) : Promise.resolve(null),
     ]);
+    if (telegramOnly) {
+      const known = await pool.query(
+        `select distinct handle from (
+          select handle from discovered_sources where is_public and verification_status = 'verified'
+            and content_tsv @@ plainto_tsquery('russian', $1)
+          union select competitor.handle from competitors competitor
+            join competitor_posts post on post.competitor_id = competitor.id
+            where competitor.channel_id = $2 and competitor.is_active and competitor.network = 'tg'
+              and post.tsv @@ plainto_tsquery('russian', $1)
+          union select source.handle from trend_sources source join trend_posts post on post.source_id = source.id
+            where source.enabled and to_tsvector('russian', coalesce(post.text, '')) @@ plainto_tsquery('russian', $1)
+          union select result.handle from radar_search_results result
+            join radar_search_runs run on run.id = result.run_id
+            where run.project_id = $3 and run.user_id = $4 and result.handle is not null
+              and result.tsv @@ plainto_tsquery('russian', $1)
+        ) sources where handle is not null order by handle limit $5`,
+        [query, claimed.channel_id, claimed.project_id, userId, TREND_SEARCH_MAX_CHANNELS],
+      );
+      for (const source of known.rows) {
+        const candidate = normalizeTelegramCandidate(`https://t.me/${source.handle}`);
+        if (candidate) knownCandidates.push({ ...candidate, provider: "verified-directory", providers: ["verified-directory"], matchedQueries: [query] });
+      }
+    }
 
     // Сначала используем накопленную общую базу. Вектор находит смысловые совпадения
     // вроде «строительство» ↔ «девелопмент и жилые комплексы», даже когда ни название,
@@ -4581,7 +4587,7 @@ async function runRadarSearch(runId, userId) {
       );
     }
 
-    const webOsint = await runRadarWebOsint({
+    const webOsint = telegramOnly ? { count: 0, providers: [], partialReasons: [] } : await runRadarWebOsint({
       runId,
       userId,
       query: rawQuery,
@@ -4606,12 +4612,23 @@ async function runRadarSearch(runId, userId) {
         searxngUrl: process.env.RADAR_SEARXNG_URL,
         fetchImpl: fetch,
         expandedQueries,
+        sitePosts: telegramOnly,
       });
       candidates = [...discovered];
       partialReasons.push(...(discovered.partialReasons || []));
     } catch (error) {
       partialReasons.push(error?.code || "telegram_discovery_failed");
-      if (intent === "topic" && resultCount === 0) throw error;
+      if (intent === "topic" && resultCount === 0 && knownCandidates.length === 0) throw error;
+    }
+    if (telegramOnly) {
+      const combined = new Map();
+      for (let i = 0; i < Math.max(candidates.length, knownCandidates.length); i++) {
+        for (const candidate of [candidates[i], knownCandidates[i]]) {
+          if (candidate && !combined.has(candidate.handle)) combined.set(candidate.handle, candidate);
+        }
+      }
+      if (combined.size > TREND_SEARCH_MAX_CHANNELS) partialReasons.push("telegram_search_limit");
+      candidates = [...combined.values()].slice(0, TREND_SEARCH_MAX_CHANNELS);
     }
     const directHandle = radarIdentityHandle(rawQuery);
     const directTelegram = directHandle
@@ -4649,11 +4666,17 @@ async function runRadarSearch(runId, userId) {
       [runId, candidates.length ? 28 : 72, providerLabel],
     );
 
-    for (let index = 0; index < candidates.length; index++) {
-      const candidate = candidates[index];
+    await mapConcurrent(candidates, telegramOnly ? 2 : 1, async (candidate) => {
+      if (Date.now() >= searchDeadline) {
+        partialReasons.push("telegram_search_deadline");
+        return;
+      }
       let page;
       try {
-        page = await fetchCompetitorPage(candidate.handle, { exhaustive: true });
+        page = await fetchCompetitorPage(candidate.handle, telegramOnly ? {
+          exhaustive: true, since: Date.now() - 90 * 86_400_000, maxPages: TREND_SEARCH_MAX_PAGES,
+          deadlineAt: Math.min(searchDeadline, Date.now() + 25_000),
+        } : { exhaustive: true });
       } catch (error) {
         await pool.query(
           `update radar_search_candidates
@@ -4662,11 +4685,13 @@ async function runRadarSearch(runId, userId) {
             where run_id = $1 and canonical_key = $2`,
           [runId, candidate.canonicalKey],
         );
+        partialReasons.push("telegram_unavailable");
         console.warn(`[radar] @${candidate.handle}: verify error`, error?.message);
-        continue;
+        return;
       }
 
       if (!page.ok || page.posts.length === 0) {
+        if (!page.ok) partialReasons.push("telegram_unavailable");
         await pool.query(
           `update radar_search_candidates
               set verification_status = 'rejected', rejection_reason = 'not_public_or_empty',
@@ -4674,9 +4699,9 @@ async function runRadarSearch(runId, userId) {
             where run_id = $1 and canonical_key = $2`,
           [runId, candidate.canonicalKey],
         );
-        continue;
+        return;
       }
-      if (page.historyComplete === false) incompleteHistories += 1;
+      if (page.historyComplete === false && !page.windowComplete) incompleteHistories += 1;
 
       const activity = summarizeTelegramPostingActivity(page.posts);
       let contentEmbedding = null;
@@ -4704,11 +4729,11 @@ async function runRadarSearch(runId, userId) {
             where run_id = $1 and canonical_key = $2`,
           [runId, candidate.canonicalKey],
         );
-        continue;
+        return;
       }
 
       const provider = candidate.providers?.join(",") || candidate.provider || "web";
-      const source = await upsertRadarPublicCorpus({
+      const source = telegramOnly ? null : await upsertRadarPublicCorpus({
         handle: candidate.handle,
         page,
         activity,
@@ -4741,6 +4766,8 @@ async function runRadarSearch(runId, userId) {
         },
       })) resultCount += 1;
 
+      const measuredAt = Date.now();
+      const baseline = matureTrendBaseline(page.posts, measuredAt);
       const postRanks = page.posts
         .map((post) => ({ post, rank: rankVerifiedTelegramPost(sourceRankingQuery, post, sourceRank) }))
         .filter((item) => item.rank.accepted)
@@ -4766,18 +4793,15 @@ async function runRadarSearch(runId, userId) {
           postsPerWeek: activity.postsPerWeek,
           lastPostAt: activity.lastPostAt,
           rank: { ...item.rank, activity: sourceRank.activity, trust: sourceRank.trust },
-          rawData: { media: item.post.media, photoUrl: item.post.photoUrl },
+          rawData: { media: item.post.media, photoUrl: item.post.photoUrl, ...baseline },
         })) resultCount += 1;
       }
 
       // «Тренд» — не мнение ИИ: только релевантный пост, чьи просмотры минимум в 1,5 раза
       // выше медианы видимых публикаций этого же канала.
-      const typicalViews = radarMedian(page.posts.map((post) => post.views));
-      const trends = postRanks.filter(({ post }) =>
-        typicalViews != null && typicalViews > 0 && Number(post.views) >= typicalViews * 1.5,
-      );
+      const trends = postRanks.filter(({ post }) => (matureTrendRatio(post, baseline, measuredAt) ?? 0) >= 1.5);
       for (const trend of trends) {
-        const ratio = Number(trend.post.views) / typicalViews;
+        const ratio = matureTrendRatio(trend.post, baseline, measuredAt);
         if (await insertRadarResult({
           runId,
           userId,
@@ -4804,7 +4828,7 @@ async function runRadarSearch(runId, userId) {
             score: Math.min(100, trend.rank.score + Math.min(12, Math.round((ratio - 1) * 8))),
             reason: `публикация набрала ×${ratio.toFixed(1)} к медиане этого канала`,
           },
-          rawData: { medianViews: typicalViews, viewRatio: ratio },
+          rawData: { ...baseline, viewRatio: ratio, media: trend.post.media, photoUrl: trend.post.photoUrl },
         })) resultCount += 1;
       }
 
@@ -4814,14 +4838,15 @@ async function runRadarSearch(runId, userId) {
           where run_id = $1 and canonical_key = $2`,
         [runId, candidate.canonicalKey],
       );
-      const progress = 35 + Math.round(((index + 1) / Math.max(1, candidates.length)) * 55);
+      completedCandidates += 1;
+      const progress = 35 + Math.round((completedCandidates / Math.max(1, candidates.length)) * 55);
       await pool.query(
         `update radar_search_runs set progress = $2, external_count = $3, updated_at = now()
           where id = $1 and status = 'running'`,
         [runId, progress, resultCount],
       );
       await sleep(180);
-    }
+    });
 
     const visibleResultCount = Number((
       await pool.query(
@@ -4848,7 +4873,7 @@ async function runRadarSearch(runId, userId) {
         providerLabel,
         isPartial ? (incompleteHistories > 0 ? "telegram_history_incomplete" : "radar_sources_partial") : null,
         isPartial
-          ? "Часть публичных источников временно не ответила. Уже подтверждённые результаты показаны; можно повторить поиск позже."
+          ? "Собрана часть доступных публикаций: некоторые источники не ответили или достигнут предел проверки истории. Можно повторить поиск."
           : null,
       ],
     );

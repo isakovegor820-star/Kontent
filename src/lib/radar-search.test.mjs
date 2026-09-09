@@ -30,6 +30,22 @@ import {
 } from "./radar-search.mjs";
 
 describe("radar hybrid-search core", () => {
+  it("finds public post previews when broad channel searches return only third-party directories", async () => {
+    const fetchImpl = vi.fn(async (input) => {
+      const url = new URL(input);
+      const query = url.searchParams.get("q") || url.searchParams.get("p");
+      const payload = query?.startsWith("site:t.me/s/")
+        ? '<a href="https://t.me/s/public_ai_news">Публичные публикации</a>'
+        : '<a href="https://example.com/channel-directory">Каталог каналов</a>';
+      return { ok: true, status: 200, text: async () => payload };
+    });
+    const broad = await discoverTelegramCandidates("искусственный интеллект", { fetchImpl });
+    expect(broad).toHaveLength(0);
+    const focused = await discoverTelegramCandidates("искусственный интеллект", { fetchImpl, sitePosts: true });
+    expect(focused.map(candidate => candidate.handle)).toEqual(["public_ai_news"]);
+    expect(focused[0].matchedQueries).toContain("искусственный интеллект");
+  });
+
   it("normalizes arbitrary Russian queries without losing their meaning", () => {
     expect(normalizeRadarQuery("  Рыбалка — на Волге!!! ")).toBe("рыбалка на волге");
   });

@@ -23,6 +23,9 @@ import { GET, POST } from "./route";
 
 const queuedRun = {
   id: "91",
+  channel_id: 11,
+  search_scope: "all",
+  search_period: "month",
   query: "садоводство",
   normalized_query: "садоводство",
   status: "queued",
@@ -211,7 +214,7 @@ describe("hybrid radar search route", () => {
     expect(mocks.enqueue).toHaveBeenCalledWith({ runId: 91, userId: 7 });
     expect(mocks.query).toHaveBeenCalledWith(
       expect.stringContaining("insert into radar_search_runs"),
-      [7, 11, "radar_garden_1234", "Садоводство", "садоводство", 0, 1],
+      [7, 11, "radar_garden_1234", "Садоводство", "садоводство", 0, 1, "all", "month"],
     );
   });
 
@@ -235,6 +238,42 @@ describe("hybrid radar search route", () => {
       results: [],
       run: { status: "failed" },
     });
+  });
+
+  it("starts a fresh Telegram-only run for the selected period without replaying the cache", async () => {
+    const response = await POST(new ProjectRequest(1, "http://localhost/api/radar/search", {
+      method: "POST", headers: { "idempotency-key": "fresh_telegram_123" },
+      body: JSON.stringify({ q: "садоводство", channelId: 11, scope: "telegram", period: "quarter", force: true }),
+    }));
+    expect(response.status).toBe(202);
+    expect(mocks.query).toHaveBeenCalledWith(expect.stringContaining("insert into radar_search_runs"),
+      [7, 11, "fresh_telegram_123", "садоводство", "садоводство", 0, 1, "telegram", "quarter"]);
+    expect(mocks.query.mock.calls.some(([sql]) => String(sql).includes("cache_expires_at > now()"))).toBe(false);
+    expect(mocks.query.mock.calls.some(([sql]) => String(sql).includes("from discovered_sources source"))).toBe(false);
+  });
+
+  it("only considers complete cache entries for the same scope and period", async () => {
+    await POST(new ProjectRequest(1, "http://localhost/api/radar/search", {
+      method: "POST", headers: { "idempotency-key": "cache_telegram_123" },
+      body: JSON.stringify({ q: "садоводство", channelId: 11, scope: "telegram", period: "week" }),
+    }));
+    const call = mocks.query.mock.calls.find(([sql]) => String(sql).includes("cache_expires_at > now()"));
+    expect(call?.[0]).toContain("status = 'ready'");
+    expect(call?.[0]).toContain("search_scope = $5 and search_period = $6");
+    expect(call?.[1]).toEqual([7, 11, "садоводство", 1, "telegram", "week"]);
+  });
+
+  it.each([
+    { channel_id: 12 }, { search_scope: "telegram" }, { search_period: "quarter" }, { normalized_query: "рыбалка" },
+  ])("rejects reusing a request key with a different search identity: %j", async (changes) => {
+    mocks.query.mockImplementation(async (sql: string) => sql.includes("request_key = $2")
+      ? { rowCount: 1, rows: [{ ...queuedRun, ...changes }] } : { rowCount: 0, rows: [] });
+    const response = await POST(new ProjectRequest(1, "http://localhost/api/radar/search", {
+      method: "POST", headers: { "idempotency-key": "conflict_run_123" },
+      body: JSON.stringify({ q: "садоводство", channelId: 11, force: true }),
+    }));
+    expect(response.status).toBe(409);
+    expect(mocks.enqueue).not.toHaveBeenCalled();
   });
 
   it("never exposes a run owned by another user", async () => {
