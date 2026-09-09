@@ -1962,7 +1962,8 @@ try {
   const recordBotConnectNetworkUrl = (request) => {
     botConnectNetworkUrls.push(sanitizeE2eNetworkUrl(request.url(), baseUrl));
     const url = new URL(request.url());
-    if (url.origin === baseUrl && url.pathname === "/login" && url.searchParams.has("_rsc")) {
+    if (url.origin === baseUrl && url.pathname === "/login" && url.searchParams.has("_rsc")
+      && request.headers()["next-router-prefetch"] === "1") {
       botConnectLoginPrefetches += 1;
     }
   };
@@ -2224,6 +2225,7 @@ try {
   fakeState.telegram.requests.length = 0;
   interfaceEvidence.botConnectTokenHygiene = {
     route: "/bot/connect?source=telegram",
+    loginPrefetches: botConnectLoginPrefetches,
     states: ["unknown", "malformed", "expired", "pending", "unauthorized", "connected", "reused-unavailable"],
     navigation: ["refresh", "back", "forward", "reopen"],
     historySteps: { back: botConnectBackSteps, forward: botConnectForwardSteps },
