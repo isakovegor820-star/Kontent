@@ -11,6 +11,58 @@ const flush = async () => { await act(async () => { await Promise.resolve(); });
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); vi.useRealTimers(); });
 
 describe("Sites AI recovery UI", () => {
+  it("keeps the add-site form compact for returning users and opens it on demand", async () => {
+    const fetcher = vi.fn(async (url: string) => {
+      if (url === "/api/sites") return Response.json({ sites: [site] });
+      if (url.endsWith("/destinations")) return Response.json({ destinations: [] });
+      return Response.json({ site, profile, reports: [report], latestAnalysis: null });
+    });
+    vi.stubGlobal("fetch", fetcher);
+    render(<SitesPage />); await flush(); await flush();
+    expect(screen.queryByRole("textbox", { name: "Адрес сайта" })).toBeNull();
+    expect(screen.getByRole("button", { name: "Настроить публикацию" })).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Добавить" }));
+    expect(screen.getByRole("textbox", { name: "Адрес сайта" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Скрыть" }).getAttribute("aria-expanded")).toBe("true");
+  });
+
+  it("shows a recoverable list error instead of a false empty state", async () => {
+    let attempts = 0;
+    const fetcher = vi.fn(async (url: string) => {
+      if (url === "/api/sites") {
+        attempts += 1;
+        return attempts === 1
+          ? Response.json({ error: "server" }, { status: 503 })
+          : Response.json({ sites: [site] });
+      }
+      if (url.endsWith("/destinations")) return Response.json({ destinations: [] });
+      return Response.json({ site, profile, reports: [report], latestAnalysis: null });
+    });
+    vi.stubGlobal("fetch", fetcher);
+    render(<SitesPage />); await flush();
+    expect(screen.getByRole("alert").textContent).toContain("Не удалось загрузить список сайтов");
+    expect(screen.queryByText("Это будет первый сайт проекта")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Повторить" })); await flush(); await flush();
+    expect(screen.getByRole("button", { name: "Добавить" })).toBeTruthy();
+  });
+
+  it("surfaces a selected-site load failure and recovers in place", async () => {
+    let detailAttempts = 0;
+    const fetcher = vi.fn(async (url: string) => {
+      if (url === "/api/sites") return Response.json({ sites: [site] });
+      if (url.endsWith("/destinations")) return Response.json({ destinations: [] });
+      detailAttempts += 1;
+      return detailAttempts === 1
+        ? Response.json({ error: "server" }, { status: 503 })
+        : Response.json({ site, profile, reports: [report], latestAnalysis: null });
+    });
+    vi.stubGlobal("fetch", fetcher);
+    render(<SitesPage />); await flush(); await flush();
+    expect(screen.getByRole("alert").textContent).toContain("Не удалось загрузить сайт");
+    fireEvent.click(screen.getByRole("button", { name: "Повторить загрузку" })); await flush();
+    expect(screen.getByText("Тестовый профиль")).toBeTruthy();
+  });
+
   it("shows failure instead of a queue, retries the selected profile and updates its terminal status", async () => {
     vi.useFakeTimers();
     let state = { ...profile, refinedAt: null as string | null };
