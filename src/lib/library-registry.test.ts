@@ -63,6 +63,8 @@ describe("buildLibraryRegistrySnapshot", () => {
             source_post_count: "1",
             pending_idea_count: "2",
             ai_engine: "local",
+            last_collected_at: "2026-09-09T09:00:00.000Z",
+            failed_source_count: "1",
           }],
         };
       }
@@ -123,6 +125,8 @@ describe("buildLibraryRegistrySnapshot", () => {
       sourcePostCount: 1,
       readyIdeaCount: 1,
       pendingIdeaCount: 2,
+      lastCollectedAt: "2026-09-09T09:00:00.000Z",
+      failedSourceCount: 1,
     });
 
     const ideaSql = mocks.query.mock.calls
