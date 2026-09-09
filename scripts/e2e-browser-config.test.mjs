@@ -394,6 +394,14 @@ describe("real E2E browser configuration", () => {
         message: `/127.0.0.1:43190${path} due to access control checks.`,
       })?.detail).toBe(path);
     }
+    const calendarTrendPath = "/api/trends?scope=niche&period=week&channel=4";
+    expect(classifyE2eExpectedSessionExpiryWebKitPageError({
+      ...input,
+      message: `/127.0.0.1:43190${calendarTrendPath} due to access control checks.`,
+    })).toEqual({
+      kind: "session-expiry.webkit-cancelled-api-request",
+      detail: calendarTrendPath,
+    });
     for (const path of [
       "/api/studio/session",
       "/api/settings",
@@ -412,6 +420,9 @@ describe("real E2E browser configuration", () => {
       { engine: "firefox" },
       { eventKind: "console" },
       { message: "/127.0.0.1:43190/api/channels due to access control checks." },
+      { message: "/127.0.0.1:43190/api/trends?scope=global&period=week&channel=4 due to access control checks." },
+      { message: "/127.0.0.1:43190/api/trends?scope=niche&period=month&channel=4 due to access control checks." },
+      { message: "/127.0.0.1:43190/api/trends?scope=niche&period=week&channel=4&q=extra due to access control checks." },
       { message: "/127.0.0.1:43191/api/drafts due to access control checks." },
       { message: "/127.0.0.1:43190/api/drafts failed with 500" },
       { currentUrl: `${baseUrl}/app/today` },

@@ -301,6 +301,17 @@ export function classifyE2eExpectedSessionExpiryWebKitPageError({
   const originPrefix = `/127.0.0.1:${port}`;
   if (!requestTarget.startsWith(`${originPrefix}/`)) return null;
   const pathAndQuery = requestTarget.slice(originPrefix.length);
+  let expectedCalendarTrendRequest = false;
+  if (current.pathname === "/app/calendar") {
+    try {
+      const requestUrl = new URL(pathAndQuery, base);
+      expectedCalendarTrendRequest = requestUrl.pathname === "/api/trends"
+        && requestUrl.searchParams.get("scope") === "niche"
+        && requestUrl.searchParams.get("period") === "week"
+        && /^\d+$/u.test(requestUrl.searchParams.get("channel") || "")
+        && [...requestUrl.searchParams.keys()].sort().join(",") === "channel,period,scope";
+    } catch {}
+  }
   const expectedPaths = {
     "/app/calendar": ["/api/drafts", "/api/projects", "/api/projects/current"],
     "/app/studio": [
@@ -311,7 +322,7 @@ export function classifyE2eExpectedSessionExpiryWebKitPageError({
       "/api/posts",
     ],
   }[current.pathname];
-  if (!expectedPaths?.includes(pathAndQuery)) {
+  if (!expectedPaths?.includes(pathAndQuery) && !expectedCalendarTrendRequest) {
     return null;
   }
   return { kind: "session-expiry.webkit-cancelled-api-request", detail: pathAndQuery };

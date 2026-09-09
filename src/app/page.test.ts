@@ -17,7 +17,9 @@ describe("production landing page", () => {
     );
 
     expect(markup).toContain("Юридический контент с проверкой рисков и доказательств");
-    expect(markup).toContain("SMM-платформа для юридического контента");
+    expect(markup).not.toContain("SMM-платформа для юридического контента");
+    expect(markup).not.toMatch(/class="[^"]*eyebrow/);
+    expect(markup).not.toMatch(/class="[^"]*accessStatus/);
     expect(markup).toContain("Создать первый материал");
     expect(markup).toContain("Рабочий контур для юридической редакции");
     expect(markup).toContain("Планирование публикаций");
