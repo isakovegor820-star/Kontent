@@ -1,14 +1,16 @@
+import { normalizeRadarQuery } from "./radar-search.mjs";
+
 export const TREND_STAT_SOURCES = {
   own: {
     label: "Мои конкуренты",
     description: "Посты Telegram-каналов, которые ты добавил для выбранного канала.",
   },
   internet: {
-    label: "Интернет",
-    description: "Проверенные публикации из твоих поисков по открытым источникам.",
+    label: "Поиск по теме",
+    description: "Публичные Telegram-публикации по твоему запросу.",
   },
   collection: {
-    label: "Подборка платформы",
+    label: "Подборка Авроры",
     description: "Общая редакционная база проверенных публичных Telegram-каналов.",
   },
 } as const;
@@ -57,16 +59,104 @@ export function parseTrendStatPeriod(value: string | null | undefined): TrendSta
 }
 
 export function normalizeTrendTopic(value: unknown) {
-  return String(value ?? "")
-    .normalize("NFKC")
-    .toLocaleLowerCase("ru-RU")
-    .replace(/[^\p{L}\p{N}_-]+/gu, " ")
-    .replace(/\s+/gu, " ")
-    .trim()
-    .slice(0, 100);
+  return normalizeRadarQuery(value);
 }
 
 export function trendPercentChange(current: number, previous: number): number | null {
   if (!Number.isFinite(current) || !Number.isFinite(previous) || previous <= 0) return null;
   return Math.round(((current - previous) / previous) * 1000) / 10;
 }
+
+export const TREND_PAGE_SIZE = 24;
+export type TrendSort = "recent" | "views" | "ratio";
+export function parseTrendSort(value: string | null | undefined): TrendSort {
+  return value === "views" || value === "ratio" ? value : "recent";
+}
+
+export type TrendSearchRun = {
+  id: number;
+  query: string;
+  status: "queued" | "running" | "ready" | "partial" | "failed";
+  stage: string;
+  progress: number;
+  errorMessage: string | null;
+  createdAt: string;
+  completedAt: string | null;
+  period: TrendStatPeriod;
+};
+
+export type TrendFeedItem = {
+  id: number;
+  competitorId: number;
+  handle: string;
+  competitorTitle: string | null;
+  category: string | null;
+  msgId: number;
+  text: string | null;
+  views: number | null;
+  reactions: number | null;
+  photoUrl: string | null;
+  media: string | null;
+  postedAt: string;
+  measuredAt: string | null;
+  median: number | null;
+  baselinePosts: number;
+  ratio: number | null;
+  isMature: boolean;
+  link: string;
+  idea: {
+    id: number;
+    topic: string | null;
+    hook: string | null;
+    structure: string | null;
+    why: string | null;
+  } | null;
+};
+
+export type TrendStatsData = {
+  source: TrendStatSource;
+  sourceLabel: string;
+  sourceDescription: string;
+  period: TrendStatPeriod;
+  periodLabel: string;
+  topic: string;
+  channelId: number | null;
+  window: { from: string; to: string; timeZone: string };
+  search: TrendSearchRun | null;
+  summary: {
+    posts: number;
+    sources: number;
+    views: number | null;
+    reactions: number | null;
+    avgViews: number | null;
+    trends: number;
+    postsWithViews: number;
+    postsWithReactions: number;
+  };
+  coverage: {
+    undatedPosts: number;
+    futurePosts: number;
+    oldestMeasurementAt: string | null;
+    latestMeasurementAt: string | null;
+    comparisonAvailable: false;
+  };
+  series: { bucket: string; until: string; posts: number; views: number | null; postsWithViews: number }[];
+  topItems: TrendFeedItem[];
+  items: TrendFeedItem[];
+  pagination: { offset: number; limit: number; total: number; hasMore: boolean };
+  status: {
+    competitors: number;
+    ready: number;
+    pending: number;
+    error: number;
+    posts: number;
+    periodPosts: number;
+    lastCollectedAt: string | null;
+    latestPostAt: string | null;
+    refreshEveryHours: number;
+    matureHours: number;
+    minMature: number;
+    waiting: number;
+    niche: string | null;
+  };
+};

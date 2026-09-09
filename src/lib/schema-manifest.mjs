@@ -5,7 +5,7 @@
  */
 export const SCHEMA_MANIFEST = Object.freeze({
   manifestVersion: 1,
-  schemaVersion: "2026-10-11.111",
+  schemaVersion: "2026-10-13.112",
   migrations: Object.freeze([
     ["20260801_account_onboarding.sql", "ac0e1f10046cf620185570ab5f40437991d08513473f67d4e93bdafa07b86614"],
     ["20260801_ai_usage_reservations.sql", "991c3a92dce16df55011d9df52fb65af1a7f4310b27f61dc519705f05528d7a0"],
@@ -122,6 +122,7 @@ export const SCHEMA_MANIFEST = Object.freeze({
     ["20261009_admin_account_controls.sql", "98ea34adc3b732a85a8db2b4165d8cb648c163ac981d2a0a1505d3360317205e"],
     ["20261010_site_ai_interpretation.sql", "ba3501e703f7899996ce06aa24e10577048ac0bf7b2c9314482dc6caaf941dd4"],
     ["20261011_studio_sites_worker_leases.sql", "373af952f70e04dc1a414079542266570346f2c6a3f7724ec6442d03dbdc7fed"],
+    ["20261013_trends_search_scope.sql", "10c4ff380a975f7813d517c4ca202a25ca1aac84c0230f5ad1e190c20cbf1dc8"],
   ].map(([name, checksum, acceptedChecksums]) => Object.freeze({
     name,
     checksum,
@@ -261,6 +262,9 @@ export const SCHEMA_MANIFEST = Object.freeze({
       "site_visibility_probes",
     ]),
     columns: Object.freeze([
+      "radar_search_runs.project_id",
+      "radar_search_runs.search_scope",
+      "radar_search_runs.search_period",
       "users.onboarding_completed_at",
       "users.blocked_at",
       "users.blocked_reason",
@@ -759,6 +763,8 @@ export const SCHEMA_MANIFEST = Object.freeze({
       "knowledge_chunks.site_id",
     ]),
     constraints: Object.freeze([
+      "radar_search_runs.radar_search_runs_scope_check",
+      "radar_search_runs.radar_search_runs_period_check",
       "bot_user_controls.bot_user_controls_reason_check",
       "bot_project_controls.bot_project_controls_reason_check",
       "bot_delivery_events.bot_delivery_events_method_check",
@@ -1105,6 +1111,7 @@ export const SCHEMA_MANIFEST = Object.freeze({
       "knowledge_chunks.knowledge_chunks_owner_check",
     ]),
     indexes: Object.freeze([
+      "radar_search_runs.radar_search_runs_topic_idx",
       "ai_usage.ai_usage_user_reservation_key_uniq",
       "autopilot_settings.autopilot_settings_pkey",
       "autopilot_settings.autopilot_settings_user_channel_uniq",

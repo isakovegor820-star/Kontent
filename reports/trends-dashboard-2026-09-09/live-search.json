@@ -1,0 +1,532 @@
+{
+  "source": "internet",
+  "sourceLabel": "Поиск по теме",
+  "sourceDescription": "Публичные Telegram-публикации по твоему запросу.",
+  "period": "month",
+  "periodLabel": "30 дней",
+  "topic": "искусственный интеллект",
+  "channelId": 3,
+  "window": {
+    "to": "2026-09-09T20:05:04.002558+04:00",
+    "from": "2026-08-11T01:00:00+04:00",
+    "timeZone": "Europe/Moscow"
+  },
+  "search": {
+    "id": 15,
+    "query": "искусственный интеллект",
+    "stage": "ready",
+    "period": "month",
+    "status": "partial",
+    "progress": 100,
+    "createdAt": "2026-09-09T20:04:37.824441+04:00",
+    "completedAt": "2026-09-09T20:05:02.284395+04:00",
+    "errorMessage": "Собрана часть доступных публикаций: некоторые источники не ответили или достигнут предел проверки истории. Можно повторить поиск."
+  },
+  "summary": {
+    "posts": 17,
+    "views": 42712,
+    "trends": 0,
+    "sources": 5,
+    "avgViews": 2512,
+    "reactions": 512,
+    "postsWithViews": 17,
+    "postsWithReactions": 15
+  },
+  "coverage": {
+    "futurePosts": 0,
+    "undatedPosts": 0,
+    "comparisonAvailable": false,
+    "latestMeasurementAt": "2026-09-09T20:05:02.092835+04:00",
+    "oldestMeasurementAt": "2026-09-09T20:04:47.785076+04:00"
+  },
+  "series": [
+    {
+      "posts": 0,
+      "until": "2026-08-12T01:00:00+04:00",
+      "views": null,
+      "bucket": "2026-08-11T01:00:00+04:00",
+      "postsWithViews": 0
+    },
+    {
+      "posts": 1,
+      "until": "2026-08-13T01:00:00+04:00",
+      "views": 6310,
+      "bucket": "2026-08-12T01:00:00+04:00",
+      "postsWithViews": 1
+    },
+    {
+      "posts": 1,
+      "until": "2026-08-14T01:00:00+04:00",
+      "views": 207,
+      "bucket": "2026-08-13T01:00:00+04:00",
+      "postsWithViews": 1
+    },
+    {
+      "posts": 0,
+      "until": "2026-08-15T01:00:00+04:00",
+      "views": null,
+      "bucket": "2026-08-14T01:00:00+04:00",
+      "postsWithViews": 0
+    },
+    {
+      "posts": 0,
+      "until": "2026-08-16T01:00:00+04:00",
+      "views": null,
+      "bucket": "2026-08-15T01:00:00+04:00",
+      "postsWithViews": 0
+    },
+    {
+      "posts": 0,
+      "until": "2026-08-17T01:00:00+04:00",
+      "views": null,
+      "bucket": "2026-08-16T01:00:00+04:00",
+      "postsWithViews": 0
+    },
+    {
+      "posts": 1,
+      "until": "2026-08-18T01:00:00+04:00",
+      "views": 6470,
+      "bucket": "2026-08-17T01:00:00+04:00",
+      "postsWithViews": 1
+    },
+    {
+      "posts": 0,
+      "until": "2026-08-19T01:00:00+04:00",
+      "views": null,
+      "bucket": "2026-08-18T01:00:00+04:00",
+      "postsWithViews": 0
+    },
+    {
+      "posts": 0,
+      "until": "2026-08-20T01:00:00+04:00",
+      "views": null,
+      "bucket": "2026-08-19T01:00:00+04:00",
+      "postsWithViews": 0
+    },
+    {
+      "posts": 0,
+      "until": "2026-08-21T01:00:00+04:00",
+      "views": null,
+      "bucket": "2026-08-20T01:00:00+04:00",
+      "postsWithViews": 0
+    },
+    {
+      "posts": 0,
+      "until": "2026-08-22T01:00:00+04:00",
+      "views": null,
+      "bucket": "2026-08-21T01:00:00+04:00",
+      "postsWithViews": 0
+    },
+    {
+      "posts": 0,
+      "until": "2026-08-23T01:00:00+04:00",
+      "views": null,
+      "bucket": "2026-08-22T01:00:00+04:00",
+      "postsWithViews": 0
+    },
+    {
+      "posts": 0,
+      "until": "2026-08-24T01:00:00+04:00",
+      "views": null,
+      "bucket": "2026-08-23T01:00:00+04:00",
+      "postsWithViews": 0
+    },
+    {
+      "posts": 2,
+      "until": "2026-08-25T01:00:00+04:00",
+      "views": 6540,
+      "bucket": "2026-08-24T01:00:00+04:00",
+      "postsWithViews": 2
+    },
+    {
+      "posts": 0,
+      "until": "2026-08-26T01:00:00+04:00",
+      "views": null,
+      "bucket": "2026-08-25T01:00:00+04:00",
+      "postsWithViews": 0
+    },
+    {
+      "posts": 2,
+      "until": "2026-08-27T01:00:00+04:00",
+      "views": 377,
+      "bucket": "2026-08-26T01:00:00+04:00",
+      "postsWithViews": 2
+    },
+    {
+      "posts": 0,
+      "until": "2026-08-28T01:00:00+04:00",
+      "views": null,
+      "bucket": "2026-08-27T01:00:00+04:00",
+      "postsWithViews": 0
+    },
+    {
+      "posts": 1,
+      "until": "2026-08-29T01:00:00+04:00",
+      "views": 115,
+      "bucket": "2026-08-28T01:00:00+04:00",
+      "postsWithViews": 1
+    },
+    {
+      "posts": 0,
+      "until": "2026-08-30T01:00:00+04:00",
+      "views": null,
+      "bucket": "2026-08-29T01:00:00+04:00",
+      "postsWithViews": 0
+    },
+    {
+      "posts": 0,
+      "until": "2026-08-31T01:00:00+04:00",
+      "views": null,
+      "bucket": "2026-08-30T01:00:00+04:00",
+      "postsWithViews": 0
+    },
+    {
+      "posts": 2,
+      "until": "2026-09-01T01:00:00+04:00",
+      "views": 6187,
+      "bucket": "2026-08-31T01:00:00+04:00",
+      "postsWithViews": 2
+    },
+    {
+      "posts": 0,
+      "until": "2026-09-02T01:00:00+04:00",
+      "views": null,
+      "bucket": "2026-09-01T01:00:00+04:00",
+      "postsWithViews": 0
+    },
+    {
+      "posts": 0,
+      "until": "2026-09-03T01:00:00+04:00",
+      "views": null,
+      "bucket": "2026-09-02T01:00:00+04:00",
+      "postsWithViews": 0
+    },
+    {
+      "posts": 2,
+      "until": "2026-09-04T01:00:00+04:00",
+      "views": 5212,
+      "bucket": "2026-09-03T01:00:00+04:00",
+      "postsWithViews": 2
+    },
+    {
+      "posts": 2,
+      "until": "2026-09-05T01:00:00+04:00",
+      "views": 296,
+      "bucket": "2026-09-04T01:00:00+04:00",
+      "postsWithViews": 2
+    },
+    {
+      "posts": 0,
+      "until": "2026-09-06T01:00:00+04:00",
+      "views": null,
+      "bucket": "2026-09-05T01:00:00+04:00",
+      "postsWithViews": 0
+    },
+    {
+      "posts": 0,
+      "until": "2026-09-07T01:00:00+04:00",
+      "views": null,
+      "bucket": "2026-09-06T01:00:00+04:00",
+      "postsWithViews": 0
+    },
+    {
+      "posts": 2,
+      "until": "2026-09-08T01:00:00+04:00",
+      "views": 6548,
+      "bucket": "2026-09-07T01:00:00+04:00",
+      "postsWithViews": 2
+    },
+    {
+      "posts": 1,
+      "until": "2026-09-09T01:00:00+04:00",
+      "views": 4450,
+      "bucket": "2026-09-08T01:00:00+04:00",
+      "postsWithViews": 1
+    },
+    {
+      "posts": 0,
+      "until": "2026-09-09T20:05:04.002558+04:00",
+      "views": null,
+      "bucket": "2026-09-09T01:00:00+04:00",
+      "postsWithViews": 0
+    }
+  ],
+  "pagination": {
+    "offset": 0,
+    "limit": 24,
+    "total": 17,
+    "hasMore": false
+  },
+  "status": {
+    "error": 0,
+    "niche": null,
+    "posts": 50,
+    "ready": 7,
+    "pending": 0,
+    "waiting": 0,
+    "minMature": 5,
+    "competitors": 7,
+    "matureHours": 48,
+    "periodPosts": 17,
+    "latestPostAt": "2026-09-08T19:22:07+04:00",
+    "lastCollectedAt": "2026-09-09T20:04:47.785076+04:00",
+    "refreshEveryHours": 2
+  },
+  "items": [
+    {
+      "link": "https://t.me/vistehno/5587",
+      "handle": "vistehno",
+      "views": 4450,
+      "reactions": 21,
+      "postedAt": "2026-09-08T19:22:07+04:00",
+      "measuredAt": "2026-09-09T20:04:48.654716+04:00",
+      "median": null,
+      "baselinePosts": 186,
+      "ratio": null
+    },
+    {
+      "link": "https://t.me/irinamuhinaexpert/32228",
+      "handle": "irinamuhinaexpert",
+      "views": 98,
+      "reactions": null,
+      "postedAt": "2026-09-07T22:24:45+04:00",
+      "measuredAt": "2026-09-09T20:04:47.785076+04:00",
+      "median": null,
+      "baselinePosts": 192,
+      "ratio": null
+    },
+    {
+      "link": "https://t.me/webstrangler/4936",
+      "handle": "webstrangler",
+      "views": 6450,
+      "reactions": 82,
+      "postedAt": "2026-09-07T18:39:01+04:00",
+      "measuredAt": "2026-09-09T20:04:53.841974+04:00",
+      "median": 7170,
+      "baselinePosts": 83,
+      "ratio": 0.9
+    },
+    {
+      "link": "https://t.me/irinamuhinaexpert/32206",
+      "handle": "irinamuhinaexpert",
+      "views": 145,
+      "reactions": 4,
+      "postedAt": "2026-09-04T22:13:40+04:00",
+      "measuredAt": "2026-09-09T20:04:47.803692+04:00",
+      "median": 158,
+      "baselinePosts": 192,
+      "ratio": 0.92
+    },
+    {
+      "link": "https://t.me/irinamuhinaexpert/32203",
+      "handle": "irinamuhinaexpert",
+      "views": 151,
+      "reactions": 2,
+      "postedAt": "2026-09-04T02:51:37+04:00",
+      "measuredAt": "2026-09-09T20:04:47.8147+04:00",
+      "median": 158,
+      "baselinePosts": 192,
+      "ratio": 0.96
+    },
+    {
+      "link": "https://t.me/yabrowser/1874",
+      "handle": "yabrowser",
+      "views": 4990,
+      "reactions": 30,
+      "postedAt": "2026-09-03T14:39:25+04:00",
+      "measuredAt": "2026-09-09T20:05:02.092835+04:00",
+      "median": 9930,
+      "baselinePosts": 90,
+      "ratio": 0.5
+    },
+    {
+      "link": "https://t.me/oipi_nanb/1158",
+      "handle": "oipi_nanb",
+      "views": 222,
+      "reactions": 7,
+      "postedAt": "2026-09-03T12:20:41+04:00",
+      "measuredAt": "2026-09-09T20:04:54.11386+04:00",
+      "median": 270,
+      "baselinePosts": 80,
+      "ratio": 0.82
+    },
+    {
+      "link": "https://t.me/webstrangler/4929",
+      "handle": "webstrangler",
+      "views": 6080,
+      "reactions": 86,
+      "postedAt": "2026-08-31T17:46:01+04:00",
+      "measuredAt": "2026-09-09T20:04:53.84586+04:00",
+      "median": 7170,
+      "baselinePosts": 83,
+      "ratio": 0.85
+    },
+    {
+      "link": "https://t.me/irinamuhinaexpert/32182",
+      "handle": "irinamuhinaexpert",
+      "views": 107,
+      "reactions": 2,
+      "postedAt": "2026-08-31T06:38:20+04:00",
+      "measuredAt": "2026-09-09T20:04:47.817587+04:00",
+      "median": 158,
+      "baselinePosts": 192,
+      "ratio": 0.68
+    },
+    {
+      "link": "https://t.me/irinamuhinaexpert/32128",
+      "handle": "irinamuhinaexpert",
+      "views": 115,
+      "reactions": 5,
+      "postedAt": "2026-08-28T05:20:45+04:00",
+      "measuredAt": "2026-09-09T20:04:47.827461+04:00",
+      "median": 158,
+      "baselinePosts": 192,
+      "ratio": 0.73
+    },
+    {
+      "link": "https://t.me/irinamuhinaexpert/32092",
+      "handle": "irinamuhinaexpert",
+      "views": 108,
+      "reactions": 1,
+      "postedAt": "2026-08-26T17:22:17+04:00",
+      "measuredAt": "2026-09-09T20:04:47.83081+04:00",
+      "median": 158,
+      "baselinePosts": 192,
+      "ratio": 0.68
+    },
+    {
+      "link": "https://t.me/oipi_nanb/1146",
+      "handle": "oipi_nanb",
+      "views": 269,
+      "reactions": 7,
+      "postedAt": "2026-08-26T14:01:05+04:00",
+      "measuredAt": "2026-09-09T20:04:54.14859+04:00",
+      "median": 270,
+      "baselinePosts": 80,
+      "ratio": 1
+    },
+    {
+      "link": "https://t.me/webstrangler/4921",
+      "handle": "webstrangler",
+      "views": 6300,
+      "reactions": 83,
+      "postedAt": "2026-08-24T18:07:28+04:00",
+      "measuredAt": "2026-09-09T20:04:53.871061+04:00",
+      "median": 7170,
+      "baselinePosts": 83,
+      "ratio": 0.88
+    },
+    {
+      "link": "https://t.me/oipi_nanb/1144",
+      "handle": "oipi_nanb",
+      "views": 240,
+      "reactions": 8,
+      "postedAt": "2026-08-24T15:36:57+04:00",
+      "measuredAt": "2026-09-09T20:04:54.122657+04:00",
+      "median": 270,
+      "baselinePosts": 80,
+      "ratio": 0.89
+    },
+    {
+      "link": "https://t.me/webstrangler/4915",
+      "handle": "webstrangler",
+      "views": 6470,
+      "reactions": 94,
+      "postedAt": "2026-08-17T17:18:02+04:00",
+      "measuredAt": "2026-09-09T20:04:53.873596+04:00",
+      "median": 7170,
+      "baselinePosts": 83,
+      "ratio": 0.9
+    },
+    {
+      "link": "https://t.me/irinamuhinaexpert/32012",
+      "handle": "irinamuhinaexpert",
+      "views": 207,
+      "reactions": null,
+      "postedAt": "2026-08-13T18:04:30+04:00",
+      "measuredAt": "2026-09-09T20:04:47.834761+04:00",
+      "median": 158,
+      "baselinePosts": 192,
+      "ratio": 1.31
+    },
+    {
+      "link": "https://t.me/webstrangler/4906",
+      "handle": "webstrangler",
+      "views": 6310,
+      "reactions": 80,
+      "postedAt": "2026-08-12T18:24:01+04:00",
+      "measuredAt": "2026-09-09T20:04:53.896917+04:00",
+      "median": 7170,
+      "baselinePosts": 83,
+      "ratio": 0.88
+    }
+  ],
+  "topItems": [
+    {
+      "link": "https://t.me/webstrangler/4915",
+      "handle": "webstrangler",
+      "views": 6470,
+      "reactions": 94,
+      "postedAt": "2026-08-17T17:18:02+04:00",
+      "measuredAt": "2026-09-09T20:04:53.873596+04:00",
+      "median": 7170,
+      "baselinePosts": 83,
+      "ratio": 0.9
+    },
+    {
+      "link": "https://t.me/yabrowser/1874",
+      "handle": "yabrowser",
+      "views": 4990,
+      "reactions": 30,
+      "postedAt": "2026-09-03T14:39:25+04:00",
+      "measuredAt": "2026-09-09T20:05:02.092835+04:00",
+      "median": 9930,
+      "baselinePosts": 90,
+      "ratio": 0.5
+    },
+    {
+      "link": "https://t.me/vistehno/5587",
+      "handle": "vistehno",
+      "views": 4450,
+      "reactions": 21,
+      "postedAt": "2026-09-08T19:22:07+04:00",
+      "measuredAt": "2026-09-09T20:04:48.654716+04:00",
+      "median": null,
+      "baselinePosts": 186,
+      "ratio": null
+    },
+    {
+      "link": "https://t.me/oipi_nanb/1146",
+      "handle": "oipi_nanb",
+      "views": 269,
+      "reactions": 7,
+      "postedAt": "2026-08-26T14:01:05+04:00",
+      "measuredAt": "2026-09-09T20:04:54.14859+04:00",
+      "median": 270,
+      "baselinePosts": 80,
+      "ratio": 1
+    },
+    {
+      "link": "https://t.me/irinamuhinaexpert/32012",
+      "handle": "irinamuhinaexpert",
+      "views": 207,
+      "reactions": null,
+      "postedAt": "2026-08-13T18:04:30+04:00",
+      "measuredAt": "2026-09-09T20:04:47.834761+04:00",
+      "median": 158,
+      "baselinePosts": 192,
+      "ratio": 1.31
+    },
+    {
+      "link": "https://t.me/webstrangler/4936",
+      "handle": "webstrangler",
+      "views": 6450,
+      "reactions": 82,
+      "postedAt": "2026-09-07T18:39:01+04:00",
+      "measuredAt": "2026-09-09T20:04:53.841974+04:00",
+      "median": 7170,
+      "baselinePosts": 83,
+      "ratio": 0.9
+    }
+  ]
+}

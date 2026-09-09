@@ -1,0 +1,10 @@
+{
+  "controlledFixtures": true,
+  "desktop": true,
+  "mobile": true,
+  "mobileQuarter": true,
+  "pagination": true,
+  "queryPreserved": true,
+  "partialState": true,
+  "pageErrors": []
+}
