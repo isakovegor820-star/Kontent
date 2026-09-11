@@ -3932,7 +3932,7 @@ try {
   assert(trackingAfterReload.version === trackingVerified.version && trackingAfterReload.verifiedAt === trackingVerified.verifiedAt, "reopening settings changed the saved verification");
 
   await page.goto("/app/settings?section=project");
-  await page.getByRole("heading", { name: "Проект и команда", exact: true }).waitFor({ timeout: UI_WAIT_TIMEOUT_MS });
+  await page.getByRole("heading", { name: "Команда и рабочие пространства", exact: true }).waitFor({ timeout: UI_WAIT_TIMEOUT_MS });
   await page.locator('[data-project-team-interactive="true"]').waitFor({ timeout: UI_WAIT_TIMEOUT_MS });
   const inviteEmailInput = page.locator("#project-invite-email");
   await inviteEmailInput.fill(reviewerEmail);
