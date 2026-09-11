@@ -1,5 +1,6 @@
 "use client";
 
+import { SettingsSaveBar } from "@/components/app/settings-save-bar";
 import { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
 import {
@@ -7,14 +8,12 @@ import {
   Check,
   LogOut,
   Mail,
-  RotateCcw,
-  Save,
   ShieldCheck,
   Smartphone,
 } from "lucide-react";
 
 import { Button, buttonClassName } from "@/components/ui/button";
-import { Badge, Card } from "@/components/ui/primitives";
+import { Card } from "@/components/ui/primitives";
 import {
   DEFAULT_NOTIFICATION_PREFERENCES,
   NOTIFICATION_CHANNELS,
@@ -110,11 +109,12 @@ export function NotificationSecuritySettings() {
 
   return (
     <div className="space-y-5" data-settings-dirty={dirty ? "true" : "false"}>
-      <Card as="section" className="overflow-hidden">
+      <SettingsSaveBar dirty={dirty} saving={saving} scope="Аккаунт · доставка уведомлений, в том числе о безопасности и ошибках публикации." label="Сохранить уведомления" onSave={() => void save()} onCancel={() => { setDraft(saved ?? DEFAULT_NOTIFICATION_PREFERENCES); setError(""); setMessage("Изменения отменены."); }} />
+      <Card as="section" data-setting-target="notifications" className="overflow-clip">
         <header className="flex flex-wrap items-start justify-between gap-3 border-b border-line px-5 py-5 sm:px-7">
           <div className="flex items-start gap-3">
             <span className="grid h-10 w-10 place-items-center rounded-sm bg-info-soft text-brand"><Bell className="h-5 w-5" aria-hidden /></span>
-            <div><div className="flex flex-wrap items-center gap-2"><h2 className="text-[18px] font-extrabold text-text">Уведомления</h2>{dirty ? <Badge tone="fire">Не сохранено</Badge> : null}</div><p className="mt-1 text-[13px] text-text-3">Выбери события и удобный способ доставки.</p></div>
+            <div><div className="flex flex-wrap items-center gap-2"><h2 className="text-[18px] font-extrabold text-text">Уведомления</h2></div><p className="mt-1 text-[13px] text-text-3">Выбери события и удобный способ доставки.</p></div>
           </div>
           {savedAt ? <p className="text-[12px] text-text-3">Сохранено в {new Intl.DateTimeFormat("ru-RU", { hour: "2-digit", minute: "2-digit" }).format(new Date(savedAt))}</p> : null}
         </header>
@@ -131,16 +131,13 @@ export function NotificationSecuritySettings() {
               {!availability.telegram ? <p className="mt-4 rounded-sm bg-info-soft p-3 text-[12px] text-info-text">Подключи Telegram в разделе «Интеграции», чтобы получать сообщения в боте.</p> : null}
               {error ? <p role="alert" className="mt-4 text-[13px] text-danger-text">{error}</p> : null}
               {message ? <p role="status" className="mt-4 text-[13px] text-success-text">{message}</p> : null}
-              <div className="mt-5 flex flex-col-reverse gap-2 border-t border-line pt-5 sm:flex-row sm:justify-end">
-                <Button type="button" variant="ghost" disabled={!dirty || saving} onClick={() => { setDraft(saved ?? DEFAULT_NOTIFICATION_PREFERENCES); setMessage("Изменения отменены."); }}><RotateCcw className="h-4 w-4" aria-hidden />Отменить изменения</Button>
-                <Button type="button" variant="brand" loading={saving} disabled={!dirty} onClick={() => void save()}><Save className="h-4 w-4" aria-hidden />Сохранить уведомления</Button>
-              </div>
+
             </>
           )}
         </div>
       </Card>
 
-      <Card as="section" className="overflow-hidden">
+      <Card as="section" data-setting-target="security" className="overflow-hidden">
         <header className="flex items-start gap-3 border-b border-line px-5 py-5 sm:px-7"><span className="grid h-10 w-10 place-items-center rounded-sm bg-info-soft text-brand"><ShieldCheck className="h-5 w-5" aria-hidden /></span><div><h2 className="text-[18px] font-extrabold text-text">Безопасность</h2><p className="mt-1 text-[13px] text-text-3">Пароль и текущая сессия аккаунта.</p></div></header>
         <div className="flex flex-col gap-4 px-5 py-6 sm:flex-row sm:items-center sm:justify-between sm:px-7">
           <div><p className="text-[14px] font-bold text-text">Смена пароля</p><p className="mt-1 text-[12px] text-text-3">Новый пароль устанавливается после проверки email.</p></div>

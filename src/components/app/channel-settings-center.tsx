@@ -1,14 +1,12 @@
 "use client";
 
+import { SettingsSaveBar } from "@/components/app/settings-save-bar";
 import { createContext, useContext, useEffect, useRef, useState, type CSSProperties } from "react";
 import { useSearchParams } from "next/navigation";
 import {
   Check,
   ChevronDown,
-  Copy,
   FileText,
-  RotateCcw,
-  Save,
   Settings2,
   ShieldCheck,
   SlidersHorizontal,
@@ -151,6 +149,18 @@ function Segments<T extends string>({
               type="button"
               role="radio"
               aria-checked={active}
+              tabIndex={active || (!options.some((item) => item.value === value && !item.disabled) && option === options.find((item) => !item.disabled)) ? 0 : -1}
+              onKeyDown={(event) => {
+                if (!["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown", "Home", "End"].includes(event.key)) return;
+                event.preventDefault();
+                const enabled = options.filter((item) => !item.disabled);
+                const index = enabled.findIndex((item) => item.value === option.value);
+                const next = event.key === "Home" ? enabled[0] : event.key === "End" ? enabled[enabled.length - 1] : enabled[(index + (["ArrowLeft", "ArrowUp"].includes(event.key) ? -1 : 1) + enabled.length) % enabled.length];
+                if (!next) return;
+                onChange(next.value);
+                const buttons = event.currentTarget.parentElement?.querySelectorAll<HTMLButtonElement>('[role="radio"]');
+                buttons?.[options.indexOf(next)]?.focus();
+              }}
               disabled={option.disabled}
               onClick={() => onChange(option.value)}
               className={cn(
@@ -379,8 +389,6 @@ export function ChannelSettingsCenter({ view = "content" }: { view?: ChannelSett
   const [styleText, setStyleText] = useState("");
   const [analysis, setAnalysis] = useState<StyleTrainingResult | null>(null);
   const [pendingChannel, setPendingChannel] = useState<number | null>(null);
-  const [copyTarget, setCopyTarget] = useState<number | null>(null);
-  const [copyOpen, setCopyOpen] = useState(false);
   const editorRef = useRef<HTMLDivElement>(null);
 
   const dirty = Boolean(saved && draft && JSON.stringify(saved) !== JSON.stringify(draft));
@@ -607,34 +615,6 @@ export function ChannelSettingsCenter({ view = "content" }: { view?: ChannelSett
     });
   };
 
-  const copyConfiguration = async () => {
-    if (!saved || !copyTarget) return;
-    const target = tgChannels.find((channel) => channel.id === copyTarget);
-    try {
-      const response = await fetch("/api/settings/channel", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({
-          channelId: copyTarget,
-          brief: { ...saved.brief, source: "manual" },
-          settings: { ...saved.settings, enabled: false, mode: "confirm" },
-        }),
-      });
-      const body = (await response.json().catch(() => null)) as { ok?: boolean } | null;
-      if (!response.ok || !body?.ok) throw new Error("copy_failed");
-      store.toast({
-        kind: "success",
-        title: "Профиль скопирован",
-        body: `Для «${target ? channelName(target) : "канала"}» автопилот оставлен выключенным до проверки.`,
-      });
-    } catch {
-      store.toast({ kind: "danger", title: "Не удалось скопировать профиль" });
-    } finally {
-      setCopyTarget(null);
-      setCopyOpen(false);
-    }
-  };
-
   if (!store.realReady) {
     return <div className="skeleton h-72 rounded-lg" />;
   }
@@ -652,6 +632,9 @@ export function ChannelSettingsCenter({ view = "content" }: { view?: ChannelSett
   return (
     <ChannelSettingsViewContext.Provider value={view}>
     <div className="space-y-5" data-settings-dirty={dirty ? "true" : "false"}>
+      <SettingsSaveBar dirty={dirty} saving={saving} scope={`${view === "autopilot" ? "Автопилот" : "Контент и стиль"} · ${activeChannel ? channelName(activeChannel) : "канал"}. Изменения начнут действовать после сохранения.`}
+        label={view === "autopilot" ? "Сохранить автопилот" : "Сохранить контент и стиль"}
+        onSave={() => void save()} onCancel={() => { if (saved) { setDraft(saved); setStyleText(saved.brief.quality.styleExamples.join("\n---\n")); setAnalysis(null); } }} />
       <ChannelPicker
         channels={tgChannels}
         value={channelId}
@@ -671,14 +654,13 @@ export function ChannelSettingsCenter({ view = "content" }: { view?: ChannelSett
         </Card>
       ) : (
         <>
-          <Card className="overflow-hidden bg-[linear-gradient(135deg,rgba(238,242,255,.92),rgba(250,245,255,.88))]">
+          <Card className="overflow-hidden bg-surface">
             <div className="flex flex-col gap-5 p-5 sm:p-6 lg:flex-row lg:items-start lg:justify-between">
               <div className="min-w-0">
                 <div className="flex flex-wrap items-center gap-2">
                   <Badge tone={saved.settings.enabled ? "success" : "neutral"}>
                     {saved.settings.enabled ? "Автопилот включён" : "Автопилот выключен"}
                   </Badge>
-                  <Badge tone="brand">Сохранено на сервере</Badge>
                 </div>
                 <h2 className="mt-3 text-[20px] font-extrabold tracking-tight text-text">
                   {view === "autopilot" ? "Автопилот канала" : "Контент и стиль канала"}
@@ -699,38 +681,20 @@ export function ChannelSettingsCenter({ view = "content" }: { view?: ChannelSett
                   size="sm"
                   disabled={saving}
                   onClick={() => {
-                    editorRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
-                    if (view === "autopilot") {
-                      document.getElementById("channel-autopilot-enabled")?.focus({ preventScroll: true });
-                    }
+                    editorRef.current?.scrollIntoView({ behavior: "instant", block: "start" });
+                    if (view === "autopilot") document.getElementById("channel-autopilot-enabled")?.focus({ preventScroll: true });
                   }}
                 >
                   <Settings2 className="h-4 w-4" aria-hidden />
-                  {view === "autopilot" ? "К настройкам" : "Изменить"}
+                  К параметрам
                 </Button>
-                {view === "content" && tgChannels.length > 1 && (
-                  <Button variant="ghost" size="sm" onClick={() => setCopyOpen((current) => !current)}>
-                    <Copy className="h-4 w-4" aria-hidden />
-                    Скопировать
-                  </Button>
-                )}
+
               </div>
             </div>
-            {view === "content" && copyOpen && (
-              <div className="border-t border-line bg-surface/65 px-5 py-4 sm:px-6">
-                <p className="text-[12px] font-bold text-text">В какой канал скопировать профиль?</p>
-                <div className="mt-2 flex flex-wrap gap-2">
-                  {tgChannels.filter((channel) => channel.id !== channelId).map((channel) => (
-                    <Button key={channel.id} variant="soft" size="sm" onClick={() => setCopyTarget(channel.id)}>
-                      {channelName(channel)}
-                    </Button>
-                  ))}
-                </div>
-              </div>
-            )}
+
           </Card>
 
-          <div ref={editorRef} className="scroll-mt-24">
+          <div inert={saving} ref={editorRef} className="scroll-mt-24">
           <Card className="overflow-hidden" as="section">
             <div className="border-b border-line px-5 py-5 sm:px-6">
               <div className="flex items-start gap-3">
@@ -1710,40 +1674,6 @@ export function ChannelSettingsCenter({ view = "content" }: { view?: ChannelSett
               )}
             </SettingsGroup>
 
-            <div className={cn(
-              "flex flex-col gap-3 bg-surface/95 px-5 py-4 backdrop-blur-xl sm:flex-row sm:items-center sm:justify-between sm:px-6",
-              dirty && "sticky bottom-[calc(4.5rem+env(safe-area-inset-bottom))] z-20 border-t border-brand/20 shadow-float lg:bottom-0",
-            )}>
-              <div>
-                <p className="text-[13px] font-bold text-text">
-                  {dirty ? "Есть несохранённые изменения" : "Все изменения сохранены"}
-                </p>
-                <p className="mt-0.5 text-[11px] text-text-3">
-                  {dirty ? "Они ещё не влияют на генерации и автопилот." : "Аврора использует этот профиль в следующих публикациях."}
-                </p>
-              </div>
-              <div className="flex flex-wrap gap-2">
-                {dirty && (
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    disabled={saving}
-                    onClick={() => {
-                      setDraft(saved);
-                      setStyleText(saved.brief.quality.styleExamples.join("\n---\n"));
-                      setAnalysis(null);
-                    }}
-                  >
-                    <RotateCcw className="h-4 w-4" aria-hidden />
-                    Отменить
-                  </Button>
-                )}
-                <Button variant="brand" size="sm" loading={saving} disabled={!dirty || saving} onClick={() => void save()}>
-                  <Save className="h-4 w-4" aria-hidden />
-                  {view === "autopilot" ? "Сохранить автопилот" : "Сохранить контент и стиль"}
-                </Button>
-              </div>
-            </div>
           </Card>
           </div>
         </>
@@ -1760,14 +1690,7 @@ export function ChannelSettingsCenter({ view = "content" }: { view?: ChannelSett
           setPendingChannel(null);
         }}
       />
-      <ConfirmDialog
-        open={copyTarget != null}
-        title="Заменить настройки другого канала?"
-        description="Скопируем сохранённый профиль. Автопилот в целевом канале останется выключенным, пока ты не проверишь настройки."
-        confirmLabel="Скопировать профиль"
-        onCancel={() => setCopyTarget(null)}
-        onConfirm={() => void copyConfiguration()}
-      />
+
     </div>
     </ChannelSettingsViewContext.Provider>
   );

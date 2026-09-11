@@ -55,7 +55,7 @@ describe("Autopilot channel settings", () => {
     expect(slider("Эмодзи").value).toBe("2");
     expect((screen.getByRole("combobox", { name: "Модель для постов" }) as HTMLSelectElement).value).toBe("navy-deepseek-pro");
     expect(screen.getByRole("switch").getAttribute("aria-checked")).toBe("true");
-    expect(saveButton().disabled).toBe(true);
+    expect(screen.queryByRole("button", { name: "Сохранить автопилот" })).toBeNull();
     expect(mocks.fetch).toHaveBeenCalledTimes(1);
   });
 
@@ -79,7 +79,7 @@ describe("Autopilot channel settings", () => {
       quick_settings: { newsPerWeek: 1, detail: 3, energy: 1, emoji: 0 },
     });
     expect(slider("Постов в неделю").value).toBe("3");
-    expect(saveButton().disabled).toBe(true);
+    expect(screen.queryByRole("button", { name: "Сохранить автопилот" })).toBeNull();
   });
 
   it("opens settings immediately after switching channels or returning from content", async () => {
@@ -107,6 +107,6 @@ describe("Autopilot channel settings", () => {
     expect(saveButton().disabled).toBe(false);
     fireEvent.click(screen.getByRole("button", { name: "Отменить" }));
     expect(slider("Подача").value).toBe("2");
-    expect(saveButton().disabled).toBe(true);
+    expect(screen.queryByRole("button", { name: "Сохранить автопилот" })).toBeNull();
   });
 });

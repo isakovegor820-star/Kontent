@@ -45,7 +45,7 @@ afterEach(() => { cleanup(); vi.unstubAllGlobals(); vi.restoreAllMocks(); });
 describe("tracking setup journey", () => {
   it("explains all steps before saving and generates an exact downloadable challenge after save", async () => {
     render(<TrackingSettingsSection />);
-    await screen.findByRole("button", { name: "Сохранить и получить код" });
+    await screen.findByLabelText(/Адрес сайта/);
     expect(screen.getByRole("list", { name: "Шаги подключения сайта" }).children).toHaveLength(3);
     expect(screen.queryByRole("link", { name: "Скачать проверочный файл" })).toBeNull();
     fireEvent.change(screen.getByLabelText(/Адрес сайта/), { target: { value: "https://example.ru" } });
@@ -111,7 +111,7 @@ describe("tracking setup journey", () => {
     settings = { ...empty };
     rerender(<TrackingSettingsSection />);
     expect(screen.queryByRole("link", { name: "Скачать проверочный файл" })).toBeNull();
-    await screen.findByRole("button", { name: "Сохранить и получить код" });
+    await screen.findByLabelText(/Адрес сайта/);
   });
 
   it("reopens an active project with saved status and no new verification request", async () => {

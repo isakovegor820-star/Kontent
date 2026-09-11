@@ -36,6 +36,26 @@ export type AccountProfile = {
   theme: AccountTheme;
 };
 
+export const ACCOUNT_PROFILE_EDITABLE_FIELDS = [
+  "firstName", "lastName", "displayName", "jobTitle", "bio", "avatar", "locale", "timezone", "theme",
+] as const;
+export type AccountProfilePatch = Partial<Pick<AccountProfile, (typeof ACCOUNT_PROFILE_EDITABLE_FIELDS)[number]>>;
+
+/** Partial writes never reset unrelated profile fields or verified contacts. */
+export function parseAccountProfilePatch(value: unknown):
+  | { ok: true; value: AccountProfilePatch }
+  | { ok: false; error: string } {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return { ok: false, error: "bad_profile" };
+  const input = value as Record<string, unknown>;
+  const keys = Object.keys(input);
+  if (!keys.length || keys.some((key) => !(ACCOUNT_PROFILE_EDITABLE_FIELDS as readonly string[]).includes(key) || typeof input[key] !== "string")) {
+    return { ok: false, error: "bad_profile" };
+  }
+  const parsed = parseAccountProfileUpdate({ displayName: "Пользователь", locale: "ru", timezone: "UTC", theme: "system", ...input });
+  if (!parsed.ok) return parsed;
+  return { ok: true, value: Object.fromEntries(keys.map((key) => [key, parsed.value[key as keyof typeof parsed.value]])) };
+}
+
 export const DEFAULT_NOTIFICATION_PREFERENCES: NotificationPreferences = {
   publication_ready: { inApp: true, email: true, telegram: true },
   publication_result: { inApp: true, email: true, telegram: true },

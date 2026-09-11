@@ -1,5 +1,6 @@
 "use client";
 
+import { SettingsSaveBar } from "@/components/app/settings-save-bar";
 import { useEffect, useMemo, useState } from "react";
 import {
   ArrowRightLeft,
@@ -8,8 +9,6 @@ import {
   Copy,
   FolderKanban,
   Play,
-  RotateCcw,
-  Save,
   Sparkles,
 } from "lucide-react";
 
@@ -72,20 +71,23 @@ export function ProjectBasicsSection() {
   };
 
   return (
-    <Card as="section" className="overflow-hidden" data-settings-dirty={dirty ? "true" : "false"}>
-      <header className="flex items-start gap-3 border-b border-line px-5 py-5 sm:px-7"><span className="grid h-10 w-10 place-items-center rounded-sm bg-info-soft text-brand"><FolderKanban className="h-5 w-5" aria-hidden /></span><div><div className="flex flex-wrap items-center gap-2"><h2 className="text-[18px] font-extrabold text-text">Проект</h2>{dirty ? <Badge tone="fire">Не сохранено</Badge> : null}</div><p className="mt-1 text-[13px] text-text-3">Название и часовой пояс действуют для всех каналов проекта.</p></div></header>
+    <div className="space-y-3" data-settings-dirty={dirty ? "true" : "false"}>
+    <SettingsSaveBar dirty={dirty} saving={saving} scope={`Проект «${current?.name ?? ""}». Часовой пояс используется для всех его каналов.`} label="Сохранить проект" onSave={() => void save()} onCancel={() => { setDraft(saved); setError(""); setMessage("Изменения отменены."); }} />
+    <Card as="section" className="overflow-clip">
+      <header className="flex items-start gap-3 border-b border-line px-5 py-5 sm:px-7"><span className="grid h-10 w-10 place-items-center rounded-sm bg-info-soft text-brand"><FolderKanban className="h-5 w-5" aria-hidden /></span><div><div className="flex flex-wrap items-center gap-2"><h2 className="text-[18px] font-extrabold text-text">Проект</h2></div><p className="mt-1 text-[13px] text-text-3">Название и часовой пояс действуют для всех каналов проекта.</p></div></header>
       {!projects.ready ? <div className="m-6 skeleton h-44 rounded-md" /> : !current ? <p className="p-6 text-[14px] text-text-2">Проект не выбран.</p> : (
         <div className="space-y-6 px-5 py-6 sm:px-7">
           <div className="grid gap-5 sm:grid-cols-2">
-            <Field label="Название проекта" htmlFor="project-settings-name" required><Input id="project-settings-name" required maxLength={160} value={draft.name} onChange={(event) => { const name = event.currentTarget.value; setDraft((value) => ({ ...value, name })); }} /></Field>
-            <Field label="Часовой пояс проекта" htmlFor="project-settings-timezone"><select id="project-settings-timezone" className={SELECT_CLASS} value={draft.timezone} onChange={(event) => { const timezone = event.currentTarget.value; setDraft((value) => ({ ...value, timezone })); }}>{Array.from(new Set([draft.timezone, ...TIMEZONES])).map((zone) => <option key={zone} value={zone}>{zone}</option>)}</select></Field>
+            <Field label="Название проекта" htmlFor="project-settings-name" required><Input id="project-settings-name" disabled={saving} required maxLength={160} value={draft.name} onChange={(event) => { const name = event.currentTarget.value; setDraft((value) => ({ ...value, name })); }} /></Field>
+            <Field label="Часовой пояс проекта" htmlFor="project-settings-timezone"><select id="project-settings-timezone" disabled={saving} className={SELECT_CLASS} value={draft.timezone} onChange={(event) => { const timezone = event.currentTarget.value; setDraft((value) => ({ ...value, timezone })); }}>{Array.from(new Set([draft.timezone, ...TIMEZONES])).map((zone) => <option key={zone} value={zone}>{zone}</option>)}</select></Field>
           </div>
           <p className="rounded-sm bg-surface-inset p-3 text-[12px] text-text-3">Текущий проект: {current.personal ? "личный" : "рабочий"}. Канальные настройки и словарь бренда сохраняются отдельно.</p>
           {error ? <p role="alert" className="text-[13px] text-danger-text">{error}</p> : null}{message ? <p role="status" className="text-[13px] text-success-text">{message}</p> : null}
-          <div className="flex flex-col-reverse gap-2 border-t border-line pt-5 sm:flex-row sm:justify-end"><Button variant="ghost" disabled={!dirty || saving} onClick={() => { setDraft(saved); setMessage("Изменения отменены."); }}><RotateCcw className="h-4 w-4" aria-hidden />Отменить изменения</Button><Button variant="brand" loading={saving} disabled={!dirty} onClick={() => void save()}><Save className="h-4 w-4" aria-hidden />Сохранить проект</Button></div>
+
         </div>
       )}
     </Card>
+    </div>
   );
 }
 

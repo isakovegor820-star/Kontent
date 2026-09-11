@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 
 import { NextRequest, NextResponse } from "next/server";
 
-import { parseAccountProfileUpdate } from "@/lib/account-settings";
+import { parseAccountProfilePatch, parseAccountProfileUpdate } from "@/lib/account-settings";
 import { readJsonBodyValue } from "@/lib/bounded-request-body";
 import { getPool } from "@/lib/db";
 import { phoneVerificationMode } from "@/lib/phone-verification-mode.mjs";
@@ -172,6 +172,46 @@ export async function POST(req: NextRequest) {
       requestId,
       errorName: error instanceof Error ? error.name : "Error",
     });
+    return json(requestId, { ok: false, error: "unavailable" }, 503);
+  } finally {
+    client.release();
+  }
+}
+
+export async function PATCH(req: NextRequest) {
+  const requestId = randomUUID();
+  if (!hasTrustedMutationOrigin(req)) return json(requestId, { ok: false, error: "forbidden_origin" }, 403);
+  const user = await getSessionUser(req);
+  if (!user) return json(requestId, { ok: false, error: "unauthorized" }, 401);
+  const parsed = parseAccountProfilePatch(await readJsonBodyValue(req).catch(() => null));
+  if (!parsed.ok) return json(requestId, { ok: false, error: parsed.error }, 422);
+  const patch = parsed.value;
+  if (patch.avatar !== undefined) {
+    const avatar = normalizeAvatar(patch.avatar);
+    if (avatar == null) return json(requestId, { ok: false, error: "bad_avatar" }, 422);
+    patch.avatar = avatar;
+  }
+  const client = await getPool().connect().catch(() => null);
+  if (!client) return json(requestId, { ok: false, error: "unavailable" }, 503);
+  try {
+    await client.query("begin");
+    await client.query("insert into user_account_settings (user_id, display_name) values ($1, $2) on conflict (user_id) do nothing", [user.id, user.name ?? "Пользователь"]);
+    const columns = { firstName: "first_name", lastName: "last_name", displayName: "display_name", jobTitle: "job_title", bio: "bio", locale: "locale", timezone: "timezone", theme: "theme" } as const;
+    const entries = Object.entries(columns).filter(([key]) => key in patch);
+    if (entries.length) {
+      // SQL identifiers come only from the fixed allowlist above.
+      await client.query(`update user_account_settings set ${entries.map(([, column], index) => `${column} = $${index + 2}`).join(", ")}, updated_at = now() where user_id = $1`,
+        [user.id, ...entries.map(([key]) => patch[key as keyof typeof columns])]);
+    }
+    if (patch.displayName !== undefined || patch.avatar !== undefined) {
+      await client.query(`update users set name = case when $2::boolean then $3 else name end, avatar = case when $4::boolean then nullif($5, '') else avatar end where id = $1`,
+        [user.id, patch.displayName !== undefined, patch.displayName ?? null, patch.avatar !== undefined, patch.avatar ?? null]);
+    }
+    await client.query("commit");
+    return json(requestId, { ok: true, patch, savedAt: new Date().toISOString() });
+  } catch (error) {
+    await client.query("rollback").catch(() => undefined);
+    console.error("[/api/settings/account-profile] PATCH", { requestId, errorName: error instanceof Error ? error.name : "Error" });
     return json(requestId, { ok: false, error: "unavailable" }, 503);
   } finally {
     client.release();
