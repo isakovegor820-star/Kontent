@@ -381,6 +381,8 @@ export function TrackingSettingsSection() {
 
   const visibleSettings = current && settingsProjectId === current.id ? settings : null;
   const visibleTemplates = current && templatesProjectId === current.id ? templates : [];
+  const editingTemplate = visibleTemplates.find((template) => template.id === editingTemplateId);
+  const templateDirty = templateName !== (editingTemplate?.name ?? "") || JSON.stringify(templateValues) !== JSON.stringify(editingTemplate ? valuesForForm(editingTemplate.values) : EMPTY_TEMPLATE_VALUES);
   const installSnippet = visibleSettings?.publicKey
     ? trackingInstallSnippet(appOrigin, visibleSettings.publicKey, visibleSettings.verificationFileContent)
     : null;
@@ -745,7 +747,7 @@ export function TrackingSettingsSection() {
 
   return (
     <>
-      <Card as="section" aria-labelledby={titleId} className="overflow-hidden">
+      <Card as="section" data-settings-dirty={settingsDirty || templateDirty ? "true" : "false"} aria-labelledby={titleId} className="overflow-clip">
         <div className="flex items-start gap-3.5 border-b border-line px-5 py-5 sm:px-7">
           <span aria-hidden className="grid h-10 w-10 shrink-0 place-items-center rounded-sm bg-surface-inset text-text-2">
             <Activity className="h-5 w-5" strokeWidth={1.75} />
@@ -847,6 +849,8 @@ export function TrackingSettingsSection() {
                     <details open={!trackerActive} className="mt-4">
                       <summary className="cursor-pointer py-2 text-[13px] font-semibold text-text-2">{trackerActive ? "Изменить адрес и срок атрибуции" : "Адрес и настройки сайта"}</summary>
                     <form noValidate onSubmit={saveSettings} className="mt-5 space-y-4">
+                      {canManage && settingsDirty ? <div className="sticky top-0 z-10 flex flex-wrap items-center justify-between gap-3 rounded-sm border border-brand/30 bg-surface p-3 shadow-soft"><p className="text-[13px] text-text-2">Проект · подключение сайта. Изменения ещё не применены.</p><div className="flex flex-wrap gap-2"><Button type="button" variant="ghost" disabled={Boolean(busyKey)} onClick={() => { setSiteOrigin(visibleSettings.siteOrigin ?? ""); setAttributionWindowDays(visibleSettings.attributionWindowDays); setSettingsDirty(false); setOriginError(null); setWindowError(null); }}>Отменить</Button><Button type="submit" variant="brand" loading={busyKey === "settings-save"} disabled={Boolean(busyKey) || projects.switching}>{visibleSettings.publicKey ? "Сохранить изменения" : "Сохранить и получить код"}</Button></div></div> : null}
+                      {!canManage ? <p className="text-[13px] text-text-2">Изменить подключение может владелец проекта.</p> : null}
                       <h4 className="text-[15px] font-bold text-text">1. Укажи сайт для переходов из публикаций</h4>
                       <div className="grid gap-4 md:grid-cols-[minmax(0,1fr)_minmax(12rem,0.38fr)]">
                         <Field
@@ -907,15 +911,7 @@ export function TrackingSettingsSection() {
                         </Field>
                       </div>
 
-                      {!canManage ? (
-                        <p className="rounded-sm bg-surface-inset p-3 text-[13px] leading-relaxed text-text-2">
-                          Настройки доступны для просмотра. Изменить их может владелец проекта.
-                        </p>
-                      ) : (
-                        <Button type="submit" variant="brand" loading={busyKey === "settings-save"} disabled={Boolean(busyKey) || projects.switching}>
-                          {visibleSettings.publicKey ? "Сохранить изменения" : "Сохранить и получить код"}
-                        </Button>
-                      )}
+
                     </form>
                     </details>
 
@@ -940,7 +936,7 @@ export function TrackingSettingsSection() {
                 ) : null}
               </section>
 
-              <section aria-labelledby={`${titleId}-templates`}>
+              <section data-setting-target="utm" aria-labelledby={`${titleId}-templates`}>
                 <div className="flex items-start gap-3">
                   <span aria-hidden className="mt-0.5 text-text-3">
                     <Link2 className="h-5 w-5" strokeWidth={1.75} />
@@ -1037,8 +1033,23 @@ export function TrackingSettingsSection() {
 
                 {canManage ? (
                   <form noValidate onSubmit={saveTemplate} className="mt-7 rounded-sm bg-surface-inset p-4 sm:p-5">
+                    <div className="sticky top-0 z-10 mb-4 flex flex-wrap items-center gap-2 rounded-sm border border-brand/30 bg-surface p-3 shadow-soft">
+                      <Button
+                        type="submit"
+                        variant="primary"
+                        loading={busyKey === "template-create" || busyKey?.startsWith("template-update-")}
+                        disabled={Boolean(busyKey) || projects.switching}
+                      >
+                        {editingTemplateId == null ? "Создать шаблон" : "Сохранить шаблон"}
+                      </Button>
+                      {editingTemplateId != null ? (
+                        <Button type="button" variant="ghost" disabled={Boolean(busyKey)} onClick={resetTemplateForm}>
+                          Отменить изменение
+                        </Button>
+                      ) : null}
+                    </div>
                     <h4 className="text-[14px] font-bold text-text">
-                      {editingTemplateId == null ? "Создать шаблон" : "Изменить шаблон"}
+                      {editingTemplateId == null ? "Новый UTM-шаблон" : "UTM-шаблон проекта"}
                     </h4>
                     <p className="mt-1 text-[13px] leading-relaxed text-text-3">
                       Не добавляй в метки имена, телефоны и электронную почту.
@@ -1128,21 +1139,7 @@ export function TrackingSettingsSection() {
                         {templateValuesError ?? "Все поля необязательные; значения ограничены 160 символами."}
                       </p>
                     </fieldset>
-                    <div className="mt-5 flex flex-wrap gap-2">
-                      <Button
-                        type="submit"
-                        variant="primary"
-                        loading={busyKey === "template-create" || busyKey?.startsWith("template-update-")}
-                        disabled={Boolean(busyKey) || projects.switching}
-                      >
-                        {editingTemplateId == null ? "Создать шаблон" : "Сохранить шаблон"}
-                      </Button>
-                      {editingTemplateId != null ? (
-                        <Button type="button" variant="ghost" disabled={Boolean(busyKey)} onClick={resetTemplateForm}>
-                          Отменить изменение
-                        </Button>
-                      ) : null}
-                    </div>
+
                   </form>
                 ) : (
                   <p className="mt-5 rounded-sm bg-surface-inset p-3 text-[13px] leading-relaxed text-text-2">

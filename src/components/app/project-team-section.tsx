@@ -224,7 +224,7 @@ function invitationDate(invitation: ProjectInvitation): { label: string; value: 
   return { label: invitation.status === "expired" ? "Истекло" : "Действует до", value: invitation.expiresAt };
 }
 
-export function ProjectTeamSection() {
+export function ProjectTeamSection({ showProjectSummary = true }: { showProjectSummary?: boolean } = {}) {
   const projects = useProjects();
   const current = projects.current;
   const owner = current?.role === "owner";
@@ -244,6 +244,7 @@ export function ProjectTeamSection() {
   const [savingKey, setSavingKey] = useState<string | null>(null);
   const [feedback, setFeedback] = useState<Feedback>(null);
   const [confirmation, setConfirmation] = useState<Confirmation>(null);
+  const [pendingRole, setPendingRole] = useState<{ member: ProjectMember; role: ClientProjectRole } | null>(null);
 
   const [projectName, setProjectName] = useState("");
   const [projectTimezone, setProjectTimezone] = useState(initialTimezone);
@@ -307,6 +308,7 @@ export function ProjectTeamSection() {
     queueMicrotask(() => {
       if (cancelled) return;
       setCreatedInvite(null);
+      setPendingRole(null);
       setCopied(false);
       if (!projects.ready || !current) {
         requestSequence.current += 1;
@@ -492,7 +494,7 @@ export function ProjectTeamSection() {
             <Users className="h-5 w-5" strokeWidth={1.75} />
           </span>
           <div className="min-w-0">
-            <h2 id={titleId} className="text-[17px] font-extrabold tracking-tight text-text">Проект и команда</h2>
+            <h2 id={titleId} className="text-[17px] font-extrabold tracking-tight text-text">{showProjectSummary ? "Проект и команда" : "Команда и рабочие пространства"}</h2>
             <p className="mt-1 text-[14px] leading-relaxed text-text-2">
               Создавай рабочие пространства, распределяй роли и выдавай доступ по одноразовой ссылке.
             </p>
@@ -519,7 +521,7 @@ export function ProjectTeamSection() {
             <p role="status" className="rounded-sm bg-surface-inset p-4 text-[14px] leading-relaxed text-text-2">
               Текущий проект не выбран. Выбери его в боковом меню или создай новый ниже.
             </p>
-          ) : (
+          ) : showProjectSummary ? (
             <div>
               <h3 className="text-[15px] font-extrabold text-text">Текущий проект</h3>
               <dl className="mt-3 grid gap-4 rounded-sm bg-surface-inset p-4 sm:grid-cols-2">
@@ -537,7 +539,7 @@ export function ProjectTeamSection() {
                 </div>
               </dl>
             </div>
-          )}
+          ) : null}
 
           <div>
             <h3 className="text-[15px] font-extrabold text-text">Создать проект</h3>
@@ -634,7 +636,7 @@ export function ProjectTeamSection() {
                                 aria-label={`Роль участника ${label}`}
                                 aria-busy={busy || undefined}
                                 className={cn(SELECT_CLASS, "min-[400px]:w-auto")}
-                                onChange={(event) => void changeRole(member, event.currentTarget.value as ClientProjectRole)}
+                                onChange={(event) => setPendingRole({ member, role: event.currentTarget.value as ClientProjectRole })}
                               >
                                 {(Object.keys(ROLE_LABEL) as ClientProjectRole[]).map((role) => (
                                   <option key={role} value={role}>{ROLE_LABEL[role]}</option>
@@ -818,6 +820,7 @@ export function ProjectTeamSection() {
         </div>
       </Card>
 
+      <ConfirmDialog open={pendingRole != null} title="Изменить роль участника?" description={pendingRole ? `${pendingRole.member.name ?? pendingRole.member.email ?? "Участник"}: ${ROLE_LABEL[pendingRole.member.role]} → ${ROLE_LABEL[pendingRole.role]}. Новые права начнут действовать после подтверждения.` : ""} confirmLabel="Сохранить роль" onCancel={() => setPendingRole(null)} onConfirm={() => { if (pendingRole) void changeRole(pendingRole.member, pendingRole.role); setPendingRole(null); }} />
       <ConfirmDialog
         open={Boolean(confirmationCopy)}
         title={confirmationCopy?.title ?? "Подтвердить действие"}

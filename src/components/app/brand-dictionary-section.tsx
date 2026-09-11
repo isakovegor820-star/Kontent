@@ -304,7 +304,7 @@ export function BrandDictionarySection() {
 
   return (
     <section aria-labelledby={sectionTitleId} data-settings-dirty={dirty || undefined}>
-      <Card className="overflow-hidden">
+      <Card className="overflow-clip">
         <div className="border-b border-line p-5 sm:p-7">
           <div className="flex items-center gap-3">
             <span aria-hidden className="grid h-10 w-10 shrink-0 place-items-center rounded-sm bg-info-soft text-info-text">
@@ -358,8 +358,9 @@ export function BrandDictionarySection() {
 
               {canManage && formOpen && (
                 <form onSubmit={save} className="space-y-5 rounded-sm border border-brand/25 bg-surface-2 p-4 sm:p-5" aria-label={editing ? "Изменение правила" : "Новое правило"}>
-                  <div className="flex items-center justify-between gap-3">
+                  <div className="sticky top-0 z-10 flex flex-wrap items-center justify-between gap-3 rounded-sm border border-brand/30 bg-surface p-3 shadow-soft">
                     <h3 className="text-[16px] font-bold text-text">{editing ? "Изменить правило" : "Новое правило"}</h3>
+                    <Button type="submit" variant="primary" loading={busy === "save"} disabled={busy === "delete"} className="shrink-0"><Check className="h-4 w-4" aria-hidden />Сохранить правило</Button>
                     <Button type="button" variant="ghost" size="sm" onClick={resetForm} disabled={busy != null}><X className="h-4 w-4" aria-hidden />Отмена</Button>
                   </div>
                   <fieldset disabled={busy != null}>
@@ -408,7 +409,6 @@ export function BrandDictionarySection() {
                   </details>
                   <div className="flex flex-col gap-3 border-t border-line pt-4 sm:flex-row sm:items-center sm:justify-between">
                     <p className="text-[12px] leading-relaxed text-text-3">Применится к следующим генерациям и проверкам.</p>
-                    <Button type="submit" variant="primary" loading={busy === "save"} disabled={busy === "delete"} className="shrink-0"><Check className="h-4 w-4" aria-hidden />Сохранить правило</Button>
                   </div>
                 </form>
               )}

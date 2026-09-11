@@ -652,12 +652,14 @@ export function AppShell({
   subtitle,
   action,
   stickyHeaderOnMobile = true,
+  workspace = false,
 }: {
   children: React.ReactNode;
   title: string;
   subtitle?: string;
   action?: React.ReactNode;
   stickyHeaderOnMobile?: boolean;
+  workspace?: boolean;
 }) {
   const { ready, authReady, authError, user, signOut, refreshAuth } = useStore();
   const router = useRouter();
@@ -848,9 +850,9 @@ export function AppShell({
         </AnimatePresence>
 
         {/* ПРАВАЯ КОЛОНКА */}
-        <div className="lg:pl-[260px]">
+        <div className={cn("lg:pl-[260px]", workspace && "flex h-dvh flex-col overflow-hidden")}>
           {/* Верхняя панель — только телефон */}
-          <div className="sticky top-0 z-30 grid h-14 grid-cols-[44px_1fr_44px] items-center border-b border-line bg-surface/80 px-2 backdrop-blur-xl lg:hidden">
+          <div className="sticky top-0 z-30 grid h-14 shrink-0 grid-cols-[44px_1fr_44px] items-center border-b border-line bg-surface/80 px-2 backdrop-blur-xl lg:hidden">
             <Button
               ref={burgerRef}
               type="button"
@@ -869,21 +871,21 @@ export function AppShell({
 
           {/* ШАПКА КОНТЕНТА: заголовок, подзаголовок и главное действие страницы */}
           <header className={cn(
-            "z-20 border-b border-line bg-surface/70 backdrop-blur-xl lg:sticky lg:top-0",
+            "shrink-0 z-20 border-b border-line bg-surface/70 backdrop-blur-xl lg:sticky lg:top-0",
             stickyHeaderOnMobile ? "sticky top-14" : "relative",
           )}>
-            <div className="mx-auto flex max-w-[1400px] flex-wrap items-end justify-between gap-x-6 gap-y-3 px-4 py-4 sm:px-6 sm:py-5 lg:px-8">
+            <div className={cn("mx-auto flex max-w-[1400px] justify-between gap-x-6 gap-y-3 px-4 sm:px-6 lg:px-8", workspace ? "items-center py-3 sm:py-4" : "flex-wrap items-end py-4 sm:py-5")}>
               <div className="min-w-0">
                 <H1>
                   {title}
                 </H1>
                 {subtitle && (
-                  <SecondaryText className="mt-1.5 max-w-2xl text-pretty">
+                  <SecondaryText className={cn("mt-1.5 max-w-2xl text-pretty", workspace && "hidden sm:block")}>
                     {subtitle}
                   </SecondaryText>
                 )}
               </div>
-              <div className="flex w-full min-w-0 flex-wrap items-center justify-end gap-2 sm:w-auto sm:shrink-0 sm:flex-nowrap">
+              <div className={cn("flex min-w-0 items-center justify-end gap-2 sm:w-auto sm:shrink-0 sm:flex-nowrap", workspace ? "shrink-0" : "w-full flex-wrap")}>
                 {action ? <div className="min-w-0 flex-1 sm:flex-none">{action}</div> : null}
                 <ProjectNotificationsInbox />
               </div>
@@ -891,9 +893,10 @@ export function AppShell({
           </header>
 
           {/* КОНТЕНТ: страница въезжает снизу — понятно, что сменился экран, а не сайт */}
-          <main id="main" className="mx-auto max-w-[1400px] px-4 pt-6 pb-[var(--app-content-bottom-inset)] sm:px-6 lg:px-8 lg:pb-10">
+          <main id="main" className={cn("mx-auto w-full max-w-[1400px] px-4 pb-[var(--app-content-bottom-inset)] sm:px-6 lg:px-8", workspace ? "min-h-0 flex-1 overflow-hidden pt-4 lg:pb-4" : "pt-6 lg:pb-10")}>
             <motion.div
               key={pathname}
+              className={workspace ? "h-full min-h-0" : undefined}
               initial={{ opacity: 0, y: 8 }}
               animate={{ opacity: 1, y: 0 }}
               transition={{ duration: 0.2, ease: [0.22, 1, 0.36, 1] }}

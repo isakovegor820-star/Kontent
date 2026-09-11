@@ -229,6 +229,7 @@ export function PublicationBlocksSection() {
         <>
           {(creating || editingId != null) && (
             <form
+              data-settings-dirty={(creating && JSON.stringify(form) !== JSON.stringify(EMPTY_FORM)) || (editingId != null && (() => { const block = blocks.find((item) => item.id === editingId); return block && (form.kind !== block.kind || form.name !== block.name || form.text !== block.text); })()) ? "true" : "false"}
               className="mt-4 space-y-3 border-t border-line pt-4"
               onSubmit={(event) => {
                 event.preventDefault();
@@ -236,6 +237,12 @@ export function PublicationBlocksSection() {
               }}
               aria-describedby={error ? errorId : undefined}
             >
+              <div className="sticky top-0 z-10 flex flex-wrap items-center gap-2 rounded-sm border border-brand/30 bg-surface p-3 shadow-soft">
+                <Button type="submit" variant="solid" loading={busy}>
+                  {editingId == null ? "Создать шаблон" : "Сохранить шаблон"}
+                </Button>
+                <Button type="button" variant="ghost" onClick={cancelForm} disabled={busy}>Отменить</Button>
+              </div>
               <div className="grid gap-3 sm:grid-cols-[minmax(0,0.85fr)_minmax(0,1.15fr)]">
                 <div>
                   <label htmlFor={kindId} className="text-[13px] font-semibold text-text-2">Что сохранить</label>
@@ -247,7 +254,7 @@ export function PublicationBlocksSection() {
                       const kind = event.currentTarget.value as PublicationBlockKind;
                       setForm((currentForm) => ({ ...currentForm, kind }));
                     }}
-                    className="mt-1 min-h-11 w-full rounded-xs border border-line-strong bg-surface px-3 text-[14px] text-text focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-brand/15"
+                    className="mt-1 min-h-11 w-full rounded-xs border border-line-strong bg-surface px-3 text-base sm:text-[14px] text-text focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-brand/15"
                   >
                     {KIND_OPTIONS.map((option) => (
                       <option key={option.value} value={option.value}>{option.label}</option>
@@ -293,12 +300,7 @@ export function PublicationBlocksSection() {
                 </span>
               </div>
               {error && <p id={errorId} role="alert" className="text-[13px] font-medium text-danger-text">{error}</p>}
-              <div className="flex flex-wrap gap-2">
-                <Button type="submit" variant="solid" loading={busy}>
-                  {editingId == null ? "Создать шаблон" : "Сохранить шаблон"}
-                </Button>
-                <Button type="button" variant="ghost" onClick={cancelForm} disabled={busy}>Отменить</Button>
-              </div>
+
             </form>
           )}
 

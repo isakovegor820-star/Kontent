@@ -2971,13 +2971,27 @@ try {
   await page.getByRole("heading", { name: "Профиль", exact: true }).waitFor({ timeout: UI_WAIT_TIMEOUT_MS });
   await page.getByLabel("Имя", { exact: true }).fill("Анна");
   await page.getByLabel(/^Отображаемое имя/u).fill("Анна E2E");
-  await page.getByText("Не сохранено", { exact: true }).waitFor();
-  await page.getByRole("button", { name: "Сохранить профиль", exact: true }).click();
-  await page.getByText("Профиль сохранён.", { exact: true }).waitFor({ timeout: UI_WAIT_TIMEOUT_MS });
+  await page.getByText("Все изменения сохранены", { exact: true }).waitFor({ timeout: UI_WAIT_TIMEOUT_MS });
   await reloadInBrowser(page);
   await page.getByRole("heading", { name: "Профиль", exact: true }).waitFor({ timeout: UI_WAIT_TIMEOUT_MS });
   assert(await page.getByLabel("Имя", { exact: true }).inputValue() === "Анна", "profile first name did not survive reload");
   assert(await page.getByLabel(/^Отображаемое имя/u).inputValue() === "Анна E2E", "profile display name did not survive reload");
+
+  await page.getByRole("combobox", { name: "Тема", exact: true }).selectOption("light");
+  assert(await page.locator(".app-v3").getAttribute("data-theme") === "light", "theme did not apply immediately");
+  await page.getByText("Все изменения сохранены", { exact: true }).waitFor({ timeout: UI_WAIT_TIMEOUT_MS });
+  await reloadInBrowser(page);
+  await page.getByRole("heading", { name: "Профиль", exact: true }).waitFor({ timeout: UI_WAIT_TIMEOUT_MS });
+  assert(await page.getByRole("combobox", { name: "Тема", exact: true }).inputValue() === "light", "theme preference did not survive reload");
+  const settingsSearch = page.getByRole("searchbox", { name: "Найти настройку" });
+  const searchBeforeScroll = await settingsSearch.boundingBox();
+  await page.locator(".settings-panel").evaluate((element) => { element.scrollTop = element.scrollHeight; });
+  const searchAfterScroll = await settingsSearch.boundingBox();
+  assert(searchBeforeScroll && searchAfterScroll && Math.abs(searchBeforeScroll.y - searchAfterScroll.y) < 1, "settings search moved with the content");
+  await settingsSearch.fill("UTM-шаблоны");
+  await page.getByRole("button", { name: /UTM-шаблоны\s*Интеграции/u }).click();
+  await page.waitForURL((url) => url.searchParams.get("section") === "integrations" && url.searchParams.get("setting") === "utm");
+  await page.locator('[data-setting-target="utm"]').waitFor({ timeout: UI_WAIT_TIMEOUT_MS });
 
   await page.goto(`/app/settings?section=content&channel=${channels[0]}`);
   await page.getByRole("heading", { name: "Как Аврора пишет", exact: true }).waitFor({ timeout: UI_WAIT_TIMEOUT_MS });
@@ -4949,6 +4963,7 @@ try {
   const reviewerRoleSelect = page.getByLabel(`Роль участника ${reviewerName}`, { exact: true });
   await reviewerRoleSelect.waitFor({ timeout: UI_WAIT_TIMEOUT_MS });
   await reviewerRoleSelect.selectOption("publisher");
+  await page.getByRole("dialog", { name: "Изменить роль участника?" }).getByRole("button", { name: "Сохранить роль", exact: true }).click();
   await page.getByText("Роль участника изменена: публикатор.", { exact: true }).waitFor({ timeout: UI_WAIT_TIMEOUT_MS });
   assert((await pool.query(
     "select role from project_members where project_id = $1 and user_id = $2",

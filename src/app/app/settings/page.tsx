@@ -1,5 +1,6 @@
 "use client";
 
+import { searchSettings, SETTINGS_SEARCH_ENTRIES, type SettingsSectionId } from "@/lib/settings-search";
 /**
  * А12 — НАСТРОЙКИ (Приложение А).
  *
@@ -53,6 +54,7 @@ import {
 } from "@/components/app/settings-sections";
 import { TrackingSettingsSection } from "@/components/app/tracking-settings-section";
 import { Button } from "@/components/ui/button";
+import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import {
   Badge,
   Card,
@@ -1140,13 +1142,12 @@ function QuietSection({ index }: { index: number }) {
       icon={Moon}
       index={index}
       title="Тихие часы"
-      description="Ограничение ночных публикаций пока не включено на сервере."
+      description="Пауза в ночных публикациях пока недоступна."
     >
       <div className="flex items-start gap-3 rounded-sm bg-surface-inset p-4" role="status">
         <Clock className="mt-0.5 h-5 w-5 shrink-0 text-text-3" strokeWidth={1.75} aria-hidden />
         <p className="text-[14px] leading-relaxed text-text-2">
-          Сейчас каждый пост выходит строго в выбранное в календаре время. Настройка появится
-          здесь только вместе с серверным переносом расписания и проверкой воркера.
+          Сейчас каждый пост выходит строго в выбранное в календаре время. Пока выбирай дневное время для публикаций в календаре.
         </p>
       </div>
     </Section>
@@ -1260,31 +1261,20 @@ function SettingsSkeleton() {
 
 /* ----------------------------------------------------------------- ЭКРАН */
 
-type SettingsSectionId =
-  | "profile"
-  | "project"
-  | "channels"
-  | "content"
-  | "autopilot"
-  | "dictionary"
-  | "integrations"
-  | "notifications";
-
 const SETTINGS_SECTIONS: Array<{
   id: SettingsSectionId;
   label: string;
   description: string;
-  keywords: string;
   icon: LucideIcon;
 }> = [
-  { id: "profile", label: "Профиль", description: "Фото, имя, контакты и внешний вид", keywords: "аккаунт аватар email телефон язык часовой пояс тема", icon: UserRound },
-  { id: "project", label: "Проект", description: "Название, время и лимиты", keywords: "личный проект генерации ии бюджет", icon: FolderKanban },
-  { id: "channels", label: "Каналы", description: "Подключения и копирование", keywords: "telegram vk сеть канал перенести настройки", icon: Radio },
-  { id: "content", label: "Контент и стиль", description: "Голос, структура и тест поста", keywords: "тон юмор длина формат автор аудитория ограничения проверить", icon: Palette },
-  { id: "autopilot", label: "Автопилот", description: "Планирование с подтверждением", keywords: "расписание частота режим план публикация", icon: Rocket },
-  { id: "dictionary", label: "Правила текста", description: "Названия, запреты и шаблоны", keywords: "словарь бренда правила слова канон замена подпись комментарий шаблоны сокращения", icon: BookOpen },
-  { id: "integrations", label: "Интеграции", description: "Бот, аналитика и источники", keywords: "telegram бот пиксель utm метрика право oauth", icon: Plug },
-  { id: "notifications", label: "Уведомления и безопасность", description: "Email, Telegram, пароль и выход", keywords: "оповещения тихие часы сессия безопасность", icon: Bell },
+  { id: "profile", label: "Профиль", description: "Аккаунт · личные предпочтения", icon: UserRound },
+  { id: "project", label: "Проект", description: "Команда, время и лимиты", icon: FolderKanban },
+  { id: "channels", label: "Каналы", description: "Подключения и копирование", icon: Radio },
+  { id: "content", label: "Контент и стиль", description: "Голос, структура и тест поста", icon: Palette },
+  { id: "autopilot", label: "Автопилот", description: "Планирование с подтверждением", icon: Rocket },
+  { id: "dictionary", label: "Правила текста", description: "Названия, запреты и шаблоны", icon: BookOpen },
+  { id: "integrations", label: "Интеграции", description: "Проект · UTM, сайт и бот", icon: Plug },
+  { id: "notifications", label: "Уведомления и безопасность", description: "Email, Telegram, пароль и выход", icon: Bell },
 ];
 
 const SETTINGS_SECTION_IDS = new Set<SettingsSectionId>(SETTINGS_SECTIONS.map((item) => item.id));
@@ -1306,22 +1296,72 @@ function SettingsContent() {
   const searchParams = useSearchParams();
   const activeSection = normalizeSection(searchParams.get("section"));
   const [query, setQuery] = useState("");
+  const panelRef = useRef<HTMLElement>(null);
+  const [focusRequest, setFocusRequest] = useState(0);
+  const [navigationMessage, setNavigationMessage] = useState("");
+  const [pendingNavigation, setPendingNavigation] = useState<{ section: SettingsSectionId; setting?: string } | null>(null);
+  const targetId = searchParams.get("setting");
 
-  const selectSection = (section: SettingsSectionId) => {
-    if (section === activeSection) return;
-    if (document.querySelector('[data-settings-dirty="true"]') && !window.confirm("Перейти в другой раздел? Несохранённые изменения останутся только на этом экране и будут потеряны.")) return;
+  useEffect(() => {
+    const panel = panelRef.current;
+    if (!panel || !ready) return;
+    const entry = SETTINGS_SEARCH_ENTRIES.find((item) => item.id === targetId && item.section === activeSection);
+    if (!entry) { panel.scrollTop = 0; return; }
+    let highlighted: HTMLElement | null = null;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const reveal = () => {
+      const target = panel.querySelector<HTMLElement>(entry.target);
+      if (!target) return false;
+      for (let parent = target.parentElement; parent && parent !== panel; parent = parent.parentElement) {
+        if (parent instanceof HTMLDetailsElement) parent.open = true;
+      }
+      if (!target.matches("input, select, textarea, button, a[href]")) target.tabIndex = -1;
+      target.focus({ preventScroll: true });
+      target.scrollIntoView({ block: "center", behavior: "instant" });
+      highlighted = target.closest<HTMLElement>("label") ?? target;
+      highlighted.dataset.settingsHighlight = "true";
+      timer = setTimeout(() => { if (highlighted) delete highlighted.dataset.settingsHighlight; }, 3500);
+      return true;
+    };
+    const observer = new MutationObserver(() => { if (reveal()) { observer.disconnect(); setNavigationMessage(""); } });
+    if (!reveal()) observer.observe(panel, { childList: true, subtree: true });
+    const deadline = setTimeout(() => {
+      if (!highlighted) setNavigationMessage("Раздел открыт. Настройка станет доступна после загрузки данных или подключения канала.");
+    }, 8000);
+    return () => { observer.disconnect(); clearTimeout(deadline); clearTimeout(timer); if (highlighted) delete highlighted.dataset.settingsHighlight; };
+  }, [activeSection, targetId, focusRequest, ready]);
+
+  const navigateToSection = (section: SettingsSectionId, setting?: string) => {
     const params = new URLSearchParams(searchParams.toString());
     params.set("section", section);
+    if (setting) params.set("setting", setting); else params.delete("setting");
+    setFocusRequest((value) => value + 1);
+    setNavigationMessage("");
     params.delete("connected");
     params.delete("oauth");
     params.delete("network");
     router.replace(`/app/settings?${params.toString()}`, { scroll: false });
   };
 
-  const normalizedQuery = query.trim().toLocaleLowerCase("ru-RU");
-  const visibleSections = normalizedQuery
-    ? SETTINGS_SECTIONS.filter((item) => `${item.label} ${item.description} ${item.keywords}`.toLocaleLowerCase("ru-RU").includes(normalizedQuery))
-    : SETTINGS_SECTIONS;
+  const selectSection = (section: SettingsSectionId, setting?: string) => {
+    if (section === activeSection && !setting) return;
+    if (section !== activeSection && document.querySelector('[data-settings-dirty="true"]')) {
+      setPendingNavigation({ section, setting });
+      return;
+    }
+    navigateToSection(section, setting);
+  };
+
+  const results = searchSettings(query);
+  const searching = Boolean(query.trim());
+
+  useEffect(() => {
+    const warn = (event: BeforeUnloadEvent) => {
+      if (document.querySelector('[data-settings-dirty="true"]')) event.preventDefault();
+    };
+    window.addEventListener("beforeunload", warn);
+    return () => window.removeEventListener("beforeunload", warn);
+  }, []);
 
   // Возврат из OAuth-редиректа: показываем итог подключения и чистим URL.
   useEffect(() => {
@@ -1359,56 +1399,60 @@ function SettingsContent() {
   return (
     <AppShell
       title="Настройки"
-      subtitle="Укажи, как Аврора должна писать, планировать и публиковать для каждого канала."
+      subtitle="Личные предпочтения, параметры проекта и каналов."
+      workspace
     >
       {!s.ready ? (
         <SettingsSkeleton />
       ) : (
-        <div className="grid items-start gap-5 lg:grid-cols-[15.5rem_minmax(0,1fr)] lg:items-stretch">
-          <aside className="rounded-md border border-line bg-surface/86 p-3 shadow-soft backdrop-blur-xl">
-            <div className="lg:sticky lg:top-5">
-              <label className="relative block">
-                <span className="sr-only">Найти настройку</span>
-                <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-text-3" aria-hidden />
-                <Input value={query} onChange={(event) => setQuery(event.currentTarget.value)} className="pl-9" placeholder="Найти настройку" />
-              </label>
-              <nav className="mt-3 grid grid-cols-2 gap-1 lg:grid-cols-1" aria-label="Разделы настроек Авроры">
-                {visibleSections.map((item) => {
+        <div className="grid h-full min-h-0 grid-rows-[auto_minmax(0,1fr)] gap-4 lg:grid-cols-[15.5rem_minmax(0,1fr)] lg:grid-rows-1" data-settings-workspace>
+          <aside className="flex min-h-0 flex-col rounded-md border border-line bg-surface p-3 shadow-soft" aria-label="Навигация настроек">
+            <label className="block shrink-0">
+              <span className="mb-2 block text-[13px] font-semibold text-text">Найти настройку</span>
+              <span className="relative block">
+              <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-text-3" aria-hidden />
+              <Input value={query} onChange={(event) => setQuery(event.currentTarget.value)} className="pl-9" placeholder="Например: UTM или тема" type="search" />
+              </span>
+            </label>
+            <p role="status" className="sr-only">{searching ? `Найдено настроек: ${results.length}` : ""}</p>
+            {searching ? (
+              <div className="mt-3 min-h-0 max-h-[28dvh] overflow-y-auto overscroll-contain lg:max-h-none">
+                <div className="mb-2 flex items-center justify-between gap-2"><p className="text-[12px] text-text-2">Найдено: {results.length}</p><Button variant="ghost" size="sm" onClick={() => setQuery("")}>Сбросить</Button></div>
+                <ul className="space-y-1" aria-label="Результаты поиска настроек">
+                  {results.map((item) => <li key={item.id}><button type="button" onClick={() => selectSection(item.section, item.id)} className="w-full rounded-sm border border-transparent p-3 text-left hover:border-line hover:bg-surface-inset"><span className="block text-[14px] font-semibold text-text">{item.label}</span><span className="mt-1 block text-[12px] text-text-2">{SETTINGS_SECTIONS.find((section) => section.id === item.section)?.label}</span></button></li>)}
+                </ul>
+                {results.length === 0 ? <p className="rounded-sm bg-surface-inset p-3 text-[13px] leading-relaxed text-text-2">По запросу «{query}» ничего не найдено. Попробуй название параметра или сбрось поиск.</p> : null}
+              </div>
+            ) : <>
+              <label className="mt-3 block lg:hidden"><span className="sr-only">Раздел настроек</span><select value={activeSection} onChange={(event) => selectSection(event.currentTarget.value as SettingsSectionId)} className="min-h-11 w-full rounded-xs border border-line bg-surface px-3 text-base text-text">{SETTINGS_SECTIONS.map((item) => <option key={item.id} value={item.id}>{item.label}</option>)}</select></label>
+              <nav className="mt-3 hidden min-h-0 space-y-1 overflow-y-auto overscroll-contain lg:block" aria-label="Разделы настроек Авроры">
+                {SETTINGS_SECTIONS.map((item) => {
                   const Icon = item.icon;
                   const active = item.id === activeSection;
-                  return (
-                    <button
-                      key={item.id}
-                      type="button"
-                      aria-current={active ? "page" : undefined}
-                      onClick={() => selectSection(item.id)}
-                      className={cn(
-                        "flex min-h-14 items-start gap-3 rounded-sm border px-3 py-3 text-left transition-colors",
-                        active ? "border-brand/30 bg-info-soft text-info-text" : "border-transparent text-text-2 hover:border-line hover:bg-surface-inset hover:text-text",
-                      )}
-                    >
-                      <span className={cn("mt-0.5 grid h-8 w-8 shrink-0 place-items-center rounded-xs", active ? "bg-surface text-brand" : "bg-surface-inset text-text-3")}><Icon className="h-4 w-4" aria-hidden /></span>
-                      <span className="min-w-0"><span className="block text-[13px] font-extrabold text-text">{item.label}</span><span className="mt-0.5 hidden text-[11px] leading-snug text-text-3 sm:block">{item.description}</span></span>
-                    </button>
-                  );
+                  return <button key={item.id} type="button" aria-current={active ? "page" : undefined} onClick={() => selectSection(item.id)} className={cn("flex min-h-14 w-full items-start gap-3 rounded-sm border px-3 py-3 text-left transition-colors", active ? "border-brand/30 bg-info-soft text-info-text" : "border-transparent text-text-2 hover:border-line hover:bg-surface-inset hover:text-text")}>
+                    <Icon className="mt-0.5 h-5 w-5 shrink-0" aria-hidden />
+                    <span className="min-w-0"><span className="block text-[14px] font-semibold">{item.label}</span><span className="mt-1 block text-[12px] leading-relaxed text-text-2">{item.description}</span></span>
+                  </button>;
                 })}
-                {visibleSections.length === 0 ? <p className="rounded-sm bg-surface-inset p-3 text-[12px] text-text-3">Ничего не найдено. Попробуй «юмор», «аватар» или «Telegram».</p> : null}
               </nav>
-            </div>
+            </>}
           </aside>
 
-          <main id={`settings-${activeSection}-panel`} aria-label={SETTINGS_SECTIONS.find((item) => item.id === activeSection)?.label}>
+          <section ref={panelRef} tabIndex={0} id={`settings-${activeSection}-panel`} aria-label={SETTINGS_SECTIONS.find((item) => item.id === activeSection)?.label} className="settings-panel min-h-0 min-w-0 overflow-y-auto overscroll-contain rounded-md pb-6 [scrollbar-gutter:stable]">
+            {navigationMessage ? <p role="status" className="mb-3 text-[13px] text-text-2">{navigationMessage}</p> : null}
+            {activeSection === "content" || activeSection === "channels" ? <div className="mb-4 flex flex-wrap items-center gap-2 text-[13px]"><span className="text-text-2">Связанные настройки:</span><Button variant="ghost" size="sm" onClick={() => selectSection("integrations", "utm")}>UTM-шаблоны</Button><Button variant="ghost" size="sm" onClick={() => selectSection("dictionary", "blocks")}>Блоки публикаций</Button>{activeSection === "content" ? <Button variant="ghost" size="sm" onClick={() => selectSection("channels", "copy")}>Копирование настроек</Button> : null}</div> : null}
             {activeSection === "profile" ? <AccountProfileSettings /> : null}
-            {activeSection === "project" ? <div className="space-y-5"><ProjectBasicsSection /><ProjectTeamSection /><AiSection index={1} /></div> : null}
-            {activeSection === "channels" ? <div className="space-y-5"><ChannelsSection index={0} /><ChannelCopySection /></div> : null}
+            {activeSection === "project" ? <div className="space-y-5"><ProjectBasicsSection /><div data-setting-target="team"><ProjectTeamSection showProjectSummary={false} /></div><div data-setting-target="limits"><AiSection index={1} /></div></div> : null}
+            {activeSection === "channels" ? <div className="space-y-5"><div data-setting-target="channels"><ChannelsSection index={0} /></div><ChannelCopySection /></div> : null}
             {activeSection === "content" ? <><SettingsPreviewPanel /><ChannelSettingsCenter view="content" /></> : null}
-            {activeSection === "autopilot" ? <ChannelSettingsCenter view="autopilot" /> : null}
-            {activeSection === "dictionary" ? <WritingSettingsSection /> : null}
-            {activeSection === "integrations" ? <div className="space-y-5"><TrackingSettingsSection /><LegalSourcesSection /><BotSection index={2} /></div> : null}
-            {activeSection === "notifications" ? <div className="space-y-5"><NotificationSecuritySettings /><QuietSection index={2} /></div> : null}
-          </main>
+            {activeSection === "autopilot" ? <div data-setting-target="autopilot"><ChannelSettingsCenter view="autopilot" /></div> : null}
+            {activeSection === "dictionary" ? <WritingSettingsSection key={targetId === "blocks" ? "templates" : "rules"} initialView={targetId === "blocks" ? "templates" : "rules"} /> : null}
+            {activeSection === "integrations" ? <div className="space-y-5"><TrackingSettingsSection /><div data-setting-target="legal"><LegalSourcesSection /></div><div data-setting-target="bot"><BotSection index={2} /></div></div> : null}
+            {activeSection === "notifications" ? <div className="space-y-5"><NotificationSecuritySettings /><div data-setting-target="quiet"><QuietSection index={2} /></div></div> : null}
+          </section>
         </div>
       )}
+      <ConfirmDialog open={pendingNavigation != null} title="Перейти без сохранения?" description="В этом разделе есть несохранённые изменения. Вернись к форме, чтобы сохранить их, или продолжи переход." confirmLabel="Перейти без сохранения" onCancel={() => setPendingNavigation(null)} onConfirm={() => { if (pendingNavigation) navigateToSection(pendingNavigation.section, pendingNavigation.setting); setPendingNavigation(null); }} />
     </AppShell>
   );
 }
@@ -1419,7 +1463,8 @@ export default function SettingsPage() {
       fallback={
         <AppShell
           title="Настройки"
-          subtitle="Укажи, как Аврора должна писать, планировать и публиковать для каждого канала."
+          subtitle="Личные предпочтения, параметры проекта и каналов."
+      workspace
         >
           <SettingsSkeleton />
         </AppShell>
