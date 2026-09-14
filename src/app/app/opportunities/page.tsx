@@ -89,6 +89,7 @@ export default function OpportunitiesPage() {
     }
   };
   const create = async (item: OpportunitySnapshot) => {
+    if (item.actionHref) { router.push(item.actionHref); return; }
     setCreatingId(item.id);
     setOperationError(undefined);
     try {

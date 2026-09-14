@@ -53,6 +53,7 @@ export type OpportunitySnapshot = {
   methodology: string;
   sourceContextDraftId: number | null;
   actionable: boolean;
+  actionHref?: string;
 };
 
 export class ContentIntelligenceError extends Error {
@@ -124,6 +125,7 @@ type OpportunityRow = {
   revision: number; title: string; independent_angle: string; confidence: Confidence; epistemic_state: EpistemicState;
   formula_version: string; evidence: Record<string, unknown>; observed_at: string | null; expires_at: string;
   source_context_draft_id: string | null;
+  growth_move_id?: string; artifact_draft_id?: string | null;
 };
 
 function mapOpportunity(row: OpportunityRow, now = new Date()): OpportunitySnapshot {
@@ -143,7 +145,11 @@ function mapOpportunity(row: OpportunityRow, now = new Date()): OpportunitySnaps
     sourceType: typeof evidence.sourceType === "string" ? evidence.sourceType : "Источник",
     methodology: typeof evidence.methodology === "string" ? evidence.methodology : "Методика не сохранена",
     sourceContextDraftId: safeId(row.source_context_draft_id),
-    actionable: !expired && sourceKind === "competitor_post" && safeId(evidence.sourceId) != null,
+    actionable: !expired && (safeId(row.growth_move_id) != null || (sourceKind === "competitor_post" && safeId(evidence.sourceId) != null)),
+    actionHref: safeId(row.growth_move_id) != null
+      ? row.artifact_draft_id ? `/app/composer?draft=${row.artifact_draft_id}&from=opportunities`
+        : `/app/studio?growthMove=${row.growth_move_id}&channel=${row.channel_id}&intent=create`
+      : undefined,
   };
 }
 
@@ -154,8 +160,11 @@ export async function listOpportunitySnapshots(input: {
   const scope = await resolveChannelScope(db, input.actorUserId, input.channelId);
   if (!await release1Enabled(db, scope)) throw new ContentIntelligenceError("feature_disabled");
   const rows = (await db.query<OpportunityRow>(
-    `select snapshot.*, channel.title as channel_title, channel.handle as channel_handle
+    `select snapshot.*, move.id as growth_move_id, move.artifact_draft_id,
+            channel.title as channel_title, channel.handle as channel_handle
        from opportunity_snapshots snapshot
+       left join growth_moves move on move.id = snapshot.growth_move_id
+         and move.project_id = snapshot.project_id and move.channel_id = snapshot.channel_id
        join channels channel on channel.id = snapshot.channel_id and channel.project_id = snapshot.project_id
       where snapshot.project_id = $1 and snapshot.channel_id = $2
       order by snapshot.expires_at desc, snapshot.id desc limit 50`,
@@ -173,7 +182,7 @@ export async function createOpportunitySourceContext(input: {
     id: string; channel_id: string; expires_at: string; source_context_draft_id: string | null;
     title: string; angle: string; evidence: Record<string, unknown>;
   }>(
-    `select id, channel_id, title, angle, expires_at::text, source_context_draft_id, evidence
+    `select id, channel_id, title, independent_angle as angle, expires_at::text, source_context_draft_id, evidence
        from opportunity_snapshots where id = $1 and project_id = $2`,
     [input.opportunityId, membership.projectId],
   )).rows[0];
