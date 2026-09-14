@@ -28,6 +28,8 @@ import {
 } from "lucide-react";
 
 import { AppShell } from "@/components/app/shell";
+import { TodayPublications } from "@/components/app/today-publications";
+import { WorkCenterNav } from "@/components/app/work-center-nav";
 import { EvidenceCard } from "@/components/app/evidence-card";
 import { Button, buttonClassName } from "@/components/ui/button";
 import { Badge, Card } from "@/components/ui/primitives";
@@ -76,6 +78,11 @@ const SOURCE_LABELS: Record<TodaySource, string> = {
   reviews: "Черновики и проверки",
   opportunities: "Возможности",
   results: "Результаты публикаций",
+};
+
+const RECOMMENDATION_LABELS: Record<TodayRecommendationKind, string> = {
+  opportunity: "Темы для материалов", calendar_gap: "Пробелы в плане",
+  result_success: "Продолжения успешных постов", result_weak: "Улучшения публикаций", result_update: "Результаты публикаций",
 };
 
 const GROUPS: Array<{
@@ -574,6 +581,7 @@ function TodayPageContent() {
   const [quickMode, setQuickMode] = useState(false);
   const [quickTotal, setQuickTotal] = useState(0);
   const [quickCompleted, setQuickCompleted] = useState(0);
+  const [quickFingerprints, setQuickFingerprints] = useState<string[]>([]);
   const requestSequence = useRef(0);
   const mutationSequence = useRef(0);
   const stateSequence = useRef(0);
@@ -660,6 +668,17 @@ function TodayPageContent() {
       feedbackController.current?.abort(); actionController.current?.abort();
     };
   }, [load]);
+
+  useEffect(() => {
+    const check = () => {
+      if (document.visibilityState !== "visible" || busy || refreshing || quickMode || document.querySelector("details[open]")) return;
+      if (boardRef.current?.channelId) void load({ channelId: boardRef.current.channelId });
+    };
+    const timer = window.setInterval(check, 60_000);
+    window.addEventListener("focus", check);
+    document.addEventListener("visibilitychange", check);
+    return () => { window.clearInterval(timer); window.removeEventListener("focus", check); document.removeEventListener("visibilitychange", check); };
+  }, [busy, load, quickMode, refreshing]);
 
   useEffect(() => {
     const handleProjectChange = () => {
@@ -850,7 +869,7 @@ function TodayPageContent() {
         }
         throw new Error(errorCode);
       }
-      if (typeof body?.href !== "string" || !body.href.startsWith("/app/studio?")) {
+      if (typeof body?.href !== "string" || !/^\/app\/(composer|studio)\?/u.test(body.href)) {
         throw new Error("action_unavailable");
       }
       if (controller.signal.aborted || sequence !== actionSequence.current) return;
@@ -937,7 +956,7 @@ function TodayPageContent() {
             ? "Решения обновлены частично. Доступные источники показаны."
             : changed
               ? "Решения обновлены — новые данные уже в списке."
-              : "Всё актуально — новых решений пока нет.";
+              : "Проверка завершена. Новых рекомендаций в подборке нет.";
         setRefreshNotice(message);
         setAnnouncement(message);
       }
@@ -958,11 +977,12 @@ function TodayPageContent() {
 
   const actionableItems = board?.items.filter((item) => item.type !== "onboarding") ?? [];
   const orderedActionableItems = orderedItems(actionableItems);
-  const firstItem = orderedActionableItems[0];
+  const firstItem = quickMode ? orderedActionableItems.find((item) => quickFingerprints.includes(item.fingerprint)) : orderedActionableItems[0];
   const firstFingerprint = firstItem?.fingerprint;
   const startQuickMode = () => {
     if (actionableItems.length === 0) return;
     setQuickMode(true); setQuickTotal(actionableItems.length); setQuickCompleted(0);
+    setQuickFingerprints(actionableItems.map((item) => item.fingerprint));
     setPendingFocus(firstFingerprint ?? "summary");
     setAnnouncement(`Начат быстрый разбор: ${actionableItems.length} ${plural(actionableItems.length, "решение", "решения", "решений")}.`);
   };
@@ -974,9 +994,37 @@ function TodayPageContent() {
     ...board.sourceStatuses.filter((source) => source.status === "error"),
   ].map((source) => [source.source, { source: source.source, message: source.message }])).values()] : [];
 
+  async function restoreRecommendationKind(recommendationKind: TodayRecommendationKind) {
+    const current = boardRef.current;
+    if (!current?.channelId || busy || refreshing) return;
+    feedbackController.current?.abort();
+    const controller = new AbortController(); feedbackController.current = controller;
+    const sequence = ++feedbackSequence.current;
+    setBusy(`preference:${recommendationKind}`);
+    setRefreshError("");
+    try {
+      const response = await fetch("/api/today/feedback", {
+        method: "POST", signal: controller.signal, headers: { "content-type": "application/json", "x-aurora-project-id": String(current.projectId) },
+        body: JSON.stringify({ channelId: current.channelId, recommendationKind, state: "active" }),
+      });
+      if (controller.signal.aborted || sequence !== feedbackSequence.current) return;
+      if (!response.ok) throw new Error("preference_failed");
+      if (boardRef.current?.projectId !== current.projectId || boardRef.current?.channelId !== current.channelId) return;
+      await load({ channelId: current.channelId });
+      if (controller.signal.aborted || sequence !== feedbackSequence.current) return;
+      setAnnouncement(`Рекомендации «${RECOMMENDATION_LABELS[recommendationKind]}» снова включены.`);
+    } catch {
+      if (controller.signal.aborted || sequence !== feedbackSequence.current) return;
+      if (boardRef.current?.projectId === current.projectId && boardRef.current?.channelId === current.channelId) {
+        setRefreshError("Не удалось вернуть рекомендации. Повторите действие.");
+      }
+    } finally { if (!controller.signal.aborted && sequence === feedbackSequence.current) setBusy(null); }
+  }
+
   return (
-    <AppShell title="Сегодня" subtitle="Приоритетные решения по выбранному каналу.">
+    <AppShell title="Сегодня" subtitle="Публикации, ближайшие действия и результаты канала.">
       <div className="mx-auto w-full max-w-[68rem] space-y-6" aria-busy={refreshing} onKeyDownCapture={routeUndoFromDecisionFocus}>
+        <WorkCenterNav current="today" channelId={board?.channelId ?? requestedChannelId} />
         <p className="sr-only" aria-live="polite" aria-atomic="true">{announcement}</p>
         {status === "loading" ? <TodayLoadingCard /> : null}
 
@@ -1053,9 +1101,21 @@ function TodayPageContent() {
               ) : null}
             </Card>
 
+            {board.channelId && <TodayPublications key={`${board.projectId}:${board.channelId}`} projectId={board.projectId} channelId={board.channelId}
+              channelLabel={board.channelLabel} timezone={board.timezone} items={board.publicationQueue?.items ?? []}
+              available={board.publicationQueue?.state === "ready"} onRefresh={(message) => { setRefreshNotice(message); setAnnouncement(message); void load({ channelId: board.channelId }); }} />}
+
             <TodaySummaryMetrics board={board} />
 
-            <ChannelPulse pulse={board.pulse} channelId={board.channelId} refreshing={refreshing} onRefresh={() => void refreshSources()} />
+            {(board.hiddenRecommendationKinds?.length ?? 0) > 0 && <Card className="p-4 sm:p-5">
+              <h2 className="text-[15px] font-semibold">Скрытые рекомендации</h2>
+              <p className="mt-1 text-sm text-text-3">Эти типы отключены. Верните нужные, чтобы снова видеть подходящие действия.</p>
+              <ul className="mt-3 space-y-2">{board.hiddenRecommendationKinds?.map((kind) => <li key={kind} className="flex flex-wrap items-center justify-between gap-2">
+                <span className="text-sm text-text-2">{RECOMMENDATION_LABELS[kind]}</span>
+                <Button variant="secondary" size="sm" className="min-h-11" disabled={busy !== null || refreshing} loading={busy === `preference:${kind}`}
+                  onClick={() => void restoreRecommendationKind(kind)} aria-label={`Вернуть: ${RECOMMENDATION_LABELS[kind]}`}>Вернуть</Button>
+              </li>)}</ul>
+            </Card>}
 
             {refreshNotice ? <div role="status" className="rounded-sm border border-success/25 bg-success-soft px-4 py-3 text-[14px] text-success-text">{refreshNotice}</div> : null}
             {refreshError ? <div role="alert" className="rounded-sm border border-danger/25 bg-danger-soft px-4 py-3 text-[14px] text-danger-text">{refreshError}</div> : null}
@@ -1098,7 +1158,7 @@ function TodayPageContent() {
                 ) : board.readiness.state === "need_stats" ? (
                   <><Database className="mx-auto h-8 w-8 text-brand" aria-hidden /><h2 className="mt-4">Получите статистику публикаций</h2><p className="mx-auto mt-2 max-w-[55ch] text-pretty text-[15px] leading-relaxed text-text-2">Результаты появятся после получения просмотров и реакций от подключённого канала.</p><Link className={buttonClassName({ className: "mt-5 min-h-11" })} href="/app/settings?section=channels">Проверить подключение канала</Link></>
                 ) : (
-                  <><CheckCircle2 className="mx-auto h-8 w-8 text-success-text" aria-hidden /><h2 className="mt-4">На сегодня всё выполнено</h2><p className="mx-auto mt-2 max-w-[55ch] text-pretty text-[15px] leading-relaxed text-text-2">Готово сегодня: {board.summary.doneToday}. Отложено до завтра: {board.summary.snoozed}.</p><Link className={buttonClassName({ className: "mt-5 min-h-11" })} href="/app/calendar">Открыть календарь</Link></>
+                  <><CheckCircle2 className="mx-auto h-8 w-8 text-text-3" aria-hidden /><h2 className="mt-4">В подборке пока нет новых действий</h2><p className="mx-auto mt-2 max-w-[55ch] text-pretty text-[15px] leading-relaxed text-text-2">Разобрано сегодня: {board.summary.doneToday}. Отложено до завтра: {board.summary.snoozed}. Публикации и материалы показаны выше; новые рекомендации появятся по мере поступления подходящих данных.</p><Link className={buttonClassName({ className: "mt-5 min-h-11" })} href={`/app/studio?channel=${board.channelId}`}>Подготовить материал</Link></>
                 )}
               </Card>
             ) : null}
@@ -1172,6 +1232,7 @@ function TodayPageContent() {
             ) : null}
 
             {!quickMode ? <CompletedToday items={board.completedItems} timezone={board.timezone} /> : null}
+            {!quickMode ? <ChannelPulse pulse={board.pulse} channelId={board.channelId} refreshing={refreshing} onRefresh={() => void refreshSources()} /> : null}
           </>
         ) : null}
       </div>

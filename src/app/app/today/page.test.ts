@@ -33,7 +33,8 @@ describe("Today page resilience and interface contract", () => {
     expect(source).toContain("Подключите канал");
     expect(source).toContain("Не все источники обновились");
     expect(source).toContain("Источники решений временно недоступны");
-    expect(source).toContain("На сегодня всё выполнено");
+    expect(source).toContain("В подборке пока нет новых действий");
+    expect(source).not.toContain("На сегодня всё выполнено");
   });
 
   it("optimistically removes items, rolls them back on error and restores focus", () => {
@@ -59,7 +60,7 @@ describe("Today page resilience and interface contract", () => {
     expect(source).toContain('method: "POST"');
     expect(source).toContain("const loaded = await load");
     expect(source).toContain("Обновить решения");
-    expect(source).toContain("Всё актуально — новых решений пока нет.");
+    expect(source).toContain("Проверка завершена. Новых рекомендаций в подборке нет.");
   });
 
   it("retains the last successful cards for a source-specific refresh failure", () => {
