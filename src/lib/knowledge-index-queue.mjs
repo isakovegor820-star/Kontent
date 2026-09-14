@@ -1,3 +1,4 @@
+import { resolveEmbeddingConfig } from "./embedding-config.mjs";
 export const KNOWLEDGE_INDEX_JOB = "knowledge-index";
 
 function positiveSourceId(value) {
@@ -41,14 +42,20 @@ export async function reconcilePendingKnowledgeSources(db, queue, options = {}) 
   const limit = Number.isSafeInteger(requestedLimit)
     ? Math.min(1_000, Math.max(1, requestedLimit))
     : 200;
+  const model = options.model ?? resolveEmbeddingConfig().identity;
   const rows = (
     await db.query(
-      `select id
-         from knowledge_sources
-        where status = 'pending'
-        order by added_at, id
-        limit $1`,
-      [limit],
+      `with due as (
+         select id from knowledge_sources
+          where status <> 'error'
+            and (next_retry_at is null or next_retry_at <= now())
+            and (status = 'pending' or text_indexed_at is null or embedding_model is distinct from $2
+              or (embedding_error_code is not null and next_retry_at is not null and embedding_attempts < 5))
+          order by next_retry_at nulls first, last_attempt_at nulls first, id
+          limit $1 for update skip locked
+       ) update knowledge_sources source set next_retry_at=now()+interval '5 minutes'
+         from due where source.id=due.id returning source.id`,
+      [limit, model],
     )
   ).rows;
 
@@ -59,6 +66,8 @@ export async function reconcilePendingKnowledgeSources(db, queue, options = {}) 
       await enqueueKnowledgeIndex(queue, row.id);
       accepted += 1;
     } catch {
+      // Keep the durable signal, release the enqueue lease with a bounded delay.
+      await db.query("update knowledge_sources set next_retry_at=now()+interval '1 minute' where id=$1", [row.id]);
       failed += 1;
     }
   }

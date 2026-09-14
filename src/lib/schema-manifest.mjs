@@ -5,7 +5,7 @@
  */
 export const SCHEMA_MANIFEST = Object.freeze({
   manifestVersion: 1,
-  schemaVersion: "2026-10-13.116",
+  schemaVersion: "2026-10-14.117",
   migrations: Object.freeze([
     ["20260801_account_onboarding.sql", "ac0e1f10046cf620185570ab5f40437991d08513473f67d4e93bdafa07b86614"],
     ["20260801_ai_usage_reservations.sql", "991c3a92dce16df55011d9df52fb65af1a7f4310b27f61dc519705f05528d7a0"],
@@ -125,6 +125,7 @@ export const SCHEMA_MANIFEST = Object.freeze({
     ["20261011_studio_sites_worker_leases.sql", "373af952f70e04dc1a414079542266570346f2c6a3f7724ec6442d03dbdc7fed"],
     ["20261012_calendar_draft_range.sql", "38a44a833def381dae0c523000d66f7c44a69560e19c2b482e1d16eb149ca44c"],
     ["20261013_trends_search_scope.sql", "10c4ff380a975f7813d517c4ca202a25ca1aac84c0230f5ad1e190c20cbf1dc8"],
+    ["20261014_knowledge_index_recovery.sql", "7d94e2709f65e80ed506571230945dd52118a682a5bf99a4e1809a0255ff8fbd"],
   ].map(([name, checksum, acceptedChecksums]) => Object.freeze({
     name,
     checksum,
@@ -767,7 +768,15 @@ export const SCHEMA_MANIFEST = Object.freeze({
       "site_article_publications.reconcile_state",
       "site_visibility_probes.run_key",
       "site_visibility_probes.brand_mentioned",
+      "knowledge_sources.text_indexed_at",
+      "knowledge_sources.embedding_model",
+      "knowledge_sources.embedding_attempts",
+      "knowledge_sources.last_attempt_at",
+      "knowledge_sources.next_retry_at",
+      "knowledge_sources.embedding_error_code",
       "knowledge_sources.site_id",
+      "discovered_sources.content_embedding_model",
+      "knowledge_chunks.embedding_model",
       "knowledge_chunks.site_id",
     ]),
     constraints: Object.freeze([
@@ -1364,6 +1373,7 @@ export const SCHEMA_MANIFEST = Object.freeze({
       "site_article_publications.site_article_publications_pending_idx",
       "site_visibility_probes.site_visibility_probes_pkey",
       "site_visibility_probes.site_visibility_probes_site_run_idx",
+      "knowledge_sources.knowledge_sources_retry_idx",
       "knowledge_sources.knowledge_sources_site_idx",
       "knowledge_chunks.knowledge_chunks_site_kind_idx",
     ]),

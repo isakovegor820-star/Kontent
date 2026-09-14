@@ -1,3 +1,4 @@
+import { knowledgeStyleSamples } from "./knowledge-style.mjs";
 // Учёт генераций ИИ и дневной лимит (ТЗ Д.8, ТЗ 12 — честный лимит с видимым счётчиком).
 // Лимит на пользователя в сутки. Для локального движка он щедрый, но механика та же,
 // что и для платного облака — сменим движок, не трогая продукт.
@@ -1010,7 +1011,8 @@ export async function channelAiContextFor(
   ).rows.map((row) => row.raw_text.trim()).filter(Boolean);
 
   const liveStyleSamples = await styleSamplesFor(userId, channelId, styleLimit, pool);
-  const styleSamples = [...new Set([...quality.styleExamples, ...liveStyleSamples])].slice(0, styleLimit);
+  const importedStyleSamples = await knowledgeStyleSamples(pool, channelId);
+  const styleSamples = [...new Set([...quality.styleExamples, ...importedStyleSamples, ...liveStyleSamples])].slice(0, styleLimit);
   const publishedCount = Number((
     await pool.query<{ count: string }>(
       `select count(*)::text as count from posts
