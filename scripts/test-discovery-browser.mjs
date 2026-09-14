@@ -16,10 +16,10 @@ await context.route('**/api/**', async route => {
  let body = { ok: true, items: [], posts: [], channels: [], drafts: [], notifications: [], generations: [], models: [], engines: [], current: null, total: 0, hasMore: false, unreadCount: 0 };
  if (path === '/api/auth/me') body = { user: { id: 99001, email: 'preview@example.test', name: 'Проверка интерфейса', onboarding_completed_at: '2026-01-01', is_admin: false } };
  if (path === '/api/projects') body = { ok: true, projects: [project] };
- if (path === '/api/projects/current') body = { ok: true, project };
+ if (path === '/api/projects/current' || path === `/api/projects/${project.id}`) body = { ok: true, project };
  if (path === '/api/posts') body = { projectId: 99001, posts: [], pageInfo: { snapshotVersion: '1', hasMore: false, nextCursor: null } };
  if (path === '/api/ai/usage') body = { status: 'ok', used: 0, limit: 30 };
- await route.fulfill({ json: body });
+ await route.fulfill({ json: body, headers: { 'X-Aurora-Project-Id': String(project.id) } });
 });
 const page = await context.newPage();
 const errors = []; page.on('pageerror', error => errors.push(error.message));

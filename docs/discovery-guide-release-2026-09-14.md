@@ -21,7 +21,7 @@ No actionable interface findings remain in the changed scope. Found and fixed du
 
 Considered but rejected: automatic first-login tours (help is optional); a separate color system (existing tokens already work); unrelated page layout and backend fixes (not required by this feature).
 
-Local validation on the release checkout: 43 focused tests passed, ESLint clean, TypeScript clean. Earlier browser verification covers search, help, menu interaction and navigation with synthetic API data; the repeatable script is `scripts/test-discovery-browser.mjs`. A fresh dev boot on this checkout stopped at the shared local database schema check; it was not reported as ready and the check was not bypassed. CI and deployment validation provide separate release evidence.
+Local validation on the release checkout: 43 focused tests passed, ESLint clean, TypeScript clean. Fresh Chromium verification passed all 10 width/theme combinations, keyboard focus, menu explanation, collapse/reopen, empty results and navigation from search to settings and the Studio guide, with zero page errors. It ran against the release checkout's full dev runtime with an isolated local database; API fixtures include the current project endpoint and required project response header. The repeatable script is `scripts/test-discovery-browser.mjs`. CI and deployment validation provide separate release evidence.
 
 Not verified: physical mobile keyboards, VoiceOver/NVDA, true browser zoom 200%, complete backend walkthrough actions. The guide itself does not execute backend actions.
 
