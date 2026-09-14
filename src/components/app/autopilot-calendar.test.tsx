@@ -14,7 +14,7 @@ function Harness({ returnItemId }: { returnItemId?: string }) {
     onSelect={(index) => setSelected((previous) => previous.has(index) ? new Set() : new Set([index]))} onSelectAll={(indexes) => setSelected(new Set(indexes))} onAdd={add} onEdit={edit} onReschedule={move} />;
 }
 beforeEach(() => {
-  vi.useFakeTimers({ shouldAdvanceTime: true });
+  vi.useFakeTimers({ toFake: ["Date"] });
   vi.setSystemTime(new Date("2026-09-07T12:00:00Z"));
   vi.stubGlobal("React", React);
   vi.clearAllMocks();
