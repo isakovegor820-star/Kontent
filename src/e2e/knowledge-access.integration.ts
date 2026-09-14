@@ -9,7 +9,7 @@ const mocks = vi.hoisted(() => ({ pool: vi.fn(), user: vi.fn(), enqueue: vi.fn()
 vi.mock("@/lib/db", () => ({ getPool: mocks.pool }));
 vi.mock("@/lib/session", () => ({ getSessionUser: mocks.user }));
 vi.mock("@/lib/queue", () => ({ getStatsQueue: () => ({ add: mocks.enqueue }) }));
-import { DELETE, GET, POST } from "@/app/api/knowledge/route";
+import { DELETE, GET, POST, PUT as retryIndex } from "@/app/api/knowledge/route";
 vi.mock("@/lib/tg-public", () => ({ fetchPublicPosts: mocks.fetch }));
 vi.mock("@/lib/ai-completion-service.mjs", () => ({ completeAiText: mocks.complete }));
 import { POST as readChannel } from "@/app/api/knowledge/read-channel/route";
@@ -222,5 +222,27 @@ describe.sequential("knowledge membership and preserved team workflows", () => {
       await blocker.query("rollback"); blocker.release();
       await Promise.allSettled([deleting, revoking].filter(Boolean));
     }
+  });
+});
+
+
+describe.sequential("knowledge indexing retry authorization", () => {
+  it("lets an author retry the shared source without deleting chunks", async () => {
+    const id = await source();
+    await pool.query("update knowledge_sources set embedding_attempts=5, embedding_error_code='embedding_auth' where id=$1", [id]);
+    expect((await retryIndex(request("PUT", "", { channelId, sourceId: id }))).status).toBe(200);
+    expect(await remains(id)).toBe(1);
+    expect((await pool.query("select embedding_attempts from knowledge_sources where id=$1", [id])).rows[0].embedding_attempts).toBe(0);
+  });
+  it("denies retry after permission revocation", async () => {
+    const id = await source();
+    await revoke();
+    expect((await retryIndex(request("PUT", "", { channelId, sourceId: id }))).status).toBe(403);
+    expect(mocks.enqueue).not.toHaveBeenCalled();
+  });
+  it("does not retry a source from a different channel", async () => {
+    const id = Number((await pool.query("insert into knowledge_sources(user_id,site_id,kind,title,raw_text) values($1,$2,'paste','Foreign','Text') returning id", [owner,siteId])).rows[0].id);
+    expect((await retryIndex(request("PUT", "", { channelId, sourceId: id }))).status).toBe(404);
+    expect(mocks.enqueue).not.toHaveBeenCalled();
   });
 });

@@ -39,7 +39,7 @@ describe("knowledge index queue", () => {
       accepted: 1,
       failed: 1,
     });
-    expect(db.query).toHaveBeenCalledWith(expect.stringContaining("status = 'pending'"), [50]);
+    expect(db.query).toHaveBeenCalledWith(expect.stringContaining("status = 'pending'"), [50, expect.any(String)]);
     expect(queue.add).toHaveBeenCalledTimes(2);
   });
 });

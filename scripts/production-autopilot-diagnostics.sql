@@ -359,4 +359,17 @@ select jsonb_pretty(jsonb_build_object(
   )
 ))::text;
 
+select exists(select 1 from information_schema.columns where table_schema='public' and table_name='knowledge_sources' and column_name='embedding_error_code') as knowledge_index_v2 \gset
+\if :knowledge_index_v2
+select jsonb_pretty(jsonb_build_object('knowledgeIndex', jsonb_build_object(
+  'sources', count(*),
+  'pendingText', count(*) filter (where text_indexed_at is null),
+  'semanticFailures', count(*) filter (where embedding_error_code is not null),
+  'exhaustedRetries', count(*) filter (where embedding_attempts >= 5),
+  'lastSuccessAt', max(indexed_at),
+  'oldestPendingAt', min(added_at) filter (where status='pending')
+))) from knowledge_sources;
+\else
+select jsonb_pretty(jsonb_build_object('knowledgeIndex', jsonb_build_object('schema', 'legacy', 'pendingText', count(*) filter(where status='pending'), 'sources', count(*)))) from knowledge_sources;
+\endif
 commit;

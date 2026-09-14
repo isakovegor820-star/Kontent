@@ -1,3 +1,4 @@
+import { resolveEmbeddingConfig } from "./embedding-config.mjs";
 import { Queue } from "bullmq";
 import { CRON_SCHEDULES } from "../../worker/cron-schedules.mjs";
 import Redis, { type RedisOptions } from "ioredis";
@@ -609,6 +610,7 @@ export const ADMIN_DIAGNOSTIC_COMPONENT_IDS = Object.freeze([
   "background_workers",
   "social_connections",
   "telegram_worker",
+  "knowledge_index",
   "aurora_ai",
   "media_generation",
   "site_analysis",
@@ -847,6 +849,28 @@ function defaultDefinitions(now: () => number): DiagnosticDefinition[] {
           scope: "Подтверждён цикл getUpdates этого бота. Отправка публикаций и права отдельных каналов проверяются отдельно.",
           affectedSections: ["settings"],
         };
+      },
+    },
+    {
+      id: "knowledge_index", group: "integrations", label: "Поиск в базе знаний", description: "Текстовая доступность и семантический индекс",
+      run: async () => {
+        const config = resolveEmbeddingConfig();
+        const row = (await pool().query<{ total: number; pending: number; failed: number; semantic: number; last_success: string | null }>(
+          `select count(*)::int as total,
+            count(*) filter(where text_indexed_at is null)::int as pending,
+            count(*) filter(where embedding_error_code is not null)::int as failed,
+            count(*) filter(where embedding_model=$1 and embedding_error_code is null and indexed_at is not null)::int as semantic,
+            max(indexed_at)::text as last_success from knowledge_sources`, [config.identity],
+        )).rows[0];
+        const state: AdminDiagnosticState = !config.configured ? "not_configured" : !row.total ? "unobserved" : row.pending || row.failed || row.semantic < row.total ? "degraded" : "healthy";
+        return { state, evidence: [
+          { label: "Провайдер и модель", value: `${config.provider} · ${config.model}` },
+          { label: "Готовы к семантическому поиску", value: `${row.semantic} / ${row.total}` },
+          { label: "Ждут текстовой обработки", value: row.pending },
+          { label: "Обработка не завершена", value: row.failed },
+        ], lastSuccessAt: row.last_success, safeErrorCode: row.failed ? "knowledge_embedding_incomplete" : null,
+        scope: "Состояние сохранённых источников; отдельная проверка базы знаний. Доступность провайдера в эту секунду не проверяется.",
+        affectedSections: ["knowledge", "autopilot", "studio", "siteAnalysis"] };
       },
     },
     {

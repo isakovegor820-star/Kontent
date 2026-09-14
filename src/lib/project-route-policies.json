@@ -536,6 +536,11 @@
   },
   {
     "path": "/api/knowledge",
+    "method": "PUT",
+    "policy": "project"
+  },
+  {
+    "path": "/api/knowledge",
     "method": "GET",
     "policy": "project"
   },

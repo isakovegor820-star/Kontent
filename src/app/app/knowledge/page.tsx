@@ -13,12 +13,13 @@ import { useProjectFetch } from "@/lib/use-project-transport";
 // не сочиняет ни дат, ни сумм, ни номеров дел. Нет опоры — пишем общо, но честно, а не врём.
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { BookText, FileText, Loader2, Radio, Trash2, TriangleAlert, User } from "lucide-react";
+import { BookText, FileText, Radio, Trash2, TriangleAlert, User } from "lucide-react";
 import { AppShell } from "@/components/app/shell";
 import { Button } from "@/components/ui/button";
 import { Badge, Card, EmptyState, Field, Input, Tabs, Textarea } from "@/components/ui/primitives";
 import { ChannelPicker, useChannelChoice } from "@/components/app/channel-picker";
 import { useStore } from "@/lib/store";
+import { knowledgeCanRetry, knowledgeNeedsPolling, knowledgeStatusMessage } from "@/lib/knowledge-status";
 import { fmtAgo, plural } from "@/lib/utils";
 import type { EffectiveProfile, ProfileField, ProfileSourceKind } from "@/lib/effective-ai-context";
 
@@ -31,6 +32,12 @@ interface Source {
   added_at: string;
   indexed_at: string | null;
   chunks: number;
+  semantic_ready: boolean;
+  text_indexed_at: string | null;
+  embedding_error_code: string | null;
+  embedding_attempts: number;
+  next_retry_at: string | null;
+  last_attempt_at: string | null;
 }
 interface State {
   ok: true;
@@ -130,7 +137,7 @@ export default function KnowledgePage() {
   }, [load]);
 
   // Пока хоть один источник считается — опрашиваем: «готово» должно появиться само.
-  const indexing = data?.sources.some((s) => s.status === "pending") ?? false;
+  const indexing = data?.sources.some(knowledgeNeedsPolling) ?? false;
   useEffect(() => {
     if (!indexing) return;
     const t = setInterval(() => void load(false), 3000);
@@ -259,7 +266,7 @@ export default function KnowledgePage() {
         <div className="flex items-baseline gap-2.5">
           <span className="text-[28px] font-bold text-text">{facts}</span>
           <span className="text-[14px] text-text-2">
-            {plural(facts, "факт", "факта", "фактов")} в опоре
+            {plural(facts, "фрагмент", "фрагмента", "фрагментов")} материала
           </span>
           {data?.voice ? (
             <span className="text-[13px] text-text-3">· и {data.voice} для стиля</span>
@@ -271,13 +278,13 @@ export default function KnowledgePage() {
             станут предметными.
           </p>
         ) : (
-          <Badge tone="success">автопилот пишет по фактам</Badge>
+          <Badge tone="success">материалы доступны генерации</Badge>
         )}
       </Card>
 
       <div className="grid min-w-0 gap-5 lg:grid-cols-[minmax(0,1fr)_minmax(0,1.1fr)]">
         <AddPanel channelId={channelId!} mode={mode} onMode={setMode} onDone={load} store={store} />
-        <SourceList sources={data?.sources ?? []} onDelete={load} store={store} />
+        <SourceList channelId={channelId!} sources={data?.sources ?? []} onDelete={load} store={store} />
       </div>
     </AppShell>
   );
@@ -390,7 +397,7 @@ function AddPanel({
       });
       const d = (await r.json().catch(() => null)) as { ok?: boolean; error?: string } | null;
       if (d?.ok) {
-        store.toast({ kind: "success", title: "Добавил — считаю факты", body: "Готово будет через несколько секунд." });
+        store.toast({ kind: "success", title: "Материал сохранён", body: "Он появится в поиске после обработки. Статус обновится здесь." });
         reset();
         onDone();
       } else {
@@ -400,6 +407,8 @@ function AddPanel({
         };
         store.toast({ kind: "danger", title: "Не вышло", body: why[d?.error ?? ""] ?? "Попробуй ещё раз." });
       }
+    } catch {
+      store.toast({ kind: "danger", title: "Сохранение не подтверждено", body: "Проверьте список материалов перед повторной отправкой. Введённый текст сохранён в форме." });
     } finally {
       setBusy(false);
     }
@@ -554,15 +563,30 @@ function AddPanel({
 /* --------------------------------------------------------------- СПИСОК */
 
 function SourceList({
+  channelId,
   sources,
   onDelete,
   store,
 }: {
+  channelId: number;
   sources: Source[];
   onDelete: () => void;
   store: ReturnType<typeof useStore>;
 }) {
   const fetch = useProjectFetch();
+  const [retryingId, setRetryingId] = useState<number | null>(null);
+  const [retryAnnouncement, setRetryAnnouncement] = useState("");
+  const retry = async (sourceId: number) => {
+    setRetryingId(sourceId);
+    try {
+      const response = await fetch("/api/knowledge", { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ channelId, sourceId }) });
+      const body = await response.json();
+      if (!response.ok || !body.ok) throw new Error("retry_failed");
+      setRetryAnnouncement("Повторная обработка запланирована.");
+      onDelete();
+    } catch { setRetryAnnouncement("Не удалось запланировать обработку. Повторите попытку."); }
+    finally { setRetryingId(null); }
+  };
   const [deletingId, setDeletingId] = useState<number | null>(null);
   const del = async (id: number, title: string) => {
     if (deletingId != null) return;
@@ -598,6 +622,7 @@ function SourceList({
 
   return (
     <Card className="divide-y divide-line p-0">
+      <p className="sr-only" role="status">{retryAnnouncement}</p>
       {sources.map((s) => (
         <div key={s.id} className="flex items-start gap-3 p-4">
           <div className="min-w-0 flex-1">
@@ -605,26 +630,22 @@ function SourceList({
               <span className="truncate text-[14px] font-semibold text-text">{s.title}</span>
               <Badge tone="neutral">{KIND_LABEL[s.kind] ?? s.kind}</Badge>
             </div>
-            <p className="mt-1 text-[13px] text-text-3">
-              {s.status === "pending" ? (
-                <span className="inline-flex items-center gap-1.5 text-text-2">
-                  <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden />
-                  {s.last_error || "считаю факты…"}
-                </span>
-              ) : s.status === "error" ? (
-                <span className="text-danger-text">{s.last_error || "не вышло разобрать"}</span>
-              ) : (
-                <>
-                  {s.kind === "channel" ? (
-                    <>{s.chunks} {plural(s.chunks, "пост-образец", "поста-образца", "постов-образцов")} стиля</>
-                  ) : (
-                    <>{s.chunks} {plural(s.chunks, "факт", "факта", "фактов")} · опора для постов</>
-                  )}
-                  {" · "}
-                  {fmtAgo(s.added_at)}
-                </>
-              )}
+            <p className="mt-1 text-[13px] leading-relaxed text-text-2" role="status" aria-atomic="true">
+              {knowledgeStatusMessage(s)}
             </p>
+            {s.last_attempt_at && !s.semantic_ready && <p className="mt-1 text-[12px] text-text-3">
+              Последняя попытка: {fmtAgo(s.last_attempt_at)}.
+              {s.next_retry_at && (s.embedding_attempts ?? 0) < 5 ? ` Следующая проверка очереди — после ${new Date(s.next_retry_at).toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit" })}.` : ""}
+            </p>}
+            {s.chunks > 0 && <p className="mt-1 text-[12px] text-text-3">
+              {s.chunks} {s.kind === "channel" ? "фрагментов стиля" : "фрагментов материала"} · {fmtAgo(s.added_at)}
+            </p>}
+            {knowledgeCanRetry(s) && (
+              <Button variant="outline" size="sm" className="mt-2" disabled={retryingId !== null}
+                loading={retryingId === s.id} onClick={() => void retry(s.id)} aria-label={`Повторить обработку «${s.title}»`}>
+                Повторить обработку
+              </Button>
+            )}
           </div>
           <Button
             type="button"

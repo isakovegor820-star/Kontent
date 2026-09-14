@@ -215,9 +215,9 @@ async function vectorScores(pool, site, embed, text) {
   const result = await pool.query(
     `select s.title as url, 1 - (c.embedding <=> $2::vector) as score
        from knowledge_chunks c join knowledge_sources s on s.id = c.source_id
-      where c.site_id = $1 and c.embedding is not null and s.kind in ('site_page', 'site_publication')
+      where c.site_id = $1 and c.embedding is not null and c.embedding_model=$3 and s.kind in ('site_page', 'site_publication')
       order by c.embedding <=> $2::vector limit 3`,
-    [site.id, toVector(vector)],
+    [site.id, toVector(vector), embed.identity ?? null],
   ).catch(() => ({ rows: [] }));
   return result.rows.map((row) => ({ url: row.url, score: Number(row.score) }));
 }

@@ -61,10 +61,8 @@ async function saveProfileSource(
     }
     return Number(ins.rows[0].id);
   });
-  await enqueueKnowledgeIndex(getStatsQueue(), sourceId)
-    .catch(() => {
-      /* Источник сохранён в pending; периодическая DB→queue сверка подберёт его позже. */
-    });
+  try { await enqueueKnowledgeIndex(getStatsQueue(), sourceId); }
+  catch { console.warn("[knowledge] enqueue deferred", { sourceId, code: "knowledge_queue_unavailable" }); }
 }
 
 async function handlePOST(req: NextRequest) {

@@ -90,7 +90,8 @@ jobs:
             aurora_audience_gate_test \
             aurora_password_gate_test \
             aurora_bot_persistence_test \
-            aurora_tracking_gate_test
+            aurora_tracking_gate_test \
+            aurora_launch_test
           do
             createdb -h localhost -U postgres "$database"
           done
@@ -182,6 +183,11 @@ jobs:
         env:
           STUDIO_SITES_TEST_POSTGRES_URL: "postgres://postgres:postgres@localhost:5432/postgres"
           STUDIO_SITES_TEST_REDIS_URL: "redis://127.0.0.1:6380"
+
+      - name: Test knowledge indexing recovery and project access
+        run: npx vitest run --config vitest.integration.config.ts src/e2e/knowledge-engine.integration.ts src/e2e/knowledge-access.integration.ts --maxWorkers=1
+        env:
+          DATABASE_URL: "postgres://postgres:postgres@127.0.0.1:5432/aurora_launch_test"
 
       - name: Production build 1
         run: npm run build

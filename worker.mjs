@@ -35,7 +35,6 @@ import {
   parseRss,
   sumReactions,
   decodeEntities,
-  splitChunks,
   plural,
   mskDatePlus,
   periodSlots,
@@ -99,6 +98,8 @@ import { createSiteAnalysisWorker } from "./worker/site-analysis-worker.mjs";
 import { SITE_ARTICLES_QUEUE, createSiteArticlesWorker } from "./worker/site-articles-worker.mjs";
 import { runSiteDailyMaintenance, runSiteMonthlyReports } from "./worker/site-scheduler.mjs";
 import { createEmbedder } from "./worker/embeddings.mjs";
+import { indexKnowledgeSource } from "./worker/knowledge-indexer.mjs";
+import { knowledgeStyleSamples } from "./src/lib/knowledge-style.mjs";
 import { createProjectExportWorker } from "./worker/project-export-worker.mjs";
 import { materializeAllOpportunitySnapshots } from "./src/lib/opportunity-snapshot-materializer.mjs";
 import {
@@ -484,8 +485,7 @@ const TELEGRAM_API_URL = (process.env.TG_API_URL || "https://api.telegram.org").
 const EMBED_DIM = 1024; // bge-m3. Сменишь модель — меняй и vector(N) в схеме.
 
 /**
- * Вектор текста. null — движок недоступен (кусок останется непроиндексированным,
- * и это честно: лучше пустая база, чем база с враньём). Логика провайдеров — в
+ * Вектор текста. null — семантический поиск недоступен; текстовый индекс остаётся доступным. Логика провайдеров — в
  * worker/embeddings.mjs, общая для базы знаний каналов и сайтов.
  */
 const sharedEmbedder = createEmbedder(process.env);
@@ -545,10 +545,10 @@ async function findSupport(channelId, topic, k = TOP_K) {
     const dense = await pool.query(
       `select id, text, kind, source_id, 1 - (embedding <=> $1::vector) as sim
          from knowledge_chunks
-        where channel_id = $2 and kind <> 'voice' and embedding is not null
+        where channel_id = $2 and kind <> 'voice' and embedding is not null and embedding_model = $4
           and (valid_until is null or valid_until >= current_date)
         order by embedding <=> $1::vector limit $3`,
-      [toVector(vec), channelId, k],
+      [toVector(vec), channelId, k, sharedEmbedder.identity],
     );
     // Порог — только на ЛУЧШЕМ векторном совпадении: он решает «есть ли тут вообще о чём».
     // Внутри выдачи порог не применяем — на замере верный кусок был вторым с 0.513 при
@@ -581,69 +581,7 @@ async function findSupport(channelId, topic, k = TOP_K) {
  * и поиск возвращал бы одно и то же по два раза.
  */
 async function indexSource(sourceId) {
-  const src = (
-    await pool.query(
-      `select id, user_id, channel_id, site_id, kind, title, raw_text from knowledge_sources where id = $1`,
-      [sourceId],
-    )
-  ).rows[0];
-  if (!src) return { error: "no_source" };
-
-  const parts = splitChunks(src.raw_text);
-  if (!parts.length) {
-    await pool.query(
-      `update knowledge_sources set status = 'error', last_error = 'пустой текст' where id = $1`,
-      [sourceId],
-    );
-    return { error: "empty" };
-  }
-
-  // Тип куска наследуется от источника: посты канала — это ГОЛОС (образец стиля), и
-  // фактом служить не могут. Иначе ИИ начнёт «опираться» на собственную прошлую выдумку
-  // и закольцует враньё: один раз соврал — навсегда стало «фактом из базы».
-  const kind = src.kind === "channel" ? "voice" : src.kind === "form" ? "service" : "fact";
-
-  const vectors = [];
-  for (const part of parts) {
-    const v = await embed(part);
-    if (!v) {
-      // Движок недоступен — оставляем pending и выходим.Наполовину проиндексированный источник
-      // хуже непроиндексированного: часть фактов молча пропала бы из поиска.
-      await pool.query(
-        `update knowledge_sources set status = 'pending', last_error = 'движок ИИ недоступен' where id = $1`,
-        [sourceId],
-      );
-      console.log(`[база] источник ${sourceId}: движок недоступен — жду`);
-      return { error: "ai_unavailable" };
-    }
-    vectors.push([part, v]);
-  }
-
-  let tx = null;
-  try {
-    tx = await pool.connect();
-    await tx.query("begin");
-    await tx.query(`delete from knowledge_chunks where source_id = $1`, [sourceId]);
-    for (const [text, v] of vectors) {
-      await tx.query(
-        `insert into knowledge_chunks (user_id, channel_id, site_id, source_id, kind, text, embedding)
-         values ($1, $2, $3, $4, $5, $6, $7)`,
-        [src.user_id, src.channel_id, src.site_id ?? null, sourceId, kind, text, toVector(v)],
-      );
-    }
-    await tx.query(
-      `update knowledge_sources set status = 'ready', last_error = null, indexed_at = now() where id = $1`,
-      [sourceId],
-    );
-    await tx.query("commit");
-  } catch (err) {
-    await tx?.query("rollback").catch(() => {});
-    throw err;
-  } finally {
-    tx?.release();
-  }
-  console.log(`[база] «${src.title}» (${src.site_id ? `сайт ${src.site_id}` : `канал ${src.channel_id}`}): ${vectors.length} кусков`);
-  return { chunks: vectors.length };
+  return indexKnowledgeSource(pool, sharedEmbedder, sourceId);
 }
 
 // Настроения агента — компактная копия src/lib/moods.ts (воркер не может импортировать TS).
@@ -3717,13 +3655,13 @@ async function upsertRadarPublicCorpus({ handle, page, activity, provider, embed
   if (!contentSample) return null;
   const existing = (
     await pool.query(
-      `select id, content_sample, content_embedding is not null as has_embedding
+      `select id, content_sample, content_embedding is not null as has_embedding, content_embedding_model
          from discovered_sources where network = 'tg' and handle = $1`,
       [normalizedHandle],
     )
   ).rows[0];
   let contentEmbedding = embedding;
-  if (!contentEmbedding && (!existing?.has_embedding || existing.content_sample !== contentSample)) {
+  if (!contentEmbedding && (!existing?.has_embedding || existing.content_embedding_model !== sharedEmbedder.identity || existing.content_sample !== contentSample)) {
     contentEmbedding = await radarEmbedding(contentSample);
   }
   return (
@@ -3732,9 +3670,9 @@ async function upsertRadarPublicCorpus({ handle, page, activity, provider, embed
          (network, handle, canonical_url, title, description, subscribers,
           last_post_at, posts_per_week, is_public, verification_status, provider,
           raw_data, verified_at, cache_expires_at, content_sample, content_embedding,
-          indexed_posts_count, content_indexed_at)
+          indexed_posts_count, content_indexed_at, content_embedding_model)
        values ('tg', $1, $2, $3, $4, $5, $6, $7, true, 'verified', $8,
-               $9::jsonb, now(), now() + interval '24 hours', $10, $11::vector, $12, now())
+               $9::jsonb, now(), now() + interval '24 hours', $10, $11::vector, $12, now(), $13)
        on conflict (network, handle) do update set
          canonical_url = excluded.canonical_url,
          title = coalesce(excluded.title, discovered_sources.title),
@@ -3749,7 +3687,8 @@ async function upsertRadarPublicCorpus({ handle, page, activity, provider, embed
          verified_at = now(),
          cache_expires_at = now() + interval '24 hours',
          content_sample = excluded.content_sample,
-         content_embedding = coalesce(excluded.content_embedding, discovered_sources.content_embedding),
+         content_embedding = case when excluded.content_embedding is not null then excluded.content_embedding when excluded.content_sample = discovered_sources.content_sample then discovered_sources.content_embedding else null end,
+         content_embedding_model = case when excluded.content_embedding is not null then excluded.content_embedding_model when excluded.content_sample = discovered_sources.content_sample then discovered_sources.content_embedding_model else null end,
          indexed_posts_count = excluded.indexed_posts_count,
          content_indexed_at = now(),
          updated_at = now()
@@ -3771,6 +3710,7 @@ async function upsertRadarPublicCorpus({ handle, page, activity, provider, embed
         contentSample,
         contentEmbedding ? toVector(contentEmbedding) : null,
         page.posts.length,
+        contentEmbedding ? sharedEmbedder.identity : null,
       ],
     )
   ).rows[0] || existing || null;
@@ -3782,10 +3722,10 @@ async function indexPendingRadarCorpus(limit = 24) {
       `select id, content_sample
          from discovered_sources
         where verification_status = 'verified' and is_public = true
-          and content_sample is not null and content_embedding is null
+          and content_sample is not null and (content_embedding is null or content_embedding_model is distinct from $2)
         order by content_indexed_at desc nulls last, id
         limit $1`,
-      [limit],
+      [limit, sharedEmbedder.identity],
     )
   ).rows;
   let indexed = 0;
@@ -3794,9 +3734,9 @@ async function indexPendingRadarCorpus(limit = 24) {
     if (!vector) return;
     const updated = await pool.query(
       `update discovered_sources
-          set content_embedding = $2::vector, content_indexed_at = now(), updated_at = now()
-        where id = $1 and content_embedding is null`,
-      [row.id, toVector(vector)],
+          set content_embedding = $2::vector, content_embedding_model=$3, content_indexed_at = now(), updated_at = now()
+        where id = $1 and content_sample=$4`,
+      [row.id, toVector(vector), sharedEmbedder.identity, row.content_sample],
     );
     indexed += updated.rowCount;
   });
@@ -4569,10 +4509,10 @@ async function runRadarSearch(runId, userId) {
                   1 - (content_embedding <=> $1::vector) as semantic_similarity
              from discovered_sources
             where network = 'tg' and verification_status = 'verified' and is_public = true
-              and content_embedding is not null
+              and content_embedding is not null and content_embedding_model=$2
               and 1 - (content_embedding <=> $1::vector) >= 0.48
             order by content_embedding <=> $1::vector`,
-          [toVector(queryEmbedding)],
+          [toVector(queryEmbedding), sharedEmbedder.identity],
         )
       ).rows;
       for (const source of semanticSources) {
@@ -6447,9 +6387,9 @@ async function buildAutopilotPlan(
   if (ideaTopics.length)
     rule += ` Взял ${ideaTopics.length} ${plural(ideaTopics.length, "тему", "темы", "тем")} из залётов конкурентов.`;
 
-  // Стиль берём только из примеров, которые человек явно положил в настройку. История
+  // Стиль берём из настроек и явно импортированных образцов канала. История
   // published загрязнялась тестами и случайными постами, а worker затем тиражировал их голос.
-  const samples = quality.styleExamples;
+  const samples = [...quality.styleExamples, ...await knowledgeStyleSamples(pool, channelId)].slice(0, 10);
 
   // Every publication plan crosses a human-review boundary. Legacy `mode=full` values are
   // deliberately ignored: generation may be automatic, calendar mutation may not.
@@ -12066,7 +12006,7 @@ const cronWorker = AUTOPILOT_ONLY || MEDIA_ONLY || PUBLICATION_ONLY ? null : new
       case "recon":    await collectCompetitors(); return checkNicheAlerts();
       case "trend":    return collectTrendSources();
       case "today-opportunities": return materializeAllOpportunitySnapshots(pool);
-      case "knowledge-index": return reconcilePendingKnowledgeSources(pool, statsProducerQueue);
+      case "knowledge-index": return reconcilePendingKnowledgeSources(pool, statsProducerQueue, { model: sharedEmbedder.identity });
       case "discover": return discoverAll();
       case "weekly":   return weeklyPlans();
       case "cleanup":  return cleanupExpired();
