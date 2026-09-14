@@ -33,6 +33,12 @@ describe("production landing page", () => {
     expect(markup).toContain("Пример проверки материала");
     expect(markup).toContain("Что уже есть для юридического редактора");
     expect(markup).toContain("Фактический статус рабочих контуров");
+    expect(markup).toContain('data-access-card="editor"');
+    expect(markup).toContain('data-access-card="telegram"');
+    expect(markup).toContain('data-access-card="vk"');
+    expect(markup).toContain("Настройки тона, включая необязательный мат");
+    expect(markup).toContain("Повторная попытка без дублей");
+    expect(markup).toContain("Статус готовности внутри проекта");
     expect(markup).toContain("Начните с проверяемого материала");
     expect(markup).toContain('<main id="main">');
     expect(markup).toContain('aria-controls="landing-mobile-menu"');
