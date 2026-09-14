@@ -3019,10 +3019,30 @@ try {
   await page.getByRole("heading", { name: "Профиль", exact: true }).waitFor({ timeout: UI_WAIT_TIMEOUT_MS });
   assert(await page.getByRole("combobox", { name: "Тема", exact: true }).inputValue() === "light", "theme preference did not survive reload");
   const settingsSearch = page.getByRole("searchbox", { name: "Найти настройку" });
-  const searchBeforeScroll = await settingsSearch.boundingBox();
-  await page.locator(".settings-panel").evaluate((element) => { element.scrollTop = element.scrollHeight; });
-  const searchAfterScroll = await settingsSearch.boundingBox();
-  assert(searchBeforeScroll && searchAfterScroll && Math.abs(searchBeforeScroll.y - searchAfterScroll.y) < 1, "settings search moved with the content");
+  const settingsScrollGeometry = await page.locator("[data-settings-workspace]").evaluate((workspace) => {
+    const panel = workspace.querySelector(".settings-panel");
+    const search = workspace.querySelector('[data-discovery-target="settings-search"]');
+    if (!(panel instanceof HTMLElement) || !(search instanceof HTMLElement)) return null;
+    const searchBeforeY = search.getBoundingClientRect().y;
+    const documentScrollBefore = document.documentElement.scrollTop;
+    panel.scrollTop = panel.scrollHeight;
+    return {
+      documentScrollBefore,
+      documentScrollAfter: document.documentElement.scrollTop,
+      panelScrollTop: panel.scrollTop,
+      searchAfterY: search.getBoundingClientRect().y,
+      searchBeforeY,
+      searchInsidePanel: panel.contains(search),
+    };
+  });
+  assert(
+    settingsScrollGeometry
+      && settingsScrollGeometry.panelScrollTop > 0
+      && !settingsScrollGeometry.searchInsidePanel
+      && settingsScrollGeometry.documentScrollAfter === settingsScrollGeometry.documentScrollBefore
+      && Math.abs(settingsScrollGeometry.searchBeforeY - settingsScrollGeometry.searchAfterY) < 1,
+    `settings search did not remain independent of content scrolling: ${JSON.stringify(settingsScrollGeometry)}`,
+  );
   await settingsSearch.fill("UTM-шаблоны");
   await page.getByRole("button", { name: /UTM-шаблоны\s*Интеграции/u }).click();
   await page.waitForURL((url) => url.searchParams.get("section") === "integrations" && url.searchParams.get("setting") === "utm");
