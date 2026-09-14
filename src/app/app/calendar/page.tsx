@@ -1774,11 +1774,6 @@ export default function CalendarPage() {
     () => gridPosts.filter((post) => !post.scheduledAt),
     [gridPosts],
   );
-  const attentionPosts = useMemo(() => gridPosts.filter(post =>
-    ["failed", "failed_retry", "quarantined", "missing", "deleted_external", "published_unverified"].includes(post.status)
-    || post.calendarStatus === "changes_requested"
-    || ["failed", "partial", "published_unverified"].includes(post.operationStatus ?? "")
-  ), [gridPosts]);
   const localRecovery = useMemo(
     () => (s.user ? s.posts.filter((post) => isRecoverableLegacyDraft(post, s.user!.id)) : []),
     [s.posts, s.user],
@@ -2613,19 +2608,6 @@ export default function CalendarPage() {
             />
             <CalendarTip />
           </div>
-        )}
-
-        {s.ready && attentionPosts.length > 0 && (
-          <Card as="section" className="p-4" aria-label="Требуют внимания">
-            <h2 className="text-[15px] font-extrabold">Требуют внимания · {attentionPosts.length}</h2>
-            <p className="mt-1 text-[13px] text-text-2">Записи со всех дат: ошибки, неподтверждённая доставка и запрошенные правки.</p>
-            <ul className="mt-3 flex flex-col gap-2">
-              {attentionPosts.map(post => <li key={post.id} className="flex items-center gap-3 rounded-sm bg-surface-2 p-3">
-                <div className="min-w-0 flex-1"><Badge tone="danger">{CALENDAR_STATUS_LABEL[calendarRecordStatus(post)] ?? post.status}</Badge><p className="mt-2 line-clamp-2 text-sm">{post.text}</p></div>
-                <Button variant="ghost" size="sm" onClick={() => openPost(post)}>Открыть</Button>
-              </li>)}
-            </ul>
-          </Card>
         )}
 
         {/* --------------------------------------- ВТОРИЧНЫЕ МАТЕРИАЛЫ */}
