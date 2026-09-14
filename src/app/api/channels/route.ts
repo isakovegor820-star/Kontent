@@ -1,3 +1,4 @@
+import { withProjectRoute } from "@/lib/project-route";
 // Д.3/Д.4 — список подключённых каналов пользователя (для интерфейса).
 
 import { NextRequest, NextResponse } from "next/server";
@@ -7,7 +8,7 @@ import { getSessionUser } from "@/lib/session";
 
 export const runtime = "nodejs";
 
-export async function GET(req: NextRequest) {
+async function handleGET(req: NextRequest) {
   try {
     const user = await getSessionUser(req);
     if (!user) return NextResponse.json({ error: "unauthorized" }, { status: 401 });
@@ -39,3 +40,5 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ error: "unavailable" }, { status: 503 });
   }
 }
+
+export const GET = withProjectRoute(handleGET);

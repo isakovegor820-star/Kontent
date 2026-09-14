@@ -1,4 +1,6 @@
 "use client";
+import { useProjectFetch } from "@/lib/use-project-transport";
+
 
 import { SettingsSaveBar } from "@/components/app/settings-save-bar";
 import { useCallback, useEffect, useState } from "react";
@@ -41,6 +43,7 @@ const CHANNEL_COPY: Record<NotificationChannel, { label: string; icon: React.Rea
 };
 
 export function NotificationSecuritySettings() {
+  const fetch = useProjectFetch();
   const store = useStore();
   const [saved, setSaved] = useState<NotificationPreferences | null>(null);
   const [draft, setDraft] = useState<NotificationPreferences | null>(null);
@@ -71,7 +74,7 @@ export function NotificationSecuritySettings() {
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [fetch]);
 
   /* eslint-disable react-hooks/set-state-in-effect -- первичная синхронизация формы с серверными настройками */
   useEffect(() => { void load(); }, [load]);

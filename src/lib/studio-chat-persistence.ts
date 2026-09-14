@@ -1,3 +1,5 @@
+import type { PoolClient } from "pg";
+import { requireSelectedProjectPermission, requireProjectPermission } from "./project-permissions";
 import { getPool } from "./db";
 import {
   parseStudioChatSession,
@@ -70,11 +72,13 @@ export function parseStudioChatSaveInput(value: unknown, owner: number): StudioC
 }
 
 export async function loadStudioChatSessionForUser(userId: number): Promise<StoredStudioChatSession | null> {
-  const result = await getPool().query<StudioChatRow>(
+  const pool = getPool();
+  const membership = await requireSelectedProjectPermission(pool, userId, "project.read");
+  const result = await pool.query<StudioChatRow>(
     `select payload, revision, updated_at
-       from studio_chat_sessions
-      where user_id = $1`,
-    [userId],
+       from studio_project_chat_sessions
+      where user_id = $1 and project_id = $2`,
+    [userId, membership.projectId],
   );
   return storedRow(userId, result.rows[0]);
 }
@@ -86,32 +90,52 @@ export async function saveStudioChatSessionForUser(
   | { saved: true; session: StoredStudioChatSession }
   | { saved: false; current: StoredStudioChatSession | null }
 > {
-  const result = await getPool().query<StudioChatRow>(
+  const pool = getPool();
+  const selected = await requireSelectedProjectPermission(pool, userId, "project.read");
+  const client = await pool.connect();
+  try {
+    await client.query("begin");
+    await requireProjectPermission(client, userId, selected.projectId, "project.read", { lock: true });
+    const result = await saveStudioSnapshot(client, userId, selected.projectId, input);
+    await client.query("commit");
+    return result;
+  } catch (error) { await client.query("rollback").catch(() => {}); throw error; }
+  finally { client.release(); }
+}
+
+async function saveStudioSnapshot(
+  pool: Pick<PoolClient, "query">, userId: number, projectId: number, input: StudioChatSaveInput,
+): Promise<{ saved: true; session: StoredStudioChatSession } | { saved: false; current: StoredStudioChatSession | null }> {
+  const result = await pool.query<StudioChatRow>(
     `with updated as (
-       update studio_chat_sessions
+       update studio_project_chat_sessions
           set payload = $2::jsonb,
               revision = revision + 1,
               updated_at = now()
-        where user_id = $1
+        where user_id = $1 and project_id = $4
           and revision = $3::bigint
           and $3::bigint > 0
        returning payload, revision, updated_at
      ), inserted as (
-       insert into studio_chat_sessions (user_id, payload, revision, updated_at)
-       select $1, $2::jsonb, 1, now()
+       insert into studio_project_chat_sessions (user_id, payload, revision, updated_at, project_id)
+       select $1, $2::jsonb, 1, now(), $4
         where $3::bigint = 0
-          and not exists (select 1 from studio_chat_sessions where user_id = $1)
-       on conflict (user_id) do nothing
+          and not exists (select 1 from studio_project_chat_sessions where user_id = $1 and project_id = $4)
+       on conflict (project_id, user_id) do nothing
        returning payload, revision, updated_at
      )
      select payload, revision, updated_at from updated
      union all
      select payload, revision, updated_at from inserted`,
-    [userId, JSON.stringify(input.payload), input.expectedRevision],
+    [userId, JSON.stringify(input.payload), input.expectedRevision, projectId],
   );
   const saved = storedRow(userId, result.rows[0]);
   if (saved) return { saved: true, session: saved };
-  const current = await loadStudioChatSessionForUser(userId);
+  const currentRows = await pool.query<StudioChatRow>(
+    "select payload, revision, updated_at from studio_project_chat_sessions where user_id = $1 and project_id = $2",
+    [userId, projectId],
+  );
+  const current = storedRow(userId, currentRows.rows[0]);
   // A normal save and the pagehide keepalive can race with the same snapshot.
   // Treat the exact stale replay as idempotent success; a different payload remains
   // a revision conflict and must still be merged by the client.

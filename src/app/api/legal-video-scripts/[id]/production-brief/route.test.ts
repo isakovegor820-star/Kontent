@@ -1,4 +1,4 @@
-import { NextRequest } from "next/server";
+import { ProjectRequest } from "@/test/project-request";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
@@ -18,7 +18,7 @@ import { GET } from "./route";
 const context = { params: Promise.resolve({ id: "201" }) };
 
 function request() {
-  return new NextRequest("http://localhost/api/legal-video-scripts/201/production-brief");
+  return new ProjectRequest(1, "http://localhost/api/legal-video-scripts/201/production-brief");
 }
 
 describe("GET /api/legal-video-scripts/:id/production-brief", () => {

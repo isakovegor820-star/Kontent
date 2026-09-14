@@ -1,9 +1,11 @@
+import { withProjectRoute } from "@/lib/project-route";
 import { randomUUID } from "node:crypto";
 import { NextRequest } from "next/server";
 
 import { getPool } from "@/lib/db";
 import { checkRateLimit, rateLimitResponse } from "@/lib/rate-limit";
 import { getSelectedProjectContext, selectProjectForUser } from "@/lib/project-context";
+import { selectedProjectDto } from "@/lib/project-dto";
 import { hasTrustedMutationOrigin } from "@/lib/request-origin";
 import { getSessionUser } from "@/lib/session";
 import { normalizeProjectName, normalizeProjectTimezone } from "@/lib/project-team";
@@ -17,7 +19,7 @@ export async function GET(req: NextRequest) {
   const user = await getSessionUser(req);
   if (!user) return projectJson({ ok: false, error: "unauthorized" }, 401, requestId);
   try {
-    return projectJson({ ok: true, project: await getSelectedProjectContext(getPool(), user.id) }, 200, requestId);
+    return projectJson({ ok: true, project: selectedProjectDto(await getSelectedProjectContext(getPool(), user.id)) }, 200, requestId);
   } catch (error) {
     return projectApiError(error, requestId);
   }
@@ -41,13 +43,13 @@ export async function PUT(req: NextRequest) {
   }
   try {
     const project = await selectProjectForUser(getPool(), user.id, projectId);
-    return projectJson({ ok: true, project }, 200, requestId);
+    return projectJson({ ok: true, project: selectedProjectDto(project) }, 200, requestId);
   } catch (error) {
     return projectApiError(error, requestId);
   }
 }
 
-export async function PATCH(req: NextRequest) {
+async function handlePATCH(req: NextRequest) {
   if (!hasTrustedMutationOrigin(req)) {
     return projectJson({ ok: false, error: "forbidden_origin" }, 403);
   }
@@ -80,3 +82,5 @@ export async function PATCH(req: NextRequest) {
     return projectApiError(error, requestId);
   }
 }
+
+export const PATCH = withProjectRoute(handlePATCH);

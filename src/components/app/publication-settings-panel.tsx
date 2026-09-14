@@ -1,4 +1,6 @@
 "use client";
+import { useProjectFetch } from "@/lib/use-project-transport";
+
 
 import { useEffect, useId, useMemo, useState } from "react";
 import { CalendarClock, MessageSquareText, Pin, RotateCcw } from "lucide-react";
@@ -101,6 +103,7 @@ export function PublicationSettingsPanel({
   onDraftVersionChange: (version: number) => void;
   onPreviewChange: (preview: PublicationSettingsPreview | null) => void;
 }) {
+  const fetch = useProjectFetch();
   const errorId = useId();
   const statusId = useId();
   const [savedSnapshot, setSavedSnapshot] = useState("");
@@ -169,7 +172,7 @@ export function PublicationSettingsPanel({
       if (!controller.signal.aborted) setLoading(false);
     });
     return () => controller.abort();
-  }, [draftId, projectId, reloadKey, timezone]);
+  }, [draftId, fetch, projectId, reloadKey, timezone]);
 
   const preview = useMemo(
     () => preferences ? buildPublicationSettingsPreview(blocks, preferences) : null,

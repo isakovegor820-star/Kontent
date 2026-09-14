@@ -302,7 +302,7 @@ describe("discard audience reply", () => {
     let row = { ...baseRow, suggested_reply: "Черновик", reply_guidance: "Совет", status: "reply_ready", ...overrides };
     const query = vi.fn(async (sql: string, values?: unknown[]) => {
       if (["begin", "commit", "rollback"].includes(sql)) return { rows: [], rowCount: 0 };
-      if (sql.includes("from user_project_preferences")) return { rows: [{ ...membership, role }], rowCount: 1 };
+      if (sql.includes("from user_project_preferences") || sql.includes("from project_members member")) return { rows: [{ ...membership, role }], rowCount: 1 };
       if (sql.includes("from bot_client_inquiries inquiry")) return { rows: [row], rowCount: 1 };
       if (sql.includes("set suggested_reply = null")) {
         expect(values).toEqual([41, 7, 1]);

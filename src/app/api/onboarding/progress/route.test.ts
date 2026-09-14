@@ -1,5 +1,5 @@
+import { ProjectRequest } from "@/test/project-request";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { NextRequest } from "next/server";
 
 const mocks = vi.hoisted(() => ({
   getSessionUser: vi.fn(),
@@ -39,7 +39,7 @@ describe("/api/onboarding/progress", () => {
   });
 
   it("restores server-owned progress for the signed-in account", async () => {
-    const response = await GET(new NextRequest("http://localhost/api/onboarding/progress"));
+    const response = await GET(new ProjectRequest(7, "http://localhost/api/onboarding/progress"));
 
     expect(response.status).toBe(200);
     await expect(response.json()).resolves.toEqual({ ok: true, progress });
@@ -47,7 +47,7 @@ describe("/api/onboarding/progress", () => {
   });
 
   it("saves only the accepted transition fields", async () => {
-    const response = await PATCH(new NextRequest("http://localhost/api/onboarding/progress", {
+    const response = await PATCH(new ProjectRequest(7, "http://localhost/api/onboarding/progress", {
       method: "PATCH",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ step: 3, channelId: 11, skippedFirstSource: false }),
@@ -63,14 +63,14 @@ describe("/api/onboarding/progress", () => {
   });
 
   it("rejects untrusted project selectors and cross-origin writes", async () => {
-    const unknown = await PATCH(new NextRequest("http://localhost/api/onboarding/progress", {
+    const unknown = await PATCH(new ProjectRequest(7, "http://localhost/api/onboarding/progress", {
       method: "PATCH",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ step: 2, projectId: 999 }),
     }));
     expect(unknown.status).toBe(400);
 
-    const crossOrigin = await PATCH(new NextRequest("http://localhost/api/onboarding/progress", {
+    const crossOrigin = await PATCH(new ProjectRequest(7, "http://localhost/api/onboarding/progress", {
       method: "PATCH",
       headers: { "content-type": "application/json", origin: "https://evil.example" },
       body: JSON.stringify({ step: 2 }),

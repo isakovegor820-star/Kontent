@@ -1,3 +1,4 @@
+import { withProjectRoute } from "@/lib/project-route";
 import { randomUUID } from "node:crypto";
 import { NextRequest } from "next/server";
 
@@ -20,7 +21,7 @@ function parsedIds(values: { projectId: string; memberId: string }) {
   };
 }
 
-export async function PATCH(req: NextRequest, { params }: Params) {
+async function handlePATCH(req: NextRequest, { params }: Params) {
   if (!hasTrustedMutationOrigin(req)) {
     return projectJson({ ok: false, error: "forbidden_origin" }, 403);
   }
@@ -57,7 +58,7 @@ export async function PATCH(req: NextRequest, { params }: Params) {
   }
 }
 
-export async function DELETE(req: NextRequest, { params }: Params) {
+async function handleDELETE(req: NextRequest, { params }: Params) {
   if (!hasTrustedMutationOrigin(req)) {
     return projectJson({ ok: false, error: "forbidden_origin" }, 403);
   }
@@ -91,3 +92,6 @@ export async function DELETE(req: NextRequest, { params }: Params) {
     return projectApiError(error, requestId);
   }
 }
+
+export const PATCH = withProjectRoute(handlePATCH, { projectInPath: true });
+export const DELETE = withProjectRoute(handleDELETE, { projectInPath: true });

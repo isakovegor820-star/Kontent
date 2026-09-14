@@ -1,5 +1,5 @@
+import { ProjectRequest } from "@/test/project-request";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { NextRequest } from "next/server";
 
 const mocks = vi.hoisted(() => ({
   hasTrustedMutationOrigin: vi.fn(),
@@ -46,7 +46,7 @@ const safeEvent = {
 };
 
 function request(body: unknown) {
-  return new NextRequest("http://localhost/api/product-events", {
+  return new ProjectRequest(31, "http://localhost/api/product-events", {
     method: "POST",
     headers: {
       "content-type": "application/json",
@@ -71,7 +71,7 @@ describe("POST /api/product-events", () => {
   it("binds user and project on the server and returns no-store", async () => {
     const result = await POST(request({ events: [safeEvent] }));
     expect(result.status).toBe(200);
-    expect(result.headers.get("cache-control")).toBe("no-store");
+    expect(result.headers.get("cache-control")).toBe("private, no-store");
     expect(result.headers.get("x-request-id")).toMatch(/^[0-9a-f-]{36}$/u);
     expect(mocks.requireSelectedProjectPermission).toHaveBeenCalledWith(expect.anything(), 7, "project.read");
     expect(mocks.persistAuroraProductEvents).toHaveBeenCalledWith(expect.objectContaining({
@@ -110,7 +110,7 @@ describe("POST /api/product-events", () => {
     }));
     const limited = await POST(request({ events: [safeEvent] }));
     expect(limited.status).toBe(503);
-    expect(limited.headers.get("cache-control")).toBe("no-store");
+    expect(limited.headers.get("cache-control")).toBe("private, no-store");
     expect(mocks.persistAuroraProductEvents).not.toHaveBeenCalled();
   });
 

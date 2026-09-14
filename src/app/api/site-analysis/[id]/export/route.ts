@@ -1,3 +1,4 @@
+import { withProjectRoute } from "@/lib/project-route";
 import { randomUUID } from "node:crypto";
 
 import { NextRequest, NextResponse } from "next/server";
@@ -24,7 +25,7 @@ type ExportRow = {
   completed_at: Date | string | null;
 };
 
-export async function GET(req: NextRequest, context: Context) {
+async function handleGET(req: NextRequest, context: Context) {
   const requestId = randomUUID();
   const user = await getSessionUser(req);
   if (!user) return NextResponse.json({ error: "unauthorized", requestId }, { status: 401, headers: { "x-request-id": requestId } });
@@ -79,3 +80,5 @@ export async function GET(req: NextRequest, context: Context) {
     return NextResponse.json({ error: "unavailable", requestId }, { status: 503, headers: { "x-request-id": requestId } });
   }
 }
+
+export const GET = withProjectRoute(handleGET);

@@ -5,6 +5,7 @@ import {
   classifyTelegramChannelFailure,
   transitionChannelHealth,
 } from "../src/lib/channel-health.mjs";
+import { resolveProviderOperation } from "../src/lib/provider-capabilities.mjs";
 import { activateNextPublicationExtra } from "../src/lib/publication-extra-operations.mjs";
 import { PUBLICATION_EXTRA_QUEUE } from "../src/lib/publication-extra-queue.mjs";
 
@@ -289,6 +290,22 @@ export async function processPublicationExtraOperation({
     );
   }
   try {
+    const providerId = operation.network;
+    if (operation.request_snapshot?.providerId !== providerId) {
+      throw new PublicationExtraOperationError("provider_snapshot_mismatch", "Площадка сохранённого действия не совпадает с каналом.");
+    }
+    const capability = operation.kind === "first_comment" ? "firstComment"
+      : operation.kind === "configure_comments" ? "commentToggle" : "pin";
+    const readiness = resolveProviderOperation(providerId, capability, { credentialState: "ready", permissionState: "ready" });
+    if (!readiness.available) {
+      throw new PublicationExtraOperationError(
+        operation.provider_started_at ? "provider_previous_delivery_unverified" : readiness.reason,
+        operation.provider_started_at
+          ? "Площадка ранее получила запрос, но результат неизвестен. Повтор остановлен; проверь публикацию вручную."
+          : readiness.message,
+        { deliveryUnknown: Boolean(operation.provider_started_at) },
+      );
+    }
     // A previous ambiguous Telegram comment request must never be repeated blindly.
     if (
       operation.kind === "first_comment"

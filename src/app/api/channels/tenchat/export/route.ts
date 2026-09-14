@@ -1,3 +1,4 @@
+import { withProjectRoute } from "@/lib/project-route";
 import { randomUUID } from "node:crypto";
 
 import type { NextRequest } from "next/server";
@@ -52,7 +53,7 @@ function disposition(fileName: string) {
   return `attachment; filename="${fallback}"; filename*=UTF-8''${encodeURIComponent(fileName)}`;
 }
 
-export async function POST(req: NextRequest) {
+async function handlePOST(req: NextRequest) {
   const requestId = randomUUID();
   if (!hasTrustedMutationOrigin(req)) {
     return NextResponse.json({ ok: false, error: "forbidden_origin" }, { status: 403 });
@@ -117,3 +118,5 @@ export async function POST(req: NextRequest) {
     );
   }
 }
+
+export const POST = withProjectRoute(handlePOST);

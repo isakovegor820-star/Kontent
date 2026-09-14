@@ -1,3 +1,4 @@
+import { withProjectRoute } from "@/lib/project-route";
 // Д.9 — платформа читает ОТКРЫТУЮ страницу твоего канала и предлагает бриф.
 // Ничего не сохраняет: возвращает предложение, а решает и подтверждает человек.
 // Честность: не смогли прочитать канал (приватный, пустой, движок молчит) — так и
@@ -50,7 +51,7 @@ function parseJsonLoose(raw: string): unknown {
   }
 }
 
-export async function POST(req: NextRequest) {
+async function handlePOST(req: NextRequest) {
   if (!hasTrustedMutationOrigin(req)) {
     return NextResponse.json({ ok: false, error: "forbidden_origin" }, { status: 403 });
   }
@@ -153,3 +154,5 @@ export async function POST(req: NextRequest) {
     if (!committed) await releaseAiUsage(user.id, reservation.reservationId).catch(() => {});
   }
 }
+
+export const POST = withProjectRoute(handlePOST);

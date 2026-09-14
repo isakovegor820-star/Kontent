@@ -3,6 +3,8 @@ import React from "react";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { EMPTY_BRIEF } from "@/lib/brief";
+import { setProjectTransport } from "@/lib/project-transport";
+import { projectJson } from "@/test/project-response";
 import { ChannelSettingsCenter } from "./channel-settings-center";
 
 const mocks = vi.hoisted(() => ({ toast: vi.fn(), fetch: vi.fn() }));
@@ -24,11 +26,12 @@ const settings = {
   quick_settings: { newsPerWeek: 4, detail: 2, energy: 2, emoji: 2 },
 };
 const brief = { ...EMPTY_BRIEF, niche: "Кофейня", audience: "Жители района", ready: true };
-const reply = (body: unknown, ok = true) => ({ ok, json: async () => body });
+const reply = (body: unknown, ok = true) => projectJson(7, body, { status: ok ? 200 : 503 });
 const slider = (name: string) => screen.getByRole("slider", { name }) as HTMLInputElement;
 const saveButton = () => screen.getByRole("button", { name: "Сохранить автопилот" }) as HTMLButtonElement;
 
 beforeEach(() => {
+  setProjectTransport(7, true, 1);
   vi.clearAllMocks();
   vi.stubGlobal("React", React);
   vi.stubGlobal("fetch", mocks.fetch);
@@ -41,7 +44,7 @@ beforeEach(() => {
     return reply({ brief, settings: { ...settings, post_frequency: url.endsWith("23") ? 3 : 7 } });
   });
 });
-afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
+afterEach(() => { cleanup(); setProjectTransport(null); vi.unstubAllGlobals(); });
 
 describe("Autopilot channel settings", () => {
   it("shows every control on entry without an extra edit click", async () => {

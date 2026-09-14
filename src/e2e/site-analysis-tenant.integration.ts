@@ -1,9 +1,9 @@
 import { readFile } from "node:fs/promises";
-import { NextRequest } from "next/server";
 import pg from "pg";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 
 import { migrate } from "../../scripts/migrate.mjs";
+import { ProjectRequest } from "@/test/project-request";
 
 const mocks = vi.hoisted(() => ({ getPool: vi.fn(), getSessionUser: vi.fn() }));
 vi.mock("@/lib/db", () => ({ getPool: mocks.getPool }));
@@ -36,9 +36,9 @@ async function selectProject(actorUserId: number, projectId: number) {
   );
 }
 
-async function listFor(actorUserId: number) {
+async function listFor(actorUserId: number, selectedProjectId: number) {
   mocks.getSessionUser.mockResolvedValueOnce({ id: actorUserId, email: `user-${actorUserId}@example.test` });
-  const response = await listAnalyses(new NextRequest("http://localhost/api/site-analysis"));
+  const response = await listAnalyses(new ProjectRequest(selectedProjectId, "http://localhost/api/site-analysis"));
   return { response, body: await response.json() };
 }
 
@@ -91,12 +91,12 @@ afterAll(async () => {
 
 describe.sequential("site analysis project isolation", () => {
   it("changes the visible analysis set with the selected project and never exposes NULL legacy rows", async () => {
-    const a = await listFor(userId);
+    const a = await listFor(userId, projectA);
     expect(a.response.status).toBe(200);
     expect(a.body.analyses.map((analysis: { id: number }) => analysis.id)).toEqual([analysisA]);
 
     await selectProject(userId, projectB);
-    const b = await listFor(userId);
+    const b = await listFor(userId, projectB);
     expect(b.response.status).toBe(200);
     expect(b.body.analyses.map((analysis: { id: number }) => analysis.id)).toEqual([analysisB]);
   });
@@ -104,7 +104,7 @@ describe.sequential("site analysis project isolation", () => {
   it("does not let a project-B member fetch project A by id", async () => {
     mocks.getSessionUser.mockResolvedValueOnce({ id: memberBId, email: "tenant-member-b@example.test" });
     const response = await getAnalysis(
-      new NextRequest(`http://localhost/api/site-analysis/${analysisA}`),
+      new ProjectRequest(projectB, `http://localhost/api/site-analysis/${analysisA}`),
       { params: Promise.resolve({ id: String(analysisA) }) },
     );
     expect(response.status).toBe(404);

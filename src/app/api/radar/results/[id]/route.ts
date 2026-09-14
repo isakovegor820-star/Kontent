@@ -1,3 +1,5 @@
+import { requireSelectedProjectPermission } from "@/lib/project-permissions";
+import { withProjectRoute } from "@/lib/project-route";
 // Действия над уже проверенным результатом радара. Клиент передаёт только id; URL,
 // handle и текст всегда перечитываются из user-scoped строки, поэтому подменить источник
 // или сохранить чужую находку нельзя.
@@ -18,7 +20,7 @@ function json(body: Record<string, unknown>, status = 200) {
   return NextResponse.json(body, { status, headers: { "cache-control": "no-store" } });
 }
 
-export async function POST(
+async function handlePOST(
   req: NextRequest,
   ctx: { params: Promise<{ id: string }> },
 ) {
@@ -45,6 +47,7 @@ export async function POST(
   if (!channelId) return json({ error: "no_channel" }, 422);
   const pool = getPool();
   try {
+    const { projectId } = await requireSelectedProjectPermission(pool, user.id, "content.create");
     const result = (
       await pool.query<{
         id: string;
@@ -62,10 +65,10 @@ export async function POST(
         `select result.id, result.result_type, result.handle, result.title, result.description,
                 result.subscribers, result.text, result.url, result.reason, result.raw_data, run.query
            from radar_search_results result
-           join radar_search_runs run on run.id = result.run_id and run.user_id = $2
+           join radar_search_runs run on run.id = result.run_id and run.user_id = $2 and run.project_id = $3
           where result.id = $1 and result.user_id = $2
             and result.verification_status = 'verified'`,
-        [resultId, user.id],
+        [resultId, user.id, projectId],
       )
     ).rows[0];
     if (!result) return json({ error: "not_found" }, 404);
@@ -155,3 +158,5 @@ export async function POST(
     return json({ error: "action_unavailable" }, 503);
   }
 }
+
+export const POST = withProjectRoute(handlePOST);

@@ -1,5 +1,5 @@
+import { ProjectRequest } from "@/test/project-request";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { NextRequest } from "next/server";
 
 const mocks = vi.hoisted(() => ({
   getSessionUser: vi.fn(),
@@ -24,7 +24,7 @@ describe("GET /api/stats availability", () => {
   it("returns 401 instead of an empty-account success for an expired session", async () => {
     mocks.getSessionUser.mockResolvedValueOnce(null);
 
-    const response = await GET(new NextRequest("http://localhost/api/stats?channel=1"));
+    const response = await GET(new ProjectRequest(44, "http://localhost/api/stats?channel=1"));
 
     expect(response.status).toBe(401);
     await expect(response.json()).resolves.toMatchObject({
@@ -39,7 +39,7 @@ describe("GET /api/stats availability", () => {
       .mockResolvedValueOnce(membership())
       .mockRejectedValueOnce(new Error("database unavailable"));
 
-    const response = await GET(new NextRequest("http://localhost/api/stats?channel=1"));
+    const response = await GET(new ProjectRequest(44, "http://localhost/api/stats?channel=1"));
 
     expect(response.status).toBe(503);
     await expect(response.json()).resolves.toMatchObject({
@@ -52,7 +52,7 @@ describe("GET /api/stats availability", () => {
     mocks.getSessionUser.mockResolvedValueOnce({ id: 7 });
     mocks.query.mockResolvedValueOnce({ rows: [], rowCount: 0 });
 
-    const response = await GET(new NextRequest("http://localhost/api/stats?channel=1"));
+    const response = await GET(new ProjectRequest(44, "http://localhost/api/stats?channel=1"));
 
     expect(response.status).toBe(403);
     await expect(response.json()).resolves.toMatchObject({
@@ -68,7 +68,7 @@ describe("GET /api/stats availability", () => {
       .mockResolvedValueOnce(membership())
       .mockResolvedValueOnce({ rows: [{ id: "17", title: "Свой канал" }], rowCount: 1 });
 
-    const response = await GET(new NextRequest("http://localhost/api/stats?channel=999"));
+    const response = await GET(new ProjectRequest(44, "http://localhost/api/stats?channel=999"));
 
     expect(response.status).toBe(200);
     await expect(response.json()).resolves.toEqual({ hasChannel: false });
@@ -79,7 +79,7 @@ describe("GET /api/stats availability", () => {
     mocks.getSessionUser.mockResolvedValueOnce({ id: 7 });
     mocks.query.mockImplementation(async (sqlValue: string) => {
       const sql = sqlValue.replace(/\s+/g, " ").trim();
-      if (sql.includes("from user_project_preferences preference")) return membership();
+      if (sql.includes("from project_members member")) return membership();
       if (sql.startsWith("select channel.id, channel.title, project.timezone")) {
         return { rows: [{ id: "17", title: "Судебная практика", timezone: "Europe/Saratov", handle: "law_channel" }], rowCount: 1 };
       }
@@ -94,7 +94,7 @@ describe("GET /api/stats availability", () => {
       throw new Error(`unexpected query: ${sql}`);
     });
 
-    const response = await GET(new NextRequest("http://localhost/api/stats?channel=17"));
+    const response = await GET(new ProjectRequest(44, "http://localhost/api/stats?channel=17"));
 
     expect(response.status).toBe(200);
     await expect(response.json()).resolves.toMatchObject({
@@ -113,7 +113,7 @@ describe("GET /api/stats availability", () => {
     mocks.getSessionUser.mockResolvedValueOnce({ id: 7 });
     mocks.query.mockImplementation(async (sqlValue: string, params?: unknown[]) => {
       const sql = sqlValue.replace(/\s+/g, " ").trim();
-      if (sql.includes("from user_project_preferences preference")) return membership();
+      if (sql.includes("from project_members member")) return membership();
       if (sql.startsWith("select channel.id, channel.title, project.timezone")) {
         return { rows: [{ id: "17", title: "Судебная практика", timezone: "Europe/Saratov", handle: "law_channel" }], rowCount: 1 };
       }
@@ -190,7 +190,7 @@ describe("GET /api/stats availability", () => {
       throw new Error(`unexpected query: ${sql}`);
     });
 
-    const response = await GET(new NextRequest("http://localhost/api/stats?channel=17&days=90"));
+    const response = await GET(new ProjectRequest(44, "http://localhost/api/stats?channel=17&days=90"));
 
     await expect(response.json()).resolves.toMatchObject({
       posts: [

@@ -1,4 +1,6 @@
 "use client";
+import { useProjectFetch } from "@/lib/use-project-transport";
+
 
 /**
  * КАРКАС РАБОЧИХ ЭКРАНОВ ПЛАТФОРМЫ (Приложение А: экраны А4–А12).
@@ -147,6 +149,7 @@ function isActive(pathname: string, item: NavItem) {
 }
 
 function useLegalOpportunityUnreadCount(userId: number | null) {
+  const fetch = useProjectFetch();
   const [count, setCount] = useState(0);
 
   const refresh = useCallback(async () => {
@@ -158,7 +161,7 @@ function useLegalOpportunityUnreadCount(userId: number | null) {
     } catch {
       // Сбой фонового badge не должен перекрывать навигацию или старое корректное число.
     }
-  }, []);
+  }, [fetch]);
 
   useEffect(() => {
     if (userId == null) return;

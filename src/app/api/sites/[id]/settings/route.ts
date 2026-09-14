@@ -1,3 +1,4 @@
+import { withProjectRoute } from "@/lib/project-route";
 import { NextRequest } from "next/server";
 
 import { readJsonBodyValue } from "@/lib/bounded-request-body";
@@ -14,7 +15,7 @@ type Context = { params: Promise<{ id: string }> };
  * Настройки сайта: режим публикации, название бренда, квоты. Режим `auto` включается только
  * после серии одобренных без правок материалов (решение 2) — иначе 409.
  */
-export async function PATCH(req: NextRequest, context: Context) {
+async function handlePATCH(req: NextRequest, context: Context) {
   const resolved = await resolveSiteRoute(req, "project.manage", { mutation: true, label: "/api/sites/:id/settings PATCH" });
   if (!resolved.ok) return resolved.response;
   const { requestId, pool, userId, projectId } = resolved.context;
@@ -77,3 +78,5 @@ export async function PATCH(req: NextRequest, context: Context) {
     return siteErrorResponse(error, "/api/sites/:id/settings PATCH", requestId);
   }
 }
+
+export const PATCH = withProjectRoute(handlePATCH);

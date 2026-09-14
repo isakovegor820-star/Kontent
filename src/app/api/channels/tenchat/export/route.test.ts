@@ -1,5 +1,6 @@
+import { ProjectRequest } from "@/test/project-request";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { NextRequest, NextResponse } from "next/server";
+import { NextResponse } from "next/server";
 
 const mocks = vi.hoisted(() => ({
   createTenChatExportForProject: vi.fn(),
@@ -32,7 +33,7 @@ vi.mock("@/lib/tenchat-export-service", async () => {
 import { POST } from "./route";
 
 function request(body: object = { text: "Пост", assetIds: [], draftId: 81, draftVersion: 3 }) {
-  return new NextRequest("http://localhost/api/channels/tenchat/export", {
+  return new ProjectRequest(31, "http://localhost/api/channels/tenchat/export", {
     method: "POST",
     headers: { origin: "http://localhost", "content-type": "application/json" },
     body: JSON.stringify(body),
@@ -40,7 +41,7 @@ function request(body: object = { text: "Пост", assetIds: [], draftId: 81, d
 }
 
 function rawRequest(body: BodyInit, contentType = "application/json", headers: Record<string, string> = {}) {
-  return new NextRequest("http://localhost/api/channels/tenchat/export", {
+  return new ProjectRequest(31, "http://localhost/api/channels/tenchat/export", {
     method: "POST",
     headers: { origin: "http://localhost", "content-type": contentType, ...headers },
     body,
@@ -120,7 +121,7 @@ describe("POST /api/channels/tenchat/export", () => {
     const stream = new ReadableStream<Uint8Array>({
       pull() { throw new Error("body must not be read"); },
     });
-    const response = await POST(new NextRequest("http://localhost/api/channels/tenchat/export", {
+    const response = await POST(new ProjectRequest(31, "http://localhost/api/channels/tenchat/export", {
       method: "POST",
       headers: { origin: "http://localhost", "content-type": "application/json" },
       body: stream,

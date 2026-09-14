@@ -1,4 +1,6 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { setProjectTransport } from "./project-transport";
+import { projectJson } from "@/test/project-response";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
   approvePersonalDraftForPublication,
@@ -104,7 +106,7 @@ describe("editorial client contract", () => {
     const requests: RequestInit[] = [];
     const fetchMock = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
       requests.push(init ?? {});
-      return Response.json({ ok: true });
+      return projectJson(7, { ok: true });
     });
     vi.stubGlobal("fetch", fetchMock);
     const snapshot = parseEditorialSnapshotResponse(response);
@@ -129,7 +131,7 @@ describe("editorial client contract", () => {
   });
 
   it("loads without cache and keeps role actions explicit", async () => {
-    const fetchMock = vi.fn(async () => Response.json(response));
+    const fetchMock = vi.fn(async () => projectJson(7, response));
     vi.stubGlobal("fetch", fetchMock);
     await expect(loadEditorialSnapshot(41)).resolves.toMatchObject({ workflow: { draftId: 41 } });
     expect(fetchMock).toHaveBeenCalledWith("/api/drafts/41/editorial", expect.objectContaining({ cache: "no-store" }));
@@ -174,7 +176,7 @@ describe("editorial client contract", () => {
     const responses = [draftResponse, { ok: true }, response, { ok: true }, approvedResponse];
     const fetchMock = vi.fn(async (...requestArgs: Parameters<typeof fetch>) => {
       void requestArgs;
-      return Response.json(responses.shift());
+      return projectJson(7, responses.shift());
     });
     vi.stubGlobal("fetch", fetchMock);
 
@@ -192,7 +194,7 @@ describe("editorial client contract", () => {
   });
 
   it("refuses to approve a different personal draft revision", async () => {
-    const fetchMock = vi.fn(async () => Response.json(response));
+    const fetchMock = vi.fn(async () => projectJson(7, response));
     vi.stubGlobal("fetch", fetchMock);
     await expect(approvePersonalDraftForPublication(41, 5)).rejects.toMatchObject({
       code: "stale_revision",
@@ -208,3 +210,6 @@ describe("editorial client contract", () => {
     expect(editorialErrorMessage(new Error("server"))).not.toMatch(/worker|payload|idempotency/iu);
   });
 });
+
+beforeEach(() => setProjectTransport(7, true, 5));
+afterEach(() => setProjectTransport(null));

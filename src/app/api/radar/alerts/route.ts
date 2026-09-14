@@ -1,3 +1,5 @@
+import { requireSelectedProjectPermission } from "@/lib/project-permissions";
+import { withProjectRoute } from "@/lib/project-route";
 // Нишевой радар: CRUD алертов по ключевым словам.
 
 import { readJsonBodyValue } from "@/lib/bounded-request-body";
@@ -9,20 +11,21 @@ import { hasTrustedMutationOrigin } from "@/lib/request-origin";
 export const runtime = "nodejs";
 
 // GET — список алертов юзера, POST — создать алерт
-export async function GET(req: NextRequest) {
+async function handleGET(req: NextRequest) {
   const user = await getSessionUser(req);
   if (!user) return NextResponse.json({ error: "unauthorized" }, { status: 401 });
 
   try {
+    const membership = await requireSelectedProjectPermission(getPool(), user.id, "project.read");
     const r = await getPool().query(
       `select a.id, a.channel_id, a.keyword, a.is_active, a.last_notified_at, a.created_at,
               c.title as channel_title,
               (select count(*)::int from niche_matches m where m.alert_id = a.id) as matches_count
          from niche_alerts a
          left join channels c on c.id = a.channel_id
-        where a.user_id = $1
+        where c.project_id = $1
         order by a.created_at desc`,
-      [user.id],
+      [membership.projectId],
     );
     return NextResponse.json({ alerts: r.rows });
   } catch (err) {
@@ -31,7 +34,7 @@ export async function GET(req: NextRequest) {
   }
 }
 
-export async function POST(req: NextRequest) {
+async function handlePOST(req: NextRequest) {
   if (!hasTrustedMutationOrigin(req)) {
     return NextResponse.json({ ok: false, error: "forbidden_origin" }, { status: 403 });
   }
@@ -51,10 +54,11 @@ export async function POST(req: NextRequest) {
   const channelId = Number(body.channelId) || null;
   if (!channelId) return NextResponse.json({ ok: false, error: "no_channel" }, { status: 422 });
 
-  // Проверяем, что канал принадлежит юзеру
+  const membership = await requireSelectedProjectPermission(getPool(), user.id, "content.create");
+  // Канал должен принадлежать проекту запроса.
   const ch = await getPool().query(
-    `select id from channels where id = $1 and user_id = $2`,
-    [channelId, user.id],
+    `select id from channels where id = $1 and project_id = $2`,
+    [channelId, membership.projectId],
   );
   if (!ch.rowCount) return NextResponse.json({ ok: false, error: "no_channel" }, { status: 422 });
 
@@ -74,7 +78,7 @@ export async function POST(req: NextRequest) {
 }
 
 // DELETE — удалить алерт
-export async function DELETE(req: NextRequest) {
+async function handleDELETE(req: NextRequest) {
   if (!hasTrustedMutationOrigin(req)) {
     return NextResponse.json({ ok: false, error: "forbidden_origin" }, { status: 403 });
   }
@@ -85,10 +89,15 @@ export async function DELETE(req: NextRequest) {
   if (!id) return NextResponse.json({ ok: false, error: "bad_request" }, { status: 400 });
 
   try {
-    await getPool().query(`delete from niche_alerts where id = $1 and user_id = $2`, [id, user.id]);
+    const membership = await requireSelectedProjectPermission(getPool(), user.id, "content.edit");
+    await getPool().query(`delete from niche_alerts where id = $1 and exists (select 1 from channels channel where channel.id = niche_alerts.channel_id and channel.project_id = $2)`, [id, membership.projectId]);
     return NextResponse.json({ ok: true });
   } catch (err) {
     console.error("[/api/radar/alerts] DELETE", err);
     return NextResponse.json({ ok: false, error: "server" }, { status: 500 });
   }
 }
+
+export const GET = withProjectRoute(handleGET);
+export const POST = withProjectRoute(handlePOST);
+export const DELETE = withProjectRoute(handleDELETE);

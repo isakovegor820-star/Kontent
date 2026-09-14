@@ -1,3 +1,4 @@
+import { withProjectRoute } from "@/lib/project-route";
 import { NextRequest } from "next/server";
 
 import { readJsonBodyValue } from "@/lib/bounded-request-body";
@@ -16,7 +17,7 @@ export const runtime = "nodejs";
 
 type Context = { params: Promise<{ id: string }> };
 
-export async function GET(req: NextRequest, context: Context) {
+async function handleGET(req: NextRequest, context: Context) {
   const resolved = await resolveSiteRoute(req, "project.read", { label: "/api/sites/:id/destinations GET" });
   if (!resolved.ok) return resolved.response;
   const { requestId, pool } = resolved.context;
@@ -34,7 +35,7 @@ export async function GET(req: NextRequest, context: Context) {
  * Настройка назначения требует права управлять проектом: учётные данные CMS — это доступ
  * к чужому сайту, а не обычное создание контента.
  */
-export async function PUT(req: NextRequest, context: Context) {
+async function handlePUT(req: NextRequest, context: Context) {
   const resolved = await resolveSiteRoute(req, "project.manage", { mutation: true, label: "/api/sites/:id/destinations PUT" });
   if (!resolved.ok) return resolved.response;
   const { requestId, pool, userId, projectId } = resolved.context;
@@ -85,7 +86,7 @@ export async function PUT(req: NextRequest, context: Context) {
   }
 }
 
-export async function DELETE(req: NextRequest, context: Context) {
+async function handleDELETE(req: NextRequest, context: Context) {
   const resolved = await resolveSiteRoute(req, "project.manage", { mutation: true, label: "/api/sites/:id/destinations DELETE" });
   if (!resolved.ok) return resolved.response;
   const { requestId, pool, userId, projectId } = resolved.context;
@@ -106,3 +107,7 @@ export async function DELETE(req: NextRequest, context: Context) {
     return siteErrorResponse(error, "/api/sites/:id/destinations DELETE", requestId);
   }
 }
+
+export const GET = withProjectRoute(handleGET);
+export const PUT = withProjectRoute(handlePUT);
+export const DELETE = withProjectRoute(handleDELETE);

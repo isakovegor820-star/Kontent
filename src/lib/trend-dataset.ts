@@ -10,6 +10,10 @@ import {
 } from "./trend-statistics";
 import { TREND_BASELINE_DAYS, TREND_MATURE_HOURS, TREND_MIN_MATURE } from "./trend-period";
 
+const SEARCH_UPPER = "ABCDEFGHIJKLMNOPQRSTUVWXYZАБВГДЕЁЖЗИЙКЛМНОПРСТУФХЦЧШЩЪЫЬЭЮЯ";
+const SEARCH_LOWER = "abcdefghijklmnopqrstuvwxyzабвгдеёжзийклмнопрстуфхцчшщъыьэюя";
+const portableLowerSql = (expression: string) => `translate(${expression}, '${SEARCH_UPPER}', '${SEARCH_LOWER}')`;
+
 // Legacy search records have a threshold/median but no evidence of a mature sample.
 // Show a ratio only when both the sample and the measured post meet the same rule.
 export function radarMeasuredMedianSql(alias: string) {
@@ -118,8 +122,8 @@ function sourceSql(source: TrendStatSource) {
           and i.ai_status = 'ready' and i.status <> 'dismissed'
         order by i.id desc limit 1
       ) idea on true` : ""}
-      where input.topic = '' or to_tsvector('russian', coalesce(source.title, '') || ' ' || coalesce(post.text, ''))
-        @@ plainto_tsquery('russian', input.topic)
+      where input.topic = '' or to_tsvector('russian', ${portableLowerSql("coalesce(source.title, '') || ' ' || coalesce(post.text, '')")})
+        @@ plainto_tsquery('russian', ${portableLowerSql("input.topic")})
     ), source_health as (
       select count(*)::int as total, count(*) filter (where status = 'ready')::int as ready,
         count(*) filter (where status in ('pending', 'refreshing'))::int as pending,

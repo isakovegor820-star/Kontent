@@ -1,4 +1,6 @@
 "use client";
+import { useProjectFetch, useProjectCall } from "@/lib/use-project-transport";
+
 
 // Библиотека — память конкретного канала, а не общий склад аккаунта.
 // 1. «Референсы» — залетевшие посты конкурентов с наблюдаемым разбором механики.
@@ -39,7 +41,7 @@ import {
 } from "@/lib/app-routes";
 import {
   createDraftClientKey,
-  createLibraryServerDraft,
+  createLibraryServerDraft as unscopedCreateLibraryServerDraft,
   libraryDraftErrorMessage,
 } from "@/lib/draft-client";
 import {
@@ -110,6 +112,8 @@ function networkLabel(channel: RealChannel | null): string {
 /* ----------------------------------------------------------------- ЭКРАН */
 
 function LibraryInner() {
+  const createLibraryServerDraft = useProjectCall(unscopedCreateLibraryServerDraft);
+  const fetch = useProjectFetch();
   const router = useRouter();
   const searchParams = useSearchParams();
   const s = useStore();
@@ -205,7 +209,7 @@ function LibraryInner() {
     } catch {
       setHitsError("server");
     }
-  }, [channelId, setHits, setHitsError]);
+  }, [channelId, fetch, setHitsError]);
 
   const loadPosts = useCallback(async (query?: string) => {
     const sequence = ++postsRequestSequence.current;
@@ -244,7 +248,7 @@ function LibraryInner() {
     } finally {
       if (sequence === postsRequestSequence.current && !controller.signal.aborted) setLoading(false);
     }
-  }, [channelId]);
+  }, [channelId, fetch]);
 
   // Поиск по своим постам (debounce)
   useEffect(() => {

@@ -5,7 +5,7 @@ import {
   reschedulePublicationOperation,
 } from "./publication-lifecycle.mjs";
 
-function lifecyclePool() {
+function lifecyclePool(network = "tg") {
   const query = vi.fn(async (sql) => {
     if (sql === "begin" || sql === "commit" || sql === "rollback") return { rows: [], rowCount: 0 };
     if (sql.includes("from publication_operations operation") && sql.includes("for update of operation")) {
@@ -16,7 +16,7 @@ function lifecyclePool() {
     }
     if (sql.includes("from publication_operation_events")) return { rows: [] };
     if (sql.includes("from posts") && sql.includes("for update")) {
-      return { rows: [{ id: "81", status: "scheduled", schedule_revision: "2", provider_started_at: null }] };
+      return { rows: [{ id: "81", status: "scheduled", schedule_revision: "2", provider_started_at: null, network }] };
     }
     return { rows: [], rowCount: 1 };
   });
@@ -50,6 +50,15 @@ describe("publication lifecycle review reconciliation", () => {
       String(sql).includes("update publication_review_reminder_outbox outbox")
       && String(sql).includes("publication_cancelled"),
     )).toBe(true);
+  });
+
+  it("preserves VK content and schedule when live operations are blocked, while allowing cancellation", async () => {
+    const { pool, query } = lifecyclePool("vk");
+    await expect(reschedulePublicationOperation({ pool, ...base, idempotencyKey: "blocked-vk",
+      scheduledAt: "2027-01-02T10:00:00.000Z", timezone: "Europe/Amsterdam", offset: "+01:00", disambiguation: "reject",
+    })).resolves.toMatchObject({ ok: false, error: "vk_auth_flow_unverified", httpStatus: 409 });
+    expect(query.mock.calls.some(([sql]) => sql.includes("update posts"))).toBe(false);
+    await expect(cancelPublicationOperation({ pool, ...base, idempotencyKey: "cancel-vk" })).resolves.toMatchObject({ ok: true, status: "cancelled" });
   });
 
   it("shifts the absolute review instant by the publication schedule delta", async () => {

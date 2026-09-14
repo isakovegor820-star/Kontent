@@ -1,3 +1,4 @@
+import { withProjectRoute } from "@/lib/project-route";
 import { readJsonBodyValue } from "@/lib/bounded-request-body";
 import { NextRequest, NextResponse } from "next/server";
 
@@ -46,7 +47,7 @@ function knownError(error: unknown): NextResponse | null {
   return null;
 }
 
-export async function GET(req: NextRequest, ctx: Context) {
+async function handleGET(req: NextRequest, ctx: Context) {
   const user = await getSessionUser(req);
   if (!user) {
     return NextResponse.json({ ok: false, error: "unauthorized" }, { status: 401 });
@@ -67,7 +68,7 @@ export async function GET(req: NextRequest, ctx: Context) {
   }
 }
 
-export async function PATCH(req: NextRequest, ctx: Context) {
+async function handlePATCH(req: NextRequest, ctx: Context) {
   if (!hasTrustedMutationOrigin(req)) {
     return NextResponse.json({ ok: false, error: "forbidden" }, { status: 403 });
   }
@@ -90,7 +91,7 @@ export async function PATCH(req: NextRequest, ctx: Context) {
   }
 }
 
-export async function DELETE(req: NextRequest, ctx: Context) {
+async function handleDELETE(req: NextRequest, ctx: Context) {
   if (!hasTrustedMutationOrigin(req)) {
     return NextResponse.json({ ok: false, error: "forbidden" }, { status: 403 });
   }
@@ -112,3 +113,7 @@ export async function DELETE(req: NextRequest, ctx: Context) {
     return NextResponse.json({ ok: false, error: "server" }, { status: 500 });
   }
 }
+
+export const GET = withProjectRoute(handleGET);
+export const PATCH = withProjectRoute(handlePATCH);
+export const DELETE = withProjectRoute(handleDELETE);

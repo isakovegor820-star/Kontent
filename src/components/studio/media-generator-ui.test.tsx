@@ -1,9 +1,11 @@
 // @vitest-environment jsdom
+import { setProjectTransport } from "@/lib/project-transport";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { MediaGenerator } from "./media-generator";
 
-afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
+beforeEach(() => setProjectTransport(7, true, 3));
+afterEach(() => { cleanup(); setProjectTransport(null); vi.unstubAllGlobals(); });
 describe("image settings", () => {
   it("sends the displayed format and shows only image creation controls", async () => {
     const fetch = vi.fn(async (url: string, init?: RequestInit) => {
@@ -12,7 +14,7 @@ describe("image settings", () => {
         models: [{ kind: "image", id: "nano-banana-2", label: "Nano Banana 2", available: true }],
       });
       if (init?.method === "POST") return Response.json({ error: "worker_unavailable" }, { status: 503 });
-      return Response.json({ generations: [] });
+      return Response.json({ generations: [] }, { headers: { "x-aurora-project-id": "7" } });
     });
     vi.stubGlobal("fetch", fetch);
     render(<MediaGenerator channelId={18} onUse={vi.fn()} />);

@@ -1,4 +1,7 @@
 "use client";
+import { useProjectCall, useProjectStorageKey } from "@/lib/use-project-transport";
+import { projectFetch as fetch, projectUrl } from "@/lib/project-transport";
+
 
 import { useRouter, useSearchParams } from "next/navigation";
 import { Suspense, useCallback, useEffect, useRef, useState } from "react";
@@ -177,7 +180,7 @@ function addSemanticCarouselCard(cards: VisualCard[]): { cards: VisualCard[]; ad
   return { cards: nextCards, added };
 }
 
-async function json<T>(url: string, init?: RequestInit): Promise<T> {
+async function unscopedJson<T>(url: string, init?: RequestInit): Promise<T> {
   const response = await fetch(url, { cache: "no-store", ...init });
   const payload = await response.json().catch(() => ({})) as T & ApiError;
   if (!response.ok) throw Object.assign(new Error(payload.error || "request_failed"), payload);
@@ -285,6 +288,7 @@ function VisualPreview({ config, activeCardId }: { config: VisualConfig; activeC
 }
 
 function EmptyIntro({ draftId, onCreated }: { draftId: number | null; onCreated: (design: Design) => void }) {
+  const json = useProjectCall(unscopedJson);
   const [name, setName] = useState("Юридическая карусель");
   const [format, setFormat] = useState<Format>("4:5");
   const [template, setTemplate] = useState<Template>("what_changed");
@@ -330,6 +334,8 @@ function VisualEditor({
   onDesign: (design: Design) => void;
   onAssets: (assets: MediaAsset[]) => void;
 }) {
+  const generatedMediaStorageKey = useProjectStorageKey("aurora:generated-media");
+  const json = useProjectCall(unscopedJson);
   const router = useRouter();
   const [config, setConfig] = useState(design.config);
   const [activeCardId, setActiveCardId] = useState(design.config.cards[0]?.id ?? "");
@@ -484,7 +490,7 @@ function VisualEditor({
             </div>
             <div className="mt-3 flex flex-wrap gap-2">
               <Button variant="brand" onClick={() => {
-                sessionStorage.setItem("aurora:generated-media", JSON.stringify({
+                sessionStorage.setItem(generatedMediaStorageKey, JSON.stringify({
                   kind: "carousel",
                   label: config.name,
                   hue: 255,
@@ -506,7 +512,7 @@ function VisualEditor({
               <Button variant="outline" onClick={() => {
                 const card = render.cards.find((item) => item.id === activeCardId) ?? render.cards[0];
                 if (!card) return;
-                sessionStorage.setItem("aurora:generated-media", JSON.stringify({ kind: "image", label: `${config.name} · карточка ${card.order}`, hue: 255, assetId: String(card.assetId), url: card.url, mimeType: "image/png" }));
+                sessionStorage.setItem(generatedMediaStorageKey, JSON.stringify({ kind: "image", label: `${config.name} · карточка ${card.order}`, hue: 255, assetId: String(card.assetId), url: card.url, mimeType: "image/png" }));
                 const returnSuffix = returnTo ? `&returnTo=${returnTo}` : "";
                 router.push(draftId
                   ? `/app/composer?draft=${draftId}&fromMedia=1&from=studio-visuals${returnSuffix}`
@@ -548,6 +554,7 @@ function rebalanceScenes(scenes: VideoScene[], totalSeconds: 30 | 45 | 60): Vide
 }
 
 function VideoStudio({ draftId, scripts, onScripts }: { draftId: number | null; scripts: VideoScriptRecord[]; onScripts: (scripts: VideoScriptRecord[]) => void }) {
+  const json = useProjectCall(unscopedJson);
   const initialScript = scripts[0] ?? null;
   const [selectedId, setSelectedId] = useState<number | null>(initialScript?.id ?? null);
   const selected = scripts.find((item) => item.id === selectedId) ?? null;
@@ -568,7 +575,7 @@ function VideoStudio({ draftId, scripts, onScripts }: { draftId: number | null; 
     setStatus("");
   };
   return <div className="grid gap-5 lg:grid-cols-[280px_minmax(0,1fr)]"><Card className="h-fit p-4"><h2 className="text-[13px] font-bold tracking-wide text-text-3 uppercase">Сценарии</h2><div className="mt-3 space-y-2">{scripts.map((script) => <button key={script.id} type="button" aria-current={script.id === selectedId ? "true" : undefined} onClick={() => selectScript(script)} className={cn("min-h-12 w-full rounded-xs border px-3 py-2 text-left focus-visible:ring-4 focus-visible:ring-brand/15", script.id === selectedId ? "border-brand bg-info-soft" : "border-line bg-surface-2")}><span className="block truncate text-[13px] font-semibold text-text">{script.title}</span><span className="text-[11px] text-text-3">{script.durationSeconds} сек. · версия {script.revision}</span></button>)}</div><div className="mt-5 space-y-3"><Field label="Номер черновика" htmlFor="video-draft"><Input id="video-draft" inputMode="numeric" value={draftValue} onChange={(event) => setDraftValue(event.target.value.replace(/\D/gu, ""))} /></Field><Field label="Продолжительность" htmlFor="new-video-duration"><select id="new-video-duration" className={SELECT_CLASS} value={newDuration} onChange={(event) => setNewDuration(Number(event.target.value) as 30 | 45 | 60)}><option value={30}>30 секунд</option><option value={45}>45 секунд</option><option value={60}>60 секунд</option></select></Field><Button variant="brand" className="w-full" loading={busy} disabled={!Number(draftValue)} onClick={async () => { setBusy(true); setError(""); try { const result = await json<{ script: VideoScriptRecord }>("/api/legal-video-scripts", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ draftId: Number(draftValue), durationSeconds: newDuration, requestKey: requestKey("video") }) }); onScripts([result.script, ...scripts.filter((item) => item.id !== result.script.id)]); selectScript(result.script); setStatus("Сценарий создан из зафиксированной версии черновика"); } catch (nextError) { setError(errorLabel(nextError)); } finally { setBusy(false); } }}><Clapperboard className="h-4 w-4" aria-hidden />Новый сценарий</Button></div></Card>
-    <section aria-label="Редактор сценария">{selected ? <Card className="p-5 md:p-7"><div className="flex flex-wrap items-start justify-between gap-4"><div><Badge tone="brand">Короткое видео</Badge><h2 className="mt-3 text-2xl font-bold tracking-tight text-text">{selected.title}</h2><p className="mt-1 text-[13px] text-text-3">Каждый факт привязан к точной ревизии исходного черновика.</p></div><div className="flex flex-wrap gap-2"><a href={`/api/legal-video-scripts/${selected.id}/production-brief`} download={`legal-video-${selected.id}-r${selected.revision}.txt`} className="inline-flex min-h-11 items-center justify-center gap-2 rounded-xs border border-line-strong bg-surface px-5 text-[15px] font-semibold text-text transition-colors hover:bg-surface-inset focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-brand/15"><Download className="h-4 w-4" aria-hidden />Скачать техзадание</a><Button variant="brand" loading={busy} onClick={async () => { setBusy(true); setError(""); setStatus("Проверяем сцены и источники…"); try { const result = await json<{ script: VideoScriptRecord }>(`/api/legal-video-scripts/${selected.id}`, { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify({ expectedRevision: selected.revision, title, durationSeconds: duration, scenes }) }); onScripts(scripts.map((item) => item.id === result.script.id ? result.script : item)); setStatus("Сценарий сохранён"); } catch (nextError) { setError(errorLabel(nextError)); setStatus(""); } finally { setBusy(false); } }}><Save className="h-4 w-4" aria-hidden />Сохранить</Button></div></div><div className="mt-6 grid gap-4 sm:grid-cols-2"><Field label="Название" htmlFor="script-title"><Input id="script-title" value={title} maxLength={180} onChange={(event) => setTitle(event.target.value)} /></Field><Field label="Хронометраж" htmlFor="script-duration"><select id="script-duration" className={SELECT_CLASS} value={duration} onChange={(event) => { const next = Number(event.target.value) as 30 | 45 | 60; setDuration(next); setScenes(rebalanceScenes(scenes, next)); }}><option value={30}>30 секунд</option><option value={45}>45 секунд</option><option value={60}>60 секунд</option></select></Field></div><ol className="mt-6 space-y-4">{scenes.map((scene, index) => <li key={scene.id} className="rounded-sm border border-line bg-surface-2 p-4"><div className="flex items-center justify-between gap-3"><h3 className="font-bold text-text">Сцена {scene.order} · {scene.role === "hook" ? "Начало" : scene.role === "cta" ? "Призыв" : "Основная часть"}</h3><label className="flex items-center gap-2 text-[12px] text-text-3"><span>Секунд</span><input aria-label={`Длительность сцены ${scene.order}`} className="h-11 w-20 rounded-xs border border-line bg-surface px-3 text-text" type="number" min={1} max={60} value={scene.durationSeconds} onChange={(event) => setScenes(scenes.map((item, itemIndex) => itemIndex === index ? { ...item, durationSeconds: Number(event.target.value) } : item))} /></label></div><div className="mt-4 grid gap-4 xl:grid-cols-2"><Field label="Озвучка" htmlFor={`voice-${scene.id}`}><Textarea id={`voice-${scene.id}`} rows={4} value={scene.voiceOver} onChange={(event) => setScenes(scenes.map((item, itemIndex) => itemIndex === index ? { ...item, voiceOver: event.target.value } : item))} /></Field><div className="space-y-4"><Field label="Текст на экране" htmlFor={`screen-${scene.id}`}><Textarea id={`screen-${scene.id}`} rows={2} value={scene.onScreenText} onChange={(event) => setScenes(scenes.map((item, itemIndex) => itemIndex === index ? { ...item, onScreenText: event.target.value } : item))} /></Field><Field label="Кадр и дополнительные материалы" htmlFor={`visual-${scene.id}`}><Textarea id={`visual-${scene.id}`} rows={2} value={scene.visualDirection} onChange={(event) => setScenes(scenes.map((item, itemIndex) => itemIndex === index ? { ...item, visualDirection: event.target.value } : item))} /></Field></div></div></li>)}</ol>{(status || error) && <p role={error ? "alert" : "status"} aria-live="polite" className={cn("mt-5 flex items-center gap-2 text-[13px] font-semibold", error ? "text-danger-text" : "text-success-text")}>{error ? <AlertTriangle className="h-4 w-4" aria-hidden /> : <CheckCircle2 className="h-4 w-4" aria-hidden />}{error || status}</p>}</Card> : <Card className="p-8 text-center"><Clapperboard className="mx-auto h-9 w-9 text-text-3" aria-hidden /><h2 className="mt-4 text-xl font-bold text-text">Создайте сценарий из черновика</h2><p className="mx-auto mt-2 max-w-lg text-[14px] leading-relaxed text-text-3">Аврора разложит материал на начало, озвучку, экранный текст, дополнительные кадры и призыв. Новые факты без основания будут заблокированы.</p>{error && <p role="alert" className="mt-4 text-[13px] font-semibold text-danger-text">{error}</p>}</Card>}</section></div>;
+    <section aria-label="Редактор сценария">{selected ? <Card className="p-5 md:p-7"><div className="flex flex-wrap items-start justify-between gap-4"><div><Badge tone="brand">Короткое видео</Badge><h2 className="mt-3 text-2xl font-bold tracking-tight text-text">{selected.title}</h2><p className="mt-1 text-[13px] text-text-3">Каждый факт привязан к точной ревизии исходного черновика.</p></div><div className="flex flex-wrap gap-2"><a href={projectUrl(`/api/legal-video-scripts/${selected.id}/production-brief`)} download={`legal-video-${selected.id}-r${selected.revision}.txt`} className="inline-flex min-h-11 items-center justify-center gap-2 rounded-xs border border-line-strong bg-surface px-5 text-[15px] font-semibold text-text transition-colors hover:bg-surface-inset focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-brand/15"><Download className="h-4 w-4" aria-hidden />Скачать техзадание</a><Button variant="brand" loading={busy} onClick={async () => { setBusy(true); setError(""); setStatus("Проверяем сцены и источники…"); try { const result = await json<{ script: VideoScriptRecord }>(`/api/legal-video-scripts/${selected.id}`, { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify({ expectedRevision: selected.revision, title, durationSeconds: duration, scenes }) }); onScripts(scripts.map((item) => item.id === result.script.id ? result.script : item)); setStatus("Сценарий сохранён"); } catch (nextError) { setError(errorLabel(nextError)); setStatus(""); } finally { setBusy(false); } }}><Save className="h-4 w-4" aria-hidden />Сохранить</Button></div></div><div className="mt-6 grid gap-4 sm:grid-cols-2"><Field label="Название" htmlFor="script-title"><Input id="script-title" value={title} maxLength={180} onChange={(event) => setTitle(event.target.value)} /></Field><Field label="Хронометраж" htmlFor="script-duration"><select id="script-duration" className={SELECT_CLASS} value={duration} onChange={(event) => { const next = Number(event.target.value) as 30 | 45 | 60; setDuration(next); setScenes(rebalanceScenes(scenes, next)); }}><option value={30}>30 секунд</option><option value={45}>45 секунд</option><option value={60}>60 секунд</option></select></Field></div><ol className="mt-6 space-y-4">{scenes.map((scene, index) => <li key={scene.id} className="rounded-sm border border-line bg-surface-2 p-4"><div className="flex items-center justify-between gap-3"><h3 className="font-bold text-text">Сцена {scene.order} · {scene.role === "hook" ? "Начало" : scene.role === "cta" ? "Призыв" : "Основная часть"}</h3><label className="flex items-center gap-2 text-[12px] text-text-3"><span>Секунд</span><input aria-label={`Длительность сцены ${scene.order}`} className="h-11 w-20 rounded-xs border border-line bg-surface px-3 text-text" type="number" min={1} max={60} value={scene.durationSeconds} onChange={(event) => setScenes(scenes.map((item, itemIndex) => itemIndex === index ? { ...item, durationSeconds: Number(event.target.value) } : item))} /></label></div><div className="mt-4 grid gap-4 xl:grid-cols-2"><Field label="Озвучка" htmlFor={`voice-${scene.id}`}><Textarea id={`voice-${scene.id}`} rows={4} value={scene.voiceOver} onChange={(event) => setScenes(scenes.map((item, itemIndex) => itemIndex === index ? { ...item, voiceOver: event.target.value } : item))} /></Field><div className="space-y-4"><Field label="Текст на экране" htmlFor={`screen-${scene.id}`}><Textarea id={`screen-${scene.id}`} rows={2} value={scene.onScreenText} onChange={(event) => setScenes(scenes.map((item, itemIndex) => itemIndex === index ? { ...item, onScreenText: event.target.value } : item))} /></Field><Field label="Кадр и дополнительные материалы" htmlFor={`visual-${scene.id}`}><Textarea id={`visual-${scene.id}`} rows={2} value={scene.visualDirection} onChange={(event) => setScenes(scenes.map((item, itemIndex) => itemIndex === index ? { ...item, visualDirection: event.target.value } : item))} /></Field></div></div></li>)}</ol>{(status || error) && <p role={error ? "alert" : "status"} aria-live="polite" className={cn("mt-5 flex items-center gap-2 text-[13px] font-semibold", error ? "text-danger-text" : "text-success-text")}>{error ? <AlertTriangle className="h-4 w-4" aria-hidden /> : <CheckCircle2 className="h-4 w-4" aria-hidden />}{error || status}</p>}</Card> : <Card className="p-8 text-center"><Clapperboard className="mx-auto h-9 w-9 text-text-3" aria-hidden /><h2 className="mt-4 text-xl font-bold text-text">Создайте сценарий из черновика</h2><p className="mx-auto mt-2 max-w-lg text-[14px] leading-relaxed text-text-3">Аврора разложит материал на начало, озвучку, экранный текст, дополнительные кадры и призыв. Новые факты без основания будут заблокированы.</p>{error && <p role="alert" className="mt-4 text-[13px] font-semibold text-danger-text">{error}</p>}</Card>}</section></div>;
 }
 
 function BrandKitPanel({
@@ -584,6 +591,7 @@ function BrandKitPanel({
   onAssets: (assets: MediaAsset[]) => void;
   onSaved: (brand: Brand, version: number) => void;
 }) {
+  const json = useProjectCall(unscopedJson);
   const [brand, setBrand] = useState(value);
   const [busy, setBusy] = useState<"save" | "upload" | null>(null);
   const [status, setStatus] = useState("");
@@ -795,6 +803,7 @@ function BrandKitPanel({
 }
 
 function LegalVisualStudioInner() {
+  const json = useProjectCall(unscopedJson);
   const params = useSearchParams();
   const draftId = Number(params.get("draft")) || null;
   const returnTo = params.get("returnTo") === "autopilot"
@@ -819,7 +828,7 @@ function LegalVisualStudioInner() {
     json<{ assets: MediaAsset[] }>("/api/media/assets"),
     json<{ scripts: VideoScriptRecord[] }>("/api/legal-video-scripts"),
     json<{ brand: Brand; version: number }>("/api/legal-visuals/brand-kit"),
-  ]).then(([visualData, mediaData, videoData, brandData]) => { if (cancelled) return; setDesigns(visualData.designs); setSelectedDesignId(visualData.designs[0]?.id ?? null); setAssets(mediaData.assets); setScripts(videoData.scripts); setBrand({ value: brandData.brand, version: brandData.version }); }).catch((nextError) => { if (!cancelled) setError(errorLabel(nextError)); }).finally(() => { if (!cancelled) setLoading(false); }); return () => { cancelled = true; }; }, []);
+  ]).then(([visualData, mediaData, videoData, brandData]) => { if (cancelled) return; setDesigns(visualData.designs); setSelectedDesignId(visualData.designs[0]?.id ?? null); setAssets(mediaData.assets); setScripts(videoData.scripts); setBrand({ value: brandData.brand, version: brandData.version }); }).catch((nextError) => { if (!cancelled) setError(errorLabel(nextError)); }).finally(() => { if (!cancelled) setLoading(false); }); return () => { cancelled = true; }; }, [json]);
   return <AppShell title="Карусели и сценарии" subtitle="Собирайте карусели и сценарии коротких видео из проверяемых материалов.">
     <div className="mx-auto w-full max-w-[1500px] space-y-5">
       {brand && <BrandKitPanel value={brand.value} version={brand.version} assets={assets} onAssets={setAssets} onSaved={(value, version) => setBrand({ value, version })} />}
