@@ -2672,7 +2672,19 @@ try {
     "desktop sidebar did not settle on one active item",
     5_000,
   );
-  assert((await desktopLibraryActive.textContent())?.includes("Идеи и примеры"), "desktop Library item is not active");
+  assert((await desktopLibraryActive.textContent())?.includes("Референсы"), "desktop Library default child is not active");
+  const libraryBranch = desktopSidebar.getByRole("button", { name: "Идеи и примеры", exact: true });
+  assert(await libraryBranch.getAttribute("aria-current") === "location", "desktop Library branch is not current");
+  assert(await libraryBranch.getAttribute("aria-expanded") === "true", "desktop Library branch is not expanded");
+  assert(await desktopSidebar.locator(".aurora-sidebar-item").count() === 16, "sidebar lost a primary section");
+  assert(await desktopSidebar.locator(".aurora-sidebar-child").count() === 15, "sidebar lost a nested destination");
+  const libraryUrlBeforeDisclosure = page.url();
+  await desktopSidebar.getByRole("button", { name: "Автопилот", exact: true }).click();
+  assert(page.url() === libraryUrlBeforeDisclosure, "opening a branch unexpectedly navigated");
+  assert(await desktopSidebar.locator('[aria-expanded="true"]').count() === 1, "sidebar opened more than one branch");
+  assert(await libraryBranch.getAttribute("aria-expanded") === "false", "previous branch did not close");
+  await libraryBranch.click();
+  await desktopLibraryActive.waitFor();
   assert(new URL(page.url()).searchParams.get("channel") === String(channels[0]), "Library lost selected channel in URL");
 
   const libraryContentId = `library-registry-text-reference-${libraryReferenceId}`;
@@ -2850,7 +2862,7 @@ try {
   assert(!new URL(page.url()).searchParams.has("intent"), "browser Back restarted the completed paid generation");
   console.log("[e2e] Studio browser Back restored URL");
   const activeStudioLink = desktopSidebar
-    .locator('a[aria-current="page"]')
+    .locator('button[aria-current="location"]')
     .filter({ hasText: "Студия контента" });
   await activeStudioLink.waitFor({ timeout: UI_WAIT_TIMEOUT_MS });
   assert(
@@ -2864,7 +2876,7 @@ try {
   const discussReference = page.getByRole("dialog").getByRole("button", { name: "Обсудить с Авророй", exact: true });
   await discussReference.waitFor();
   await desktopSidebar
-    .locator('a[aria-current="page"]')
+    .locator('button[aria-current="location"]')
     .filter({ hasText: "Идеи и примеры" })
     .waitFor({ timeout: UI_WAIT_TIMEOUT_MS });
   await discussReference.click();
@@ -2951,7 +2963,8 @@ try {
   await page.getByRole("button", { name: "Открыть меню", exact: true }).click();
   const mobileDrawer = page.getByRole("dialog", { name: "Меню платформы" });
   const mobileDrawerActive = mobileDrawer.locator('a[aria-current="page"]');
-  assert((await mobileDrawerActive.textContent())?.includes("Идеи и примеры"), "mobile drawer lost active Library item");
+  assert((await mobileDrawerActive.textContent())?.includes("Референсы"), "mobile drawer lost active Library child");
+  assert(await mobileDrawer.getByRole("button", { name: "Идеи и примеры", exact: true }).getAttribute("aria-current") === "location", "mobile drawer lost current Library branch");
   await mobileDrawer.getByRole("button", { name: "Закрыть меню", exact: true }).click();
   const mobileNav = page.locator('nav[aria-label="Основные разделы"]');
   const mobileStudioLink = mobileNav.locator('a[href="/app/studio"]');
@@ -3052,7 +3065,7 @@ try {
   await page.getByLabel("Цель канала", { exact: true }).fill(savedGoal);
   await page.getByText("Есть несохранённые изменения", { exact: true }).waitFor({ state: "detached" });
   assert(
-    await desktopSidebar.getByRole("link", { name: "Настройки", exact: true }).getAttribute("aria-current") === "page",
+    await desktopSidebar.getByRole("button", { name: "Настройки", exact: true }).getAttribute("aria-current") === "location",
     "desktop Settings item is not active",
   );
 
