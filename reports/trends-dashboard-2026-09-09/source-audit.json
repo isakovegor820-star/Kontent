@@ -1,0 +1,190 @@
+{
+  "source": "https://t.me/s/ifax_go",
+  "fetchedAt": "2026-09-09T16:00:07.291Z",
+  "httpStatus": 200,
+  "note": "Telegram public counters may be rounded; this checks extraction, not historical production database values.",
+  "posts": 20,
+  "matched": 20,
+  "comparisons": [
+    {
+      "url": "https://t.me/ifax_go/25178",
+      "rawViews": "628",
+      "expectedViews": 628,
+      "parsedViews": 628,
+      "postedAt": "2026-09-09T06:23:53+00:00",
+      "parsedDate": "2026-09-09T06:23:53+00:00",
+      "matches": true
+    },
+    {
+      "url": "https://t.me/ifax_go/25179",
+      "rawViews": "643",
+      "expectedViews": 643,
+      "parsedViews": 643,
+      "postedAt": "2026-09-09T06:53:24+00:00",
+      "parsedDate": "2026-09-09T06:53:24+00:00",
+      "matches": true
+    },
+    {
+      "url": "https://t.me/ifax_go/25180",
+      "rawViews": "3.28K",
+      "expectedViews": 3280,
+      "parsedViews": 3280,
+      "postedAt": "2026-09-09T06:54:49+00:00",
+      "parsedDate": "2026-09-09T06:54:49+00:00",
+      "matches": true
+    },
+    {
+      "url": "https://t.me/ifax_go/25181",
+      "rawViews": "2.92K",
+      "expectedViews": 2920,
+      "parsedViews": 2920,
+      "postedAt": "2026-09-09T07:08:08+00:00",
+      "parsedDate": "2026-09-09T07:08:08+00:00",
+      "matches": true
+    },
+    {
+      "url": "https://t.me/ifax_go/25182",
+      "rawViews": "3.09K",
+      "expectedViews": 3090,
+      "parsedViews": 3090,
+      "postedAt": "2026-09-09T07:09:17+00:00",
+      "parsedDate": "2026-09-09T07:09:17+00:00",
+      "matches": true
+    },
+    {
+      "url": "https://t.me/ifax_go/25183",
+      "rawViews": "713",
+      "expectedViews": 713,
+      "parsedViews": 713,
+      "postedAt": "2026-09-09T07:29:06+00:00",
+      "parsedDate": "2026-09-09T07:29:06+00:00",
+      "matches": true
+    },
+    {
+      "url": "https://t.me/ifax_go/25184",
+      "rawViews": "738",
+      "expectedViews": 738,
+      "parsedViews": 738,
+      "postedAt": "2026-09-09T07:36:56+00:00",
+      "parsedDate": "2026-09-09T07:36:56+00:00",
+      "matches": true
+    },
+    {
+      "url": "https://t.me/ifax_go/25185",
+      "rawViews": "780",
+      "expectedViews": 780,
+      "parsedViews": 780,
+      "postedAt": "2026-09-09T07:49:38+00:00",
+      "parsedDate": "2026-09-09T07:49:38+00:00",
+      "matches": true
+    },
+    {
+      "url": "https://t.me/ifax_go/25186",
+      "rawViews": "784",
+      "expectedViews": 784,
+      "parsedViews": 784,
+      "postedAt": "2026-09-09T08:28:45+00:00",
+      "parsedDate": "2026-09-09T08:28:45+00:00",
+      "matches": true
+    },
+    {
+      "url": "https://t.me/ifax_go/25187",
+      "rawViews": "3.08K",
+      "expectedViews": 3080,
+      "parsedViews": 3080,
+      "postedAt": "2026-09-09T10:50:01+00:00",
+      "parsedDate": "2026-09-09T10:50:01+00:00",
+      "matches": true
+    },
+    {
+      "url": "https://t.me/ifax_go/25188",
+      "rawViews": "650",
+      "expectedViews": 650,
+      "parsedViews": 650,
+      "postedAt": "2026-09-09T11:53:12+00:00",
+      "parsedDate": "2026-09-09T11:53:12+00:00",
+      "matches": true
+    },
+    {
+      "url": "https://t.me/ifax_go/25189",
+      "rawViews": "695",
+      "expectedViews": 695,
+      "parsedViews": 695,
+      "postedAt": "2026-09-09T11:54:30+00:00",
+      "parsedDate": "2026-09-09T11:54:30+00:00",
+      "matches": true
+    },
+    {
+      "url": "https://t.me/ifax_go/25190",
+      "rawViews": "669",
+      "expectedViews": 669,
+      "parsedViews": 669,
+      "postedAt": "2026-09-09T12:25:49+00:00",
+      "parsedDate": "2026-09-09T12:25:49+00:00",
+      "matches": true
+    },
+    {
+      "url": "https://t.me/ifax_go/25191",
+      "rawViews": "545",
+      "expectedViews": 545,
+      "parsedViews": 545,
+      "postedAt": "2026-09-09T13:49:47+00:00",
+      "parsedDate": "2026-09-09T13:49:47+00:00",
+      "matches": true
+    },
+    {
+      "url": "https://t.me/ifax_go/25192",
+      "rawViews": "507",
+      "expectedViews": 507,
+      "parsedViews": 507,
+      "postedAt": "2026-09-09T14:04:12+00:00",
+      "parsedDate": "2026-09-09T14:04:12+00:00",
+      "matches": true
+    },
+    {
+      "url": "https://t.me/ifax_go/25193",
+      "rawViews": "481",
+      "expectedViews": 481,
+      "parsedViews": 481,
+      "postedAt": "2026-09-09T14:17:46+00:00",
+      "parsedDate": "2026-09-09T14:17:46+00:00",
+      "matches": true
+    },
+    {
+      "url": "https://t.me/ifax_go/25194",
+      "rawViews": "459",
+      "expectedViews": 459,
+      "parsedViews": 459,
+      "postedAt": "2026-09-09T14:37:34+00:00",
+      "parsedDate": "2026-09-09T14:37:34+00:00",
+      "matches": true
+    },
+    {
+      "url": "https://t.me/ifax_go/25195",
+      "rawViews": "1.32K",
+      "expectedViews": 1320,
+      "parsedViews": 1320,
+      "postedAt": "2026-09-09T15:00:59+00:00",
+      "parsedDate": "2026-09-09T15:00:59+00:00",
+      "matches": true
+    },
+    {
+      "url": "https://t.me/ifax_go/25196",
+      "rawViews": "294",
+      "expectedViews": 294,
+      "parsedViews": 294,
+      "postedAt": "2026-09-09T15:22:26+00:00",
+      "parsedDate": "2026-09-09T15:22:26+00:00",
+      "matches": true
+    },
+    {
+      "url": "https://t.me/ifax_go/25197",
+      "rawViews": "197",
+      "expectedViews": 197,
+      "parsedViews": 197,
+      "postedAt": "2026-09-09T15:40:43+00:00",
+      "parsedDate": "2026-09-09T15:40:43+00:00",
+      "matches": true
+    }
+  ]
+}

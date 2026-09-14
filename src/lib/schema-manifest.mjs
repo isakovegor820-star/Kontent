@@ -5,7 +5,7 @@
  */
 export const SCHEMA_MANIFEST = Object.freeze({
   manifestVersion: 1,
-  schemaVersion: "2026-10-12.115",
+  schemaVersion: "2026-10-13.116",
   migrations: Object.freeze([
     ["20260801_account_onboarding.sql", "ac0e1f10046cf620185570ab5f40437991d08513473f67d4e93bdafa07b86614"],
     ["20260801_ai_usage_reservations.sql", "991c3a92dce16df55011d9df52fb65af1a7f4310b27f61dc519705f05528d7a0"],
@@ -124,6 +124,7 @@ export const SCHEMA_MANIFEST = Object.freeze({
     ["20261011_project_request_isolation.sql", "0699d10f1da26e2b5244dadf2d2a5f83f5ba9d57a9c869cde3a6b5a9a77fdfeb"],
     ["20261011_studio_sites_worker_leases.sql", "373af952f70e04dc1a414079542266570346f2c6a3f7724ec6442d03dbdc7fed"],
     ["20261012_calendar_draft_range.sql", "38a44a833def381dae0c523000d66f7c44a69560e19c2b482e1d16eb149ca44c"],
+    ["20261013_trends_search_scope.sql", "10c4ff380a975f7813d517c4ca202a25ca1aac84c0230f5ad1e190c20cbf1dc8"],
   ].map(([name, checksum, acceptedChecksums]) => Object.freeze({
     name,
     checksum,
@@ -264,6 +265,9 @@ export const SCHEMA_MANIFEST = Object.freeze({
       "site_visibility_probes",
     ]),
     columns: Object.freeze([
+      "radar_search_runs.project_id",
+      "radar_search_runs.search_scope",
+      "radar_search_runs.search_period",
       "users.onboarding_completed_at",
       "users.blocked_at",
       "users.blocked_reason",
@@ -767,6 +771,8 @@ export const SCHEMA_MANIFEST = Object.freeze({
       "knowledge_chunks.site_id",
     ]),
     constraints: Object.freeze([
+      "radar_search_runs.radar_search_runs_scope_check",
+      "radar_search_runs.radar_search_runs_period_check",
       "bot_user_controls.bot_user_controls_reason_check",
       "bot_project_controls.bot_project_controls_reason_check",
       "bot_delivery_events.bot_delivery_events_method_check",
@@ -1116,6 +1122,7 @@ export const SCHEMA_MANIFEST = Object.freeze({
     indexes: Object.freeze([
       "rss_feeds.rss_feeds_actor_channel_url_uidx",
       "radar_search_runs.radar_search_runs_project_request_uidx",
+      "radar_search_runs.radar_search_runs_topic_idx",
       "ai_usage.ai_usage_user_reservation_key_uniq",
       "autopilot_settings.autopilot_settings_pkey",
       "autopilot_settings.autopilot_settings_user_channel_uniq",

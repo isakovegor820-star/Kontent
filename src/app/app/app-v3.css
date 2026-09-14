@@ -730,3 +730,7 @@ body:has(.app-v3) {
     animation: none;
   }
 }
+
+/* Settings have independent navigation/content scrolling, including short viewports. */
+.app-v3 .settings-panel :is(input, select, textarea, [data-setting-target]) { scroll-margin-block: 8rem; }
+.app-v3 [data-settings-highlight="true"] { outline: 2px solid var(--brand-1); outline-offset: 4px; border-radius: 4px; }

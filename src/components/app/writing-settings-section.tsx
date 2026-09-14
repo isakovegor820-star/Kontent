@@ -5,8 +5,8 @@ import { BookOpenCheck, FileText } from "lucide-react";
 import { BrandDictionarySection } from "./brand-dictionary-section";
 import { PublicationBlocksSection } from "./publication-blocks-section";
 
-export function WritingSettingsSection() {
-  const [view, setView] = useState<"rules" | "templates">("rules");
+export function WritingSettingsSection({ initialView = "rules" }: { initialView?: "rules" | "templates" } = {}) {
+  const [view, setView] = useState<"rules" | "templates">(initialView);
 
   return (
     <div className="space-y-4">
@@ -28,8 +28,8 @@ export function WritingSettingsSection() {
           </button>
         ))}
       </div>
-      <div id="writing-rules" hidden={view !== "rules"}><BrandDictionarySection /></div>
-      <div id="writing-templates" hidden={view !== "templates"}><PublicationBlocksSection /></div>
+      <div id="writing-rules" data-setting-target="dictionary" hidden={view !== "rules"}><BrandDictionarySection /></div>
+      <div id="writing-templates" data-setting-target="blocks" hidden={view !== "templates"}><PublicationBlocksSection /></div>
     </div>
   );
 }

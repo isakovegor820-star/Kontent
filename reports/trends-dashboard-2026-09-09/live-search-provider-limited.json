@@ -1,0 +1,277 @@
+{
+  "source": "internet",
+  "sourceLabel": "Поиск по теме",
+  "sourceDescription": "Публичные Telegram-публикации по твоему запросу.",
+  "period": "month",
+  "periodLabel": "30 дней",
+  "topic": "искусственный интеллект",
+  "channelId": 3,
+  "window": {
+    "to": "2026-09-09T20:47:10.577195+04:00",
+    "from": "2026-08-11T01:00:00+04:00",
+    "timeZone": "Europe/Moscow"
+  },
+  "search": {
+    "id": 15,
+    "query": "искусственный интеллект",
+    "stage": "ready",
+    "period": "month",
+    "status": "partial",
+    "progress": 100,
+    "createdAt": "2026-09-09T20:47:07.407623+04:00",
+    "completedAt": "2026-09-09T20:47:09.4631+04:00",
+    "errorMessage": "Собрана часть доступных публикаций: некоторые источники не ответили или достигнут предел проверки истории. Можно повторить поиск."
+  },
+  "summary": {
+    "posts": 0,
+    "views": null,
+    "trends": 0,
+    "sources": 0,
+    "avgViews": null,
+    "reactions": null,
+    "postsWithViews": 0,
+    "postsWithReactions": 0
+  },
+  "coverage": {
+    "futurePosts": 0,
+    "undatedPosts": 0,
+    "comparisonAvailable": false,
+    "latestMeasurementAt": null,
+    "oldestMeasurementAt": null
+  },
+  "series": [
+    {
+      "posts": 0,
+      "until": "2026-08-12T01:00:00+04:00",
+      "views": null,
+      "bucket": "2026-08-11T01:00:00+04:00",
+      "postsWithViews": 0
+    },
+    {
+      "posts": 0,
+      "until": "2026-08-13T01:00:00+04:00",
+      "views": null,
+      "bucket": "2026-08-12T01:00:00+04:00",
+      "postsWithViews": 0
+    },
+    {
+      "posts": 0,
+      "until": "2026-08-14T01:00:00+04:00",
+      "views": null,
+      "bucket": "2026-08-13T01:00:00+04:00",
+      "postsWithViews": 0
+    },
+    {
+      "posts": 0,
+      "until": "2026-08-15T01:00:00+04:00",
+      "views": null,
+      "bucket": "2026-08-14T01:00:00+04:00",
+      "postsWithViews": 0
+    },
+    {
+      "posts": 0,
+      "until": "2026-08-16T01:00:00+04:00",
+      "views": null,
+      "bucket": "2026-08-15T01:00:00+04:00",
+      "postsWithViews": 0
+    },
+    {
+      "posts": 0,
+      "until": "2026-08-17T01:00:00+04:00",
+      "views": null,
+      "bucket": "2026-08-16T01:00:00+04:00",
+      "postsWithViews": 0
+    },
+    {
+      "posts": 0,
+      "until": "2026-08-18T01:00:00+04:00",
+      "views": null,
+      "bucket": "2026-08-17T01:00:00+04:00",
+      "postsWithViews": 0
+    },
+    {
+      "posts": 0,
+      "until": "2026-08-19T01:00:00+04:00",
+      "views": null,
+      "bucket": "2026-08-18T01:00:00+04:00",
+      "postsWithViews": 0
+    },
+    {
+      "posts": 0,
+      "until": "2026-08-20T01:00:00+04:00",
+      "views": null,
+      "bucket": "2026-08-19T01:00:00+04:00",
+      "postsWithViews": 0
+    },
+    {
+      "posts": 0,
+      "until": "2026-08-21T01:00:00+04:00",
+      "views": null,
+      "bucket": "2026-08-20T01:00:00+04:00",
+      "postsWithViews": 0
+    },
+    {
+      "posts": 0,
+      "until": "2026-08-22T01:00:00+04:00",
+      "views": null,
+      "bucket": "2026-08-21T01:00:00+04:00",
+      "postsWithViews": 0
+    },
+    {
+      "posts": 0,
+      "until": "2026-08-23T01:00:00+04:00",
+      "views": null,
+      "bucket": "2026-08-22T01:00:00+04:00",
+      "postsWithViews": 0
+    },
+    {
+      "posts": 0,
+      "until": "2026-08-24T01:00:00+04:00",
+      "views": null,
+      "bucket": "2026-08-23T01:00:00+04:00",
+      "postsWithViews": 0
+    },
+    {
+      "posts": 0,
+      "until": "2026-08-25T01:00:00+04:00",
+      "views": null,
+      "bucket": "2026-08-24T01:00:00+04:00",
+      "postsWithViews": 0
+    },
+    {
+      "posts": 0,
+      "until": "2026-08-26T01:00:00+04:00",
+      "views": null,
+      "bucket": "2026-08-25T01:00:00+04:00",
+      "postsWithViews": 0
+    },
+    {
+      "posts": 0,
+      "until": "2026-08-27T01:00:00+04:00",
+      "views": null,
+      "bucket": "2026-08-26T01:00:00+04:00",
+      "postsWithViews": 0
+    },
+    {
+      "posts": 0,
+      "until": "2026-08-28T01:00:00+04:00",
+      "views": null,
+      "bucket": "2026-08-27T01:00:00+04:00",
+      "postsWithViews": 0
+    },
+    {
+      "posts": 0,
+      "until": "2026-08-29T01:00:00+04:00",
+      "views": null,
+      "bucket": "2026-08-28T01:00:00+04:00",
+      "postsWithViews": 0
+    },
+    {
+      "posts": 0,
+      "until": "2026-08-30T01:00:00+04:00",
+      "views": null,
+      "bucket": "2026-08-29T01:00:00+04:00",
+      "postsWithViews": 0
+    },
+    {
+      "posts": 0,
+      "until": "2026-08-31T01:00:00+04:00",
+      "views": null,
+      "bucket": "2026-08-30T01:00:00+04:00",
+      "postsWithViews": 0
+    },
+    {
+      "posts": 0,
+      "until": "2026-09-01T01:00:00+04:00",
+      "views": null,
+      "bucket": "2026-08-31T01:00:00+04:00",
+      "postsWithViews": 0
+    },
+    {
+      "posts": 0,
+      "until": "2026-09-02T01:00:00+04:00",
+      "views": null,
+      "bucket": "2026-09-01T01:00:00+04:00",
+      "postsWithViews": 0
+    },
+    {
+      "posts": 0,
+      "until": "2026-09-03T01:00:00+04:00",
+      "views": null,
+      "bucket": "2026-09-02T01:00:00+04:00",
+      "postsWithViews": 0
+    },
+    {
+      "posts": 0,
+      "until": "2026-09-04T01:00:00+04:00",
+      "views": null,
+      "bucket": "2026-09-03T01:00:00+04:00",
+      "postsWithViews": 0
+    },
+    {
+      "posts": 0,
+      "until": "2026-09-05T01:00:00+04:00",
+      "views": null,
+      "bucket": "2026-09-04T01:00:00+04:00",
+      "postsWithViews": 0
+    },
+    {
+      "posts": 0,
+      "until": "2026-09-06T01:00:00+04:00",
+      "views": null,
+      "bucket": "2026-09-05T01:00:00+04:00",
+      "postsWithViews": 0
+    },
+    {
+      "posts": 0,
+      "until": "2026-09-07T01:00:00+04:00",
+      "views": null,
+      "bucket": "2026-09-06T01:00:00+04:00",
+      "postsWithViews": 0
+    },
+    {
+      "posts": 0,
+      "until": "2026-09-08T01:00:00+04:00",
+      "views": null,
+      "bucket": "2026-09-07T01:00:00+04:00",
+      "postsWithViews": 0
+    },
+    {
+      "posts": 0,
+      "until": "2026-09-09T01:00:00+04:00",
+      "views": null,
+      "bucket": "2026-09-08T01:00:00+04:00",
+      "postsWithViews": 0
+    },
+    {
+      "posts": 0,
+      "until": "2026-09-09T20:47:10.577195+04:00",
+      "views": null,
+      "bucket": "2026-09-09T01:00:00+04:00",
+      "postsWithViews": 0
+    }
+  ],
+  "pagination": {
+    "offset": 0,
+    "limit": 24,
+    "total": 0,
+    "hasMore": false
+  },
+  "status": {
+    "error": 0,
+    "niche": null,
+    "posts": 0,
+    "ready": 0,
+    "pending": 0,
+    "waiting": 0,
+    "minMature": 5,
+    "competitors": 0,
+    "matureHours": 48,
+    "periodPosts": 0,
+    "latestPostAt": null,
+    "lastCollectedAt": null,
+    "refreshEveryHours": 2
+  },
+  "items": [],
+  "topItems": []
+}

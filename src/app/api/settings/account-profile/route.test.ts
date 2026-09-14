@@ -11,7 +11,7 @@ const mocks = vi.hoisted(() => ({
 vi.mock("@/lib/session", () => ({ getSessionUser: mocks.getSessionUser }));
 vi.mock("@/lib/db", () => ({ getPool: () => ({ connect: mocks.connect }) }));
 
-import { POST } from "./route";
+import { PATCH, POST } from "./route";
 
 function request(body: Record<string, unknown>, origin = "http://localhost") {
   return new NextRequest("http://localhost/api/settings/account-profile", {
@@ -69,5 +69,43 @@ describe("POST /api/settings/account-profile", () => {
     expect(invalid.status).toBe(422);
     await expect(invalid.json()).resolves.toMatchObject({ error: "bad_timezone" });
     expect(mocks.connect).not.toHaveBeenCalled();
+  });
+
+  it("partially saves appearance without rewriting names, contacts, or other preferences", async () => {
+    const response = await PATCH(request({ theme: "light" }));
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({ ok: true, patch: { theme: "light" } });
+    const updates = mocks.query.mock.calls.filter(([sql]) => String(sql).startsWith("update"));
+    expect(updates).toEqual([["update user_account_settings set theme = $2, updated_at = now() where user_id = $1", [7, "light"]]]);
+  });
+
+  it("updates only the avatar when saving a picture", async () => {
+    const response = await PATCH(request({ avatar: validProfile.avatar }));
+    expect(response.status).toBe(200);
+    const update = mocks.query.mock.calls.find(([sql]) => String(sql).startsWith("update users"));
+    expect(update?.[1]).toEqual([7, false, null, true, validProfile.avatar]);
+  });
+
+  it.each([{ email: "other@example.test" }, { phone: "+123456789" }, { theme: "blue" }, { displayName: " " }, { avatar: "javascript:alert(1)" }, {}])("rejects invalid partial writes: %j", async (body) => {
+    const response = await PATCH(request(body));
+    expect(response.status).toBe(422);
+    expect(mocks.connect).not.toHaveBeenCalled();
+  });
+
+  it("checks origin and authentication for partial updates", async () => {
+    expect((await PATCH(request({ theme: "dark" }, "https://evil.example"))).status).toBe(403);
+    mocks.getSessionUser.mockResolvedValue(null);
+    expect((await PATCH(request({ theme: "dark" }))).status).toBe(401);
+    expect(mocks.connect).not.toHaveBeenCalled();
+  });
+
+  it("rolls back a failed partial save", async () => {
+    mocks.query.mockImplementation(async (sql: string) => {
+      if (sql.startsWith("update")) throw new Error("database_failed");
+      return { rows: [] };
+    });
+    expect((await PATCH(request({ theme: "light" }))).status).toBe(503);
+    expect(mocks.query).toHaveBeenCalledWith("rollback");
+    expect(mocks.release).toHaveBeenCalledOnce();
   });
 });

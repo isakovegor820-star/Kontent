@@ -1011,7 +1011,7 @@ function CompetitorsPageContent() {
   return (
     <AppShell
       title="Конкуренты"
-      subtitle="Ищи и веди соседей по нише. Публикации по теме — во вкладке «Интернет» в трендах."
+      subtitle="Ищи и веди соседей по нише. Публикации и статистика по теме — в разделе «Тренды»."
       action={
         <Button variant="brand" data-aurora-feature="competitor" data-aurora-action="added" onClick={() => setOpen((v) => !v)} disabled={atLimit}>
           <Plus className="h-[18px] w-[18px]" strokeWidth={2.25} aria-hidden />

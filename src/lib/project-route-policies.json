@@ -1110,6 +1110,11 @@
     "policy": "account"
   },
   {
+    "path": "/api/settings/account-profile",
+    "method": "PATCH",
+    "policy": "account"
+  },
+  {
     "path": "/api/settings/channel",
     "method": "GET",
     "policy": "project"
