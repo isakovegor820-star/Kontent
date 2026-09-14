@@ -1,0 +1,25 @@
+.aurora-discovery-toolbar { grid-template-columns: minmax(0, 1fr) auto; }
+.aurora-search-dialog { max-height: calc(100dvh - 1.5rem); }
+.aurora-guide-panel {
+  inset-inline-end: 1rem;
+  bottom: calc(var(--app-bottom-nav-height) + 1rem);
+  width: min(23rem, calc(100vw - 2rem));
+  max-height: min(31rem, 55dvh);
+}
+.app-v3 [data-discovery-highlight="true"] {
+  outline: 3px solid var(--info-text);
+  outline-offset: 4px;
+  scroll-margin-block: 10rem;
+}
+@media (min-width: 1024px) {
+  .aurora-discovery-toolbar { grid-template-columns: minmax(0, 1fr) min(50%, 32rem) minmax(0, 1fr); }
+  .aurora-search-trigger { grid-column: 2; }
+  .aurora-guide-trigger { justify-self: end; }
+  .aurora-guide-panel { bottom: 1.5rem; inset-inline-end: 1.5rem; max-height: min(36rem, calc(100dvh - 10rem)); }
+}
+@media (max-width: 639px) {
+  .aurora-search-overlay { padding-top: max(.75rem, env(safe-area-inset-top)); padding-bottom: max(.75rem, env(safe-area-inset-bottom)); }
+}
+@media (forced-colors: active) {
+  .app-v3 [data-discovery-highlight="true"] { outline-color: Highlight; }
+}

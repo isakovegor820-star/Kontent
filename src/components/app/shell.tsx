@@ -43,6 +43,7 @@ import { AuroraBackground } from "@/components/aurora-background";
 import { Wordmark } from "@/components/brand";
 import { ProjectSwitcher } from "@/components/app/project-switcher";
 import { ProjectNotificationsInbox } from "@/components/app/project-notifications-inbox";
+import { AuroraDiscovery, DiscoveryNavHelp, DiscoveryToolbar } from "@/components/app/aurora-discovery";
 import { AppThemeSelector } from "@/components/app/theme-selector";
 import { Button } from "@/components/ui/button";
 import { H1, SecondaryText } from "@/components/ui/typography";
@@ -461,12 +462,13 @@ function SidebarInner({
                     key={item.routeId}
                     ref={active && item.children ? activeItemRef : undefined}
                   >
+                    <div className="flex items-start">
                     <Link
                       href={route.href}
                       onClick={onClose}
                       aria-current={active ? "page" : undefined}
                       className={cn(
-                        "group relative flex min-h-11 items-center gap-3 rounded-xs py-2.5 pr-3 pl-3.5",
+                        "group relative flex min-h-11 min-w-0 flex-1 items-center gap-3 rounded-xs py-2.5 pr-3 pl-3.5",
                         "text-[15px] font-semibold transition-colors duration-200",
                         active
                           ? "bg-info-soft text-brand"
@@ -502,6 +504,8 @@ function SidebarInner({
                         </>
                       ) : null}
                     </Link>
+                    <DiscoveryNavHelp section={item.routeId} onSelect={onClose} />
+                    </div>
                     {active && item.children && (
                       <ul className="mt-1 ml-6 space-y-0.5 border-l border-brand/15 pl-3">
                         {item.children.map((child) => {
@@ -794,6 +798,7 @@ export function AppShell({
   return (
     // reducedMotion="user": системная настройка гасит движение, оставляя прозрачность (ТЗ 7.4)
     <MotionConfig reducedMotion="user">
+      <AuroraDiscovery navigationOpen={menuOpen}>
       <div className="relative isolate min-h-dvh bg-bg">
         <div className="pointer-events-none fixed inset-0 -z-10 overflow-hidden">
           <AuroraBackground intensity="app" grid={false} grain={false} />
@@ -877,6 +882,7 @@ export function AppShell({
             "shrink-0 z-20 border-b border-line bg-surface/70 backdrop-blur-xl lg:sticky lg:top-0",
             stickyHeaderOnMobile ? "sticky top-14" : "relative",
           )}>
+            <DiscoveryToolbar />
             <div className={cn("mx-auto flex max-w-[1400px] justify-between gap-x-6 gap-y-3 px-4 sm:px-6 lg:px-8", workspace ? "items-center py-3 sm:py-4" : "flex-wrap items-end py-4 sm:py-5")}>
               <div className="min-w-0">
                 <H1>
@@ -955,6 +961,7 @@ export function AppShell({
           </ul>
         </nav>
       </div>
+      </AuroraDiscovery>
     </MotionConfig>
   );
 }
