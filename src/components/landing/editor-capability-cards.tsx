@@ -132,7 +132,10 @@ function CapabilityCard({ capability, index }: { capability: Capability; index: 
     <motion.article
       className={styles.editorCapabilityCard}
       data-editor-capability={capability.scene}
-      initial={reduceMotion ? false : { opacity: 0, y: 26, scale: 0.98 }}
+      // Keep the initial target identical on the server and during hydration.
+      // useReducedMotion() is null on the server, so branching here produces
+      // different inline styles for visitors who prefer reduced motion.
+      initial={{ opacity: 0, y: 26, scale: 0.98 }}
       whileInView={{ opacity: 1, y: 0, scale: 1 }}
       whileHover={reduceMotion ? undefined : { y: -6 }}
       viewport={{ once: true, margin: "-70px" }}
