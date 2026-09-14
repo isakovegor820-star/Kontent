@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { NextRequest } from "next/server";
+import { ProjectRequest } from "@/test/project-request";
 
 const mocks = vi.hoisted(() => ({ session: vi.fn(), origin: vi.fn(), permission: vi.fn(), query: vi.fn(), enqueue: vi.fn(), worker: vi.fn() }));
 vi.mock("@/lib/session", () => ({ getSessionUser: mocks.session }));
@@ -9,7 +9,7 @@ vi.mock("@/lib/project-permissions", async (original) => ({ ...await original<ty
 vi.mock("@/lib/site-articles-queue", () => ({ enqueueSiteArticleJob: mocks.enqueue, hasSiteArticlesWorker: mocks.worker }));
 import { POST } from "./route";
 const site = { id: 5, project_id: 31, user_id: 7, latest_profile_id: 77, status: "active" };
-const run = (body: unknown) => POST(new NextRequest("http://localhost/api/sites/5/ai/retry", {
+const run = (body: unknown) => POST(new ProjectRequest(31, "http://localhost/api/sites/5/ai/retry", {
   method: "POST", headers: { origin: "http://localhost", "content-type": "application/json" }, body: JSON.stringify(body),
 }), { params: Promise.resolve({ id: "5" }) });
 

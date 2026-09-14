@@ -1,3 +1,4 @@
+import { withProjectRoute } from "@/lib/project-route";
 // Д.6 — список конкурентов пользователя со сводкой для карточек.
 // Кроме цифр отдаём честные признаки: сколько залётов найдено и хватает ли вообще
 // данных, чтобы этим цифрам верить (thin_data). Пороги — те же, что в воркере.
@@ -19,7 +20,7 @@ export const runtime = "nodejs";
 const MIN_POSTS_FOR_STATS = 8;
 const MIN_MEDIAN_VIEWS = 20;
 
-export async function GET(req: NextRequest) {
+async function handleGET(req: NextRequest) {
   const user = await getSessionUser(req);
   if (!user) return NextResponse.json({ competitors: [], limit: MAX_COMPETITORS });
 
@@ -90,3 +91,5 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ competitors: [], limit: MAX_COMPETITORS });
   }
 }
+
+export const GET = withProjectRoute(handleGET);

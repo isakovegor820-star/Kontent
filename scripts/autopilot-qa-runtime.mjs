@@ -12,8 +12,9 @@ import pg from 'pg';
 import IORedis from 'ioredis';
 import { Queue } from 'bullmq';
 
-const localEnv = parseEnv(await readFile('.env.local', 'utf8'));
-const source = new URL(localEnv.DATABASE_URL || process.env.DATABASE_URL);
+const localEnv = parseEnv(await readFile('.env.local', 'utf8').catch((error) => { if (error.code === 'ENOENT') return ''; throw error; }));
+const source = new URL(process.env.DATABASE_URL || localEnv.DATABASE_URL);
+const reportDir = process.env.AUTOPILOT_QA_REPORT_DIR || 'reports/autopilot-calendar-2026-09-07';
 if (!['127.0.0.1', 'localhost', '[::1]'].includes(source.hostname)) throw new Error('QA requires loopback PostgreSQL');
 const name = `aurora_autopilot_qa_${randomBytes(5).toString('hex')}`;
 const directory = await mkdtemp(join(tmpdir(), 'aurora-autopilot-qa-'));
@@ -41,7 +42,7 @@ async function cleanup() {
   if (created) await admin.query(`drop database "${name}" with (force)`);
   await admin.end();
   await unlink(join(directory, 'runtime.json')).catch(() => {});
-  await unlink('reports/autopilot-calendar-2026-09-07/runtime-path.txt').catch(() => {});
+  await unlink(join(reportDir, 'runtime-path.txt')).catch(() => {});
 }
 process.on('SIGTERM', () => void cleanup().finally(() => process.exit(0)));
 process.on('SIGINT', () => void cleanup().finally(() => process.exit(0)));
@@ -62,7 +63,7 @@ try {
     DATABASE_URL: database.toString(), REDIS_URL: redisUrl,
     APP_URL: baseUrl, NEXT_PUBLIC_APP_URL: baseUrl,
     AURORA_SENTRY_DISABLED: '1', NEXT_PUBLIC_AURORA_SENTRY_DISABLED: '1', NEXT_TELEMETRY_DISABLED: '1',
-    AURORA_NEXT_DIST_DIR: '.next-autopilot-qa',
+    AURORA_NEXT_DIST_DIR: process.env.AUTOPILOT_QA_DIST_DIR || '.next-autopilot-qa',
     TG_BOT_TOKEN: '9000000000:qa-only-not-live', TG_BOT_USERNAME: 'qa_autopilot_bot', TG_API_URL: fakeBase,
     OPENAI_API_KEY: '', AI_API_KEY: '', ANTHROPIC_API_KEY: '', GEMINI_API_KEY: '', NAVYAI_API_KEY: '',
     OPENAI_API_URL: `${fakeBase}/v1`, AI_API_URL: `${fakeBase}/v1`, NAVYAI_API_URL: `${fakeBase}/v1`, OLLAMA_URL: fakeBase,
@@ -81,9 +82,9 @@ try {
   }
   if (!workers) throw new Error(`autopilot-plans has no worker; logs: ${directory}`);
   await queue.close();
-  await writeFile(join(directory, 'runtime.json'), JSON.stringify({ databaseUrl: database.toString(), redisUrl, baseUrl, directory }), { mode: 0o600 });
-  await mkdir('reports/autopilot-calendar-2026-09-07', { recursive: true });
-  await writeFile('reports/autopilot-calendar-2026-09-07/runtime-path.txt', directory);
+  await writeFile(join(directory, 'runtime.json'), JSON.stringify({ databaseUrl: database.toString(), redisUrl, baseUrl, directory, processId: process.pid }), { mode: 0o600 });
+  await mkdir(reportDir, { recursive: true });
+  await writeFile(join(reportDir, 'runtime-path.txt'), directory);
   console.log(JSON.stringify({ ready: true, baseUrl, workers, directory, isolated: true, externalHttpBlocked: true }));
   await new Promise(() => {});
 } catch (error) {

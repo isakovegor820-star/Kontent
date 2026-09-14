@@ -1,5 +1,5 @@
+import { ProjectRequest } from "@/test/project-request";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { NextRequest } from "next/server";
 
 const mocks = vi.hoisted(() => ({
   getSessionUser: vi.fn(),
@@ -32,7 +32,7 @@ vi.mock("@/lib/project-permissions", async (importOriginal) => {
 import { POST } from "./route";
 
 function request(body: Record<string, unknown>, headers: Record<string, string> = {}) {
-  return new NextRequest("http://localhost/api/settings/channel", {
+  return new ProjectRequest(12, "http://localhost/api/settings/channel", {
     method: "POST",
     headers: { "content-type": "application/json", ...headers },
     body: JSON.stringify(body),

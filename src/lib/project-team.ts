@@ -8,20 +8,12 @@ import {
   type ProjectRole,
 } from "./project-permissions";
 import { normalizeIdempotencyKey } from "./publication-idempotency";
+import type { ProjectDto } from "./project-dto";
 
 export const INVITABLE_PROJECT_ROLES = ["author", "approver", "publisher"] as const;
 export type InvitableProjectRole = (typeof INVITABLE_PROJECT_ROLES)[number];
 
-export type ProjectSummary = {
-  id: number;
-  name: string;
-  timezone: string;
-  role: ProjectRole;
-  version: number;
-  personal: boolean;
-  selected: boolean;
-  createdAt: string;
-};
+export type ProjectSummary = ProjectDto;
 
 export type ProjectMemberSummary = {
   userId: number;

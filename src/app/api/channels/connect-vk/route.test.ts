@@ -1,5 +1,5 @@
+import { ProjectRequest } from "@/test/project-request";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { NextRequest } from "next/server";
 
 const mocks = vi.hoisted(() => ({
   getSessionUser: vi.fn(),
@@ -40,7 +40,7 @@ import { POST } from "./route";
 const previousMasterKey = process.env.TOKENS_MASTER_KEY;
 
 function request() {
-  return new NextRequest("http://localhost/api/channels/connect-vk", {
+  return new ProjectRequest(12, "http://localhost/api/channels/connect-vk", {
     method: "POST",
     headers: { origin: "http://localhost", "content-type": "application/json" },
     body: JSON.stringify({ token: "vk-secret" }),
@@ -70,13 +70,16 @@ describe("POST /api/channels/connect-vk", () => {
     else process.env.TOKENS_MASTER_KEY = previousMasterKey;
   });
 
-  it("stores the channel in the authorized project", async () => {
-    const response = await POST(request());
-
-    expect(response.status).toBe(200);
-    const insert = mocks.query.mock.calls.find(([sql]) => String(sql).includes("insert into channels"));
-    expect(String(insert?.[0])).toContain("project_id");
-    expect(insert?.[1]).toEqual([12, 7, 55, "encrypted-token", "VK Team", "vk-team"]);
+  it("blocks VK before reading a token, calling VK, or modifying saved data", async () => {
+    const req = request();
+    const response = await POST(req);
+    expect(response.status).toBe(409);
+    expect(await response.json()).toMatchObject({ ok: false, error: "vk_auth_flow_unverified" });
+    expect(req.bodyUsed).toBe(false);
+    expect(mocks.resolveGroupByToken).not.toHaveBeenCalled();
+    expect(mocks.encryptToken).not.toHaveBeenCalled();
+    expect(mocks.query).not.toHaveBeenCalled();
+    expect(mocks.transitionChannelHealth).not.toHaveBeenCalled();
   });
 
   it("rejects a non-manager before validating or encrypting their token", async () => {

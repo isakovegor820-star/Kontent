@@ -1,10 +1,8 @@
 // Клиент VK API для публикации и аналитики (Д.4).
 //
-// Модель токена (волна 1): РУЧНОЙ токен сообщества — админ создаёт ключ в
-// «Управление → Работа с API» с правом «Стена», вставляет его при подключении канала.
-// Токен бессрочный, не требует бизнес-верификации и одобрения VK. OAuth через VK ID —
-// следующая волна (тот же wall.post, но источник токена другой; конверт и паблишинг
-// уже готовы его принять).
+// Legacy VK adapter. New live operations are closed by the provider registry.
+// groups.getById reads metadata; it does not prove wall.post authorization.
+// See docs/launch-hardening-2026-09-07.md for the VK release prerequisites.
 //
 // Чистые парсеры (parseGroup/parsePostStats/buildOwnerId/vkPostUrl) вынесены отдельно
 // и покрыты тестами: формат ответов VK менялся между версиями API, поэтому парсим защитно.

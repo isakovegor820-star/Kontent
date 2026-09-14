@@ -1,5 +1,5 @@
+import { ProjectRequest } from "@/test/project-request";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { NextRequest } from "next/server";
 
 const mocks = vi.hoisted(() => ({
   getPool: vi.fn(),
@@ -24,7 +24,7 @@ import { ProjectAccessError } from "@/lib/project-permissions";
 const context = { params: Promise.resolve({ id: "7" }) };
 
 function request(origin = "http://localhost") {
-  return new NextRequest("http://localhost/api/publication-operations/7/restore-draft", {
+  return new ProjectRequest(23, "http://localhost/api/publication-operations/7/restore-draft", {
     method: "POST",
     headers: {
       "content-type": "application/json",

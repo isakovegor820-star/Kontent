@@ -1,4 +1,5 @@
 "use client";
+import { useProjectCall } from "@/lib/use-project-transport";
 
 import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
 import {
@@ -14,13 +15,13 @@ import { Button } from "@/components/ui/button";
 import { Badge, Textarea } from "@/components/ui/primitives";
 import type { DraftSaveState, ServerDraft } from "@/lib/draft-types";
 import {
-  addEditorialComment,
-  approvePersonalDraftForPublication,
-  decideEditorialReview,
+  addEditorialComment as unscopedAddEditorialComment,
+  approvePersonalDraftForPublication as unscopedApprovePersonalDraftForPublication,
+  decideEditorialReview as unscopedDecideEditorialReview,
   editorialErrorMessage,
   editorialRoleCapabilities,
-  loadEditorialSnapshot,
-  submitEditorialReview,
+  loadEditorialSnapshot as unscopedLoadEditorialSnapshot,
+  submitEditorialReview as unscopedSubmitEditorialReview,
   type ClientEditorialSnapshot,
   type ClientEditorialState,
 } from "@/lib/editorial-client";
@@ -93,6 +94,11 @@ export function EditorialReviewPanel({
   onSaveDraft: () => Promise<ServerDraft | null>;
   onStateChange?: (state: ClientEditorialState | null) => void;
 }) {
+  const loadEditorialSnapshot = useProjectCall(unscopedLoadEditorialSnapshot);
+  const submitEditorialReview = useProjectCall(unscopedSubmitEditorialReview);
+  const approvePersonalDraftForPublication = useProjectCall(unscopedApprovePersonalDraftForPublication);
+  const addEditorialComment = useProjectCall(unscopedAddEditorialComment);
+  const decideEditorialReview = useProjectCall(unscopedDecideEditorialReview);
   const descriptionId = useId();
   const noteId = useId();
   const noteErrorId = useId();
@@ -135,7 +141,7 @@ export function EditorialReviewPanel({
         setBusy((current) => current === "load" ? null : current);
       }
     }
-  }, [setCurrentSnapshot]);
+  }, [loadEditorialSnapshot, setCurrentSnapshot]);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -196,7 +202,7 @@ export function EditorialReviewPanel({
     } finally {
       setBusy(null);
     }
-  }, [busy, draftId, load, setCurrentSnapshot, snapshot]);
+  }, [busy, draftId, load, loadEditorialSnapshot, setCurrentSnapshot, snapshot]);
 
   const saveOnly = useCallback(async () => {
     if (busy || disabled) return;
@@ -238,7 +244,7 @@ export function EditorialReviewPanel({
     } finally {
       setBusy(null);
     }
-  }, [busy, disabled, draftId, load, onSaveDraft, setCurrentSnapshot, snapshot]);
+  }, [busy, disabled, draftId, load, loadEditorialSnapshot, onSaveDraft, setCurrentSnapshot, snapshot, submitEditorialReview]);
 
   const confirmPersonalPost = useCallback(async () => {
     if (!personalProject || role !== "owner" || busy || disabled) return;
@@ -260,7 +266,7 @@ export function EditorialReviewPanel({
     } finally {
       setBusy(null);
     }
-  }, [busy, disabled, draftId, load, onSaveDraft, personalProject, role, setCurrentSnapshot]);
+  }, [approvePersonalDraftForPublication, busy, disabled, draftId, load, onSaveDraft, personalProject, role, setCurrentSnapshot]);
 
   const sendComment = useCallback(async () => {
     const body = comment.trim();
@@ -273,7 +279,7 @@ export function EditorialReviewPanel({
     if (await refreshAfter("comment", (current) => addEditorialComment(draftId!, current, body), "Комментарий добавлен к этой версии.")) {
       setComment("");
     }
-  }, [comment, draftId, refreshAfter]);
+  }, [addEditorialComment, comment, draftId, refreshAfter]);
 
   const decide = useCallback(async (decision: "approve" | "request_changes") => {
     const note = decisionNote.trim();
@@ -289,7 +295,7 @@ export function EditorialReviewPanel({
       decision === "approve" ? "Версия согласована." : "Запрос правок отправлен автору.",
     );
     if (completed) setDecisionNote("");
-  }, [decisionNote, draftId, refreshAfter]);
+  }, [decideEditorialReview, decisionNote, draftId, refreshAfter]);
 
   const presentation = STATE_PRESENTATION[snapshot?.workflow.state ?? "draft"];
   const stateDescription = personalProject

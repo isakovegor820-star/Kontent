@@ -4,6 +4,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ReactNode } from "react";
 import StudioPage from "./page";
 import { serializeStudioChatSession } from "@/lib/studio-chat-session";
+import { setProjectTransport } from "@/lib/project-transport";
+import { projectJson } from "@/test/project-response";
 
 const mocks = vi.hoisted(() => ({
   search: new URLSearchParams("mode=chat"),
@@ -13,18 +15,22 @@ const mocks = vi.hoisted(() => ({
 }));
 vi.mock("next/navigation", () => ({ useSearchParams: () => mocks.search, useRouter: () => ({ push: vi.fn() }) }));
 vi.mock("@/lib/store", () => ({ useStore: () => mocks.store }));
+vi.mock("@/components/app/project-provider", () => ({
+  useProjects: () => ({ current: { id: 7, role: "owner", personal: false } }),
+}));
 vi.mock("@/components/app/shell", () => ({ AppShell: ({ children }: { children: ReactNode }) => <main>{children}</main> }));
 vi.mock("@/components/studio/media-generator", () => ({ MediaGenerator: () => null }));
 vi.mock("@/components/studio/post-settings-menu", () => ({ PostSettingsMenu: () => null }));
 
 beforeEach(() => {
+  setProjectTransport(7, true, 7);
   for (const key of ["localStorage", "sessionStorage"]) {
     vi.stubGlobal(key, { getItem: vi.fn(() => null), setItem: vi.fn(), removeItem: vi.fn() });
   }
   Element.prototype.scrollIntoView = vi.fn();
   vi.stubGlobal("ResizeObserver", class { observe() {} disconnect() {} unobserve() {} });
 });
-afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
+afterEach(() => { cleanup(); setProjectTransport(null); vi.unstubAllGlobals(); });
 
 describe("Studio message actions", () => {
   it.each(["Короче", "Улучшить"])("%s sends the selected message and excludes unrelated chat history", async (label) => {
@@ -36,10 +42,10 @@ describe("Studio message actions", () => {
       ], draft: "", workspaceMode: "chat", generations: [],
     }));
     const fetch = vi.fn(async (url: string, init?: RequestInit) => {
-      if (url === "/api/studio/session") return Response.json({ session, revision: 1 });
+      if (url === "/api/studio/session") return projectJson(7, { session, revision: 1 });
       if (url === "/api/settings") return Response.json({ postSettings: { qualityMode: "fast" } });
       if (url === "/api/ai/engines") return Response.json({ engines: [], current: null });
-      if (url === "/api/ai/generate") return Response.json({ error: "provider_timeout" }, { status: 503 });
+      if (url === "/api/ai/generate") return projectJson(7, { error: "provider_timeout" }, { status: 503 });
       throw new Error(`Unexpected request ${url} ${init?.method}`);
     });
     vi.stubGlobal("fetch", fetch);

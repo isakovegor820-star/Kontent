@@ -127,7 +127,7 @@ describe("collectRssPipeline", () => {
     expect(h.queries.some((query) => query.sql.includes("skip_reason = 'baseline'"))).toBe(false);
   });
 
-  it("ручной запуск запрашивает только feeds конкретного пользователя", async () => {
+  it("ручной запуск запрашивает feeds явного проекта и проверяет членство", async () => {
     const feeds = [{
       id: 1,
       url: "https://example.com/a.xml",
@@ -141,13 +141,14 @@ describe("collectRssPipeline", () => {
       [feeds[0].url]: rss([{ title: "Новость", link: "https://example.com/1", summary: "Текст", guid: "1" }]),
     });
 
-    const result = await collectRssPipeline({ ...h, userId: 42, now: () => 1_700_000_000_000 });
+    const result = await collectRssPipeline({ ...h, userId: 42, projectId: 17, now: () => 1_700_000_000_000 });
 
-    expect(h.queries[0].sql).toContain("f.user_id = $1");
+    expect(h.queries[0].sql).toContain("c.project_id = $1");
+    expect(h.queries[0].sql).toContain("member.user_id = $2");
     expect(h.queries[0].sql).toContain(
-      "join channels c on c.id = f.channel_id and c.user_id = f.user_id",
+      "join channels c on c.id = f.channel_id",
     );
-    expect(h.queries[0].params).toEqual([42]);
+    expect(h.queries[0].params).toEqual([17, 42]);
     expect(h.enqueuePost).toHaveBeenCalledOnce();
     expect(h.enqueuePost).toHaveBeenCalledWith(
       42,
@@ -173,11 +174,12 @@ describe("collectRssPipeline", () => {
       [feed.url]: rss([{ title: "Новость", link: "https://example.com/1", summary: "Текст", guid: "1" }]),
     });
 
-    await collectRssPipeline({ ...h, userId: 42, channelId: 18 });
+    await collectRssPipeline({ ...h, userId: 42, projectId: 17, channelId: 18 });
 
-    expect(h.queries[0].sql).toContain("f.user_id = $1");
-    expect(h.queries[0].sql).toContain("f.channel_id = $2");
-    expect(h.queries[0].params).toEqual([42, 18]);
+    expect(h.queries[0].sql).toContain("c.project_id = $1");
+    expect(h.queries[0].sql).toContain("member.user_id = $2");
+    expect(h.queries[0].sql).toContain("f.channel_id = $3");
+    expect(h.queries[0].params).toEqual([17, 42, 18]);
   });
 
   it("лимит считается отдельно для каждой ленты, а не глобально", async () => {

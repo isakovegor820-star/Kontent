@@ -133,9 +133,9 @@ describe("calendar role-aware interface", () => {
   it("preserves stale cards and exposes partial/offline recovery without a reload", () => {
     expect(source).not.toContain("setServerDrafts([])");
     expect(source).toContain("calendarPartiallyStale");
-    expect(source).toContain("Уже загруженные карточки сохранены");
+    expect(source).toContain("Ранее загруженные данные этого периода сохранены");
     expect(source).toContain("void s.refreshReal()");
-    expect(source).toContain("void refreshDrafts(s.user)");
+    expect(source).toContain("void refreshDrafts()");
   });
 
   it("uses the project date for today and advances it while the calendar stays open", () => {

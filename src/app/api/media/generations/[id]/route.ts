@@ -1,3 +1,4 @@
+import { withProjectRoute } from "@/lib/project-route";
 import { NextRequest, NextResponse } from "next/server";
 import { randomUUID } from "node:crypto";
 
@@ -19,7 +20,7 @@ function response(requestId: string, body: Record<string, unknown>, status = 200
   );
 }
 
-export async function GET(req: NextRequest, ctx: { params: Promise<{ id: string }> }) {
+async function handleGET(req: NextRequest, ctx: { params: Promise<{ id: string }> }) {
   let requestId: string = randomUUID();
   const user = await getSessionUser(req);
   if (!user) return response(requestId, { error: "unauthorized" }, 401);
@@ -118,3 +119,5 @@ export async function GET(req: NextRequest, ctx: { params: Promise<{ id: string 
     return response(requestId, { error: "server", retryable: true }, 500);
   }
 }
+
+export const GET = withProjectRoute(handleGET);

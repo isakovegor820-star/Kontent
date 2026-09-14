@@ -1,5 +1,5 @@
+import { ProjectRequest } from "@/test/project-request";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { NextRequest } from "next/server";
 
 const mocks = vi.hoisted(() => ({
   getSessionUser: vi.fn(),
@@ -49,19 +49,19 @@ describe("/api/studio/session", () => {
 
   it("не отдаёт историю без авторизации", async () => {
     mocks.getSessionUser.mockResolvedValue(null);
-    const response = await GET(new NextRequest("http://localhost/api/studio/session"));
+    const response = await GET(new ProjectRequest(1, "http://localhost/api/studio/session"));
     expect(response.status).toBe(401);
     expect(mocks.loadStudioChatSessionForUser).not.toHaveBeenCalled();
   });
 
   it("возвращает постоянный снимок и revision", async () => {
-    const response = await GET(new NextRequest("http://localhost/api/studio/session"));
+    const response = await GET(new ProjectRequest(1, "http://localhost/api/studio/session"));
     expect(response.status).toBe(200);
     await expect(response.json()).resolves.toMatchObject({ ok: true, session: payload, revision: 4 });
   });
 
   it("сохраняет снимок только в пространстве текущего пользователя", async () => {
-    const response = await PUT(new NextRequest("http://localhost/api/studio/session", {
+    const response = await PUT(new ProjectRequest(1, "http://localhost/api/studio/session", {
       method: "PUT",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ expectedRevision: 4, session: payload }),
@@ -79,7 +79,7 @@ describe("/api/studio/session", () => {
       saved: false,
       current: { payload, revision: 7, updatedAt: "2026-08-10T09:02:00.000Z" },
     });
-    const response = await PUT(new NextRequest("http://localhost/api/studio/session", {
+    const response = await PUT(new ProjectRequest(1, "http://localhost/api/studio/session", {
       method: "PUT",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ expectedRevision: 4, session: payload }),

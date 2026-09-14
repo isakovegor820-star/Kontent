@@ -1,4 +1,4 @@
-import { NextRequest } from "next/server";
+import { ProjectRequest } from "@/test/project-request";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
@@ -25,7 +25,7 @@ vi.mock("@/lib/publication-review-service", async (importOriginal) => {
 import { POST } from "./route";
 
 function request(body: unknown, idempotencyKey = "decision-request-0001") {
-  return new NextRequest("http://localhost/api/publication-review-tasks/9/decision", {
+  return new ProjectRequest(999, "http://localhost/api/publication-review-tasks/9/decision", {
     method: "POST",
     headers: {
       origin: "http://localhost",
@@ -103,7 +103,7 @@ describe("POST /api/publication-review-tasks/:id/decision", () => {
 
   it("fails closed on rate-limit storage before parsing the body", async () => {
     mocks.checkRateLimit.mockResolvedValueOnce({ allowed: false, remaining: 0 });
-    const req = new NextRequest("http://localhost/api/publication-review-tasks/9/decision", {
+    const req = new ProjectRequest(999, "http://localhost/api/publication-review-tasks/9/decision", {
       method: "POST",
       headers: {
         origin: "http://localhost",

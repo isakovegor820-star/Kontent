@@ -1,5 +1,5 @@
+import { ProjectRequest } from "@/test/project-request";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { NextRequest } from "next/server";
 
 const mocks = vi.hoisted(() => ({
   getSessionUser: vi.fn(),
@@ -37,7 +37,7 @@ describe("GET /api/channels/oauth/start", () => {
     "does not launch configured %s OAuth before Composer supports it",
     async (network) => {
       const response = await GET(
-        new NextRequest(`http://localhost/api/channels/oauth/start?network=${network}`),
+        new ProjectRequest(1, `http://localhost/api/channels/oauth/start?network=${network}`),
       );
 
       expect(response.status).toBe(307);
@@ -55,7 +55,7 @@ describe("GET /api/channels/oauth/start", () => {
     mocks.getOAuthConfig.mockReturnValue(null);
 
     const response = await GET(
-      new NextRequest("http://localhost/api/channels/oauth/start?network=unknown"),
+      new ProjectRequest(1, "http://localhost/api/channels/oauth/start?network=unknown"),
     );
 
     expect(response.status).toBe(307);
@@ -67,7 +67,7 @@ describe("GET /api/channels/oauth/start", () => {
 
   it("denies a newly configured OAuth adapter by default", async () => {
     const response = await GET(
-      new NextRequest("http://localhost/api/channels/oauth/start?network=future-network"),
+      new ProjectRequest(1, "http://localhost/api/channels/oauth/start?network=future-network"),
     );
 
     expect(response.status).toBe(307);
@@ -82,7 +82,7 @@ describe("GET /api/channels/oauth/start", () => {
     mocks.getSessionUser.mockResolvedValue(null);
 
     const response = await GET(
-      new NextRequest("http://localhost/api/channels/oauth/start?network=youtube"),
+      new ProjectRequest(1, "http://localhost/api/channels/oauth/start?network=youtube"),
     );
 
     expect(response.status).toBe(307);

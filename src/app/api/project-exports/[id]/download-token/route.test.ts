@@ -1,5 +1,6 @@
+import { ProjectRequest } from "@/test/project-request";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { NextRequest, NextResponse } from "next/server";
+import { NextResponse } from "next/server";
 
 const mocks = vi.hoisted(() => ({
   getPool: vi.fn(() => ({})),
@@ -40,7 +41,7 @@ describe("project export download token route", () => {
   it("rejects untrusted origins before session and token creation", async () => {
     mocks.hasTrustedMutationOrigin.mockReturnValue(false);
     const response = await POST(
-      new NextRequest("http://localhost/api/project-exports/41/download-token", { method: "POST" }),
+      new ProjectRequest(1, "http://localhost/api/project-exports/41/download-token", { method: "POST" }),
       { params: Promise.resolve({ id: "41" }) },
     );
     expect(response.status).toBe(403);
@@ -49,7 +50,7 @@ describe("project export download token route", () => {
 
   it("returns the token separately from a token-free download URL", async () => {
     const response = await POST(
-      new NextRequest("http://localhost/api/project-exports/41/download-token", { method: "POST" }),
+      new ProjectRequest(1, "http://localhost/api/project-exports/41/download-token", { method: "POST" }),
       { params: Promise.resolve({ id: "41" }) },
     );
     const body = await response.json();

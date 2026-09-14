@@ -1,3 +1,4 @@
+import { withProjectRoute } from "@/lib/project-route";
 import { NextRequest } from "next/server";
 
 import { enqueueSiteArticleJob, hasSiteArticlesWorker } from "@/lib/site-articles-queue";
@@ -22,7 +23,7 @@ type ProbeRow = {
   checked_at: Date;
 };
 
-export async function GET(req: NextRequest, context: Context) {
+async function handleGET(req: NextRequest, context: Context) {
   const resolved = await resolveSiteRoute(req, "project.read", { label: "/api/sites/:id/probe GET" });
   if (!resolved.ok) return resolved.response;
   const { requestId, pool } = resolved.context;
@@ -60,7 +61,7 @@ export async function GET(req: NextRequest, context: Context) {
   }
 }
 
-export async function POST(req: NextRequest, context: Context) {
+async function handlePOST(req: NextRequest, context: Context) {
   const resolved = await resolveSiteRoute(req, "content.create", { mutation: true, label: "/api/sites/:id/probe POST" });
   if (!resolved.ok) return resolved.response;
   const { requestId } = resolved.context;
@@ -76,3 +77,6 @@ export async function POST(req: NextRequest, context: Context) {
     return siteErrorResponse(error, "/api/sites/:id/probe POST", requestId);
   }
 }
+
+export const GET = withProjectRoute(handleGET);
+export const POST = withProjectRoute(handlePOST);

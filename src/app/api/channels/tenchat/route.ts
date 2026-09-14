@@ -1,3 +1,4 @@
+import { withProjectRoute } from "@/lib/project-route";
 import type { NextRequest } from "next/server";
 import { NextResponse } from "next/server";
 
@@ -8,7 +9,7 @@ import { tenChatIntegrationReadiness } from "@/lib/tenchat-integration.mjs";
 
 export const runtime = "nodejs";
 
-export async function GET(request: NextRequest) {
+async function handleGET(request: NextRequest) {
   const user = await getSessionUser(request);
   if (!user) return NextResponse.json({ ok: false, error: "unauthorized" }, { status: 401 });
   try {
@@ -27,3 +28,5 @@ export async function GET(request: NextRequest) {
     return NextResponse.json({ ok: false, error: "server" }, { status: 500 });
   }
 }
+
+export const GET = withProjectRoute(handleGET);

@@ -9,6 +9,13 @@ export function telegramPartDefinitions({ hasAsset, text, forceSeparateMedia = f
   return buildTelegramPayload({ hasAsset, text, forceSeparateMedia }).parts;
 }
 
+/** Only an explicit client rejection proves that Telegram did not accept delivery. */
+export function isConfirmedTelegramRejection(response) {
+  const code = Number(response?.error_code);
+  return response?.ok === false && response?.deliveryUnknown !== true
+    && Number.isInteger(code) && code >= 400 && code < 500 && code !== 408;
+}
+
 export async function deliverTelegramParts({
   parts,
   asset,
@@ -66,7 +73,11 @@ export async function deliverTelegramParts({
       };
     }
     const messageId = Number(response?.result?.message_id);
-    if (!response?.ok || !Number.isSafeInteger(messageId) || messageId <= 0) {
+    if (response?.ok !== true || !Number.isSafeInteger(messageId) || messageId <= 0) {
+      if (!isConfirmedTelegramRejection(response)) {
+        await markUnknown(part, new Error("telegram_acknowledgement_invalid"));
+        return { ok: false, parts: completed, reason: "Telegram не подтвердил идентификатор отправленной части", deliveryUnknown: true };
+      }
       await markFailed(part, response);
       return {
         ok: false,

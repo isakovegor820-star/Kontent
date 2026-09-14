@@ -1,4 +1,5 @@
 "use client";
+import { useProjectCall } from "@/lib/use-project-transport";
 
 import {
   useCallback,
@@ -24,9 +25,9 @@ import {
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/primitives";
 import {
-  loadProjectNotifications,
-  markAllClientProjectNotificationsRead,
-  markClientProjectNotificationRead,
+  loadProjectNotifications as unscopedLoadProjectNotifications,
+  markAllClientProjectNotificationsRead as unscopedMarkAllClientProjectNotificationsRead,
+  markClientProjectNotificationRead as unscopedMarkClientProjectNotificationRead,
   projectNotificationCopy,
   projectNotificationDestination,
   projectNotificationErrorMessage,
@@ -241,6 +242,9 @@ export function ProjectNotificationsInboxPanel({
 }
 
 export function ProjectNotificationsInbox() {
+  const loadProjectNotifications = useProjectCall(unscopedLoadProjectNotifications);
+  const markClientProjectNotificationRead = useProjectCall(unscopedMarkClientProjectNotificationRead);
+  const markAllClientProjectNotificationsRead = useProjectCall(unscopedMarkAllClientProjectNotificationsRead);
   const router = useRouter();
   const projects = useProjects();
   const projectId = projects.current?.id ?? null;
@@ -315,7 +319,7 @@ export function ProjectNotificationsInbox() {
     } finally {
       if (mountedRef.current && sequence === requestSequence.current) setLoadingMore(false);
     }
-  }, [projectId]);
+  }, [loadProjectNotifications, projectId]);
 
   useEffect(() => {
     currentProjectRef.current = projectId;
@@ -385,7 +389,7 @@ export function ProjectNotificationsInbox() {
     } finally {
       if (mountedRef.current && currentProjectRef.current === expectedProjectId) setMarkingId(null);
     }
-  }, [markingId, projectId]);
+  }, [markClientProjectNotificationRead, markingId, projectId]);
 
   const markAll = useCallback(async () => {
     if (markingAll || projectId == null) return;
@@ -409,7 +413,7 @@ export function ProjectNotificationsInbox() {
     } finally {
       if (mountedRef.current && currentProjectRef.current === expectedProjectId) setMarkingAll(false);
     }
-  }, [markingAll, projectId]);
+  }, [markAllClientProjectNotificationsRead, markingAll, projectId]);
 
   const openNotification = useCallback(async (
     event: ReactMouseEvent<HTMLAnchorElement>,

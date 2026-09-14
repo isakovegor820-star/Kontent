@@ -1,3 +1,4 @@
+import { withProjectRoute } from "@/lib/project-route";
 import { NextRequest, NextResponse } from "next/server";
 import { readJsonBodyValue } from "@/lib/bounded-request-body";
 import { getPool } from "@/lib/db";
@@ -37,7 +38,7 @@ const validId = (v: unknown) => Number.isSafeInteger(Number(v)) && Number(v) > 0
 const failure = (error: string, status = 409) => NextResponse.json({ ok: false, error }, { status });
 
 /** Opening an editor only creates a private, linked draft; it never schedules a post. */
-export async function POST(req: NextRequest) {
+async function handlePOST(req: NextRequest) {
   if (!hasTrustedMutationOrigin(req)) return failure("forbidden", 403);
   const user = await getSessionUser(req);
   if (!user) return failure("unauthorized", 401);
@@ -57,6 +58,7 @@ export async function POST(req: NextRequest) {
     const tx = await pool.connect();
     try {
       await tx.query("begin");
+      await requireProjectPermission(tx, user.id, projectId, "content.edit", { lock: true });
       const plan = (await tx.query<Plan>(
         postId
           ? `select id, items, channel_id, revision from autopilot_plan where project_id = $1 and channel_id = $2
@@ -131,7 +133,7 @@ export async function POST(req: NextRequest) {
 }
 
 /** Saves one acknowledged editor version back to its plan, preserving post identity. */
-export async function PATCH(req: NextRequest) {
+async function handlePATCH(req: NextRequest) {
   if (!hasTrustedMutationOrigin(req)) return failure("forbidden", 403);
   const user = await getSessionUser(req);
   if (!user) return failure("unauthorized", 401);
@@ -172,6 +174,8 @@ export async function PATCH(req: NextRequest) {
     let scheduleRevision = 0;
     try {
       await tx.query("begin");
+      await requireProjectPermission(tx, user.id, projectId, "content.edit", { lock: true });
+      if (item.postId) await requireProjectPermission(tx, user.id, projectId, "content.publish", { lock: true });
       const locked = (await tx.query<Plan>(`select id, items, channel_id, revision from autopilot_plan where id = $1 and project_id = $2 and revision = $3 and status in ('pending', 'approved') for update`, [plan.id, projectId, plan.revision])).rows[0];
       if (!locked) { await tx.query("rollback"); return failure("stale_plan"); }
       const currentDraft = (await tx.query<{ version: string; channel_ids: string[] }>(`select d.version, array(select channel_id from draft_destinations where draft_id = d.id) as channel_ids from drafts d where id = $1 and project_id = $2 for update`, [draft.id, projectId])).rows[0];
@@ -215,3 +219,7 @@ export async function PATCH(req: NextRequest) {
     return failure("server", 500);
   }
 }
+
+export const POST = withProjectRoute(handlePOST);
+
+export const PATCH = withProjectRoute(handlePATCH);

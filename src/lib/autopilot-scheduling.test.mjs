@@ -123,6 +123,7 @@ function checkpointPool({
       query: vi.fn(async (sqlValue, params = []) => {
         const sql = String(sqlValue).replace(/\s+/g, " ").trim();
         statements.push(sql);
+        if (sql.includes("from project_members member")) return { rows: [{ role: "publisher" }], rowCount: 1 };
         if (sql === "begin") {
           working = structuredClone(state);
           return { rows: [], rowCount: null };
@@ -288,7 +289,7 @@ describe("transactional Autopilot scheduling", () => {
     const planCheckpoint = statements.find((sql) =>
       sql.startsWith("update autopilot_plan") && sql.includes("approval_heartbeat_at"),
     );
-    expect(planCheckpoint).toContain("user_id = $3");
+    expect(planCheckpoint).toContain("op.user_id=$3");
   });
 
   it("keeps the committed outcome retryable when DB acknowledgement fails after enqueue", async () => {

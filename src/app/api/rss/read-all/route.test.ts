@@ -1,5 +1,5 @@
+import { ProjectRequest } from "@/test/project-request";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { NextRequest } from "next/server";
 
 const mocks = vi.hoisted(() => ({
   query: vi.fn(),
@@ -26,7 +26,7 @@ beforeEach(() => {
 
 describe("POST /api/rss/read-all", () => {
   it("marks all visible project items as read without accepting a client project id", async () => {
-    const response = await POST(new NextRequest("http://localhost/api/rss/read-all", { method: "POST" }));
+    const response = await POST(new ProjectRequest(17, "http://localhost/api/rss/read-all", { method: "POST" }));
     const body = await response.json();
 
     expect(response.status).toBe(200);

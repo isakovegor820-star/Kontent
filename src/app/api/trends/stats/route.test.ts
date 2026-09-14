@@ -1,4 +1,4 @@
-import { NextRequest } from "next/server";
+import { ProjectRequest } from "@/test/project-request";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({ query: vi.fn(), session: vi.fn(), resolveChannel: vi.fn() }));
@@ -22,7 +22,7 @@ describe("GET /api/trends/stats", () => {
     mocks.query.mockResolvedValue({ rows: [{ payload }] });
   });
   it("keeps missing counters unavailable and returns one dataset for both views", async () => {
-    const response = await GET(new NextRequest("http://localhost/api/trends/stats?source=own&topic=Рыбалка&channel=11"));
+    const response = await GET(new ProjectRequest(1, "http://localhost/api/trends/stats?source=own&topic=Рыбалка&channel=11"));
     expect(response.status).toBe(200);
     expect(await response.json()).toMatchObject({ topic: "рыбалка", summary: { views: null, reactions: null, avgViews: null },
       coverage: { comparisonAvailable: false }, items: [], pagination: { total: 12 } });
@@ -31,20 +31,20 @@ describe("GET /api/trends/stats", () => {
   });
   it("requires an owned project channel for private statistics", async () => {
     mocks.resolveChannel.mockResolvedValue(null);
-    expect((await GET(new NextRequest("http://localhost/api/trends/stats?source=internet&channel=999"))).status).toBe(422);
+    expect((await GET(new ProjectRequest(1, "http://localhost/api/trends/stats?source=internet&channel=999"))).status).toBe(422);
     expect(mocks.query).not.toHaveBeenCalled();
   });
   it("cannot fall back to other results for an inaccessible or mismatched run", async () => {
-    const response = await GET(new NextRequest("http://localhost/api/trends/stats?source=internet&topic=рыбалка&run=99&channel=11"));
+    const response = await GET(new ProjectRequest(1, "http://localhost/api/trends/stats?source=internet&topic=рыбалка&run=99&channel=11"));
     expect(response.status).toBe(404);
   });
   it("does not require a channel for the shared collection", async () => {
-    expect((await GET(new NextRequest("http://localhost/api/trends/stats?source=collection"))).status).toBe(200);
+    expect((await GET(new ProjectRequest(1, "http://localhost/api/trends/stats?source=collection"))).status).toBe(200);
     expect(mocks.resolveChannel).not.toHaveBeenCalled();
     expect(mocks.query.mock.calls[0][1]).toEqual([7, null, 1, "", null, 0]);
   });
   it.each(["run=-2", "run=abc", "offset=-1", "offset=1.5", "offset=100001"])("rejects invalid filters: %s", async (query) => {
-    expect((await GET(new NextRequest(`http://localhost/api/trends/stats?${query}`))).status).toBe(400);
+    expect((await GET(new ProjectRequest(1, `http://localhost/api/trends/stats?${query}`))).status).toBe(400);
     expect(mocks.query).not.toHaveBeenCalled();
   });
 });

@@ -1,3 +1,4 @@
+import { withProjectRoute } from "@/lib/project-route";
 import { NextRequest } from "next/server";
 import { readJsonBodyValue } from "@/lib/bounded-request-body";
 import { enqueueSiteArticleJob, hasSiteArticlesWorker } from "@/lib/site-articles-queue";
@@ -6,7 +7,7 @@ import { jsonWithRequest, parseSiteId, requireSite, resolveSiteRoute, siteErrorR
 export const runtime = "nodejs";
 type Context = { params: Promise<{ id: string }> };
 
-export async function POST(req: NextRequest, context: Context) {
+async function handlePOST(req: NextRequest, context: Context) {
   const resolved = await resolveSiteRoute(req, "content.create", { mutation: true, label: "/api/sites/:id/ai/retry POST" });
   if (!resolved.ok) return resolved.response;
   const { pool, requestId } = resolved.context;
@@ -47,3 +48,5 @@ export async function POST(req: NextRequest, context: Context) {
     return jsonWithRequest({ ok: true, queued: true }, 202, requestId);
   } catch (error) { return siteErrorResponse(error, "/api/sites/:id/ai/retry POST", requestId); }
 }
+
+export const POST = withProjectRoute(handlePOST);

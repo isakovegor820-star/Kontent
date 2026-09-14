@@ -1,5 +1,5 @@
+import { ProjectRequest } from "@/test/project-request";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { NextRequest } from "next/server";
 import { ProjectAccessError } from "@/lib/project-permissions";
 
 const mocks = vi.hoisted(() => ({
@@ -52,7 +52,7 @@ describe("PATCH /api/drafts/:id", () => {
   it("returns 409 with the current server draft for a stale version", async () => {
     mocks.updateDraftForUser.mockRejectedValue(new DraftConflictError(current));
     const response = await PATCH(
-      new NextRequest("http://localhost/api/drafts/41", {
+      new ProjectRequest(1, "http://localhost/api/drafts/41", {
         method: "PATCH",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
@@ -79,7 +79,7 @@ describe("PATCH /api/drafts/:id", () => {
   it("returns access denied when the selected project cannot read the draft", async () => {
     mocks.getDraftForUser.mockRejectedValue(new ProjectAccessError("membership_required"));
     const response = await GET(
-      new NextRequest("http://localhost/api/drafts/41"),
+      new ProjectRequest(1, "http://localhost/api/drafts/41"),
       { params: Promise.resolve({ id: "41" }) },
     );
 
@@ -89,7 +89,7 @@ describe("PATCH /api/drafts/:id", () => {
 
   it("checks mutation origin before authentication", async () => {
     const response = await PATCH(
-      new NextRequest("http://localhost/api/drafts/41", {
+      new ProjectRequest(1, "http://localhost/api/drafts/41", {
         method: "PATCH",
         headers: { origin: "https://attacker.example", "sec-fetch-site": "cross-site" },
         body: "{}",

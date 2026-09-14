@@ -1,5 +1,6 @@
+import { ProjectRequest } from "@/test/project-request";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { NextRequest, NextResponse } from "next/server";
+import { NextResponse } from "next/server";
 
 const mocks = vi.hoisted(() => ({
   getPool: vi.fn(() => ({ query: vi.fn() })),
@@ -46,7 +47,7 @@ vi.mock("@/lib/project-export-queue.mjs", () => ({
 import { GET, POST } from "./route";
 
 function request(method: "GET" | "POST", body?: object) {
-  return new NextRequest("http://localhost/api/project-exports", {
+  return new ProjectRequest(7, "http://localhost/api/project-exports", {
     method,
     headers: method === "POST"
       ? { origin: "http://localhost", "idempotency-key": "export-route-001", "content-type": "application/json" }
@@ -56,7 +57,7 @@ function request(method: "GET" | "POST", body?: object) {
 }
 
 function rawPost(body: string, contentType = "application/json") {
-  return new NextRequest("http://localhost/api/project-exports", {
+  return new ProjectRequest(7, "http://localhost/api/project-exports", {
     method: "POST",
     headers: {
       origin: "http://localhost",

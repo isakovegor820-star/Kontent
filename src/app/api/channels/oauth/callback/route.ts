@@ -1,3 +1,4 @@
+import { ProjectAccessError, requireProjectPermission } from "@/lib/project-permissions";
 // Волна 2 — подключение OAuth-сети. Шаг 2: колбэк от провайдера.
 // Провайдер редиректит сюда с code и state. Сверяем state (CSRF), меняем code на токены
 // (с PKCE-verifier из cookie), пост-обрабатываем (резолв канала/аккаунта), ШИФРУЕМ токены
@@ -72,7 +73,7 @@ export async function GET(req: NextRequest) {
   const raw = req.cookies.get(OAUTH_STATE_COOKIE)?.value;
   if (!raw) return settingsRedirect(req, `oauth=expired&network=${network}`);
 
-  let saved: { state?: string; verifier?: string; network?: string; userId?: number };
+  let saved: { state?: string; verifier?: string; network?: string; userId?: number; projectId?: number };
   try {
     saved = JSON.parse(raw);
   } catch {
@@ -83,6 +84,9 @@ export async function GET(req: NextRequest) {
   if (!state || saved.state !== state || saved.network !== network || saved.userId !== user.id) {
     return settingsRedirect(req, `oauth=state_mismatch&network=${network}`);
   }
+
+  const projectId = Number(saved.projectId);
+  if (!Number.isSafeInteger(projectId) || projectId <= 0) return settingsRedirect(req, `oauth=expired&network=${network}`);
 
   const cfg = getOAuthConfig(network);
   const adapter = getAdapter(network);
@@ -97,6 +101,7 @@ export async function GET(req: NextRequest) {
   }
 
   try {
+    await requireProjectPermission(getPool(), user.id, projectId, "project.manage");
     // 1) code → токены (с PKCE-verifier).
     const redirectUri = callbackUrlFromReq(req, network);
     const tokens = await exchangeCode(cfg, { code, redirectUri, codeVerifier: saved.verifier });
@@ -127,6 +132,7 @@ export async function GET(req: NextRequest) {
     const client = await pool.connect();
     try {
       await client.query("begin");
+      await requireProjectPermission(client, user.id, projectId, "project.manage", { lock: true });
       const tok = await client.query<{ id: number }>(
         `insert into oauth_tokens
          (user_id, provider, external_id, access_token, refresh_token, scopes, expires_at, meta)
@@ -145,10 +151,13 @@ export async function GET(req: NextRequest) {
       const tokenId = tok.rows[0].id;
 
       // 4) Канал и token живут в одной транзакции: конфликт владения не оставляет orphan token.
-      const existing = await client.query<{ id: number }>(
-        `select id from channels where user_id = $1 and ${idCol} = $2 for update`,
+      const existing = await client.query<{ id: number; project_id: string }>(
+        `select id, project_id from channels where user_id = $1 and ${idCol} = $2 for update`,
         [user.id, fin.externalId],
       );
+      if (existing.rowCount && Number(existing.rows[0].project_id) !== projectId) {
+        throw new ProjectAccessError("project_context_mismatch");
+      }
       if (existing.rowCount) {
         await client.query(
           `update channels set title = $2, handle = $3, oauth_token_id = $4,
@@ -159,9 +168,9 @@ export async function GET(req: NextRequest) {
         );
       } else {
         await client.query(
-          `insert into channels (user_id, network, ${idCol}, oauth_token_id, title, handle)
-           values ($1, $2, $3, $4, $5, $6)`,
-          [user.id, network, fin.externalId, tokenId, fin.meta?.title ?? null, fin.meta?.handle ?? null],
+          `insert into channels (user_id, network, ${idCol}, oauth_token_id, title, handle, project_id)
+           values ($1, $2, $3, $4, $5, $6, $7)`,
+          [user.id, network, fin.externalId, tokenId, fin.meta?.title ?? null, fin.meta?.handle ?? null, projectId],
         );
       }
       await client.query("commit");
@@ -177,6 +186,7 @@ export async function GET(req: NextRequest) {
 
     return settingsRedirect(req, `connected=${network}`);
   } catch (err) {
+    if (err instanceof ProjectAccessError) return settingsRedirect(req, `oauth=forbidden&network=${network}`);
     console.error("oauth_callback_failed", { provider: label, ...safeOAuthError(err) });
     return settingsRedirect(req, `oauth=server&network=${network}`);
   }
