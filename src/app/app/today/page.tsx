@@ -1101,11 +1101,13 @@ function TodayPageContent() {
               ) : null}
             </Card>
 
+            {!quickMode ? <ChannelPulse pulse={board.pulse} channelId={board.channelId} refreshing={refreshing} onRefresh={() => void refreshSources()} /> : null}
+
+            <TodaySummaryMetrics board={board} />
+
             {board.channelId && <TodayPublications key={`${board.projectId}:${board.channelId}`} projectId={board.projectId} channelId={board.channelId}
               channelLabel={board.channelLabel} timezone={board.timezone} items={board.publicationQueue?.items ?? []}
               available={board.publicationQueue?.state === "ready"} onRefresh={(message) => { setRefreshNotice(message); setAnnouncement(message); void load({ channelId: board.channelId }); }} />}
-
-            <TodaySummaryMetrics board={board} />
 
             {(board.hiddenRecommendationKinds?.length ?? 0) > 0 && <Card className="p-4 sm:p-5">
               <h2 className="text-[15px] font-semibold">Скрытые рекомендации</h2>
@@ -1232,7 +1234,6 @@ function TodayPageContent() {
             ) : null}
 
             {!quickMode ? <CompletedToday items={board.completedItems} timezone={board.timezone} /> : null}
-            {!quickMode ? <ChannelPulse pulse={board.pulse} channelId={board.channelId} refreshing={refreshing} onRefresh={() => void refreshSources()} /> : null}
           </>
         ) : null}
       </div>
