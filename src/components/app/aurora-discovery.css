@@ -1,10 +1,88 @@
 .aurora-discovery-toolbar { grid-template-columns: minmax(0, 1fr) auto; }
 .aurora-search-dialog { max-height: calc(100dvh - 1.5rem); }
+.aurora-guide-stage {
+  --guide-gap: 12px;
+  --guide-top: max(var(--guide-gap), env(safe-area-inset-top));
+  --guide-bottom: calc(var(--app-bottom-nav-height, 0px) + var(--guide-gap));
+  position: fixed;
+  z-index: 60;
+  top: var(--guide-top);
+  inset-inline: max(var(--guide-gap), env(safe-area-inset-left)) max(var(--guide-gap), env(safe-area-inset-right));
+  height: calc(100dvh - var(--guide-top) - var(--guide-bottom));
+  pointer-events: none;
+}
+.aurora-guide-stage, .aurora-guide-panel { transition-property: none; }
 .aurora-guide-panel {
-  inset-inline-end: 1rem;
-  bottom: calc(var(--app-bottom-nav-height) + 1rem);
-  width: min(23rem, calc(100vw - 2rem));
-  max-height: min(31rem, 55dvh);
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  display: flex;
+  flex-direction: column;
+  width: min(440px, 100%);
+  height: min(580px, 100%);
+  max-width: 100%;
+  max-height: 100%;
+  overflow: hidden;
+  border: 1px solid var(--border-strong);
+  border-radius: 20px;
+  background: var(--surface);
+  color: var(--text);
+  pointer-events: auto;
+  container-type: inline-size;
+}
+.aurora-guide-panel[data-collapsed="true"] { height: auto; }
+.aurora-guide-header {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 12px;
+  padding: 24px 16px 16px 28px;
+  border-bottom: 1px solid var(--border);
+  background: var(--surface);
+  cursor: grab;
+  touch-action: none;
+  user-select: none;
+}
+.aurora-guide-panel[data-interaction="move"] .aurora-guide-header,
+.aurora-guide-panel[data-interaction="move"] .aurora-guide-move { cursor: grabbing; }
+.aurora-guide-heading { --type-h2-size: 18px; --type-h2-line: 1.35; --type-h2-weight: 650; flex: 1; min-width: 0; }
+.aurora-guide-heading h2 { margin: 0; font-size: 18px; font-weight: 650; line-height: 1.35; text-wrap: balance; }
+.aurora-guide-heading p { margin-top: 4px; font-size: 12px; line-height: 1.5; color: var(--text-2); }
+.aurora-guide-header-actions { display: flex; flex: 0 0 auto; gap: 2px; }
+.aurora-guide-header-actions button { width: 44px; height: 44px; }
+.aurora-guide-move { position: relative; display: grid; flex: 0 0 44px; place-items: center; width: 44px; height: 44px; border-radius: 50%; cursor: grab; touch-action: none; }
+.aurora-guide-move img { width: 40px; height: 40px; }
+.aurora-guide-grip { position: absolute; bottom: -5px; padding: 1px; width: 20px; height: 14px; border-radius: 4px; background: var(--surface); color: var(--text-2); }
+.aurora-guide-body { flex: 1; min-height: 0; overflow-y: auto; overscroll-behavior: contain; padding: 22px 24px 24px; scrollbar-gutter: stable; }
+.aurora-guide-body > label { font-size: 13px; }
+.aurora-guide-body > select { min-height: 46px; border-radius: 10px; }
+.aurora-guide-description { margin-top: 24px; font-size: 15px; line-height: 1.65; text-wrap: pretty; }
+.aurora-guide-first-step { --type-h3-size: 14px; --type-h3-line: 1.5; --type-h3-weight: 650; margin-top: 24px; padding: 18px; border-radius: 12px; background: var(--surface-inset); }
+.aurora-guide-first-step h3 { margin: 0; font-size: 14px; font-weight: 650; line-height: 1.5; }
+.aurora-guide-first-step p { margin-top: 6px; font-size: 14px; line-height: 1.65; color: var(--text-2); }
+.aurora-guide-actions { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 24px; }
+.aurora-guide-actions > * { min-height: 44px; }
+.aurora-guide-step-actions { justify-content: space-between; }
+.aurora-guide-note { margin-top: 18px; font-size: 12px; line-height: 1.65; color: var(--text-3); }
+.aurora-guide-step { --type-h3-size: 20px; --type-h3-line: 1.4; --type-h3-weight: 650; }
+.aurora-guide-step h3 { margin-top: 16px; font-size: 20px; line-height: 1.4; font-weight: 650; text-wrap: balance; }
+.aurora-guide-step > p { font-size: 14px; line-height: 1.65; }
+.aurora-guide-progress { display: flex; gap: 6px; margin-bottom: 20px; }
+.aurora-guide-progress span { flex: 1; height: 4px; border-radius: 4px; background: var(--border-strong); }
+.aurora-guide-progress [data-complete="true"] { background: var(--info-text); }
+.aurora-guide-footer { display: flex; flex: 0 0 auto; align-items: center; gap: 8px; min-height: 56px; padding: 4px 4px 4px 16px; border-top: 1px solid var(--border); background: var(--surface); }
+.aurora-guide-reset { display: inline-flex; align-items: center; gap: 7px; min-height: 44px; padding: 0 8px; border-radius: 8px; font-size: 12px; color: var(--text-2); }
+.aurora-guide-resize-note { margin-inline-start: auto; font-size: 12px; color: var(--text-3); }
+.aurora-guide-resize { display: grid; place-items: center; flex: 0 0 44px; width: 44px; height: 44px; margin-inline-start: auto; border-radius: 12px; cursor: nwse-resize; touch-action: none; color: var(--text-2); }
+.aurora-guide-resize-start { position: absolute; left: 0; top: 0; display: grid; place-items: center; width: 24px; height: 24px; border-radius: 19px 0 8px 0; color: var(--text-2); cursor: nwse-resize; touch-action: none; }
+.aurora-guide-reset:hover, .aurora-guide-resize:hover, .aurora-guide-resize-start:hover { background: var(--surface-inset); color: var(--text); }
+.aurora-guide-panel button:focus-visible, .aurora-guide-heading h2:focus-visible { outline: 2px solid var(--info-text); outline-offset: -3px; }
+@container (max-width: 360px) {
+  .aurora-guide-header { gap: 8px; padding-inline-end: 8px; }
+  .aurora-guide-heading { --type-h2-size: 16px; }
+  .aurora-guide-heading h2 { font-size: 16px; }
+  .aurora-guide-body { padding: 20px 16px; }
+  .aurora-guide-resize-note { display: none; }
 }
 .app-v3 [data-discovery-highlight="true"] {
   outline: 3px solid var(--info-text);
@@ -15,11 +93,13 @@
   .aurora-discovery-toolbar { grid-template-columns: minmax(0, 1fr) min(50%, 32rem) minmax(0, 1fr); }
   .aurora-search-trigger { grid-column: 2; }
   .aurora-guide-trigger { justify-self: end; }
-  .aurora-guide-panel { bottom: 1.5rem; inset-inline-end: 1.5rem; max-height: min(36rem, calc(100dvh - 10rem)); }
+  .aurora-guide-stage { --guide-gap: 24px; --guide-bottom: max(var(--guide-gap), env(safe-area-inset-bottom)); }
 }
 @media (max-width: 639px) {
   .aurora-search-overlay { padding-top: max(.75rem, env(safe-area-inset-top)); padding-bottom: max(.75rem, env(safe-area-inset-bottom)); }
 }
 @media (forced-colors: active) {
   .app-v3 [data-discovery-highlight="true"] { outline-color: Highlight; }
+  .aurora-guide-panel { border-color: CanvasText; }
+  .aurora-guide-panel button:focus-visible { outline-color: Highlight; }
 }
