@@ -1,6 +1,4 @@
 "use client";
-import { useProjectFetch } from "@/lib/use-project-transport";
-
 
 // А7. ДОСЬЕ КОНКУРЕНТА (ТЗ 5.4, Д.6). Разведка по ОТКРЫТЫМ данным t.me/s/ + Bot API.
 //
@@ -183,7 +181,6 @@ function BarRow({
 /* ------------------------------------------------------------------ экран */
 
 export default function DossierPage() {
-  const fetch = useProjectFetch();
   const params = useParams<{ id: string }>();
   const reduce = useReducedMotion();
   const id = params?.id;
@@ -200,7 +197,7 @@ export default function DossierPage() {
     } finally {
       setLoading(false);
     }
-  }, [fetch, id]);
+  }, [id]);
 
   useEffect(() => {
     // eslint-disable-next-line react-hooks/set-state-in-effect -- загрузка при монтировании

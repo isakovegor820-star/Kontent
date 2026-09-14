@@ -1,4 +1,3 @@
-import { withProjectRoute } from "@/lib/project-route";
 import { NextRequest } from "next/server";
 
 import { getPool } from "@/lib/db";
@@ -14,7 +13,7 @@ import {
 
 export const runtime = "nodejs";
 
-async function handleGET(request: NextRequest) {
+export async function GET(request: NextRequest) {
   const requestId = monthlyCampaignRequestId();
   const user = await getSessionUser(request);
   if (!user) return monthlyCampaignJson({ ok: false, error: "unauthorized" }, 401, requestId);
@@ -26,7 +25,7 @@ async function handleGET(request: NextRequest) {
   }
 }
 
-async function handlePOST(req: NextRequest) {
+export async function POST(req: NextRequest) {
   if (!hasTrustedMutationOrigin(req)) {
     return monthlyCampaignJson({ ok: false, error: "forbidden_origin" }, 403);
   }
@@ -49,6 +48,3 @@ async function handlePOST(req: NextRequest) {
     return monthlyCampaignApiError(error, requestId);
   }
 }
-
-export const GET = withProjectRoute(handleGET);
-export const POST = withProjectRoute(handlePOST);

@@ -1,12 +1,11 @@
-import { ProjectRequest } from "@/test/project-request";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { NextRequest } from "next/server";
 
 const mocks = vi.hoisted(() => ({
   getPool: vi.fn(),
   getSessionUser: vi.fn(),
   probePublication: vi.fn(),
   requireSelectedProjectPermission: vi.fn(),
-  requireProjectPermission: vi.fn(),
   requireCurrentDraftApproval: vi.fn(),
   reconcilePublicationOutbox: vi.fn(),
   recheckTypographyForPublication: vi.fn(),
@@ -20,7 +19,6 @@ vi.mock("@/lib/readiness-probes", () => ({
 vi.mock("@/lib/project-permissions", async (original) => ({
   ...await original<typeof import("@/lib/project-permissions")>(),
   requireSelectedProjectPermission: mocks.requireSelectedProjectPermission,
-  requireProjectPermission: mocks.requireProjectPermission,
 }));
 vi.mock("@/lib/editorial-approval", async (original) => ({
   ...await original<typeof import("@/lib/editorial-approval")>(),
@@ -40,7 +38,7 @@ import { generationResultHash } from "@/lib/generation-artifacts";
 import { ProjectAccessError } from "@/lib/project-permissions";
 
 function request(origin?: string, overrides: Record<string, unknown> = {}) {
-  return new ProjectRequest(23, "http://localhost/api/publication-operations", {
+  return new NextRequest("http://localhost/api/publication-operations", {
     method: "POST",
     headers: {
       "content-type": "application/json",
@@ -148,7 +146,6 @@ describe("POST /api/publication-operations readiness gate", () => {
     vi.stubEnv("APP_URL", "");
     mocks.getSessionUser.mockResolvedValue({ id: 5 });
     mocks.requireSelectedProjectPermission.mockResolvedValue({ projectId: 23, role: "publisher" });
-    mocks.requireProjectPermission.mockResolvedValue({ projectId: 23, role: "publisher" });
     mocks.requireCurrentDraftApproval.mockResolvedValue({
       revisionId: 91,
       contentHash: "a".repeat(64),
@@ -278,7 +275,7 @@ describe("POST /api/publication-operations readiness gate", () => {
     },
   );
 
-  it.each(["tg", "vk"])("enforces provider support for an exact approved snapshot (%s)", async (network) => {
+  it("persists an explicit project and the exact approved revision snapshot", async () => {
     mocks.probePublication.mockResolvedValue({ redis: "up", publicationWorker: "up" });
     const tx = {
       query: vi.fn(async (sql: string, params?: unknown[]) => {
@@ -342,7 +339,7 @@ describe("POST /api/publication-operations readiness gate", () => {
           return { rows: [], rowCount: 0 };
         }
         if (sql.includes("from channels channel")) {
-          return { rows: [{ channel_id: "12", network }], rowCount: 1 };
+          return { rows: [{ channel_id: "12", network: "vk" }], rowCount: 1 };
         }
         if (sql.includes("from short_links")) {
           return {
@@ -389,7 +386,7 @@ describe("POST /api/publication-operations readiness gate", () => {
         if (sql.includes("insert into publication_tracking_snapshots")) {
           return { rows: [], rowCount: 1 };
         }
-        if (sql.includes("insert into audit_events") || sql.includes("insert into publication_parts")) {
+        if (sql.includes("insert into audit_events")) {
           return { rows: [], rowCount: 1 };
         }
         throw new Error(`unexpected transaction query: ${sql}`);
@@ -402,7 +399,7 @@ describe("POST /api/publication-operations readiness gate", () => {
         rows: [{
           post_id: "81",
           channel_id: "12",
-          network,
+          network: "vk",
           title: "Практика",
           post_status: "scheduled",
           queue_status: "enqueued",
@@ -413,13 +410,6 @@ describe("POST /api/publication-operations readiness gate", () => {
 
     const response = await POST(request());
 
-    if (network === "vk") {
-      expect(response.status).toBe(422);
-      expect(await response.json()).toMatchObject({ ok: false, error: "provider_operation_unsupported", code: "vk_auth_flow_unverified" });
-      expect(tx.query.mock.calls.some(([sql]) => String(sql).includes("insert into posts") || String(sql).includes("insert into publication_operations"))).toBe(false);
-      expect(mocks.reconcilePublicationOutbox).not.toHaveBeenCalled();
-      return;
-    }
     expect(response.status).toBe(201);
     await expect(response.json()).resolves.toMatchObject({
       ok: true,
@@ -562,7 +552,7 @@ describe("POST /api/publication-operations readiness gate", () => {
           return { rows: [], rowCount: 0 };
         }
         if (sql.includes("from channels channel")) {
-          return { rows: [{ channel_id: "12", network: "tg" }], rowCount: 1 };
+          return { rows: [{ channel_id: "12", network: "vk" }], rowCount: 1 };
         }
         if (sql.includes("insert into publication_operations")) {
           return {
@@ -593,7 +583,7 @@ describe("POST /api/publication-operations readiness gate", () => {
         if (sql.includes("insert into publication_outbox")) {
           return { rows: [], rowCount: 1 };
         }
-        if (sql.includes("insert into audit_events") || sql.includes("insert into publication_parts")) {
+        if (sql.includes("insert into audit_events")) {
           return { rows: [], rowCount: 1 };
         }
         throw new Error(`unexpected schedule transaction query: ${sql}`);
@@ -606,7 +596,7 @@ describe("POST /api/publication-operations readiness gate", () => {
         rows: [{
           post_id: "81",
           channel_id: "12",
-          network: "tg",
+          network: "vk",
           title: "Практика",
           post_status: "scheduled",
           queue_status: "enqueued",
@@ -697,7 +687,7 @@ describe("POST /api/publication-operations readiness gate", () => {
           return { rows: [], rowCount: 0 };
         }
         if (sql.includes("from channels channel")) {
-          return { rows: [{ channel_id: "12", network: "tg" }], rowCount: 1 };
+          return { rows: [{ channel_id: "12", network: "vk" }], rowCount: 1 };
         }
         if (sql.includes("insert into publication_operations")) {
           return {
@@ -728,7 +718,7 @@ describe("POST /api/publication-operations readiness gate", () => {
         if (sql.includes("insert into publication_outbox")) {
           return { rows: [], rowCount: 1 };
         }
-        if (sql.includes("insert into audit_events") || sql.includes("insert into publication_parts")) {
+        if (sql.includes("insert into audit_events")) {
           return { rows: [], rowCount: 1 };
         }
         throw new Error(`unexpected ready-post query: ${sql}`);
@@ -741,7 +731,7 @@ describe("POST /api/publication-operations readiness gate", () => {
         rows: [{
           post_id: "81",
           channel_id: "12",
-          network: "tg",
+          network: "vk",
           title: "Практика",
           post_status: "scheduled",
           queue_status: "enqueued",
@@ -814,7 +804,7 @@ describe("POST /api/publication-operations readiness gate", () => {
             };
           }
           if (sql.includes("from channels channel")) {
-            return { rows: [{ channel_id: "12", network: "tg" }], rowCount: 1 };
+            return { rows: [{ channel_id: "12", network: "vk" }], rowCount: 1 };
           }
           if (sql.includes("insert into publication_operations")) {
             const fingerprint = String(params?.[5]);
@@ -860,7 +850,7 @@ describe("POST /api/publication-operations readiness gate", () => {
           if (sql.includes("insert into publication_outbox")) {
             return { rows: [], rowCount: 1 };
           }
-          if (sql.includes("insert into audit_events") || sql.includes("insert into publication_parts")) {
+          if (sql.includes("insert into audit_events")) {
             return { rows: [], rowCount: 1 };
           }
           throw new Error(`unexpected concurrent publication query: ${sql}`);
@@ -879,7 +869,7 @@ describe("POST /api/publication-operations readiness gate", () => {
         rows: [{
           post_id: "81",
           channel_id: "12",
-          network: "tg",
+          network: "vk",
           title: "Практика",
           post_status: "scheduled",
           queue_status: "enqueued",
@@ -973,7 +963,7 @@ describe("POST /api/publication-operations readiness gate", () => {
         rows: [{
           post_id: "81",
           channel_id: "12",
-          network: "tg",
+          network: "vk",
           title: "Практика",
           post_status: "scheduled",
           queue_status: "enqueued",
@@ -1114,7 +1104,7 @@ describe("POST /api/publication-operations readiness gate", () => {
         rows: [{
           post_id: "81",
           channel_id: "12",
-          network: "tg",
+          network: "vk",
           title: "Практика",
           post_status: "scheduled",
           queue_status: "enqueued",

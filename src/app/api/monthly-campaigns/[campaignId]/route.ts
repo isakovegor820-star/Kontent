@@ -1,4 +1,3 @@
-import { withProjectRoute } from "@/lib/project-route";
 import { NextRequest } from "next/server";
 
 import { getPool } from "@/lib/db";
@@ -20,7 +19,7 @@ async function campaignId(context: Context): Promise<number | null> {
   return monthlyCampaignRouteId((await context.params).campaignId);
 }
 
-async function handleGET(request: NextRequest, context: Context) {
+export async function GET(request: NextRequest, context: Context) {
   const requestId = monthlyCampaignRequestId();
   const user = await getSessionUser(request);
   if (!user) return monthlyCampaignJson({ ok: false, error: "unauthorized" }, 401, requestId);
@@ -34,7 +33,7 @@ async function handleGET(request: NextRequest, context: Context) {
   }
 }
 
-async function handlePATCH(req: NextRequest, context: Context) {
+export async function PATCH(req: NextRequest, context: Context) {
   if (!hasTrustedMutationOrigin(req)) {
     return monthlyCampaignJson({ ok: false, error: "forbidden_origin" }, 403);
   }
@@ -56,6 +55,3 @@ async function handlePATCH(req: NextRequest, context: Context) {
     return monthlyCampaignApiError(error, requestId);
   }
 }
-
-export const GET = withProjectRoute(handleGET);
-export const PATCH = withProjectRoute(handlePATCH);

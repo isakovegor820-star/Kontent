@@ -1,4 +1,3 @@
-import { withProjectRoute } from "@/lib/project-route";
 import { randomUUID } from "node:crypto";
 import type { NextRequest } from "next/server";
 
@@ -14,7 +13,7 @@ import { legalStudioBody, legalStudioBodyFailure, legalStudioError, legalStudioJ
 export const runtime = "nodejs";
 type Context = { params: Promise<{ id: string }> };
 
-async function handlePOST(request: NextRequest, context: Context) {
+export async function POST(request: NextRequest, context: Context) {
   const requestId = randomUUID();
   if (!hasTrustedMutationOrigin(request)) return legalStudioJson({ ok: false, error: "forbidden_origin" }, 403, requestId);
   const user = await getSessionUser(request);
@@ -45,5 +44,3 @@ async function handlePOST(request: NextRequest, context: Context) {
     return legalStudioError(error, requestId);
   }
 }
-
-export const POST = withProjectRoute(handlePOST);

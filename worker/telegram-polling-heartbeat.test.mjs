@@ -109,6 +109,7 @@ describe("telegram polling heartbeat", () => {
       pool: { query: async () => ({ rows: [{ last_update: 0 }] }) },
       syncTelegramDiscussionChats: async () => null,
       ensureTelegramPollingLease: async () => true,
+      verifyTelegramPollingLease: async () => context.telegramPollingLeaseHeld,
       openTelegramPollingQueue: async () => true,
       enableTelegramPollingGuard: async () => true,
       waitForTelegramPollingConflict: async () => {},

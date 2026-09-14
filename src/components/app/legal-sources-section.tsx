@@ -1,6 +1,4 @@
 "use client";
-import { useProjectFetch } from "@/lib/use-project-transport";
-
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
@@ -122,7 +120,6 @@ function toneForConnection(connection: Connection): "success" | "danger" | "neut
 }
 
 export function LegalSourcesSection({ className }: { className?: string }) {
-  const fetch = useProjectFetch();
   const [state, setState] = useState<LegalSourcesResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [providerId, setProviderId] = useState("");
@@ -157,7 +154,7 @@ export function LegalSourcesSection({ className }: { className?: string }) {
     } finally {
       setLoading(false);
     }
-  }, [fetch]);
+  }, []);
 
   /* eslint-disable react-hooks/set-state-in-effect -- load the authoritative server integration state on mount */
   useEffect(() => {

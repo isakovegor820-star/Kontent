@@ -1,6 +1,4 @@
 "use client";
-import { useProjectFetch } from "@/lib/use-project-transport";
-
 
 import { useCallback, useEffect, useId, useRef, useState } from "react";
 import { Check, ChevronDown, Copy, Link2 } from "lucide-react";
@@ -222,7 +220,6 @@ export function TrackingBuilder({
   validationError?: string;
   defaultOpen?: boolean;
 }) {
-  const fetch = useProjectFetch();
   const baseId = useId();
   const destinationRef = useRef<HTMLInputElement>(null);
   const utmRefs = useRef<Partial<Record<UtmField, HTMLInputElement>>>({});
@@ -268,7 +265,7 @@ export function TrackingBuilder({
     } catch {
       setLoadMessage("Шаблоны и статус трекера не загрузились. Ссылку можно настроить вручную.");
     }
-  }, [fetch]);
+  }, []);
 
   useEffect(() => {
     if (!expanded) return;

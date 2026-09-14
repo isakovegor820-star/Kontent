@@ -1,4 +1,3 @@
-import { withProjectRoute } from "@/lib/project-route";
 import { readJsonBodyValue } from "@/lib/bounded-request-body";
 import { NextRequest, NextResponse } from "next/server";
 
@@ -17,7 +16,7 @@ export const runtime = "nodejs";
 
 type Context = { params: Promise<{ id: string }> };
 
-async function handlePATCH(req: NextRequest, ctx: Context) {
+export async function PATCH(req: NextRequest, ctx: Context) {
   if (!hasTrustedMutationOrigin(req)) {
     return NextResponse.json({ ok: false, error: "forbidden" }, { status: 403 });
   }
@@ -57,5 +56,3 @@ async function handlePATCH(req: NextRequest, ctx: Context) {
     return NextResponse.json({ ok: false, error: "server" }, { status: 500 });
   }
 }
-
-export const PATCH = withProjectRoute(handlePATCH);

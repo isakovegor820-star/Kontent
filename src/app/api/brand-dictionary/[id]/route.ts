@@ -1,4 +1,3 @@
-import { withProjectRoute } from "@/lib/project-route";
 import { randomUUID } from "node:crypto";
 import type { NextRequest } from "next/server";
 
@@ -33,10 +32,10 @@ async function authorizeMutation(request: NextRequest, requestId: string) {
   return { user };
 }
 
-async function handlePATCH(request: NextRequest, context: Context) {
+export async function PATCH(request: NextRequest, context: Context) {
   const requestId = randomUUID();
   const auth = await authorizeMutation(request, requestId);
-  if ("response" in auth) return auth.response!;
+  if ("response" in auth) return auth.response;
   const entryId = routeId((await context.params).id);
   const body = await readTypographyBody(request, [
     "expectedEntryVersion",
@@ -68,10 +67,10 @@ async function handlePATCH(request: NextRequest, context: Context) {
   }
 }
 
-async function handleDELETE(request: NextRequest, context: Context) {
+export async function DELETE(request: NextRequest, context: Context) {
   const requestId = randomUUID();
   const auth = await authorizeMutation(request, requestId);
-  if ("response" in auth) return auth.response!;
+  if ("response" in auth) return auth.response;
   const entryId = routeId((await context.params).id);
   const body = await readTypographyBody(request, ["expectedEntryVersion", "expectedDictionaryVersion"]);
   if (!entryId || !body) return typographyJson({ ok: false, error: "bad_request" }, 400, requestId);
@@ -89,6 +88,3 @@ async function handleDELETE(request: NextRequest, context: Context) {
     return typographyApiError(error, requestId);
   }
 }
-
-export const PATCH = withProjectRoute(handlePATCH);
-export const DELETE = withProjectRoute(handleDELETE);

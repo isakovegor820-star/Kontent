@@ -1,4 +1,4 @@
-import { ProjectRequest } from "@/test/project-request";
+import { NextRequest } from "next/server";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
@@ -58,7 +58,7 @@ describe("hybrid radar search route", () => {
   });
 
   it("returns local results without requiring an external provider", async () => {
-    const response = await GET(new ProjectRequest(1, "http://localhost/api/radar/search?q=рыбалка&channel=11"));
+    const response = await GET(new NextRequest("http://localhost/api/radar/search?q=рыбалка&channel=11"));
     expect(response.status).toBe(200);
     await expect(response.json()).resolves.toMatchObject({
       channelId: 11,
@@ -92,7 +92,7 @@ describe("hybrid radar search route", () => {
       }
       return { rowCount: 0, rows: [] };
     });
-    const response = await GET(new ProjectRequest(1, "http://localhost/api/radar/search?q=строительство&channel=11"));
+    const response = await GET(new NextRequest("http://localhost/api/radar/search?q=строительство&channel=11"));
     expect(response.status).toBe(200);
     await expect(response.json()).resolves.toMatchObject({
       results: [{
@@ -134,7 +134,7 @@ describe("hybrid radar search route", () => {
       }
       return { rowCount: 0, rows: [] };
     });
-    const response = await GET(new ProjectRequest(1, "http://localhost/api/radar/search?q=строительство&channel=11"));
+    const response = await GET(new NextRequest("http://localhost/api/radar/search?q=строительство&channel=11"));
     expect(response.status).toBe(200);
     await expect(response.json()).resolves.toMatchObject({
       run: { status: "ready", externalCount: 1 },
@@ -190,7 +190,7 @@ describe("hybrid radar search route", () => {
       }
       return { rowCount: 0, rows: [] };
     });
-    const response = await GET(new ProjectRequest(1, "http://localhost/api/radar/search?run=91"));
+    const response = await GET(new NextRequest("http://localhost/api/radar/search?run=91"));
     expect(response.status).toBe(200);
     await expect(response.json()).resolves.toMatchObject({
       results: [
@@ -201,7 +201,7 @@ describe("hybrid radar search route", () => {
   });
 
   it("creates a user-scoped background run and returns immediately", async () => {
-    const response = await POST(new ProjectRequest(1, "http://localhost/api/radar/search", {
+    const response = await POST(new NextRequest("http://localhost/api/radar/search", {
       method: "POST",
       headers: { "content-type": "application/json", "idempotency-key": "radar_garden_1234" },
       body: JSON.stringify({ q: "Садоводство", channelId: 11 }),
@@ -228,7 +228,7 @@ describe("hybrid radar search route", () => {
       }
       return { rowCount: 0, rows: [] };
     });
-    const response = await POST(new ProjectRequest(1, "http://localhost/api/radar/search", {
+    const response = await POST(new NextRequest("http://localhost/api/radar/search", {
       method: "POST",
       headers: { "content-type": "application/json", "idempotency-key": "radar_garden_5678" },
       body: JSON.stringify({ q: "садоводство", channelId: 11 }),
@@ -242,7 +242,7 @@ describe("hybrid radar search route", () => {
   });
 
   it("starts a fresh Telegram-only run for the selected period without replaying the cache", async () => {
-    const response = await POST(new ProjectRequest(1, "http://localhost/api/radar/search", {
+    const response = await POST(new NextRequest("http://localhost/api/radar/search", {
       method: "POST", headers: { "idempotency-key": "fresh_telegram_123" },
       body: JSON.stringify({ q: "садоводство", channelId: 11, scope: "telegram", period: "quarter", force: true }),
     }));
@@ -254,7 +254,7 @@ describe("hybrid radar search route", () => {
   });
 
   it("only considers complete cache entries for the same scope and period", async () => {
-    await POST(new ProjectRequest(1, "http://localhost/api/radar/search", {
+    await POST(new NextRequest("http://localhost/api/radar/search", {
       method: "POST", headers: { "idempotency-key": "cache_telegram_123" },
       body: JSON.stringify({ q: "садоводство", channelId: 11, scope: "telegram", period: "week" }),
     }));
@@ -269,7 +269,7 @@ describe("hybrid radar search route", () => {
   ])("rejects reusing a request key with a different search identity: %j", async (changes) => {
     mocks.query.mockImplementation(async (sql: string) => sql.includes("request_key = $2")
       ? { rowCount: 1, rows: [{ ...queuedRun, ...changes }] } : { rowCount: 0, rows: [] });
-    const response = await POST(new ProjectRequest(1, "http://localhost/api/radar/search", {
+    const response = await POST(new NextRequest("http://localhost/api/radar/search", {
       method: "POST", headers: { "idempotency-key": "conflict_run_123" },
       body: JSON.stringify({ q: "садоводство", channelId: 11, force: true }),
     }));
@@ -279,7 +279,7 @@ describe("hybrid radar search route", () => {
 
   it("never exposes a run owned by another user", async () => {
     mocks.query.mockResolvedValue({ rowCount: 0, rows: [] });
-    const response = await GET(new ProjectRequest(1, "http://localhost/api/radar/search?run=999"));
+    const response = await GET(new NextRequest("http://localhost/api/radar/search?run=999"));
     expect(response.status).toBe(404);
     expect(mocks.query).toHaveBeenCalledWith(expect.stringContaining("user_id = $2"), [999, 7, 1]);
   });
@@ -317,7 +317,7 @@ describe("hybrid radar search route", () => {
       }
       return { rowCount: 0, rows: [] };
     });
-    const response = await GET(new ProjectRequest(1, "http://localhost/api/radar/search?run=91"));
+    const response = await GET(new NextRequest("http://localhost/api/radar/search?run=91"));
     expect(response.status).toBe(200);
     await expect(response.json()).resolves.toMatchObject({
       results: [{ kind: "trend", url: "https://t.me/sea_fishing/42" }],
@@ -353,7 +353,7 @@ describe("hybrid radar search route", () => {
       return { rowCount: 0, rows: [] };
     });
 
-    const response = await GET(new ProjectRequest(1, "http://localhost/api/radar/search?run=91"));
+    const response = await GET(new NextRequest("http://localhost/api/radar/search?run=91"));
     expect(response.status).toBe(200);
     const payload = await response.json();
     expect(payload.results).toHaveLength(85);
@@ -366,7 +366,7 @@ describe("hybrid radar search route", () => {
   it("rejects a reused legacy request key from another project without exposing its run", async () => {
     mocks.query.mockImplementation(async (sql: string) => ({ rows: sql.includes("request_key = $2")
       ? [{ ...queuedRun, project_id: 99 }] : [] }));
-    const response = await POST(new ProjectRequest(1, "http://localhost/api/radar/search", {
+    const response = await POST(new NextRequest("http://localhost/api/radar/search", {
       method: "POST", headers: { "content-type": "application/json", "idempotency-key": "shared_key_12345" },
       body: JSON.stringify({ q: "садоводство", channelId: 11, force: true }),
     }));

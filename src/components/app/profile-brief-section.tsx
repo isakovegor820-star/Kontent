@@ -1,6 +1,4 @@
 "use client";
-import { useProjectFetch } from "@/lib/use-project-transport";
-
 
 import { useEffect, useId, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
@@ -109,7 +107,6 @@ function emailError(code?: string, provider?: string): string {
 }
 
 export function ProfileBriefSection() {
-  const fetch = useProjectFetch();
   const store = useStore();
   const router = useRouter();
   const uid = useId();
@@ -195,7 +192,7 @@ export function ProfileBriefSection() {
         if (!controller.signal.aborted) setLoading(false);
       });
     return () => controller.abort();
-  }, [channelId, fetch]);
+  }, [channelId]);
   /* eslint-enable react-hooks/set-state-in-effect */
 
   useEffect(() => {

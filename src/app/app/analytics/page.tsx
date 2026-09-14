@@ -1,6 +1,4 @@
 "use client";
-import { useProjectFetch } from "@/lib/use-project-transport";
-
 
 import Link from "next/link";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
@@ -588,7 +586,6 @@ function AnalyticsContent({ data, section, onSectionChange, metric, onMetricChan
 }
 
 function AnalyticsPageContent() {
-  const fetch = useProjectFetch();
   const store = useStore();
   const router = useRouter();
   const pathname = usePathname();
@@ -658,7 +655,7 @@ function AnalyticsPageContent() {
     } finally {
       setLoading(false);
     }
-  }, [fetch, requestUrl]);
+  }, [requestUrl]);
 
   useEffect(() => {
     const timer = window.setTimeout(() => void load(), 0);
@@ -693,7 +690,7 @@ function AnalyticsPageContent() {
     } finally {
       setRefreshing(false);
     }
-  }, [data, fetch, refreshing, requestUrl, store]);
+  }, [data, refreshing, requestUrl, store]);
 
   const sendReport = useCallback(async () => {
     if (sending) return;
@@ -704,7 +701,7 @@ function AnalyticsPageContent() {
     } finally {
       setSending(false);
     }
-  }, [fetch, sending, store]);
+  }, [sending, store]);
 
   return (
     <AppShell title="Статистика" subtitle="Публикации, рост, конкуренты, ссылки и заявки — по одному каналу и периоду." action={<div className="grid grid-cols-1 gap-2 min-[24rem]:grid-cols-2"><ProjectExportButton channels={store.realChannels} defaultKind="analytics" initialChannelId={channelId} /><Button variant="primary" data-aurora-feature="report" data-aurora-action="analyzed" onClick={refresh} loading={refreshing}><RefreshCw className="h-4 w-4" aria-hidden />Обновить данные</Button></div>}>

@@ -1,4 +1,3 @@
-import { withProjectRoute } from "@/lib/project-route";
 import { createHash } from "node:crypto";
 import { NextRequest, NextResponse } from "next/server";
 
@@ -66,7 +65,7 @@ function repairRequestHash(
     .digest("hex");
 }
 
-async function handlePOST(req: NextRequest) {
+export async function POST(req: NextRequest) {
   if (!hasTrustedMutationOrigin(req)) {
     return NextResponse.json({ ok: false, error: "forbidden_origin" }, { status: 403 });
   }
@@ -338,5 +337,3 @@ async function handlePOST(req: NextRequest) {
     return NextResponse.json({ ok: false, error: "server" }, { status: 500 });
   }
 }
-
-export const POST = withProjectRoute(handlePOST);

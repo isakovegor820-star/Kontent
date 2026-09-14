@@ -1,4 +1,3 @@
-import { withProjectRoute } from "@/lib/project-route";
 import { NextRequest, NextResponse } from "next/server";
 
 import { ProjectAccessError } from "@/lib/project-permissions";
@@ -7,7 +6,7 @@ import { loadTodayBoard, TodayError } from "@/lib/today";
 
 export const runtime = "nodejs";
 
-async function handleGET(req: NextRequest) {
+export async function GET(req: NextRequest) {
   const user = await getSessionUser(req);
   if (!user) return NextResponse.json({ error: "unauthorized" }, { status: 401 });
   const rawChannel = req.nextUrl.searchParams.get("channel");
@@ -28,5 +27,3 @@ async function handleGET(req: NextRequest) {
     return NextResponse.json({ error: "today_unavailable" }, { status: 503 });
   }
 }
-
-export const GET = withProjectRoute(handleGET);

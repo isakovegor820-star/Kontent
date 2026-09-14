@@ -1,4 +1,3 @@
-import { withProjectRoute } from "@/lib/project-route";
 import { randomUUID } from "node:crypto";
 import { NextRequest } from "next/server";
 
@@ -11,7 +10,7 @@ import { readTrackingBodyResult, trackingApiError, trackingBodyFailure, tracking
 
 export const runtime = "nodejs";
 
-async function handleGET(req: NextRequest) {
+export async function GET(req: NextRequest) {
   const requestId = randomUUID();
   const user = await getSessionUser(req);
   if (!user) return trackingJson({ ok: false, error: "unauthorized" }, 401, requestId);
@@ -22,7 +21,7 @@ async function handleGET(req: NextRequest) {
   }
 }
 
-async function handlePOST(req: NextRequest) {
+export async function POST(req: NextRequest) {
   if (!hasTrustedMutationOrigin(req)) {
     return trackingJson({ ok: false, error: "forbidden_origin" }, 403);
   }
@@ -43,6 +42,3 @@ async function handlePOST(req: NextRequest) {
     return trackingApiError(error, requestId);
   }
 }
-
-export const GET = withProjectRoute(handleGET);
-export const POST = withProjectRoute(handlePOST);

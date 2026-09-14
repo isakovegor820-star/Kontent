@@ -1,4 +1,3 @@
-import { withProjectRoute } from "@/lib/project-route";
 import { NextRequest, NextResponse } from "next/server";
 
 import { getPool } from "@/lib/db";
@@ -15,7 +14,7 @@ export const runtime = "nodejs";
 
 type Context = { params: Promise<{ id: string }> };
 
-async function handlePOST(req: NextRequest, context: Context) {
+export async function POST(req: NextRequest, context: Context) {
   if (!hasTrustedMutationOrigin(req)) {
     return NextResponse.json({ ok: false, error: "forbidden_origin" }, { status: 403 });
   }
@@ -48,5 +47,3 @@ async function handlePOST(req: NextRequest, context: Context) {
     return NextResponse.json({ ok: false, error: "server" }, { status: 500 });
   }
 }
-
-export const POST = withProjectRoute(handlePOST);

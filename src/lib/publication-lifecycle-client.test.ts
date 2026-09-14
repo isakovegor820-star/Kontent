@@ -1,6 +1,4 @@
-import { setProjectTransport } from "./project-transport";
-import { projectJson } from "@/test/project-response";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
   cancelPublication,
@@ -32,7 +30,7 @@ describe("publication lifecycle client", () => {
   });
 
   it("loads a strict editor context for the publication-linked draft", async () => {
-    const fetchMock = vi.fn().mockResolvedValue(projectJson(7, editorResponse()));
+    const fetchMock = vi.fn().mockResolvedValue(Response.json(editorResponse()));
     vi.stubGlobal("fetch", fetchMock);
 
     await expect(getPublicationOperationEditorContext(7)).resolves.toMatchObject({
@@ -41,9 +39,10 @@ describe("publication lifecycle client", () => {
       draftVersion: 3,
       scheduleRevision: 2,
     });
-    expect(fetchMock).toHaveBeenCalledWith("/api/publication-operations/7", expect.objectContaining({
-      cache: "no-store", signal: expect.any(AbortSignal), headers: expect.any(Headers),
-    }));
+    expect(fetchMock).toHaveBeenCalledWith("/api/publication-operations/7", {
+      cache: "no-store",
+      signal: undefined,
+    });
   });
 
   it("rejects malformed editor contexts and recognizes delivered destinations", () => {
@@ -65,7 +64,7 @@ describe("publication lifecycle client", () => {
   });
 
   it("sends revision, status and idempotency for cancel", async () => {
-    const fetchMock = vi.fn().mockResolvedValue(projectJson(7, {
+    const fetchMock = vi.fn().mockResolvedValue(Response.json({
       ok: true,
       status: "cancelled",
       scheduleRevision: 2,
@@ -79,16 +78,13 @@ describe("publication lifecycle client", () => {
     });
     expect(fetchMock).toHaveBeenCalledWith("/api/publication-operations/7", expect.objectContaining({
       method: "DELETE",
-      headers: expect.any(Headers),
+      headers: expect.objectContaining({ "idempotency-key": "cancel-7" }),
       body: JSON.stringify({ expectedScheduleRevision: 1, expectedStatus: "queued" }),
     }));
-    const headers = new Headers(fetchMock.mock.calls[0][1].headers);
-    expect(headers.get("idempotency-key")).toBe("cancel-7");
-    expect(headers.get("x-aurora-project-id")).toBe("7");
   });
 
   it("does not turn a 409 body into success", async () => {
-    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(projectJson(7, {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(Response.json({
       ok: false,
       error: "publication_in_progress",
     }, { status: 409 })));
@@ -107,7 +103,7 @@ describe("publication lifecycle client", () => {
   });
 
   it("restores only the server-confirmed draft id", async () => {
-    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(projectJson(7, {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(Response.json({
       ok: true,
       draftId: 91,
       draftVersion: 1,
@@ -120,6 +116,3 @@ describe("publication lifecycle client", () => {
     })).resolves.toMatchObject({ ok: true, draftId: 91 });
   });
 });
-
-beforeEach(() => setProjectTransport(7, true, 5));
-afterEach(() => setProjectTransport(null));

@@ -1,6 +1,4 @@
 "use client";
-import { useProjectCall } from "@/lib/use-project-transport";
-import { projectUrl } from "@/lib/project-transport";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
@@ -26,7 +24,7 @@ import { createSiteAnalysisUuid } from "@/lib/site-analysis-client-key";
 import { cn } from "@/lib/utils";
 
 import { ArticlesPanel } from "./articles-panel";
-import { errorMessage, formatDate, requestJson as unscopedRequestJson } from "./client";
+import { errorMessage, formatDate, requestJson } from "./client";
 import { DestinationsPanel } from "./destinations-panel";
 import { ProbePanel } from "./probe-panel";
 
@@ -259,7 +257,6 @@ function Score({ label, value }: { label: string; value: number | null }) {
 }
 
 export default function SitesPage() {
-  const requestJson = useProjectCall(unscopedRequestJson);
   const [sites, setSites] = useState<SiteListItem[]>([]);
   const [listLoaded, setListLoaded] = useState(false);
   const [listError, setListError] = useState<string | null>(null);
@@ -302,7 +299,7 @@ export default function SitesPage() {
     } finally {
       setListLoaded(true);
     }
-  }, [requestJson]);
+  }, []);
 
   // Состояние обновляется только после ответа сервера — синхронных setState в эффектах нет.
   const loadDetails = useCallback(async (id: number) => {
@@ -333,7 +330,7 @@ export default function SitesPage() {
     } finally {
       if (request === detailsRequest.current) setDetailsLoading(false);
     }
-  }, [requestJson]);
+  }, []);
 
   // eslint-disable-next-line react-hooks/set-state-in-effect -- state changes only after the request settles
   useEffect(() => { void loadSites(); }, [loadSites]);
@@ -378,7 +375,7 @@ export default function SitesPage() {
       return;
     }
     setTimeout(() => { void loadDetails(activeId); setReportRequested(false); }, 6000);
-  }, [activeId, loadDetails, requestJson]);
+  }, [activeId, loadDetails]);
 
   const retryAi = useCallback(async (target: "profile" | "report", reportId?: number) => {
     if (activeId === null || retryingAi) return;
@@ -390,7 +387,7 @@ export default function SitesPage() {
     setRetryingAi(null);
     if (status >= 400 && activeSiteId.current === activeId) setActionError(errorMessage(body.error, "Не удалось повторить задачу."));
     await loadDetails(activeId);
-  }, [activeId, retryingAi, loadDetails, requestJson]);
+  }, [activeId, retryingAi, loadDetails]);
 
   const aiActive = Boolean(current?.profile && !current.profile.refinedAt && current.profile.aiClassification?.status !== "failed")
     || Boolean(current?.reports.some((report) => report.interpretationStatus === "pending"));
@@ -431,7 +428,7 @@ export default function SitesPage() {
     setSelectedId(body.site.id);
     setDetails({ site: body.site, latestAnalysis: body.latestAnalysis, profile: body.profile, reports: body.reports });
     if (body.analysisError) setActionError(errorMessage(body.analysisError, "Сайт подключён, но анализ не запустился."));
-  }, [consent, requestJson, url, loadSites]);
+  }, [consent, url, loadSites]);
 
   const verify = useCallback(async () => {
     if (!details) return;
@@ -453,7 +450,7 @@ export default function SitesPage() {
     } else {
       setVerifyMessage({ tone: "danger", text: verificationReason(body.reason) });
     }
-  }, [details, loadSites, requestJson]);
+  }, [details, loadSites]);
 
   const reanalyze = useCallback(async () => {
     if (!details) return;
@@ -469,7 +466,7 @@ export default function SitesPage() {
       return;
     }
     setDetails((current) => (current ? { ...current, latestAnalysis: body.analysis as AnalysisView } : current));
-  }, [details, requestJson]);
+  }, [details]);
 
   const selected = current?.site ?? null;
   const profile = current?.profile ?? null;
@@ -890,7 +887,7 @@ export default function SitesPage() {
                           {REPORT_FORMATS.map(([format, label]) => (
                             <a
                               key={format}
-                              href={projectUrl(`/api/sites/${selected.id}/reports/${report.id}/export?format=${format}`)}
+                              href={`/api/sites/${selected.id}/reports/${report.id}/export?format=${format}`}
                               download
                               className="inline-flex min-h-9 items-center gap-1.5 rounded-sm border border-line px-2.5 py-1.5 text-[12px] font-semibold text-brand hover:border-brand/35 hover:bg-info-soft"
                             >

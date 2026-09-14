@@ -1,4 +1,3 @@
-import { withProjectRoute } from "@/lib/project-route";
 // Профиль канала: ИИ сам читает посты и вытаскивает «что это за бизнес» — человеку
 // заполнять базу знаний руками больше не нужно (она стала невидимой).
 //
@@ -13,7 +12,7 @@ import { getPool } from "@/lib/db";
 import { getSessionUser } from "@/lib/session";
 import { getStatsQueue } from "@/lib/queue";
 import { enqueueKnowledgeIndex } from "@/lib/knowledge-index-queue.mjs";
-import { knowledgeChannelSelector, knowledgeFailure, requireKnowledgeChannel, withKnowledgeChannel } from "@/lib/knowledge-access";
+import { resolveChannel } from "@/lib/autopilot";
 import { fetchPublicPosts } from "@/lib/tg-public";
 import { completeAiText } from "@/lib/ai-completion-service.mjs";
 import { isEngineId } from "@/lib/engines";
@@ -44,30 +43,48 @@ async function saveProfileSource(
   kind: "profile" | "profile_edit",
   usageReservationId: number | null = null,
 ) {
+  const pool = getPool();
   const wipe = kind === "profile_edit" ? ["profile", "profile_edit"] : [kind];
-  const sourceId = await withKnowledgeChannel(getPool(), userId, channelId, "content.edit", async (tx, channel) => {
+  const tx = await pool.connect();
+  let sourceId: number;
+  try {
+    await tx.query("begin");
     await tx.query(
-      `delete from knowledge_sources where channel_id = $1 and kind = any($2)`,
-      [channel.id, wipe],
+      `delete from knowledge_sources
+        where user_id = $1 and channel_id = $2 and kind = any($3)`,
+      [userId, channelId, wipe],
     );
     const ins = await tx.query<{ id: number }>(
       `insert into knowledge_sources (user_id, channel_id, kind, title, raw_text)
        values ($1, $2, $3, $4, $5) returning id`,
-      [userId, channel.id, kind, title, profileToSourceText(profile)],
+      [userId, channelId, kind, title, profileToSourceText(profile)],
     );
+    sourceId = Number(ins.rows[0].id);
     if (usageReservationId !== null) {
-      const finalized = await finalizeAiUsage(userId, usageReservationId, "committed", tx);
+      // Профиль и списание — одна транзакция: ни сохранённого бесплатного результата,
+      // ни списания за откатившееся сохранение.
+      const finalized = await finalizeAiUsage(
+        userId,
+        usageReservationId,
+        "committed",
+        tx,
+      );
       if (!finalized.changed) throw new Error("ai usage reservation expired or already finalized");
     }
-    return Number(ins.rows[0].id);
-  });
+    await tx.query("commit");
+  } catch (err) {
+    await tx.query("rollback").catch(() => {});
+    throw err;
+  } finally {
+    tx.release();
+  }
   await enqueueKnowledgeIndex(getStatsQueue(), sourceId)
     .catch(() => {
       /* Источник сохранён в pending; периодическая DB→queue сверка подберёт его позже. */
     });
 }
 
-async function handlePOST(req: NextRequest) {
+export async function POST(req: NextRequest) {
   if (!hasTrustedMutationOrigin(req)) {
     return NextResponse.json({ ok: false, error: "forbidden_origin" }, { status: 403 });
   }
@@ -80,15 +97,15 @@ async function handlePOST(req: NextRequest) {
   let committed = false;
   try {
     const pool = getPool();
-    const channel = await requireKnowledgeChannel(pool, user.id, knowledgeChannelSelector(body.channelId), "content.edit");
-    const channelId = channel.id;
+    const channelId = await resolveChannel(user.id, body.channelId ?? null);
+    if (!channelId) return NextResponse.json({ ok: false, error: "no_channel" }, { status: 422 });
 
     const ch = (
       await pool.query<{ handle: string | null; title: string | null; ai_engine: string | null }>(
         `select c.handle, c.title, u.ai_engine
-           from channels c join users u on u.id = $2
-          where c.id = $1 and c.project_id = $3`,
-        [channelId, user.id, channel.projectId],
+           from channels c join users u on u.id = c.user_id
+          where c.id = $1 and c.user_id = $2`,
+        [channelId, user.id],
       )
     ).rows[0];
     if (!ch?.handle) return NextResponse.json({ ok: false, error: "no_handle" }, { status: 422 });
@@ -139,8 +156,6 @@ async function handlePOST(req: NextRequest) {
     committed = true;
     return NextResponse.json({ ok: true, profile, posts: posts.length });
   } catch (err) {
-    const failure = knowledgeFailure(err);
-    if (failure) return NextResponse.json({ ok: false, error: failure.error }, { status: failure.status });
     console.error("[/api/knowledge/extract-profile] POST", {
       errorName: (err as Error)?.name || "Error",
     });
@@ -152,7 +167,7 @@ async function handlePOST(req: NextRequest) {
   }
 }
 
-async function handlePUT(req: NextRequest) {
+export async function PUT(req: NextRequest) {
   if (!hasTrustedMutationOrigin(req)) {
     return NextResponse.json({ ok: false, error: "forbidden_origin" }, { status: 403 });
   }
@@ -171,8 +186,8 @@ async function handlePUT(req: NextRequest) {
 
   try {
     const pool = getPool();
-    const channel = await requireKnowledgeChannel(pool, user.id, knowledgeChannelSelector(body.channelId), "content.edit");
-    const channelId = channel.id;
+    const channelId = await resolveChannel(user.id, body.channelId ?? null);
+    if (!channelId) return NextResponse.json({ ok: false, error: "no_channel" }, { status: 422 });
 
     const ch = (
       await pool.query<{ title: string | null }>(`select title from channels where id = $1`, [
@@ -185,12 +200,7 @@ async function handlePUT(req: NextRequest) {
     await saveProfileSource(user.id, channelId, `Профиль канала «${ch?.title || "без названия"}»`, profile, "profile_edit");
     return NextResponse.json({ ok: true });
   } catch (err) {
-    const failure = knowledgeFailure(err);
-    if (failure) return NextResponse.json({ ok: false, error: failure.error }, { status: failure.status });
     console.error("[/api/knowledge/extract-profile] PUT", err);
     return NextResponse.json({ ok: false, error: "server" }, { status: 500 });
   }
 }
-
-export const POST = withProjectRoute(handlePOST);
-export const PUT = withProjectRoute(handlePUT);

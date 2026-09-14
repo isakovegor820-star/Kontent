@@ -1,4 +1,3 @@
-import { withProjectRoute } from "@/lib/project-route";
 import { randomUUID } from "node:crypto";
 
 import { NextRequest, NextResponse } from "next/server";
@@ -35,7 +34,7 @@ function validEnvelope(value: unknown): value is { events: unknown[] } {
     && record.events.length <= PRODUCT_EVENT_BATCH_LIMIT;
 }
 
-async function handlePOST(req: NextRequest) {
+export async function POST(req: NextRequest) {
   const requestId = randomUUID();
   if (!hasTrustedMutationOrigin(req, { requireBrowserOrigin: true })) {
     return response(requestId, { ok: false, error: "forbidden_origin" }, 403);
@@ -99,5 +98,3 @@ async function handlePOST(req: NextRequest) {
     return response(requestId, { ok: false, error: "product_event_store_unavailable" }, 503);
   }
 }
-
-export const POST = withProjectRoute(handlePOST);

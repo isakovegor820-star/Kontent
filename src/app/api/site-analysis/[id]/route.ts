@@ -1,4 +1,3 @@
-import { withProjectRoute } from "@/lib/project-route";
 import { randomUUID } from "node:crypto";
 
 import { NextRequest, NextResponse } from "next/server";
@@ -10,7 +9,7 @@ import { serializeSiteAnalysis, type SiteAnalysisRow } from "@/lib/site-analysis
 
 export const runtime = "nodejs";
 
-async function handleGET(req: NextRequest, context: { params: Promise<{ id: string }> }) {
+export async function GET(req: NextRequest, context: { params: Promise<{ id: string }> }) {
   const requestId = randomUUID();
   const user = await getSessionUser(req);
   if (!user) return NextResponse.json({ error: "unauthorized", requestId }, { status: 401, headers: { "x-request-id": requestId } });
@@ -46,5 +45,3 @@ async function handleGET(req: NextRequest, context: { params: Promise<{ id: stri
     return NextResponse.json({ error: "unavailable", requestId }, { status: 503, headers: { "x-request-id": requestId } });
   }
 }
-
-export const GET = withProjectRoute(handleGET);

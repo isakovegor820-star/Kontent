@@ -1,4 +1,3 @@
-import { withProjectRoute } from "@/lib/project-route";
 import { randomUUID } from "node:crypto";
 
 import { NextRequest, NextResponse } from "next/server";
@@ -27,7 +26,7 @@ function fingerprint(row: AnswerRow) {
     evidenceKeys: row.evidence_keys,
   });
 }
-async function handleGET(req: NextRequest, context: Context) {
+export async function GET(req: NextRequest, context: Context) {
   const requestId = randomUUID();
   const user = await getSessionUser(req);
   if (!user) return NextResponse.json({ error: "unauthorized", requestId }, { status: 401, headers: { "x-request-id": requestId } });
@@ -77,5 +76,3 @@ async function handleGET(req: NextRequest, context: Context) {
     return NextResponse.json({ error: "unavailable", requestId }, { status: 503, headers: { "x-request-id": requestId } });
   }
 }
-
-export const GET = withProjectRoute(handleGET);

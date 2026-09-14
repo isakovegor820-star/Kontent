@@ -1,6 +1,4 @@
 "use client";
-import { useProjectFetch } from "@/lib/use-project-transport";
-
 
 // А6. КОНКУРЕНТЫ (ТЗ 5.4, Д.6). Настоящие досье по открытым данным Telegram-каналов:
 // добавляешь ссылку → воркер собирает статистику постов (t.me/s/ + Bot API). Лимит 20,
@@ -574,7 +572,6 @@ function Suggestions({
   atLimit: boolean;
   channelId: number | null;
 }) {
-  const fetch = useProjectFetch();
   const s = useStore();
   const [items, setItems] = useState<Suggestion[]>([]);
   const [seeds, setSeeds] = useState(0);
@@ -606,7 +603,7 @@ function Suggestions({
     } finally {
       setLoading(false);
     }
-  }, [channelId, fetch]);
+  }, [channelId]);
   useEffect(() => {
     // eslint-disable-next-line react-hooks/set-state-in-effect -- загрузка находок при монтировании
     load();
@@ -814,7 +811,6 @@ function Suggestions({
 /* ----------------------------------------------------------------- ЭКРАН */
 
 function CompetitorsPageContent() {
-  const fetch = useProjectFetch();
   const s = useStore();
   const reduced = useReducedMotion();
   const router = useRouter();
@@ -887,7 +883,7 @@ function CompetitorsPageContent() {
     } finally {
       setLoading(false);
     }
-  }, [channelId, fetch]);
+  }, [channelId]);
 
   useEffect(() => {
     // eslint-disable-next-line react-hooks/set-state-in-effect -- загрузка списка при монтировании

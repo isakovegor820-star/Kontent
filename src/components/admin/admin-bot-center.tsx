@@ -56,6 +56,10 @@ function botStateFromSearch(search: string): BotUrlState {
 }
 
 const ACTION_LABEL: Record<string, string> = {
+  "bot.chat.connected": "Чат подключён к аккаунту",
+  "bot.chat.disconnected": "Чат отключён пользователем",
+  "bot.chat.transferred": "Подтверждён перенос чата",
+  "bot.chat.transferred_away": "Чат перенесён в другой аккаунт",
   "bot.access.enabled": "Доступ к боту включён",
   "bot.access.disabled": "Доступ к боту приостановлен",
   "bot.business.enabled": "Помощник клиентам включён",

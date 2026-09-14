@@ -1,5 +1,4 @@
 import { requireSelectedProjectPermission } from "@/lib/project-permissions";
-import { withProjectRoute } from "@/lib/project-route";
 // Гибридный радар: локальная выдача возвращается сразу, а worker расширяет её
 // проверенными Telegram-данными и доказательным OSINT по публичным веб-источникам.
 
@@ -337,7 +336,7 @@ function json(body: Record<string, unknown>, status = 200) {
   return NextResponse.json(body, { status, headers: { "cache-control": "no-store" } });
 }
 
-async function handleGET(req: NextRequest) {
+export async function GET(req: NextRequest) {
   const user = await getSessionUser(req);
   if (!user) return json({ error: "unauthorized" }, 401);
   const pool = getPool();
@@ -402,7 +401,7 @@ async function handleGET(req: NextRequest) {
   }
 }
 
-async function handlePOST(req: NextRequest) {
+export async function POST(req: NextRequest) {
   if (!hasTrustedMutationOrigin(req)) {
     return json({ error: "forbidden_origin" }, 403);
   }
@@ -513,6 +512,3 @@ async function handlePOST(req: NextRequest) {
     return json({ error: "search_unavailable" }, 503);
   }
 }
-
-export const GET = withProjectRoute(handleGET);
-export const POST = withProjectRoute(handlePOST);

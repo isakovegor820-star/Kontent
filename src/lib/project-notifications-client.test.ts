@@ -1,6 +1,4 @@
-import { setProjectTransport } from "./project-transport";
-import { projectJson } from "@/test/project-response";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
   loadProjectNotifications,
@@ -52,7 +50,7 @@ describe("project notification client contract", () => {
   });
 
   it("loads a bounded page without ever sending a project selector", async () => {
-    const fetchMock = vi.fn().mockResolvedValue(projectJson(23, inboxBody()));
+    const fetchMock = vi.fn().mockResolvedValue(Response.json(inboxBody()));
     vi.stubGlobal("fetch", fetchMock);
 
     await expect(loadProjectNotifications({ limit: 20, beforeId: 91, unreadOnly: true }))
@@ -66,14 +64,14 @@ describe("project notification client contract", () => {
 
   it("marks one and all without mutable request bodies", async () => {
     const fetchMock = vi.fn()
-      .mockResolvedValueOnce(projectJson(23, {
+      .mockResolvedValueOnce(Response.json({
         ok: true,
         projectId: 23,
         notificationId: 12,
         readAt: "2026-08-12T10:00:00.000Z",
         unreadCount: 0,
       }))
-      .mockResolvedValueOnce(projectJson(23, {
+      .mockResolvedValueOnce(Response.json({
         ok: true,
         projectId: 23,
         markedCount: 4,
@@ -118,6 +116,3 @@ describe("project notification client contract", () => {
     });
   });
 });
-
-beforeEach(() => setProjectTransport(23, true, 5));
-afterEach(() => setProjectTransport(null));

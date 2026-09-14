@@ -1,4 +1,3 @@
-import { projectFetch as fetch } from "./project-transport";
 export type ClientProjectNotification = Readonly<{
   id: number;
   projectId: number;

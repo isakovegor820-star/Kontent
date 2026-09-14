@@ -95,11 +95,16 @@ function configuration(env) {
   if (rawAllowForwardSchema !== "true" && rawAllowForwardSchema !== "false") {
     throw new DeploymentSmokeError("invalid_forward_schema_smoke_policy");
   }
+  const rawRequireTelegram = String(env.AURORA_DEPLOYMENT_SMOKE_REQUIRE_TELEGRAM || "false").trim();
+  if (rawRequireTelegram !== "true" && rawRequireTelegram !== "false") {
+    throw new DeploymentSmokeError("invalid_telegram_smoke_policy");
+  }
   return {
     baseUrl,
     profile,
     readinessToken,
     allowForwardSchema: rawAllowForwardSchema === "true",
+    requireTelegram: rawRequireTelegram === "true",
   };
 }
 
@@ -360,7 +365,7 @@ export async function runDeploymentSmoke({
   logger = console,
   now = new Date(),
 } = {}) {
-  const { baseUrl, profile, readinessToken, allowForwardSchema } = configuration(env);
+  const { baseUrl, profile, readinessToken, allowForwardSchema, requireTelegram } = configuration(env);
   const [health, readiness, ...htmlPages] = await Promise.all([
     request(fetchImpl, new URL("/api/health", baseUrl), "application/json", MAX_JSON_BYTES),
     request(
@@ -374,12 +379,17 @@ export async function runDeploymentSmoke({
   ]);
   validateHealth(health);
   const status = validateReadiness(readiness, profile, now, allowForwardSchema);
+  const telegramBotReady = JSON.parse(readiness.body)?.telegramBotReady === true;
+  if (requireTelegram && !telegramBotReady) {
+    throw new DeploymentSmokeError("deployment_smoke_telegram_unavailable");
+  }
   htmlPages.forEach((page, index) => validateHtml(page, HTML_PATHS[index]));
   const report = {
     ok: true,
     host: baseUrl.host,
     profile,
     readinessStatus: status,
+    ...(requireTelegram ? { telegramBotReady } : {}),
     checkedPages: HTML_PATHS,
     checkedAt: now.toISOString(),
   };

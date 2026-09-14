@@ -1,5 +1,4 @@
-import { ProjectRequest } from "@/test/project-request";
-import { NextResponse } from "next/server";
+import { NextRequest, NextResponse } from "next/server";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
@@ -42,11 +41,11 @@ const allowedRate = { allowed: true, limit: 720, remaining: 719, retryAfter: 0 }
 const scope = { projectId: 23, userId: 5, role: "author" as const };
 
 function getRequest(query = "") {
-  return new ProjectRequest(23, `http://localhost/api/project-notifications${query}`);
+  return new NextRequest(`http://localhost/api/project-notifications${query}`);
 }
 
 function postRequest(path: string, body?: string) {
-  return new ProjectRequest(23, `http://localhost${path}`, {
+  return new NextRequest(`http://localhost${path}`, {
     method: "POST",
     headers: {
       origin: "http://localhost",
@@ -89,7 +88,7 @@ describe("project notification routes", () => {
 
   it("rejects unknown, repeated and oversized list input before authorization", async () => {
     const foreign = await GET(getRequest("?projectId=999"));
-    expect(foreign.status).toBe(400);
+    expect(foreign.status).toBe(422);
     expect(mocks.authorize).not.toHaveBeenCalled();
 
     const repeated = await GET(getRequest("?limit=10&limit=20"));
@@ -125,7 +124,7 @@ describe("project notification routes", () => {
       beforeId: 91,
       unreadOnly: true,
     });
-    expect(response.headers.get("cache-control")).toBe("private, no-store");
+    expect(response.headers.get("cache-control")).toBe("no-store");
   });
 
   it("fails closed when either inbox rate limit denies the request", async () => {

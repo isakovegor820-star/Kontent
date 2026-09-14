@@ -1,6 +1,4 @@
 "use client";
-import { useProjectCall } from "@/lib/use-project-transport";
-import { projectFetch as fetch } from "@/lib/project-transport";
 
 import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
 import {
@@ -194,7 +192,7 @@ export function projectTeamErrorMessage(code: unknown): string {
   }
 }
 
-async function unscopedRequestJson(url: string, init?: RequestInit): Promise<{ response: Response; body: ApiBody | null }> {
+async function requestJson(url: string, init?: RequestInit): Promise<{ response: Response; body: ApiBody | null }> {
   try {
     const response = await fetch(url, { cache: "no-store", ...init });
     const parsed = await response.json().catch(() => null);
@@ -227,7 +225,6 @@ function invitationDate(invitation: ProjectInvitation): { label: string; value: 
 }
 
 export function ProjectTeamSection({ showProjectSummary = true }: { showProjectSummary?: boolean } = {}) {
-  const requestJson = useProjectCall(unscopedRequestJson);
   const projects = useProjects();
   const current = projects.current;
   const owner = current?.role === "owner";
@@ -304,7 +301,7 @@ export function ProjectTeamSection({ showProjectSummary = true }: { showProjectS
     } finally {
       if (sequence === requestSequence.current) setLoading(false);
     }
-  }, [current?.id, owner, requestJson]);
+  }, [current?.id, owner]);
 
   useEffect(() => {
     let cancelled = false;

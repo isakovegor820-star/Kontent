@@ -1,4 +1,3 @@
-import { withProjectRoute } from "@/lib/project-route";
 import { readJsonBodyValue } from "@/lib/bounded-request-body";
 import { NextRequest, NextResponse } from "next/server";
 
@@ -14,7 +13,7 @@ import { getSessionUser } from "@/lib/session";
 
 export const runtime = "nodejs";
 
-async function handlePOST(req: NextRequest) {
+export async function POST(req: NextRequest) {
   if (!hasTrustedMutationOrigin(req)) {
     return NextResponse.json({ ok: false, error: "forbidden_origin" }, { status: 403 });
   }
@@ -44,5 +43,3 @@ async function handlePOST(req: NextRequest) {
     return NextResponse.json({ ok: false, error: "event_unavailable" }, { status: 503 });
   }
 }
-
-export const POST = withProjectRoute(handlePOST);

@@ -4,8 +4,6 @@ import { act, cleanup, configure, fireEvent, render, screen, waitFor, within } f
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { TrackingSettingsSection, type ProjectTrackingSettings } from "./tracking-settings-section";
 import { trackingDeveloperInstructions } from "./tracking-connection-guide";
-import { setProjectTransport } from "@/lib/project-transport";
-import { projectJson } from "@/test/project-response";
 
 configure({ asyncUtilTimeout: 5000 });
 
@@ -24,9 +22,8 @@ const connected: ProjectTrackingSettings = {
 };
 let settings: ProjectTrackingSettings;
 let fetchMock: ReturnType<typeof vi.fn<(url: string, init?: RequestInit) => Promise<Response>>>;
-function reply(body: unknown) { return projectJson(project.current.id, body, { status: 200 }); }
+function reply(body: unknown) { return new Response(JSON.stringify(body), { status: 200 }); }
 beforeEach(() => {
-  setProjectTransport(7, true, 1);
   vi.stubGlobal("React", React);
   project.current = { id: 7, role: "owner" };
   settings = { ...empty };
@@ -43,7 +40,7 @@ beforeEach(() => {
   });
   vi.stubGlobal("fetch", fetchMock);
 });
-afterEach(() => { cleanup(); setProjectTransport(null); vi.unstubAllGlobals(); vi.restoreAllMocks(); });
+afterEach(() => { cleanup(); vi.unstubAllGlobals(); vi.restoreAllMocks(); });
 
 describe("tracking setup journey", () => {
   it("explains all steps before saving and generates an exact downloadable challenge after save", async () => {
@@ -111,7 +108,6 @@ describe("tracking setup journey", () => {
     await screen.findByText("Запасной способ: проверочный файл");
     fireEvent.click(screen.getByText("Запасной способ: проверочный файл"));
     project.current = { id: 9, role: "owner" };
-    setProjectTransport(9, true, 1);
     settings = { ...empty };
     rerender(<TrackingSettingsSection />);
     expect(screen.queryByRole("link", { name: "Скачать проверочный файл" })).toBeNull();

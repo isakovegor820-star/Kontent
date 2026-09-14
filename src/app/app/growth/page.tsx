@@ -1,7 +1,4 @@
 "use client";
-import { useProjectFetch, useProjectCall } from "@/lib/use-project-transport";
-import { projectFetch as fetch } from "@/lib/project-transport";
-
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
@@ -67,8 +64,8 @@ function evidenceSourceLabel(move: GrowthMoveRecord): string {
   return `${sourceType} · ${sourceLabel}`;
 }
 
-async function unscopedTelemetry(event: "growth.board.viewed" | "growth.evidence.opened" | "growth.move.started", input: { moveId?: number; channelId?: number | null }) {
-  await fetch("/api/growth/events", {
+function telemetry(event: "growth.board.viewed" | "growth.evidence.opened" | "growth.move.started", input: { moveId?: number; channelId?: number | null }) {
+  void fetch("/api/growth/events", {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ event, ...input }),
@@ -163,11 +160,6 @@ function GrowthSkeleton() {
 }
 
 export default function GrowthPage() {
-  const guardedTelemetry = useProjectCall(unscopedTelemetry);
-  const telemetry = useCallback((...args: Parameters<typeof unscopedTelemetry>) => {
-    void guardedTelemetry(...args).catch(() => undefined);
-  }, [guardedTelemetry]);
-  const fetch = useProjectFetch();
   const store = useStore();
   const [picked, setPicked] = useState<number | null>(() => {
     if (typeof window === "undefined") return null;
@@ -203,7 +195,7 @@ export default function GrowthPage() {
       if (isAbortError(error) || !isCurrent()) return;
       setLoadError(true); setLiveMessage("Не удалось загрузить рекомендации. Можно попробовать снова.");
     } finally { if (isCurrent()) setLoading(false); }
-  }, [fetch, requestFence, telemetry]);
+  }, [requestFence]);
 
   useEffect(() => { channelRef.current = channelId; }, [channelId]);
   useEffect(() => { void load(); return () => requestFence.invalidate(); }, [channelId, load, requestFence]);

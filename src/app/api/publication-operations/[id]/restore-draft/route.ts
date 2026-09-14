@@ -1,4 +1,3 @@
-import { withProjectRoute } from "@/lib/project-route";
 import { readJsonBodyValue } from "@/lib/bounded-request-body";
 import { NextRequest, NextResponse } from "next/server";
 
@@ -17,7 +16,7 @@ export const runtime = "nodejs";
 
 type RestoreDraftRouteContext = { params: Promise<{ id: string }> };
 
-async function handlePOST(
+export async function POST(
   req: NextRequest,
   ctx: RestoreDraftRouteContext,
 ) {
@@ -83,5 +82,3 @@ async function handlePOST(
     return NextResponse.json({ ok: false, error: "draft_not_restored" }, { status: 500 });
   }
 }
-
-export const POST = withProjectRoute(handlePOST);

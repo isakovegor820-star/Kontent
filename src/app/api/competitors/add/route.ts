@@ -1,5 +1,3 @@
-import { requireSelectedProjectPermission } from "@/lib/project-permissions";
-import { withProjectRoute } from "@/lib/project-route";
 // Универсальное добавление источника конкурента. Сеть выбирает адаптер воркера, а не
 // отдельный API-роут: у Telegram/Instagram одинаковые лимит, жизненный цикл и карточка.
 
@@ -18,13 +16,12 @@ import { hasTrustedMutationOrigin } from "@/lib/request-origin";
 
 export const runtime = "nodejs";
 
-async function handlePOST(req: NextRequest) {
+export async function POST(req: NextRequest) {
   if (!hasTrustedMutationOrigin(req)) {
     return NextResponse.json({ ok: false, error: "forbidden_origin" }, { status: 403 });
   }
   const user = await getSessionUser(req);
   if (!user) return NextResponse.json({ ok: false, error: "unauthorized" }, { status: 401 });
-  await requireSelectedProjectPermission(getPool(), user.id, "content.create");
 
   let body: { url?: unknown; handle?: unknown; channelId?: unknown; network?: unknown; title?: unknown };
   try {
@@ -105,5 +102,3 @@ async function handlePOST(req: NextRequest) {
     return NextResponse.json({ ok: false, error: "server" }, { status: 500 });
   }
 }
-
-export const POST = withProjectRoute(handlePOST);

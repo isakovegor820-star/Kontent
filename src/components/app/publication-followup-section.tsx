@@ -1,6 +1,4 @@
 "use client";
-import { useProjectFetch } from "@/lib/use-project-transport";
-
 
 import { useCallback, useEffect, useId, useState } from "react";
 import { CheckCircle2, Clock3, ExternalLink, RotateCcw, TriangleAlert } from "lucide-react";
@@ -53,7 +51,6 @@ export function PublicationFollowupSection({
   operationId: number;
   onUpdateRequested?: (draftId: number) => void;
 }) {
-  const fetch = useProjectFetch();
   const statusId = useId();
   const [destinations, setDestinations] = useState<PublicationDestinationFollowup[] | null>(null);
   const [loading, setLoading] = useState(true);
@@ -72,7 +69,7 @@ export function PublicationFollowupSection({
     const parsed = response.ok ? parsePublicationFollowupResponse(body) : null;
     if (!parsed) throw body;
     return parsed;
-  }, [fetch, operationId]);
+  }, [operationId]);
 
   useEffect(() => {
     const controller = new AbortController();

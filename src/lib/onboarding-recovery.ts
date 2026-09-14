@@ -17,11 +17,9 @@ export interface OnboardingRecovery {
   channelId: number | null;
 }
 
-export function onboardingRecoveryKey(userId: number, projectId?: number | null): string {
+export function onboardingRecoveryKey(userId: number): string {
   if (!Number.isInteger(userId) || userId <= 0) throw new Error("invalid onboarding user id");
-  if (projectId == null) return `aurora-onboarding-quiz-v3:${userId}`;
-  if (!Number.isSafeInteger(projectId) || projectId <= 0) throw new Error("invalid onboarding project id");
-  return `aurora-onboarding-quiz-v4:${userId}:${projectId}`;
+  return `aurora-onboarding-quiz-v3:${userId}`;
 }
 
 export function parseOnboardingRecovery(raw: string | null): OnboardingRecovery | null {

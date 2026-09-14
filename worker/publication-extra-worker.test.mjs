@@ -48,18 +48,25 @@ function operationPool(row, extra = {}) {
 }
 
 describe("publication extra worker", () => {
-  it("blocks queued VK comments and preserves already succeeded replay", async () => {
+  it("publishes a VK first comment with deterministic guid and never duplicates a succeeded replay", async () => {
     const pool = operationPool(operationRow());
     const vkRequest = vi.fn(async () => ({ response: { comment_id: 55 } }));
-    const decryptToken = vi.fn();
-    await expect(processPublicationExtraOperation({
-      pool, operationId: 5, projectId: 7, fingerprint,
-      telegramRequest: vi.fn(), vkRequest, decryptToken,
-    })).rejects.toMatchObject({ code: "vk_auth_flow_unverified", retryable: false });
-    expect(vkRequest).not.toHaveBeenCalled();
-    expect(decryptToken).not.toHaveBeenCalled();
-    expect(pool.query.mock.calls.some(([sql]) => sql.includes("set provider_started_at"))).toBe(false);
-    expect(pool.query.mock.calls.some(([sql]) => sql.includes("delete from"))).toBe(false);
+    const result = await processPublicationExtraOperation({
+      pool,
+      operationId: 5,
+      projectId: 7,
+      fingerprint,
+      telegramRequest: vi.fn(),
+      vkRequest,
+      decryptToken: vi.fn(() => "token"),
+      finalAttempt: false,
+    });
+    expect(result).toMatchObject({ ok: true, externalId: "55" });
+    expect(vkRequest).toHaveBeenCalledWith(
+      "wall.createComment",
+      expect.objectContaining({ owner_id: -99, post_id: 44, message: "Первый комментарий", guid: expect.any(Number) }),
+      "token",
+    );
 
     const replayPool = operationPool(null, {
       query: (sql) => {
@@ -136,7 +143,7 @@ describe("publication extra worker", () => {
     expect(telegramRequest).not.toHaveBeenCalled();
   });
 
-  it("blocks queued VK comment settings without changing the published post state", async () => {
+  it("successfully closes VK comments without changing the published post state", async () => {
     const pool = operationPool(operationRow({
       kind: "configure_comments",
       request_snapshot: { providerId: "vk", commentsEnabled: false },
@@ -150,19 +157,14 @@ describe("publication extra worker", () => {
       telegramRequest: vi.fn(),
       vkRequest,
       decryptToken: vi.fn(() => "token"),
-    })).rejects.toMatchObject({ code: "vk_auth_flow_unverified", retryable: false });
-    expect(vkRequest).not.toHaveBeenCalled();
+    })).resolves.toMatchObject({ ok: true, externalId: "44" });
+    expect(vkRequest).toHaveBeenCalledWith(
+      "wall.closeComments",
+      { owner_id: -99, post_id: 44 },
+      "token",
+    );
     expect(pool.query.mock.calls.some(([sql]) => String(sql).includes("update posts"))).toBe(false);
     expect(String(pool.query.mock.calls[0]?.[0])).toContain("'pending','queued','failed_retry'");
-  });
-
-  it("retains uncertainty when an old VK action may already have reached the provider", async () => {
-    const pool = operationPool(operationRow({ provider_started_at: "2026-09-01T10:00:00Z" }));
-    const vkRequest = vi.fn();
-    await expect(processPublicationExtraOperation({ pool, operationId: 5, projectId: 7, fingerprint,
-      vkRequest, telegramRequest: vi.fn(), decryptToken: vi.fn(),
-    })).rejects.toMatchObject({ code: "provider_previous_delivery_unverified", deliveryUnknown: true, retryable: false });
-    expect(vkRequest).not.toHaveBeenCalled();
   });
 
   it.each([

@@ -1,4 +1,3 @@
-import { withProjectRoute } from "@/lib/project-route";
 import { randomUUID } from "node:crypto";
 import type { NextRequest } from "next/server";
 
@@ -19,7 +18,7 @@ import {
 
 export const runtime = "nodejs";
 
-async function handleGET(request: NextRequest) {
+export async function GET(request: NextRequest) {
   const requestId = randomUUID();
   const user = await getSessionUser(request);
   if (!user) return projectNotificationJson({ ok: false, error: "unauthorized" }, 401, requestId);
@@ -42,5 +41,3 @@ async function handleGET(request: NextRequest) {
     return projectNotificationApiError(error, requestId, "list");
   }
 }
-
-export const GET = withProjectRoute(handleGET);

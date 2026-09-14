@@ -250,6 +250,7 @@ jobs:
 
       - name: Verify production deployment
         env:
+          AURORA_DEPLOYMENT_SMOKE_REQUIRE_TELEGRAM: "true"
           AURORA_DEPLOYMENT_SMOKE_BASE_URL: ${{ vars.PRODUCTION_BASE_URL }}
           AURORA_DEPLOYMENT_SMOKE_PROFILE: ${{ vars.ALLOW_DEGRADED_MAIL == 'true' && 'release' || 'full' }}
           AURORA_READINESS_TOKEN: ${{ secrets.AURORA_READINESS_TOKEN }}
@@ -257,6 +258,9 @@ jobs:
           PRODUCTION_SSH_USER: ${{ secrets.PRODUCTION_SSH_USER }}
           AURORA_DEPLOY_SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
         run: |
+          # The previous worker's Telegram heartbeat lives for 75 seconds. Wait
+          # beyond its TTL so the smoke proves the new process is receiving commands.
+          sleep 80
           smoke_attempts=12
           for attempt in $(seq 1 "$smoke_attempts"); do
             if npm run test:deployment-smoke; then

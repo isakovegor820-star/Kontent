@@ -1,4 +1,3 @@
-import { withProjectRoute } from "@/lib/project-route";
 import { NextRequest } from "next/server";
 
 import { getPool } from "@/lib/db";
@@ -16,7 +15,7 @@ import {
 export const runtime = "nodejs";
 type Context = { params: Promise<{ campaignId: string; planId: string; itemId: string }> };
 
-async function handlePATCH(req: NextRequest, context: Context) {
+export async function PATCH(req: NextRequest, context: Context) {
   if (!hasTrustedMutationOrigin(req)) {
     return monthlyCampaignJson({ ok: false, error: "forbidden_origin" }, 403);
   }
@@ -50,5 +49,3 @@ async function handlePATCH(req: NextRequest, context: Context) {
     return monthlyCampaignApiError(error, requestId);
   }
 }
-
-export const PATCH = withProjectRoute(handlePATCH);

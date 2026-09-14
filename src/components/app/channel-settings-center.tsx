@@ -1,6 +1,4 @@
 "use client";
-import { useProjectFetch } from "@/lib/use-project-transport";
-
 
 import { SettingsSaveBar } from "@/components/app/settings-save-bar";
 import { createContext, useContext, useEffect, useRef, useState, type CSSProperties } from "react";
@@ -379,7 +377,6 @@ function autopilotSummary(settings: AutopilotSettings) {
 }
 
 export function ChannelSettingsCenter({ view = "content" }: { view?: ChannelSettingsView }) {
-  const fetch = useProjectFetch();
   const store = useStore();
   const requestedChannel = Number(useSearchParams().get("channel")) || null;
   const [picked, setPicked] = useState<number | null>(requestedChannel);
@@ -436,7 +433,7 @@ export function ChannelSettingsCenter({ view = "content" }: { view?: ChannelSett
         if (!controller.signal.aborted) setLoading(false);
       });
     return () => controller.abort();
-  }, [channelId, fetch, view]);
+  }, [channelId, view]);
   /* eslint-enable react-hooks/set-state-in-effect */
 
   useEffect(() => {

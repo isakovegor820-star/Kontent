@@ -111,9 +111,6 @@ function officialAccessRequired(message) {
   };
 }
 
-export const VK_AUTH_FLOW_UNVERIFIED =
-  "Автопубликация VK приостановлена: способ авторизации и право публикации ещё не подтверждены. История сохранена. Для новых публикаций подключи Telegram; подключение VK появится после проверки интеграции.";
-
 const NOT_IMPLEMENTED = "Эта операция пока не поддерживается Авророй для выбранной площадки.";
 const SOURCE_ONLY = "RSS используется как источник материалов, а не как площадка публикации.";
 const COMPOSER_UNSUPPORTED = "Публикация станет доступна после поддержки формата площадки в Композиторе.";
@@ -155,11 +152,11 @@ export const PROVIDER_CAPABILITY_REGISTRY = deepFreeze({
     role: "destination",
     connection: { kind: "access_token", officialAccessRequired: false },
     capabilities: {
-      livePublish: unsupported("vk_auth_flow_unverified", VK_AUTH_FLOW_UNVERIFIED),
+      livePublish: supported({ credentials: true, permissions: true }),
       exportPackage: unsupported("export_package_not_implemented", NOT_IMPLEMENTED),
-      firstComment: unsupported("vk_auth_flow_unverified", VK_AUTH_FLOW_UNVERIFIED),
+      firstComment: supported({ credentials: true, permissions: true }),
       pin: unsupported("pin_not_implemented", NOT_IMPLEMENTED),
-      commentToggle: unsupported("vk_auth_flow_unverified", VK_AUTH_FLOW_UNVERIFIED),
+      commentToggle: supported({ credentials: true, permissions: true }),
       analytics: supported({ credentials: true, permissions: true }),
     },
     // The current worker publishes wall text only. Media stays closed until the

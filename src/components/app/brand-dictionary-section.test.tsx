@@ -5,8 +5,6 @@ import { BrandDictionarySection } from "./brand-dictionary-section";
 import { WritingSettingsSection } from "./writing-settings-section";
 import type { ClientBrandDictionary } from "@/lib/brand-dictionary-client";
 import { analyzeLegalTypography, applyTypographySuggestions } from "@/lib/legal-typographer";
-import { setProjectTransport } from "@/lib/project-transport";
-import { projectJson } from "@/test/project-response";
 
 const project = vi.hoisted(() => ({ current: { id: 7, role: "owner" } }));
 vi.mock("@/components/app/project-provider", () => ({ useProjects: () => project }));
@@ -16,25 +14,24 @@ let failLoad: boolean;
 let requests: Array<{ method: string; body: Record<string, unknown> }>;
 
 beforeEach(() => {
-  setProjectTransport(7, true, 1);
   project.current = { id: 7, role: "owner" };
   dictionary = { projectId: 7, version: 1, updatedAt: null, entries: [] };
   failSave = false;
   failLoad = false;
   requests = [];
   vi.stubGlobal("fetch", vi.fn(async (url: string, init?: RequestInit) => {
-    if (url === "/api/publication-blocks") return projectJson(7, { ok: true, blocks: [] });
-    if (!init?.method) return failLoad ? projectJson(7, { ok: false }, { status: 503 }) : projectJson(7, { ok: true, dictionary });
+    if (url === "/api/publication-blocks") return Response.json({ ok: true, blocks: [] });
+    if (!init?.method) return failLoad ? Response.json({ ok: false }, { status: 503 }) : Response.json({ ok: true, dictionary });
     const body = JSON.parse(String(init.body));
     requests.push({ method: init.method, body });
-    if (failSave) return projectJson(7, { ok: false, error: "version_conflict" }, { status: 409 });
+    if (failSave) return Response.json({ ok: false, error: "version_conflict" }, { status: 409 });
     if (init.method === "DELETE") dictionary.entries = [];
     else dictionary.entries = [{ ...body, id: 1, version: 1 }];
     dictionary.version += 1;
-    return projectJson(7, { ok: true });
+    return Response.json({ ok: true });
   }));
 });
-afterEach(() => { cleanup(); setProjectTransport(null); vi.unstubAllGlobals(); });
+afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
 
 async function openForm(name = /Писать правильно/) {
   fireEvent.click(await screen.findByRole("button", { name }));

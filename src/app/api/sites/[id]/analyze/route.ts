@@ -1,4 +1,3 @@
-import { withProjectRoute } from "@/lib/project-route";
 import { NextRequest } from "next/server";
 
 import { readJsonBodyValue } from "@/lib/bounded-request-body";
@@ -12,7 +11,7 @@ export const runtime = "nodejs";
 type Context = { params: Promise<{ id: string }> };
 
 /** Повторный прогон анализа и пересборка профиля сайта. */
-async function handlePOST(req: NextRequest, context: Context) {
+export async function POST(req: NextRequest, context: Context) {
   const resolved = await resolveSiteRoute(req, "content.create", { mutation: true, label: "/api/sites/:id/analyze POST" });
   if (!resolved.ok) return resolved.response;
   const { requestId, pool, userId } = resolved.context;
@@ -36,5 +35,3 @@ async function handlePOST(req: NextRequest, context: Context) {
     return siteErrorResponse(error, "/api/sites/:id/analyze POST", requestId);
   }
 }
-
-export const POST = withProjectRoute(handlePOST);

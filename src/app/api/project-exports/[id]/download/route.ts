@@ -1,4 +1,3 @@
-import { withProjectRoute } from "@/lib/project-route";
 import { NextRequest, NextResponse } from "next/server";
 
 import { getPool } from "@/lib/db";
@@ -15,7 +14,7 @@ export const runtime = "nodejs";
 
 type Context = { params: Promise<{ id: string }> };
 
-async function handleGET(req: NextRequest, context: Context) {
+export async function GET(req: NextRequest, context: Context) {
   const user = await getSessionUser(req);
   if (!user) return NextResponse.json({ ok: false, error: "unauthorized" }, { status: 401 });
   const rate = await checkRateLimit(`project-export:download:user:${user.id}`, 120, 3_600, { failureMode: "closed" });
@@ -52,5 +51,3 @@ async function handleGET(req: NextRequest, context: Context) {
     return NextResponse.json({ ok: false, error: "server" }, { status: 500 });
   }
 }
-
-export const GET = withProjectRoute(handleGET);

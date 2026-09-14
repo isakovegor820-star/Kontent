@@ -1,4 +1,3 @@
-import { withProjectRoute } from "@/lib/project-route";
 // Д.9 — собрать план недели сейчас (кнопка «Собрать план») ДЛЯ ВЫБРАННОГО КАНАЛА.
 // Строит воркер (ИИ + аналитика).
 
@@ -30,7 +29,7 @@ import { GrowthArtifactLinkError, linkGrowthMovePlanInTransaction } from "@/lib/
 
 export const runtime = "nodejs";
 
-async function handlePOST(req: NextRequest) {
+export async function POST(req: NextRequest) {
   if (!hasTrustedMutationOrigin(req)) {
     return NextResponse.json({ ok: false, error: "forbidden_origin" }, { status: 403 });
   }
@@ -342,7 +341,7 @@ async function handlePOST(req: NextRequest) {
   }
 }
 
-async function handleDELETE(req: NextRequest) {
+export async function DELETE(req: NextRequest) {
   if (!hasTrustedMutationOrigin(req)) {
     return NextResponse.json({ ok: false, error: "forbidden_origin" }, { status: 403 });
   }
@@ -437,6 +436,3 @@ async function handleDELETE(req: NextRequest) {
     return NextResponse.json({ ok: false, error: "server" }, { status: 500 });
   }
 }
-
-export const POST = withProjectRoute(handlePOST);
-export const DELETE = withProjectRoute(handleDELETE);

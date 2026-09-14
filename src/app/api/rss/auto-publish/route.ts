@@ -1,9 +1,8 @@
-import { withProjectRoute } from "@/lib/project-route";
 import { readJsonBodyValue } from "@/lib/bounded-request-body";
 import { NextRequest, NextResponse } from "next/server";
 
 import { getPool } from "@/lib/db";
-import { ProjectAccessError, requireProjectPermission, requireSelectedProjectPermission } from "@/lib/project-permissions";
+import { ProjectAccessError, requireSelectedProjectPermission } from "@/lib/project-permissions";
 import { getPublishQueue, jobIdForPost, jobIdForPostRevision } from "@/lib/queue";
 import { hasTrustedMutationOrigin } from "@/lib/request-origin";
 import { getSessionUser } from "@/lib/session";
@@ -30,7 +29,7 @@ async function removePublishJobs(posts: CancelledPost[]) {
   )));
 }
 
-async function handlePATCH(req: NextRequest) {
+export async function PATCH(req: NextRequest) {
   if (!hasTrustedMutationOrigin(req)) {
     return NextResponse.json({ ok: false, error: "forbidden_origin" }, { status: 403 });
   }
@@ -54,9 +53,9 @@ async function handlePATCH(req: NextRequest) {
       await pool.query<{ id: string }>(
         `select id
            from channels
-          where id = $1 and project_id = $2
+          where id = $1 and user_id = $2 and project_id = $3
             and is_active and status = 'active' and network in ('tg', 'vk')`,
-        [channelId, membership.projectId],
+        [channelId, user.id, membership.projectId],
       )
     ).rows[0];
     if (!channel) return NextResponse.json({ ok: false, error: "no_channel" }, { status: 422 });
@@ -66,17 +65,15 @@ async function handlePATCH(req: NextRequest) {
     let publishingNow = 0;
     try {
       await client.query("begin");
-      await requireProjectPermission(client, user.id, membership.projectId, "content.publish", { lock: true });
-      await client.query("select id from channels where id = $1 and project_id = $2 for update", [channelId, membership.projectId]);
       const feeds = (
         await client.query<{ id: string }>(
           `select id
              from rss_feeds
-            where channel_id = $1
+            where user_id = $1 and channel_id = $2
               and source_kind = 'legal_opportunity' and is_active = true
             order by id
             for update`,
-          [channelId],
+          [user.id, channelId],
         )
       ).rows;
       if (!feeds.length) {
@@ -104,9 +101,9 @@ async function handlePATCH(req: NextRequest) {
         await client.query(
           `update rss_feeds
               set auto_publish_enabled = false
-            where channel_id = $1
+            where user_id = $1 and channel_id = $2
               and source_kind = 'legal_opportunity'`,
-          [channelId],
+          [user.id, channelId],
         );
         cancelled = (
           await client.query<CancelledPost>(
@@ -182,5 +179,3 @@ async function handlePATCH(req: NextRequest) {
     return NextResponse.json({ ok: false, error: "server" }, { status: 500 });
   }
 }
-
-export const PATCH = withProjectRoute(handlePATCH);

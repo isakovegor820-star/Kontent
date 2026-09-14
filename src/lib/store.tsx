@@ -1,8 +1,4 @@
 "use client";
-import { collectCalendarPages } from "./calendar-pages";
-import { captureProjectFetch, projectTransportSnapshot } from "@/lib/project-transport";
-import { useProjectFetch } from "@/lib/use-project-transport";
-
 
 // Состояние платформы. Без бэкенда: localStorage + React Context.
 // Публикация «исполняется сервером» — здесь это таймер, который двигает статусы постов,
@@ -84,6 +80,14 @@ interface StoreValue extends AppState {
   connectChannel: (handle: string) => Promise<{ ok: boolean; error?: string; title?: string }>;
   /** Подключить VK-сообщество по ключу доступа сообщества (право «Стена»). */
   connectVkChannel: (token: string) => Promise<{ ok: boolean; error?: string; title?: string }>;
+  createRealPost: (input: {
+    channelId: number;
+    draftId: number;
+    draftVersion: number;
+    text: string;
+    scheduledAt: string | null;
+    media?: Post["media"];
+  }) => Promise<{ ok: boolean; error?: string; postId?: number }>;
   createPublicationOperation: (input: {
     draftId: number;
     draftVersion: number;
@@ -173,7 +177,6 @@ function mapUser(su: ServerUser): User {
 }
 
 export function StoreProvider({ children }: { children: React.ReactNode }) {
-  const fetch = useProjectFetch();
   const pathname = usePathname();
   const [state, setState] = useState<AppState>(() => seedState());
   const [ready, setReady] = useState(false);
@@ -266,7 +269,7 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
       authReadyRef.current = true;
       setAuthReady(true);
     }
-  }, [beginWorkspaceTransition, fetch]);
+  }, [beginWorkspaceTransition]);
 
   useEffect(() => {
     // Загрузка сессии с сервера — side-effect; setState происходит внутри async-колбэка.
@@ -294,17 +297,16 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
       );
     };
     try {
-      const [chRes, posts] = await Promise.all([
+      const [chRes, poRes] = await Promise.all([
         fetch("/api/channels", { cache: "no-store", signal: ticket.signal }),
-        pathname === "/app/calendar" ? Promise.resolve([] as RealPost[])
-          : collectCalendarPages<RealPost>("/api/posts", { fetcher: fetch, signal: ticket.signal }),
+        fetch("/api/posts", { cache: "no-store", signal: ticket.signal }),
       ]);
-      if (!chRes.ok) throw new Error("real_data_unavailable");
+      if (!chRes.ok || !poRes.ok) throw new Error("real_data_unavailable");
       const ch = (await chRes.json().catch(() => null)) as { channels?: RealChannel[] } | null;
+      const po = (await poRes.json().catch(() => null)) as { posts?: RealPost[] } | null;
       if (!isCurrent()) return;
       setRealChannels(ch?.channels ?? []);
-      setRealPosts(posts.sort((a, b) => (a.scheduled_at == null ? Infinity : Date.parse(a.scheduled_at))
-        - (b.scheduled_at == null ? Infinity : Date.parse(b.scheduled_at)) || b.id - a.id));
+      setRealPosts(po?.posts ?? []);
       setRealError(false);
     } catch (error) {
       if (isAbortError(error) || !isCurrent()) return;
@@ -313,7 +315,7 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
     } finally {
       if (isCurrent()) setRealReady(true);
     }
-  }, [fetch, pathname, realRequestFence]);
+  }, [realRequestFence]);
 
   const connectChannel = useCallback<StoreValue["connectChannel"]>(
     async (handle) => {
@@ -335,7 +337,7 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
         return { ok: false, error: "network" };
       }
     },
-    [fetch, refreshReal],
+    [refreshReal],
   );
 
   const connectVkChannel = useCallback<StoreValue["connectVkChannel"]>(
@@ -358,7 +360,42 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
         return { ok: false, error: "network" };
       }
     },
-    [fetch, refreshReal],
+    [refreshReal],
+  );
+
+  const createRealPost = useCallback<StoreValue["createRealPost"]>(
+    async ({ channelId, draftId, draftVersion, text, scheduledAt, media }) => {
+      try {
+        const idempotencyKey = globalThis.crypto.randomUUID();
+        const res = await fetch("/api/posts/create", {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+            "idempotency-key": idempotencyKey,
+          },
+          body: JSON.stringify({
+            channelId,
+            draftId,
+            draftVersion,
+            text,
+            scheduledAt,
+            media,
+            idempotencyKey,
+          }),
+        });
+        const data = (await res.json().catch(() => null)) as
+          | { ok: boolean; error?: string; postId?: number }
+          | null;
+        if (res.ok && data?.ok) {
+          await refreshReal();
+          return { ok: true, postId: data.postId };
+        }
+        return { ok: false, error: data?.error };
+      } catch {
+        return { ok: false, error: "network" };
+      }
+    },
+    [refreshReal],
   );
 
   const createPublicationOperation = useCallback<StoreValue["createPublicationOperation"]>(
@@ -393,7 +430,7 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
         return { ok: false, result: "operation_not_created", error: "network" };
       }
     },
-    [fetch, refreshReal],
+    [refreshReal],
   );
 
   const retryRealPost = useCallback<StoreValue["retryRealPost"]>(
@@ -409,7 +446,7 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
         return { ok: false };
       }
     },
-    [fetch, refreshReal],
+    [refreshReal],
   );
 
   /* ---------------------------- ИИ-студия (Д.8): реальный дневной лимит */
@@ -440,26 +477,23 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
       // Keep the last confirmed number internally, but do not present it as current fact.
       setAiUsageStatus("unknown");
     }
-  }, [aiUsageRequestFence, fetch]);
+  }, [aiUsageRequestFence]);
 
   const resolveSelectedWorkspace = useCallback(async (expectedUserId: number) => {
-    const captured = projectTransportSnapshot();
-    if (!captured.ready || !captured.projectId) return;
-    const requestScope = `user:${expectedUserId}:project:${captured.projectId}`;
+    const requestScope = `user:${expectedUserId}:current-project`;
     const ticket = selectedProjectFence.start(requestScope);
     const isCurrent = () => (
       selectedProjectFence.isCurrent(ticket, requestScope)
       && activeUserRef.current?.id === expectedUserId
-      && projectTransportSnapshot() === captured
     );
     try {
-      const response = await captureProjectFetch(captured)(`/api/projects/${captured.projectId}`, {
+      const response = await fetch("/api/projects/current", {
         cache: "no-store",
         signal: ticket.signal,
       });
       const body: unknown = await response.json().catch(() => null);
       const projectId = response.ok ? parseServerSelectedProjectId(body) : null;
-      if (projectId !== captured.projectId) throw new Error("project_context_unavailable");
+      if (!projectId) throw new Error("project_context_unavailable");
       if (!isCurrent()) return;
 
       const identity: ClientWorkspaceIdentity = { userId: expectedUserId, projectId };
@@ -497,7 +531,7 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
 
   const activeUserId = state.user?.id ?? null;
 
-  // Контекст выбранного в этой вкладке проекта проверяем на сервере. projectId из DOM-события — только
+  // Выбор проекта всегда перечитываем с сервера. projectId из DOM-события — только
   // сигнал об изменении, но никогда не источник полномочий или ключа localStorage.
   useEffect(() => {
     const onProjectChanged = () => {
@@ -580,7 +614,7 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
     setState({ ...seedState(), user: null, onboarded: false });
     setReady(true);
     fetch("/api/auth/logout", { method: "POST" }).catch(() => {});
-  }, [beginWorkspaceTransition, fetch]);
+  }, [beginWorkspaceTransition]);
 
   const finishOnboarding = useCallback<StoreValue["finishOnboarding"]>(
     async (input) => {
@@ -602,7 +636,7 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
         return false;
       }
     },
-    [fetch, patch],
+    [patch],
   );
 
   /* ----------------------------------------------------------- ПОСТЫ */
@@ -922,6 +956,7 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
       refreshReal,
       connectChannel,
       connectVkChannel,
+      createRealPost,
       createPublicationOperation,
       retryRealPost,
       aiUsed,
@@ -962,6 +997,7 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
       refreshReal,
       connectChannel,
       connectVkChannel,
+      createRealPost,
       createPublicationOperation,
       retryRealPost,
       aiUsed,

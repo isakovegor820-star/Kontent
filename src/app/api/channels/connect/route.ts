@@ -1,4 +1,3 @@
-import { withProjectRoute } from "@/lib/project-route";
 // Д.3 — подключение Telegram-канала. Пользователь добавил нашего бота админом
 // своего канала → присылает @адрес или id → сервер проверяет, что бот реально
 // имеет доступ и право публикации (getChat + getChatMember), и сохраняет канал.
@@ -40,7 +39,7 @@ async function tg<T>(method: string, params: Record<string, string>): Promise<T 
   }
 }
 
-async function handlePOST(req: NextRequest) {
+export async function POST(req: NextRequest) {
   if (!hasTrustedMutationOrigin(req)) {
     return NextResponse.json({ ok: false, error: "forbidden_origin" }, { status: 403 });
   }
@@ -150,5 +149,3 @@ async function handlePOST(req: NextRequest) {
     return NextResponse.json({ ok: false, error: "server" }, { status: 500 });
   }
 }
-
-export const POST = withProjectRoute(handlePOST);

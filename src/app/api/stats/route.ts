@@ -1,4 +1,3 @@
-import { withProjectRoute } from "@/lib/project-route";
 // Единый read model для «Результатов»: публикации, рост и публичные ориентиры
 // конкурентов используют один канал, период, timezone и подтверждённый cohort.
 
@@ -60,7 +59,7 @@ function reportPeriodLabel(days: number): string {
   return `${days} ${plural(days, "календарный день", "календарных дня", "календарных дней")}`;
 }
 
-async function handleGET(req: NextRequest) {
+export async function GET(req: NextRequest) {
   let user;
   try {
     user = await getSessionUser(req);
@@ -371,5 +370,3 @@ async function handleGET(req: NextRequest) {
     );
   }
 }
-
-export const GET = withProjectRoute(handleGET);
