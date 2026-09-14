@@ -16,4 +16,18 @@ describe("opportunities page states", () => {
     expect(source).toContain('status === "ready" && operationError');
     expect(source).not.toContain('setStatus("error")');
   });
+
+  it("binds every request and recovery action to the selected channel", () => {
+    expect(source).toContain("useChannelChoice(store.realChannels, requestedChannelId)");
+    expect(source).toContain("`/api/opportunities?channel=${channelId}`");
+    expect(source).toContain("item.channelId !== channelId");
+    expect(source).toContain("`/app/competitors${channelId ? `?channel=${channelId}` : \"\"}`");
+  });
+
+  it("offers progressive disclosure without showing stale-state controls", () => {
+    expect(source).toContain("<details");
+    expect(source).toContain("Источник и методика");
+    expect(source).toContain("Развернуть подробности");
+    expect(source).not.toContain('epistemicState === "stale"');
+  });
 });

@@ -165,8 +165,9 @@ export async function listOpportunitySnapshots(input: {
        from opportunity_snapshots snapshot
        left join growth_moves move on move.id = snapshot.growth_move_id
          and move.project_id = snapshot.project_id and move.channel_id = snapshot.channel_id
-       join channels channel on channel.id = snapshot.channel_id and channel.project_id = snapshot.project_id
+      join channels channel on channel.id = snapshot.channel_id and channel.project_id = snapshot.project_id
       where snapshot.project_id = $1 and snapshot.channel_id = $2
+        and snapshot.expires_at > now()
       order by snapshot.expires_at desc, snapshot.id desc limit 50`,
     [scope.projectId, scope.channelId],
   )).rows;
