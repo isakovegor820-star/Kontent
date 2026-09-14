@@ -1,9 +1,10 @@
 import { readFileSync } from "node:fs";
 
 import { describe, expect, it } from "vitest";
+import { NAV_CHILDREN } from "@/lib/sidebar-navigation";
 
 const pageSource = readFileSync(new URL("./page.tsx", import.meta.url), "utf8");
-const shellSource = readFileSync(new URL("../../../components/app/shell.tsx", import.meta.url), "utf8");
+
 
 describe("Studio responsive recovery controls", () => {
   it("allows a long suggested engine label to wrap on narrow screens", () => {
@@ -35,7 +36,7 @@ describe("Studio responsive recovery controls", () => {
   });
 
   it("offers images in the dedicated workspace and keeps the chat menu focused on text", () => {
-    expect(shellSource).toContain('{ href: "/app/studio?mode=media", label: "Изображения" }');
+    expect(NAV_CHILDREN.studio).toContainEqual({ href: "/app/studio?mode=media", label: "Изображения" });
     expect(pageSource).toContain('aria-label="Режим Изображения"');
     expect(pageSource).not.toContain('id: "video"');
     expect(pageSource).not.toContain('id: "image"');
