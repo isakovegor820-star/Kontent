@@ -1798,11 +1798,11 @@ async function waitForResponsiveLayout(targetPage) {
     requestAnimationFrame(() => requestAnimationFrame(resolveFrame));
   }));
   await targetPage.waitForFunction(() => {
-    const shell = [...document.querySelectorAll("div")]
-      .find((element) => element.classList.contains("lg:pl-[260px]"));
+    const shell = document.querySelector("main#main")?.parentElement;
     if (!shell) return true;
     const desktop = matchMedia("(min-width: 64rem)").matches;
-    return getComputedStyle(shell).paddingLeft === (desktop ? "260px" : "0px");
+    const paddingLeft = Number.parseFloat(getComputedStyle(shell).paddingLeft);
+    return desktop ? paddingLeft > 0 : paddingLeft === 0;
   }, undefined, { timeout: UI_WAIT_TIMEOUT_MS });
 }
 
