@@ -1,4 +1,3 @@
-import { captureProjectFetch } from "./project-transport";
 export type ClientProjectExportKind = "content_plan" | "analytics";
 export type ClientProjectExportFormat = "csv" | "xlsx" | "pdf";
 export type ClientProjectExportStatus =
@@ -389,7 +388,7 @@ export function isActiveProjectExport(status: ClientProjectExportStatus): boolea
 
 export async function listProjectExports(
   signal?: AbortSignal,
-  fetcher: FetchLike = captureProjectFetch(),
+  fetcher: FetchLike = fetch,
 ): Promise<ClientProjectExportOperation[]> {
   let response: Response;
   try {
@@ -410,7 +409,7 @@ export async function createProjectExport(
   idempotencyKey: string,
   previewHash: string,
   signal?: AbortSignal,
-  fetcher: FetchLike = captureProjectFetch(),
+  fetcher: FetchLike = fetch,
 ): Promise<ClientProjectExportOperation> {
   const periodError = validateProjectExportPeriod(value);
   if (periodError) throw new ProjectExportClientError("invalid_period");
@@ -439,7 +438,7 @@ export async function createProjectExport(
 export async function previewProjectExport(
   value: ProjectExportFormValue,
   signal?: AbortSignal,
-  fetcher: FetchLike = captureProjectFetch(),
+  fetcher: FetchLike = fetch,
 ): Promise<ClientProjectExportPreview> {
   const periodError = validateProjectExportPeriod(value);
   if (periodError) throw new ProjectExportClientError("invalid_period");
@@ -465,7 +464,7 @@ export async function previewProjectExport(
 export async function getProjectExport(
   operationId: number,
   signal?: AbortSignal,
-  fetcher: FetchLike = captureProjectFetch(),
+  fetcher: FetchLike = fetch,
 ): Promise<ClientProjectExportOperation> {
   let response: Response;
   try {
@@ -487,7 +486,7 @@ export async function getProjectExport(
 export async function revokeProjectExport(
   operationId: number,
   signal?: AbortSignal,
-  fetcher: FetchLike = captureProjectFetch(),
+  fetcher: FetchLike = fetch,
 ): Promise<void> {
   let response: Response;
   try {
@@ -509,7 +508,7 @@ export async function revokeProjectExport(
 export async function downloadProjectExport(
   operation: ClientProjectExportOperation,
   signal?: AbortSignal,
-  fetcher: FetchLike = captureProjectFetch(),
+  fetcher: FetchLike = fetch,
 ): Promise<{ blob: Blob; fileName: string }> {
   if (operation.status !== "ready" || !operation.artifact) {
     throw new ProjectExportClientError("export_not_ready", 409);

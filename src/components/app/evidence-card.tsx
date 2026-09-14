@@ -1,6 +1,4 @@
 "use client";
-import { useProjectFetch } from "@/lib/use-project-transport";
-
 
 import { useEffect, useRef, useState } from "react";
 import { AlertTriangle, CheckCircle2, ExternalLink, FileQuestion, ShieldCheck, X } from "lucide-react";
@@ -21,7 +19,6 @@ const STATUS = {
 export function EvidenceCard({ kind, id, label = "Почему?", compact = false }: {
   kind: EvidenceSubjectKind; id: number; label?: string; compact?: boolean;
 }) {
-  const fetch = useProjectFetch();
   const dialogRef = useRef<HTMLDialogElement>(null);
   const [evidence, setEvidence] = useState<EvidenceProjection | null>(null);
   const [state, setState] = useState<"idle" | "loading" | "ready" | "error">("idle");

@@ -1,4 +1,3 @@
-import { withProjectRoute } from "@/lib/project-route";
 import { readJsonBodyValue } from "@/lib/bounded-request-body";
 import { randomUUID } from "node:crypto";
 
@@ -25,7 +24,7 @@ function reply(body: Record<string, unknown>, status: number, requestId: string)
   return NextResponse.json({ ...body, requestId }, { status, headers: { "x-request-id": requestId, "cache-control": "no-store" } });
 }
 
-async function handlePOST(req: NextRequest, context: { params: Promise<{ id: string }> }) {
+export async function POST(req: NextRequest, context: { params: Promise<{ id: string }> }) {
   const requestId = randomUUID();
   if (!hasTrustedMutationOrigin(req)) {
     return reply({ error: "forbidden_origin" }, 403, requestId);
@@ -138,5 +137,3 @@ async function handlePOST(req: NextRequest, context: { params: Promise<{ id: str
     return reply({ error: "queue_unavailable", analysis: serializeSiteAnalysis(row) }, 503, row.request_id);
   }
 }
-
-export const POST = withProjectRoute(handlePOST);

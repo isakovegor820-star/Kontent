@@ -1,4 +1,3 @@
-import { withProjectRoute } from "@/lib/project-route";
 import { NextRequest } from "next/server";
 
 import { loadSiteDetails } from "@/lib/sites/service";
@@ -9,7 +8,7 @@ export const runtime = "nodejs";
 
 type Context = { params: Promise<{ id: string }> };
 
-async function handleGET(req: NextRequest, context: Context) {
+export async function GET(req: NextRequest, context: Context) {
   const resolved = await resolveSiteRoute(req, "project.read", { label: "/api/sites/:id GET" });
   if (!resolved.ok) return resolved.response;
   const { requestId, pool } = resolved.context;
@@ -22,5 +21,3 @@ async function handleGET(req: NextRequest, context: Context) {
     return siteErrorResponse(error, "/api/sites/:id GET", requestId);
   }
 }
-
-export const GET = withProjectRoute(handleGET);

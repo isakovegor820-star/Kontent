@@ -1,4 +1,3 @@
-import { withProjectRoute } from "@/lib/project-route";
 // Д.9 — состояние автопилота ДЛЯ ВЫБРАННОГО КАНАЛА: настройки + последний план + бриф.
 //
 // Раньше всё это было на пользователе: одни настройки, один бриф, план без канала. При двух
@@ -51,7 +50,7 @@ function errorReasonForPlan(plan: Record<string, unknown> | null) {
   return reasons[String(plan.rules || "")] || "provider";
 }
 
-async function handleGET(req: NextRequest) {
+export async function GET(req: NextRequest) {
   const user = await getSessionUser(req);
   if (!user) return NextResponse.json(empty);
 
@@ -231,5 +230,3 @@ async function handleGET(req: NextRequest) {
     return NextResponse.json({ ...empty, error: "server" }, { status: 500 });
   }
 }
-
-export const GET = withProjectRoute(handleGET);

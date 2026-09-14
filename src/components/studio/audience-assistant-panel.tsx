@@ -1,7 +1,4 @@
 "use client";
-import { useProjectCall } from "@/lib/use-project-transport";
-import { projectFetch as fetch } from "@/lib/project-transport";
-
 
 import Link from "next/link";
 import { useCallback, useEffect, useMemo, useState } from "react";
@@ -103,7 +100,7 @@ function assistantError(code: string | undefined): string {
   return "Не удалось выполнить действие. Проверьте соединение и повторите.";
 }
 
-async function unscopedJson<T>(url: string, init?: RequestInit): Promise<T> {
+async function json<T>(url: string, init?: RequestInit): Promise<T> {
   const response = await fetch(url, { cache: "no-store", ...init });
   const body = await response.json().catch(() => null) as (T & ApiError) | null;
   if (!response.ok || !body) {
@@ -366,7 +363,6 @@ function InquiryCard({
 }
 
 export function AudienceAssistantPanel() {
-  const json = useProjectCall(unscopedJson);
   const [inquiries, setInquiries] = useState<AudienceInquiryRecord[]>([]);
   const [stats, setStats] = useState<AudienceAssistantStats>(EMPTY_STATS);
   const [capabilities, setCapabilities] = useState<AudienceAssistantCapabilities | null>(null);
@@ -395,7 +391,7 @@ export function AudienceAssistantPanel() {
     } finally {
       if (!silent) setLoading(false);
     }
-  }, [json]);
+  }, []);
 
   useEffect(() => {
     const initial = window.setTimeout(() => void load(), 0);

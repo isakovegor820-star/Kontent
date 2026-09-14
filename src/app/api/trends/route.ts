@@ -1,4 +1,3 @@
-import { withProjectRoute } from "@/lib/project-route";
 import { NextRequest, NextResponse } from "next/server";
 import { resolveChannel } from "@/lib/autopilot";
 import { radarMeasuredMedianSql, radarMeasuredRatioSql } from "@/lib/trend-dataset";
@@ -373,7 +372,7 @@ async function internetScope(
   return { competitors: sources, items, norms: [] as NormRow[] };
 }
 
-async function handleGET(req: NextRequest) {
+export async function GET(req: NextRequest) {
   const user = await getSessionUser(req);
   if (!user) return NextResponse.json({ error: "unauthorized" }, { status: 401 });
 
@@ -505,7 +504,7 @@ async function handleGET(req: NextRequest) {
   }
 }
 
-async function handlePOST(req: NextRequest) {
+export async function POST(req: NextRequest) {
   if (!hasTrustedMutationOrigin(req)) {
     return NextResponse.json({ ok: false, error: "forbidden" }, { status: 403 });
   }
@@ -711,6 +710,3 @@ async function handlePOST(req: NextRequest) {
     return NextResponse.json({ ok: false, error: "server" }, { status: 500 });
   }
 }
-
-export const GET = withProjectRoute(handleGET);
-export const POST = withProjectRoute(handlePOST);

@@ -1,4 +1,3 @@
-import { withProjectRoute } from "@/lib/project-route";
 import { NextRequest, NextResponse } from "next/server";
 
 import { readJsonBodyValue } from "@/lib/bounded-request-body";
@@ -17,7 +16,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-async function handleGET(req: NextRequest) {
+export async function GET(req: NextRequest) {
   const user = await getSessionUser(req);
   if (!user) return NextResponse.json({ ok: false, error: "unauthorized" }, { status: 401 });
   try {
@@ -31,7 +30,7 @@ async function handleGET(req: NextRequest) {
   }
 }
 
-async function handlePATCH(req: NextRequest) {
+export async function PATCH(req: NextRequest) {
   if (!hasTrustedMutationOrigin(req)) {
     return NextResponse.json({ ok: false, error: "forbidden_origin" }, { status: 403 });
   }
@@ -70,6 +69,3 @@ async function handlePATCH(req: NextRequest) {
     return NextResponse.json({ ok: false, error: "unavailable" }, { status: 503 });
   }
 }
-
-export const GET = withProjectRoute(handleGET);
-export const PATCH = withProjectRoute(handlePATCH);

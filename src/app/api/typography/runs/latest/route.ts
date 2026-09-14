@@ -1,4 +1,3 @@
-import { withProjectRoute } from "@/lib/project-route";
 import { randomUUID } from "node:crypto";
 import type { NextRequest } from "next/server";
 
@@ -9,7 +8,7 @@ import { typographyApiError, typographyJson } from "../../_shared";
 
 export const runtime = "nodejs";
 
-async function handleGET(request: NextRequest) {
+export async function GET(request: NextRequest) {
   const requestId = randomUUID();
   const user = await getSessionUser(request);
   if (!user) return typographyJson({ ok: false, error: "unauthorized" }, 401, requestId);
@@ -28,5 +27,3 @@ async function handleGET(request: NextRequest) {
     return typographyApiError(error, requestId);
   }
 }
-
-export const GET = withProjectRoute(handleGET);

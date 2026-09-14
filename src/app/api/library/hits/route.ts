@@ -1,4 +1,3 @@
-import { withProjectRoute } from "@/lib/project-route";
 // Хиты ниши для Библиотеки: залетевшие посты конкурентов (is_hit) по активному каналу.
 // Это «на что ориентироваться»: человек видит, что реально заходит у соседей,
 // с цифрами и ссылкой на оригинал. Данные уже собирает разведка — здесь только витрина.
@@ -10,7 +9,7 @@ import { getSessionUser } from "@/lib/session";
 
 export const runtime = "nodejs";
 
-async function handleGET(req: NextRequest) {
+export async function GET(req: NextRequest) {
   const user = await getSessionUser(req);
   if (!user) return NextResponse.json({ error: "unauthorized" }, { status: 401 });
 
@@ -37,5 +36,3 @@ async function handleGET(req: NextRequest) {
     return NextResponse.json({ error: "server" }, { status: 500 });
   }
 }
-
-export const GET = withProjectRoute(handleGET);

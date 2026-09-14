@@ -1,4 +1,3 @@
-import { withProjectRoute } from "@/lib/project-route";
 import { randomUUID } from "node:crypto";
 import { NextRequest, NextResponse } from "next/server";
 
@@ -47,7 +46,7 @@ function safeError(error: unknown, requestId: string) {
   return response(requestId, { ok: false, error: "server", retryable: true }, 500);
 }
 
-async function handleGET(req: NextRequest) {
+export async function GET(req: NextRequest) {
   const requestId = safeRequestId(req);
   const user = await getSessionUser(req);
   if (!user) return response(requestId, { ok: false, error: "unauthorized" }, 401);
@@ -63,7 +62,7 @@ async function handleGET(req: NextRequest) {
   }
 }
 
-async function handlePOST(req: NextRequest) {
+export async function POST(req: NextRequest) {
   if (!hasTrustedMutationOrigin(req)) {
     return response(randomUUID(), { ok: false, error: "forbidden_origin" }, 403);
   }
@@ -132,6 +131,3 @@ async function handlePOST(req: NextRequest) {
     return safeError(error, requestId);
   }
 }
-
-export const GET = withProjectRoute(handleGET);
-export const POST = withProjectRoute(handlePOST);

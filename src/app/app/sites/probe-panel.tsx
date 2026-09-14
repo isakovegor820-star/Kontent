@@ -1,5 +1,4 @@
 "use client";
-import { useProjectCall } from "@/lib/use-project-transport";
 
 import { useCallback, useEffect, useState } from "react";
 import { Radar } from "lucide-react";
@@ -7,7 +6,7 @@ import { Radar } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge, Card } from "@/components/ui/primitives";
 
-import { errorMessage, formatDate, requestJson as unscopedRequestJson } from "./client";
+import { errorMessage, formatDate, requestJson } from "./client";
 
 type ProbeRow = {
   questionKey: string;
@@ -36,7 +35,6 @@ type RunSummary = {
 type Props = { siteId: number; verified: boolean; hasProfile: boolean };
 
 export function ProbePanel({ siteId, verified, hasProfile }: Props) {
-  const requestJson = useProjectCall(unscopedRequestJson);
   const [latest, setLatest] = useState<(RunSummary & { rows: ProbeRow[] }) | null>(null);
   const [history, setHistory] = useState<RunSummary[]>([]);
   const [error, setError] = useState<string | null>(null);
@@ -55,7 +53,7 @@ export function ProbePanel({ siteId, verified, hasProfile }: Props) {
     } finally {
       setLoaded(true);
     }
-  }, [requestJson, siteId]);
+  }, [siteId]);
 
   // eslint-disable-next-line react-hooks/set-state-in-effect -- state changes only after the request settles
   useEffect(() => { void load(); }, [load]);
@@ -67,7 +65,7 @@ export function ProbePanel({ siteId, verified, hasProfile }: Props) {
     setBusy(false);
     if (status >= 400) setError(errorMessage(body.error, "Не удалось запустить зонд."));
     else setTimeout(() => void load(), 5000);
-  }, [requestJson, siteId, load]);
+  }, [siteId, load]);
 
   const byQuestion = new Map<string, ProbeRow[]>();
   for (const row of latest?.rows || []) {

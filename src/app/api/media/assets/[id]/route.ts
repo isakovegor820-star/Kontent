@@ -1,4 +1,3 @@
-import { withProjectRoute } from "@/lib/project-route";
 import { NextRequest, NextResponse } from "next/server";
 import { randomUUID } from "node:crypto";
 
@@ -6,7 +5,7 @@ import { getPool } from "@/lib/db";
 import { getSessionUser } from "@/lib/session";
 import {
   ProjectAccessError,
-  requireProjectPermission,
+  requireSelectedProjectPermission,
 } from "@/lib/project-permissions";
 import {
   parseMediaRange,
@@ -24,7 +23,7 @@ function assetJson(requestId: string, body: Record<string, unknown>, status: num
   );
 }
 
-async function handleGET(req: NextRequest, ctx: { params: Promise<{ id: string }> }) {
+export async function GET(req: NextRequest, ctx: { params: Promise<{ id: string }> }) {
   const requestId = randomUUID();
   const user = await getSessionUser(req);
   if (!user) return assetJson(requestId, { error: "unauthorized" }, 401);
@@ -36,11 +35,7 @@ async function handleGET(req: NextRequest, ctx: { params: Promise<{ id: string }
 
   try {
     const pool = getPool();
-    const source = (await pool.query<{ project_id: string }>(
-      "select project_id from media_assets where id = $1", [assetId],
-    )).rows[0];
-    if (!source) return assetJson(requestId, { error: "not_found" }, 404);
-    const membership = await requireProjectPermission(pool, user.id, Number(source.project_id), "project.read");
+    const membership = await requireSelectedProjectPermission(pool, user.id, "project.read");
     const asset = (
       await pool.query<{
         storage_backend: "postgres" | "object";
@@ -136,5 +131,3 @@ async function handleGET(req: NextRequest, ctx: { params: Promise<{ id: string }
     return assetJson(requestId, { error: "server" }, 500);
   }
 }
-
-export const GET = withProjectRoute(handleGET, { objectRead: true });

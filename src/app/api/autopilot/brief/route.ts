@@ -1,4 +1,3 @@
-import { withProjectRoute } from "@/lib/project-route";
 // Д.9 — бриф контента: что за канал. Без него автопилот не запускается.
 // GET отдаёт бриф + список рубрик для интерфейса, POST сохраняет.
 // ready ставит только пользователь, подтвердив бриф глазами (честность).
@@ -15,7 +14,7 @@ import { ProjectAccessError, requireSelectedProjectPermission } from "@/lib/proj
 
 export const runtime = "nodejs";
 
-async function handleGET(req: NextRequest) {
+export async function GET(req: NextRequest) {
   const user = await getSessionUser(req);
   if (!user) return NextResponse.json({ error: "unauthorized" }, { status: 401 });
   try {
@@ -34,7 +33,7 @@ async function handleGET(req: NextRequest) {
   }
 }
 
-async function handlePOST(req: NextRequest) {
+export async function POST(req: NextRequest) {
   if (!hasTrustedMutationOrigin(req)) {
     return NextResponse.json({ ok: false, error: "forbidden_origin" }, { status: 403 });
   }
@@ -114,6 +113,3 @@ async function handlePOST(req: NextRequest) {
     return NextResponse.json({ ok: false, error: "server" }, { status: 500 });
   }
 }
-
-export const GET = withProjectRoute(handleGET);
-export const POST = withProjectRoute(handlePOST);

@@ -1,4 +1,3 @@
-import { withProjectRoute } from "@/lib/project-route";
 import { readJsonBodyValue } from "@/lib/bounded-request-body";
 import { NextRequest, NextResponse } from "next/server";
 import type { PoolClient } from "pg";
@@ -17,7 +16,6 @@ import { generationBindingValid } from "@/lib/generation-artifacts";
 import { configuredAppUrl } from "@/lib/password-reset";
 import {
   ProjectAccessError,
-  requireProjectPermission,
   requireSelectedProjectPermission,
 } from "@/lib/project-permissions";
 import { resolveProviderLiveWriteBoundary } from "@/lib/provider-write-boundary.mjs";
@@ -327,7 +325,7 @@ async function dispatchPublicationOperation(operation: OperationRow): Promise<Op
   return { ...operation, status: result.statuses[Number(operation.id)] ?? operation.status };
 }
 
-async function handlePOST(req: NextRequest) {
+export async function POST(req: NextRequest) {
   if (!hasTrustedMutationOrigin(req)) {
     return operationError("forbidden_origin", 403);
   }
@@ -382,7 +380,6 @@ async function handlePOST(req: NextRequest) {
   let committed = false;
   try {
     await tx.query("begin");
-    await requireProjectPermission(tx, user.id, projectId, "content.publish", { lock: true });
     // Only rows created before approved-revision lineage existed may replay by the
     // historical actor/idempotency contract. Every new publication is resolved by
     // its immutable approval below, independently of the publisher who clicked it.
@@ -1351,5 +1348,3 @@ async function handlePOST(req: NextRequest) {
     });
   }
 }
-
-export const POST = withProjectRoute(handlePOST);

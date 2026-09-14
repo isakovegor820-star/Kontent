@@ -1,4 +1,3 @@
-import { withProjectRoute } from "@/lib/project-route";
 import { randomUUID } from "node:crypto";
 
 import { readJsonBodyValue } from "@/lib/bounded-request-body";
@@ -19,7 +18,7 @@ function reply(body: Record<string, unknown>, status: number, requestId: string)
   });
 }
 
-async function handlePOST(req: NextRequest) {
+export async function POST(req: NextRequest) {
   const requestId = randomUUID();
   if (!hasTrustedMutationOrigin(req)) return reply({ ok: false, error: "forbidden_origin" }, 403, requestId);
   const user = await getSessionUser(req);
@@ -58,5 +57,3 @@ async function handlePOST(req: NextRequest) {
     return reply({ ok: false, error: "server" }, 500, requestId);
   }
 }
-
-export const POST = withProjectRoute(handlePOST);

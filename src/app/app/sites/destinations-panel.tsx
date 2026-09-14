@@ -1,5 +1,4 @@
 "use client";
-import { useProjectCall } from "@/lib/use-project-transport";
 
 import { useCallback, useEffect, useState } from "react";
 import { ExternalLink, Globe2, Lock, ShieldCheck, Unlock } from "lucide-react";
@@ -7,7 +6,7 @@ import { ExternalLink, Globe2, Lock, ShieldCheck, Unlock } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge, Card, Field, Input } from "@/components/ui/primitives";
 
-import { errorMessage, formatDate, requestJson as unscopedRequestJson } from "./client";
+import { errorMessage, formatDate, requestJson } from "./client";
 
 type Destination = {
   id: number;
@@ -35,7 +34,6 @@ type Props = {
 };
 
 export function DestinationsPanel({ siteId, verified, publishingMode, approvedStreak, autoUnlockStreak, hostedOrigin, brandName, onChanged }: Props) {
-  const requestJson = useProjectCall(unscopedRequestJson);
   const [destinations, setDestinations] = useState<Destination[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
@@ -51,7 +49,7 @@ export function DestinationsPanel({ siteId, verified, publishingMode, approvedSt
     } catch (caught) {
       setError(errorMessage((caught as { code?: string }).code, "Не удалось загрузить назначения."));
     }
-  }, [requestJson, siteId]);
+  }, [siteId]);
 
   // eslint-disable-next-line react-hooks/set-state-in-effect -- state changes only after the request settles
   useEffect(() => { void load(); }, [load]);
@@ -68,7 +66,7 @@ export function DestinationsPanel({ siteId, verified, publishingMode, approvedSt
     await load();
     onChanged();
     return true;
-  }, [requestJson, siteId, load, onChanged]);
+  }, [siteId, load, onChanged]);
 
   const remove = useCallback(async (kind: string) => {
     setBusy(`delete:${kind}`);
@@ -77,7 +75,7 @@ export function DestinationsPanel({ siteId, verified, publishingMode, approvedSt
     if (status >= 400) setError(errorMessage(body.error, "Не удалось отключить назначение."));
     await load();
     onChanged();
-  }, [requestJson, siteId, load, onChanged]);
+  }, [siteId, load, onChanged]);
 
   const patchSettings = useCallback(async (payload: Record<string, unknown>, key: string) => {
     setBusy(key);
@@ -89,7 +87,7 @@ export function DestinationsPanel({ siteId, verified, publishingMode, approvedSt
       return;
     }
     onChanged();
-  }, [requestJson, siteId, onChanged]);
+  }, [siteId, onChanged]);
 
   const wordpress = destinations.find((item) => item.kind === "wordpress" && item.status !== "disconnected");
   const hosted = destinations.find((item) => item.kind === "site_hosted" && item.status !== "disconnected");

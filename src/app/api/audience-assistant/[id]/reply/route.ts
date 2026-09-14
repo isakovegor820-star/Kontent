@@ -1,4 +1,3 @@
-import { withProjectRoute } from "@/lib/project-route";
 import { randomUUID } from "node:crypto";
 import type { NextRequest } from "next/server";
 
@@ -33,7 +32,7 @@ import {
 export const runtime = "nodejs";
 type Context = { params: Promise<{ id: string }> };
 
-async function handlePOST(request: NextRequest, { params }: Context) {
+export async function POST(request: NextRequest, { params }: Context) {
   const requestId = randomUUID();
   if (!hasTrustedMutationOrigin(request)) {
     return audienceAssistantJson({ ok: false, error: "forbidden_origin" }, 403, requestId);
@@ -209,5 +208,3 @@ async function handlePOST(request: NextRequest, { params }: Context) {
     return audienceAssistantApiError(error, requestId);
   }
 }
-
-export const POST = withProjectRoute(handlePOST);

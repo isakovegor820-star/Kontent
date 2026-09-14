@@ -1,4 +1,3 @@
-import { withProjectRoute } from "@/lib/project-route";
 // Д.5 — отправить недельный отчёт в Telegram-бот сейчас (обычно раз в неделю сам).
 
 import { NextRequest, NextResponse } from "next/server";
@@ -10,7 +9,7 @@ import { hasTrustedMutationOrigin } from "@/lib/request-origin";
 
 export const runtime = "nodejs";
 
-async function handlePOST(req: NextRequest) {
+export async function POST(req: NextRequest) {
   if (!hasTrustedMutationOrigin(req)) {
     return NextResponse.json({ ok: false, error: "forbidden_origin" }, { status: 403 });
   }
@@ -41,5 +40,3 @@ async function handlePOST(req: NextRequest) {
     return NextResponse.json({ ok: false, error: "server" }, { status: 500 });
   }
 }
-
-export const POST = withProjectRoute(handlePOST);

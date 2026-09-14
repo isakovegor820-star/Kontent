@@ -1,7 +1,4 @@
 "use client";
-import { projectUrl } from "@/lib/project-transport";
-import { useProjectFetch, useProjectStorageKey } from "@/lib/use-project-transport";
-
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
@@ -1117,7 +1114,7 @@ function ReportView({ report, analysisId }: { report: SiteReport; analysisId: nu
             ].map(([format, label]) => (
               <a
                 key={format}
-                href={projectUrl(`/api/site-analysis/${analysisId}/export?format=${format}`)}
+                href={`/api/site-analysis/${analysisId}/export?format=${format}`}
                 download
                 className="inline-flex min-h-10 items-center rounded-sm border border-line px-3 py-2 text-[12px] font-bold text-brand hover:border-brand/35 hover:bg-info-soft"
               >
@@ -1132,9 +1129,6 @@ function ReportView({ report, analysisId }: { report: SiteReport; analysisId: nu
 }
 
 export default function SiteAnalysisPage() {
-  const createKeySlot = useProjectStorageKey(CREATE_KEY_SLOT);
-  const selectedAnalysisSlot = useProjectStorageKey(SELECTED_ANALYSIS_SLOT);
-  const fetch = useProjectFetch();
   const [url, setUrl] = useState("");
   const [domain, setDomain] = useState("");
   const [domainEdited, setDomainEdited] = useState(false);
@@ -1161,7 +1155,7 @@ export default function SiteAnalysisPage() {
     } finally {
       setLoading(false);
     }
-  }, [fetch]);
+  }, []);
 
   const loadOne = useCallback(async (id: number) => {
     const sequence = ++requestSequence.current;
@@ -1173,11 +1167,11 @@ export default function SiteAnalysisPage() {
       body.analysis = withClientReceipt(body.analysis);
       setComparison(null);
       setCurrent(body.analysis);
-      availableSessionStorage()?.setItem(selectedAnalysisSlot, String(body.analysis.id));
+      availableSessionStorage()?.setItem(SELECTED_ANALYSIS_SLOT, String(body.analysis.id));
       setAnalyses((items) => [body.analysis!, ...items.filter((item) => item.id !== body.analysis!.id)]);
       if (TERMINAL.has(body.analysis.status)) {
         const storage = availableSessionStorage();
-        releaseStableSiteAnalysisKey(storage, createKeySlot, body.analysis.id);
+        releaseStableSiteAnalysisKey(storage, CREATE_KEY_SLOT, body.analysis.id);
         releaseStableSiteAnalysisKey(storage, retryKeySlot(body.analysis.id), body.analysis.id);
         if (createKeyRef.current?.analysisId === body.analysis.id) createKeyRef.current = null;
         if (retryKeyRef.current?.analysisId === body.analysis.id) retryKeyRef.current = null;
@@ -1190,18 +1184,18 @@ export default function SiteAnalysisPage() {
       }
       return null;
     }
-  }, [createKeySlot, selectedAnalysisSlot, fetch]);
+  }, []);
 
   // eslint-disable-next-line react-hooks/set-state-in-effect -- state changes only after the request settles
   useEffect(() => { void loadList(); }, [loadList]);
 
   useEffect(() => {
     if (loading || current || !analyses.length) return;
-    const selected = Number(availableSessionStorage()?.getItem(selectedAnalysisSlot));
+    const selected = Number(availableSessionStorage()?.getItem(SELECTED_ANALYSIS_SLOT));
     const initial = analyses.find((analysis) => analysis.id === selected) || analyses[0];
     // eslint-disable-next-line react-hooks/set-state-in-effect -- loadOne updates only after the detail request settles
     void loadOne(initial.id);
-  }, [analyses, current, loadOne, loading, selectedAnalysisSlot]);
+  }, [analyses, current, loadOne, loading]);
 
   useEffect(() => {
     if (!current || current.status !== "ready") return;
@@ -1213,7 +1207,7 @@ export default function SiteAnalysisPage() {
       })
       .catch(() => { if (!cancelled) setComparison(null); });
     return () => { cancelled = true; };
-  }, [current, fetch]);
+  }, [current]);
 
   useEffect(() => {
     if (!current || TERMINAL.has(current.status)) return;
@@ -1251,7 +1245,7 @@ export default function SiteAnalysisPage() {
       const fingerprint = siteAnalysisIntentFingerprint(normalizedInputUrl(url), domain);
       const keyRecord = acquireStableSiteAnalysisKey(
         availableSessionStorage(),
-        createKeySlot,
+        CREATE_KEY_SLOT,
         fingerprint,
         "site-analysis",
         createSiteAnalysisUuid,
@@ -1268,14 +1262,14 @@ export default function SiteAnalysisPage() {
       if (body.analysis) {
         createKeyRef.current = bindStableSiteAnalysisKey(
           availableSessionStorage(),
-          createKeySlot,
+          CREATE_KEY_SLOT,
           keyRecord,
           body.analysis.id,
         );
         setCurrent(body.analysis);
         setAnalyses((items) => [body.analysis!, ...items.filter((item) => item.id !== body.analysis!.id)]);
         if (TERMINAL.has(body.analysis.status)) {
-          releaseStableSiteAnalysisKey(availableSessionStorage(), createKeySlot, body.analysis.id);
+          releaseStableSiteAnalysisKey(availableSessionStorage(), CREATE_KEY_SLOT, body.analysis.id);
           createKeyRef.current = null;
         }
       }

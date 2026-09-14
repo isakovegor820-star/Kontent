@@ -1,4 +1,3 @@
-import { withProjectRoute } from "@/lib/project-route";
 import { randomUUID } from "node:crypto";
 import { NextRequest } from "next/server";
 
@@ -30,9 +29,9 @@ async function context(req: NextRequest, ctx: Context) {
   return { requestId, user, draftId };
 }
 
-async function handleGET(req: NextRequest, ctx: Context) {
+export async function GET(req: NextRequest, ctx: Context) {
   const resolved = await context(req, ctx);
-  if ("response" in resolved) return resolved.response!;
+  if ("response" in resolved) return resolved.response;
   try {
     const preferences = await getDraftPublicationPreferences(
       getPool(),
@@ -45,12 +44,12 @@ async function handleGET(req: NextRequest, ctx: Context) {
   }
 }
 
-async function handlePUT(req: NextRequest, ctx: Context) {
+export async function PUT(req: NextRequest, ctx: Context) {
   if (!hasTrustedMutationOrigin(req)) {
     return publicationSettingsJson({ ok: false, error: "forbidden_origin" }, 403);
   }
   const resolved = await context(req, ctx);
-  if ("response" in resolved) return resolved.response!;
+  if ("response" in resolved) return resolved.response;
   const rate = await checkRateLimit(`publication-preferences:user:${resolved.user.id}`, 120, 3_600, {
     failureMode: "closed",
   });
@@ -84,6 +83,3 @@ async function handlePUT(req: NextRequest, ctx: Context) {
     return publicationSettingsApiError(error, resolved.requestId);
   }
 }
-
-export const GET = withProjectRoute(handleGET);
-export const PUT = withProjectRoute(handlePUT);

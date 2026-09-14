@@ -1,4 +1,3 @@
-import { withProjectRoute } from "@/lib/project-route";
 import { createHash, randomUUID } from "node:crypto";
 
 import { NextRequest, NextResponse } from "next/server";
@@ -68,7 +67,7 @@ async function reservePreview(input: {
   }
 }
 
-async function handleGET(req: NextRequest) {
+export async function GET(req: NextRequest) {
   const requestId = randomUUID();
   const user = await getSessionUser(req);
   if (!user) return NextResponse.json({ ok: false, error: "unauthorized", requestId }, { status: 401 });
@@ -92,7 +91,7 @@ async function handleGET(req: NextRequest) {
   }
 }
 
-async function handlePOST(req: NextRequest) {
+export async function POST(req: NextRequest) {
   const requestId = randomUUID();
   if (!hasTrustedMutationOrigin(req)) {
     return NextResponse.json({ ok: false, error: "forbidden_origin", requestId }, { status: 403 });
@@ -217,6 +216,3 @@ async function handlePOST(req: NextRequest) {
     return NextResponse.json({ ok: false, error: "preview_unavailable", requestId }, { status: 503 });
   }
 }
-
-export const GET = withProjectRoute(handleGET);
-export const POST = withProjectRoute(handlePOST);

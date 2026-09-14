@@ -1,4 +1,3 @@
-import { withProjectRoute } from "@/lib/project-route";
 import { NextRequest, NextResponse } from "next/server";
 
 import { renderSiteReportExport, SITE_REPORT_EXPORT_FORMATS } from "@/lib/site-report/export.mjs";
@@ -10,7 +9,7 @@ export const runtime = "nodejs";
 
 type Context = { params: Promise<{ id: string; reportId: string }> };
 
-async function handleGET(req: NextRequest, context: Context) {
+export async function GET(req: NextRequest, context: Context) {
   const resolved = await resolveSiteRoute(req, "project.read", { label: "/api/sites/:id/reports/:reportId/export GET" });
   if (!resolved.ok) return resolved.response;
   const { requestId, pool } = resolved.context;
@@ -51,5 +50,3 @@ async function handleGET(req: NextRequest, context: Context) {
     return siteErrorResponse(error, "/api/sites/:id/reports/:reportId/export GET", requestId);
   }
 }
-
-export const GET = withProjectRoute(handleGET);

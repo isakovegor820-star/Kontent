@@ -1,6 +1,4 @@
 "use client";
-import { useProjectFetch } from "@/lib/use-project-transport";
-
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
@@ -22,7 +20,6 @@ import { cn } from "@/lib/utils";
 const confidenceLabel = { low: "Низкая уверенность", medium: "Средняя уверенность", high: "Высокая уверенность" } as const;
 
 export default function OpportunitiesPage() {
-  const fetch = useProjectFetch();
   const router = useRouter(); const searchParams = useSearchParams();
   const channel = searchParams.get("channel");
   const [items, setItems] = useState<OpportunitySnapshot[]>([]);
@@ -53,7 +50,7 @@ export default function OpportunitiesPage() {
       setSelectedId(null);
       setStatus("initial_error");
     }
-  }, [endpoint, fetch]);
+  }, [endpoint]);
   useEffect(() => {
     const timer = window.setTimeout(() => void load(), 0);
     return () => window.clearTimeout(timer);

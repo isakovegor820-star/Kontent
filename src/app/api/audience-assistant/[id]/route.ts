@@ -1,4 +1,3 @@
-import { withProjectRoute } from "@/lib/project-route";
 import { randomUUID } from "node:crypto";
 import type { NextRequest } from "next/server";
 
@@ -17,7 +16,7 @@ import {
 export const runtime = "nodejs";
 type Context = { params: Promise<{ id: string }> };
 
-async function handlePATCH(request: NextRequest, { params }: Context) {
+export async function PATCH(request: NextRequest, { params }: Context) {
   const requestId = randomUUID();
   if (!hasTrustedMutationOrigin(request)) {
     return audienceAssistantJson({ ok: false, error: "forbidden_origin" }, 403, requestId);
@@ -43,5 +42,3 @@ async function handlePATCH(request: NextRequest, { params }: Context) {
     return audienceAssistantApiError(error, requestId);
   }
 }
-
-export const PATCH = withProjectRoute(handlePATCH);

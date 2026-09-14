@@ -19,7 +19,7 @@ type FeedState = Snapshot & {
 export const LIBRARY_REFRESH_INTERVAL = 60_000;
 
 /** Poll the server without moving the material someone is reading. */
-export function useLibraryFeed(query: string, mutationBusy: boolean, scopedFetch: typeof fetch = fetch) {
+export function useLibraryFeed(query: string, mutationBusy: boolean) {
   const [feed, setFeed] = useState<FeedState>({
     items: [], pending: null, loading: true, refreshing: false, error: false, refreshError: false,
   });
@@ -41,7 +41,7 @@ export function useLibraryFeed(query: string, mutationBusy: boolean, scopedFetch
       ...current, loading: mode === "initial", refreshing: mode === "manual", refreshError: false,
     }));
     try {
-      const response = await scopedFetch(`/api/library/registry?${query}`, { cache: "no-store", signal: request.signal });
+      const response = await fetch(`/api/library/registry?${query}`, { cache: "no-store", signal: request.signal });
       const body = await response.json() as Snapshot & { ok?: boolean };
       if (!response.ok || !body.ok || !Array.isArray(body.items)) throw new Error("registry_failed");
       if (request.signal.aborted || requestId !== sequence.current) return;
@@ -69,7 +69,7 @@ export function useLibraryFeed(query: string, mutationBusy: boolean, scopedFetch
     } finally {
       if (controller.current === request) controller.current = null;
     }
-  }, [query, scopedFetch]);
+  }, [query]);
 
   useEffect(() => {
     loaded.current = false;

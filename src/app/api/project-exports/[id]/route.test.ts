@@ -1,6 +1,5 @@
-import { ProjectRequest } from "@/test/project-request";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { NextResponse } from "next/server";
+import { NextRequest, NextResponse } from "next/server";
 
 const mocks = vi.hoisted(() => ({
   getPool: vi.fn(() => ({})),
@@ -44,7 +43,7 @@ describe("project export operation route", () => {
   });
 
   it("reads an operation through the project-scoped service", async () => {
-    const response = await GET(new ProjectRequest(1, "http://localhost/api/project-exports/41"), context);
+    const response = await GET(new NextRequest("http://localhost/api/project-exports/41"), context);
     expect(response.status).toBe(200);
     expect(mocks.getProjectExportOperation).toHaveBeenCalledWith(expect.anything(), 9, "41");
   });
@@ -52,7 +51,7 @@ describe("project export operation route", () => {
   it("rejects cross-origin revocation before session lookup", async () => {
     mocks.hasTrustedMutationOrigin.mockReturnValue(false);
     const response = await DELETE(
-      new ProjectRequest(1, "http://localhost/api/project-exports/41", { method: "DELETE" }),
+      new NextRequest("http://localhost/api/project-exports/41", { method: "DELETE" }),
       context,
     );
     expect(response.status).toBe(403);

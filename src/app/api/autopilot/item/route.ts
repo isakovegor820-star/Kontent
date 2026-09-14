@@ -1,4 +1,3 @@
-import { withProjectRoute } from "@/lib/project-route";
 // Действия над одним постом плана: заменить, отклонить или поправить текст.
 // Одобрение всегда идёт через batch preview/confirm: один пост не может обойти проверку всего плана.
 
@@ -47,7 +46,7 @@ interface PlanItem {
   humanAttestation?: AutopilotApprovalItem["humanAttestation"];
 }
 
-async function handlePATCH(req: NextRequest) {
+export async function PATCH(req: NextRequest) {
   if (!hasTrustedMutationOrigin(req)) {
     return NextResponse.json({ ok: false, error: "forbidden" }, { status: 403 });
   }
@@ -391,5 +390,3 @@ async function handlePATCH(req: NextRequest) {
     return NextResponse.json({ ok: false, error: "server" }, { status: 500 });
   }
 }
-
-export const PATCH = withProjectRoute(handlePATCH);

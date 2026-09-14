@@ -1,6 +1,3 @@
-import { getPool } from "@/lib/db";
-import { ProjectAccessError, requireSelectedProjectPermission } from "@/lib/project-permissions";
-import { withProjectRoute } from "@/lib/project-route";
 // Волна 2 — подключение OAuth-сети (YouTube/Instagram/...). Шаг 1: старт.
 // Роут строит URL согласия только для сетей, для которых Композитор уже умеет создать
 // полноценный payload публикации. Наличие OAuth-конфига или worker-адаптера само по себе
@@ -35,7 +32,7 @@ function stateCookieOptions() {
   };
 }
 
-async function handleGET(req: NextRequest) {
+export async function GET(req: NextRequest) {
   const user = await getSessionUser(req);
   if (!user) {
     return NextResponse.redirect(new URL("/app/settings?oauth=unauthorized", req.url));
@@ -62,13 +59,6 @@ async function handleGET(req: NextRequest) {
     return NextResponse.redirect(new URL(`/app/settings?oauth=not_configured&network=${network}`, req.url));
   }
 
-  let projectId: number;
-  try {
-    projectId = (await requireSelectedProjectPermission(getPool(), user.id, "project.manage")).projectId;
-  } catch (error) {
-    if (!(error instanceof ProjectAccessError)) throw error;
-    return NextResponse.redirect(new URL(`/app/settings?oauth=forbidden&network=${network}`, req.url));
-  }
   const state = randomState();
   const pkce = randomPkce();
   const redirectUri = callbackUrlFromReq(req, network);
@@ -82,10 +72,8 @@ async function handleGET(req: NextRequest) {
   // state + verifier + сеть + пользователь — в HttpOnly-cookie до колбэка.
   res.cookies.set(
     OAUTH_STATE_COOKIE,
-    JSON.stringify({ state, verifier: pkce.verifier, network, userId: user.id, projectId }),
+    JSON.stringify({ state, verifier: pkce.verifier, network, userId: user.id }),
     stateCookieOptions(),
   );
   return res;
 }
-
-export const GET = withProjectRoute(handleGET);

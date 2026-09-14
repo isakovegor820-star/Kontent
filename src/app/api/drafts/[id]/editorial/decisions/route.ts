@@ -1,4 +1,3 @@
-import { withProjectRoute } from "@/lib/project-route";
 import { NextRequest } from "next/server";
 
 import {
@@ -19,7 +18,7 @@ export const runtime = "nodejs";
 
 type Context = { params: Promise<{ id: string }> };
 
-async function handlePOST(req: NextRequest, ctx: Context) {
+export async function POST(req: NextRequest, ctx: Context) {
   if (!hasTrustedMutationOrigin(req)) {
     return editorialJson({ ok: false, error: "forbidden_origin" }, 403, editorialRequestId());
   }
@@ -53,5 +52,3 @@ async function handlePOST(req: NextRequest, ctx: Context) {
     return editorialApiError(error, requestId);
   }
 }
-
-export const POST = withProjectRoute(handlePOST);

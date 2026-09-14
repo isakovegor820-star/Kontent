@@ -2,8 +2,6 @@
 import React from "react";
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
-import { setProjectTransport } from "@/lib/project-transport";
-import { projectJson } from "@/test/project-response";
 import TrendsPage from "./page";
 
 const mocks = vi.hoisted(() => ({ fetch: vi.fn(), push: vi.fn(), toast: vi.fn() }));
@@ -14,7 +12,7 @@ vi.mock("@/lib/store", () => ({ useStore: () => ({ toast: mocks.toast, realChann
 vi.mock("next/navigation", () => ({ useRouter: () => ({ push: mocks.push }) }));
 vi.mock("@/components/app/shell", () => ({ AppShell: ({ children }: { children: React.ReactNode }) => <main>{children}</main> }));
 
-function reply(body: object, status = 200) { return projectJson(7, body, { status }); }
+function reply(body: object, status = 200) { return { ok: status < 400, status, json: async () => body }; }
 function pending() {
   let resolve!: (value: ReturnType<typeof reply>) => void;
   const promise = new Promise<ReturnType<typeof reply>>(done => { resolve = done; });
@@ -36,14 +34,13 @@ async function submit(query: string) {
   await act(async () => {});
 }
 beforeEach(() => {
-  setProjectTransport(7, true, 1);
   vi.clearAllMocks();
   vi.stubGlobal("React", React);
   vi.stubGlobal("fetch", mocks.fetch);
   window.history.replaceState(null, "", "/app/trends?scope=internet&channel=11&period=week");
   mocks.fetch.mockImplementation(async (url: string) => reply(dataset(url)));
 });
-afterEach(() => { cleanup(); setProjectTransport(null); vi.unstubAllGlobals(); });
+afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
 
 it("keeps the newer query when a previous search acknowledges late, even if transport ignores abort", async () => {
   const old = pending();
@@ -77,8 +74,8 @@ it("reuses the key after an uncertain response and uses a new key after an ackno
   await submit("ремонт");
   await waitFor(() => expect(window.location.search).toContain("run=103"));
   const requests = mocks.fetch.mock.calls.filter(([, init]) => init?.method === "POST").map(([, init]) => init);
-  expect(new Headers(requests[0].headers).get("idempotency-key")).toBe(new Headers(requests[1].headers).get("idempotency-key"));
-  expect(new Headers(requests[2].headers).get("idempotency-key")).not.toBe(new Headers(requests[1].headers).get("idempotency-key"));
+  expect(requests[0].headers["idempotency-key"]).toBe(requests[1].headers["idempotency-key"]);
+  expect(requests[2].headers["idempotency-key"]).not.toBe(requests[1].headers["idempotency-key"]);
   expect(JSON.parse(requests[2].body)).toMatchObject({ scope: "telegram", period: "week", force: true });
 });
 
@@ -116,7 +113,7 @@ it("can retry a confirmed failed run immediately with a fresh request key", asyn
   await submit("ремонт");
   await waitFor(() => expect(window.location.search).toContain("run=102"));
   const requests = mocks.fetch.mock.calls.filter(([, init]) => init?.method === "POST").map(([, init]) => init);
-  expect(new Headers(requests[1].headers).get("idempotency-key")).not.toBe(new Headers(requests[0].headers).get("idempotency-key"));
+  expect(requests[1].headers["idempotency-key"]).not.toBe(requests[0].headers["idempotency-key"]);
 });
 
 it("ignores late dataset responses after changing the source mode", async () => {

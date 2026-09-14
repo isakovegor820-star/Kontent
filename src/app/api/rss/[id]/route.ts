@@ -1,4 +1,3 @@
-import { withProjectRoute } from "@/lib/project-route";
 // RSS-фид по id: DELETE — удалить, PATCH — пауза/возобновление, лимит.
 
 import { readJsonBodyValue } from "@/lib/bounded-request-body";
@@ -87,7 +86,7 @@ async function removeQueueJobs(postIds: number[]) {
   );
 }
 
-async function handleDELETE(_req: NextRequest, { params }: Params) {
+export async function DELETE(_req: NextRequest, { params }: Params) {
   if (!hasTrustedMutationOrigin(_req)) {
     return NextResponse.json({ ok: false, error: "forbidden_origin" }, { status: 403 });
   }
@@ -129,7 +128,7 @@ async function handleDELETE(_req: NextRequest, { params }: Params) {
   }
 }
 
-async function handlePATCH(req: NextRequest, { params }: Params) {
+export async function PATCH(req: NextRequest, { params }: Params) {
   if (!hasTrustedMutationOrigin(req)) {
     return NextResponse.json({ ok: false, error: "forbidden_origin" }, { status: 403 });
   }
@@ -218,6 +217,3 @@ async function handlePATCH(req: NextRequest, { params }: Params) {
     client.release();
   }
 }
-
-export const DELETE = withProjectRoute(handleDELETE);
-export const PATCH = withProjectRoute(handlePATCH);

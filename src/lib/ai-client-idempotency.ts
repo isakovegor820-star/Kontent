@@ -1,4 +1,3 @@
-import { captureProjectFetch } from "./project-transport";
 export interface AiClientRequestIdentity {
   fingerprint: string;
   key: string;
@@ -37,7 +36,7 @@ export async function acknowledgeAiTerminal(
   } = {},
 ): Promise<{ requestId: string | null; replayed: boolean; generationResultId: number }> {
   if (!/^[A-Za-z0-9:_-]{8,96}$/u.test(key)) throw new TypeError("invalid AI request key");
-  const fetchImpl = options.fetchImpl ?? captureProjectFetch();
+  const fetchImpl = options.fetchImpl ?? fetch;
   let response: Response;
   try {
     response = await fetchImpl("/api/ai/generate/ack", {

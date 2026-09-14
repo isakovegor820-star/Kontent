@@ -3,7 +3,6 @@ import type { Pool, PoolClient } from "pg";
 import { draftRevisionContentHash } from "./editorial-approval";
 import {
   normalizeProviderId,
-  assertProviderOperationAvailable,
   providerSupportsOperation,
 } from "./provider-capabilities.mjs";
 import {
@@ -509,10 +508,9 @@ export async function retryPublicationExtraOperation(input: {
     const locked = await client.query<Record<string, unknown>>(
       `select extra.id, extra.fingerprint, extra.status, extra.kind,
               extra.request_snapshot, extra.provider_started_at,
-              extra.last_error_code, extra.post_id, post.status as post_status, channel.network
+              extra.last_error_code, extra.post_id, post.status as post_status
          from publication_extra_operations extra
          join posts post on post.id = extra.post_id and post.project_id = extra.project_id
-         join channels channel on channel.id = extra.channel_id and channel.project_id = extra.project_id
         where extra.id = $1 and extra.project_id = $2
         for update of extra`,
       [operationId, membership.projectId],
@@ -526,8 +524,6 @@ export async function retryPublicationExtraOperation(input: {
       throw new PublicationReviewError("operation_not_retryable");
     }
     if (row.post_status !== "published") throw new PublicationReviewError("post_not_published");
-    assertProviderOperationAvailable(row.network, row.kind === "first_comment" ? "firstComment"
-      : row.kind === "configure_comments" ? "commentToggle" : "pin", { credentialState: "ready", permissionState: "ready" });
     const snapshot = row.request_snapshot as { providerId?: unknown } | null;
     const ambiguousTelegramComment = row.kind === "first_comment"
       && snapshot?.providerId === "tg"

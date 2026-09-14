@@ -1,4 +1,3 @@
-import { withProjectRoute } from "@/lib/project-route";
 import { NextRequest } from "next/server";
 
 import { readJsonBodyValue } from "@/lib/bounded-request-body";
@@ -13,7 +12,7 @@ type Context = { params: Promise<{ id: string }> };
 
 const STATUSES = new Set(["draft", "generating", "needs_review", "approved", "scheduled", "publishing", "published", "failed", "rejected", "retired"]);
 
-async function handleGET(req: NextRequest, context: Context) {
+export async function GET(req: NextRequest, context: Context) {
   const resolved = await resolveSiteRoute(req, "project.read", { label: "/api/sites/:id/articles GET" });
   if (!resolved.ok) return resolved.response;
   const { requestId, pool } = resolved.context;
@@ -33,7 +32,7 @@ async function handleGET(req: NextRequest, context: Context) {
  * Ручной материал (origin = manual) или запуск планирования (`{"plan": true}`).
  * Генерация всегда идёт через worker: у API нет права тратить ИИ-бюджет напрямую.
  */
-async function handlePOST(req: NextRequest, context: Context) {
+export async function POST(req: NextRequest, context: Context) {
   const resolved = await resolveSiteRoute(req, "content.create", { mutation: true, label: "/api/sites/:id/articles POST" });
   if (!resolved.ok) return resolved.response;
   const { requestId, pool, userId } = resolved.context;
@@ -59,6 +58,3 @@ async function handlePOST(req: NextRequest, context: Context) {
     return siteErrorResponse(error, "/api/sites/:id/articles POST", requestId);
   }
 }
-
-export const GET = withProjectRoute(handleGET);
-export const POST = withProjectRoute(handlePOST);

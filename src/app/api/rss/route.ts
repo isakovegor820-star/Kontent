@@ -1,6 +1,3 @@
-import { ProjectAccessError, requireSelectedProjectPermission } from "@/lib/project-permissions";
-import { saveRssSubscription, withRssChannel } from "@/lib/rss-subscriptions";
-import { withProjectRoute } from "@/lib/project-route";
 // RSS-ленты: GET — список фидов юзера, POST — добавить фид.
 
 import { readJsonBodyValue } from "@/lib/bounded-request-body";
@@ -14,7 +11,7 @@ import { hasTrustedMutationOrigin } from "@/lib/request-origin";
 
 export const runtime = "nodejs";
 
-async function handleGET(req: NextRequest) {
+export async function GET(req: NextRequest) {
   const user = await getSessionUser(req);
   if (!user) return NextResponse.json({ error: "unauthorized" }, { status: 401 });
 
@@ -24,7 +21,6 @@ async function handleGET(req: NextRequest) {
   }
 
   try {
-    const membership = await requireSelectedProjectPermission(getPool(), user.id, "project.read");
     const r = await getPool().query(
       `select f.id, f.url, f.title, f.channel_id, f.is_active, f.auto_publish_enabled,
               f.ai_summarize, f.source_kind,
@@ -51,10 +47,10 @@ async function handleGET(req: NextRequest) {
             where i.feed_id = f.id
               and i.fetched_at > now() - interval '24 hours'
          ) activity on true
-        where c.project_id = $1
+        where f.user_id = $1
           and ($2::text is null or f.source_kind = $2)
         order by f.created_at desc`,
-      [membership.projectId, sourceKind],
+      [user.id, sourceKind],
     );
     return NextResponse.json({
       feeds: r.rows.map((feed) => ({
@@ -66,13 +62,12 @@ async function handleGET(req: NextRequest) {
       })),
     });
   } catch (err) {
-    if (err instanceof ProjectAccessError) return NextResponse.json({ ok: false, error: "access_denied" }, { status: 403 });
     console.error("[/api/rss] GET", err);
     return NextResponse.json({ error: "server" }, { status: 500 });
   }
 }
 
-async function handlePOST(req: NextRequest) {
+export async function POST(req: NextRequest) {
   if (!hasTrustedMutationOrigin(req)) {
     return NextResponse.json({ ok: false, error: "forbidden_origin" }, { status: 403 });
   }
@@ -102,16 +97,13 @@ async function handlePOST(req: NextRequest) {
     return NextResponse.json({ ok: false, error: "no_channel" }, { status: 422 });
   }
 
-  try {
-    const membership = await requireSelectedProjectPermission(getPool(), user.id, "content.create");
-    const channel = await getPool().query(
-      "select id from channels where id = $1 and project_id = $2 and is_active", [channelId, membership.projectId],
-    );
-    if (!channel.rowCount) return NextResponse.json({ ok: false, error: "no_channel" }, { status: 422 });
-  } catch (error) {
-    if (error instanceof ProjectAccessError) return NextResponse.json({ ok: false, error: "access_denied" }, { status: 403 });
-    throw error;
-  }
+  // Проверяем, что канал принадлежит юзеру
+  const ch = await getPool().query(
+    `select id from channels
+      where id = $1 and user_id = $2 and is_active and network in ('tg', 'vk')`,
+    [channelId, user.id],
+  );
+  if (!ch.rowCount) return NextResponse.json({ ok: false, error: "no_channel" }, { status: 422 });
 
   const aiSummarize = body.aiSummarize !== false;
   const includeExisting = body.includeExisting === true;
@@ -144,24 +136,33 @@ async function handlePOST(req: NextRequest) {
   }
 
   try {
-    const saved = await withRssChannel(user.id, channelId, "content.create", (client) => saveRssSubscription(client, {
-      actorUserId: user.id, channelId, url, title, kind: "manual", aiSummarize,
-      publishExisting: includeExisting, maxPerDay,
-    }));
-    if (!saved) return NextResponse.json({ ok: false, error: "no_channel" }, { status: 422 });
+    const r = await getPool().query(
+      `insert into rss_feeds (
+         user_id, channel_id, url, title, is_active, ai_summarize, publish_existing,
+         source_kind, max_per_day, last_fetched_at
+       )
+       values ($1, $2, $3, $4, false, $5, $6, 'manual', $7, null)
+       on conflict (user_id, url) do update set
+         is_active = false,
+         channel_id = excluded.channel_id,
+         title = excluded.title,
+         ai_summarize = excluded.ai_summarize,
+         publish_existing = excluded.publish_existing,
+         source_kind = 'manual',
+         max_per_day = excluded.max_per_day,
+         last_fetched_at = null
+       returning id, is_active`,
+      [user.id, channelId, url, title, aiSummarize, includeExisting, maxPerDay],
+    );
     return NextResponse.json({
       ok: true,
-      id: saved.id,
+      id: Number(r.rows[0]?.id),
       title,
       itemCount,
-      isActive: saved.is_active,
+      isActive: Boolean(r.rows[0]?.is_active),
     });
   } catch (err) {
-    if (err instanceof ProjectAccessError) return NextResponse.json({ ok: false, error: "access_denied" }, { status: 403 });
     console.error("[/api/rss] POST", err);
     return NextResponse.json({ ok: false, error: "server" }, { status: 500 });
   }
 }
-
-export const GET = withProjectRoute(handleGET);
-export const POST = withProjectRoute(handlePOST);

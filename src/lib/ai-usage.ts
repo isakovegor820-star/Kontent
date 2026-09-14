@@ -3,7 +3,6 @@
 // что и для платного облака — сменим движок, не трогая продукт.
 
 import { getPool } from "./db";
-import { requireProjectPermission, requireSelectedProjectPermission } from "./project-permissions";
 import type { Pool, PoolClient } from "pg";
 import { createHash, randomUUID } from "node:crypto";
 import {
@@ -822,10 +821,7 @@ export async function styleSamplesFor(
   const safeLimit = Math.min(200, Math.max(1, Math.round(limit)));
   const r = await pool.query<{ text: string }>(
     `select text from posts
-      where project_id in (
-          select member.project_id from project_members member join projects project on project.id=member.project_id
-          where member.user_id=$1 and member.status='active' and project.is_archived=false
-        )
+      where user_id = $1
         and channel_id = $2
         and status = 'published'
         and verification_state = 'verified'
@@ -862,33 +858,28 @@ export async function channelAiContextFor(
   styleLimit = 10,
   pool: Pick<Pool, "query"> = getPool(),
 ): Promise<ChannelAiContext | null> {
-  const selectedProjectId = wantedChannelId == null
-    ? (await requireSelectedProjectPermission(pool, userId, "project.read")).projectId
-    : null;
   const channel = wantedChannelId
     ? (
         await pool.query<{ id: string; title: string | null; handle: string | null; network: string; project_id: string }>(
           `select id, title, handle, network, project_id
              from channels
-            where id = $1 and is_active = true`,
-          [wantedChannelId],
+            where id = $1 and user_id = $2 and is_active = true`,
+          [wantedChannelId, userId],
         )
       ).rows[0]
     : (
         await pool.query<{ id: string; title: string | null; handle: string | null; network: string; project_id: string }>(
           `select id, title, handle, network, project_id
              from channels
-            where project_id = $1 and is_active = true
+            where user_id = $1 and is_active = true
             order by id
             limit 1`,
-          [selectedProjectId],
+          [userId],
         )
       ).rows[0];
 
   if (!channel) return null;
   const channelId = Number(channel.id);
-  const projectId = Number(channel.project_id);
-  await requireProjectPermission(pool, userId, projectId, "project.read");
   const profileRows = (
     await pool.query<{
       id: string;
@@ -899,10 +890,10 @@ export async function channelAiContextFor(
     }>(
       `select id, kind, raw_text, status, added_at
          from knowledge_sources
-        where channel_id = $1 and kind in ('profile_edit', 'profile')
+        where user_id = $1 and channel_id = $2 and kind in ('profile_edit', 'profile')
         order by added_at desc
         limit 20`,
-      [channelId],
+      [userId, channelId],
     )
   ).rows;
   const brief = (
@@ -923,8 +914,8 @@ export async function channelAiContextFor(
       `select niche, audience, rubrics, formats, author_role, goal, cta, taboo,
               profile_answers, quality, ready, updated_at
          from content_brief
-        where project_id = $1 and channel_id = $2`,
-      [projectId, channelId],
+        where user_id = $1 and channel_id = $2`,
+      [userId, channelId],
     )
   ).rows[0];
   const candidates: ProfileCandidate[] = profileRows.map((row) => ({
@@ -1002,10 +993,10 @@ export async function channelAiContextFor(
     await pool.query<{ raw_text: string }>(
       `select raw_text
          from knowledge_sources
-        where channel_id = $1 and kind in ('form', 'paste') and status = 'ready'
+        where user_id = $1 and channel_id = $2 and kind in ('form', 'paste') and status = 'ready'
         order by added_at desc
         limit 4`,
-      [channelId],
+      [userId, channelId],
     )
   ).rows.map((row) => row.raw_text.trim()).filter(Boolean);
 
@@ -1014,8 +1005,8 @@ export async function channelAiContextFor(
   const publishedCount = Number((
     await pool.query<{ count: string }>(
       `select count(*)::text as count from posts
-        where project_id = $1 and channel_id = $2 and status = 'published'`,
-      [projectId, channelId],
+        where user_id = $1 and channel_id = $2 and status = 'published'`,
+      [userId, channelId],
     )
   ).rows[0]?.count ?? 0);
 

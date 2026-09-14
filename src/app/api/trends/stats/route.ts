@@ -1,6 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
 import { requireSelectedProjectPermission } from "@/lib/project-permissions";
-import { withProjectRoute } from "@/lib/project-route";
 import { resolveChannel } from "@/lib/autopilot";
 import { getPool } from "@/lib/db";
 import { getSessionUser } from "@/lib/session";
@@ -9,7 +8,7 @@ import { normalizeTrendTopic, parseTrendSort, parseTrendStatPeriod, parseTrendSt
 
 export const runtime = "nodejs";
 
-async function handleGET(req: NextRequest) {
+export async function GET(req: NextRequest) {
   const user = await getSessionUser(req);
   if (!user) return NextResponse.json({ error: "unauthorized" }, { status: 401 });
   const source = parseTrendStatSource(req.nextUrl.searchParams.get("source"));
@@ -47,5 +46,3 @@ async function handleGET(req: NextRequest) {
     return NextResponse.json({ error: "stats_unavailable" }, { status: 503 });
   }
 }
-
-export const GET = withProjectRoute(handleGET);

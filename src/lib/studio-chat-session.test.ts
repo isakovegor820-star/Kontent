@@ -4,7 +4,6 @@ import {
   mergeStudioChatSessions,
   parseStudioChatSession,
   serializeStudioChatSession,
-  shouldSendStudioSessionPageHide,
   stopStudioStreamingMessages,
   studioChatStorageKey,
   type StudioChatSession,
@@ -211,24 +210,6 @@ describe("studio chat session", () => {
     );
 
     expect(merged.draft).toBe("Набранный текст");
-  });
-
-  it("не отправляет pagehide-снимок до получения серверной ревизии", () => {
-    expect(shouldSendStudioSessionPageHide({
-      snapshotOwner: 17,
-      persistenceOwner: 17,
-      serverRevisionKnown: false,
-    })).toBe(false);
-    expect(shouldSendStudioSessionPageHide({
-      snapshotOwner: 17,
-      persistenceOwner: 18,
-      serverRevisionKnown: true,
-    })).toBe(false);
-    expect(shouldSendStudioSessionPageHide({
-      snapshotOwner: 17,
-      persistenceOwner: 17,
-      serverRevisionKnown: true,
-    })).toBe(true);
   });
 });
 
