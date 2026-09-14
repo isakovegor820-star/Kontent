@@ -1368,7 +1368,7 @@ function SettingsContent() {
               <span className="mb-2 block text-[13px] font-semibold text-text">Найти настройку</span>
               <span className="relative block">
               <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-text-3" aria-hidden />
-              <Input value={query} onChange={(event) => setQuery(event.currentTarget.value)} className="pl-9" placeholder="Например: UTM или тема" type="search" />
+              <Input data-discovery-target="settings-search" value={query} onChange={(event) => setQuery(event.currentTarget.value)} className="pl-9" placeholder="Например: UTM или тема" type="search" />
               </span>
             </label>
             <p role="status" className="sr-only">{searching ? `Найдено настроек: ${results.length}` : ""}</p>
