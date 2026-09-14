@@ -32,6 +32,13 @@ describe("production landing page", () => {
     expect(markup).toContain("Проверяйте риски и доказательства до публикации");
     expect(markup).toContain("Пример проверки материала");
     expect(markup).toContain("Что уже есть для юридического редактора");
+    expect(markup).toContain('data-editor-capability="evidence"');
+    expect(markup).toContain('data-editor-capability="sources"');
+    expect(markup).toContain('data-editor-capability="history"');
+    expect(markup).toContain('data-capability-scene="evidence"');
+    expect(markup).toContain("Карточка доказательства");
+    expect(markup).toContain("Юридические источники");
+    expect(markup).toContain("История согласования");
     expect(markup).toContain("Фактический статус рабочих контуров");
     expect(markup).toContain('data-access-card="editor"');
     expect(markup).toContain('data-access-card="telegram"');

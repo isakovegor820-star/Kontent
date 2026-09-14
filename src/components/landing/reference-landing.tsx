@@ -7,9 +7,6 @@ import {
   Check,
   ClipboardCheck,
   Clock3,
-  FileCheck2,
-  History,
-  Scale,
   Send,
   Settings2,
   ShieldCheck,
@@ -17,6 +14,7 @@ import {
 } from "lucide-react";
 import { Logo } from "@/components/brand";
 import { AccessStatusCards } from "./access-status-cards";
+import { EditorCapabilityCards } from "./editor-capability-cards";
 import { HeroProductScene } from "./hero-product-scene";
 import { LandingMobileNav } from "./landing-mobile-nav";
 import styles from "./reference-landing.module.css";
@@ -93,24 +91,6 @@ const steps = [
 
 const processRoutePath =
   "M 150 74 C 250 22 350 126 450 74 S 650 22 750 74 S 950 126 1050 74";
-
-const editorCapabilities: Feature[] = [
-  {
-    icon: <FileCheck2 aria-hidden="true" />,
-    title: "Карточка доказательства",
-    text: "Тип, содержание, источник и дата актуальности хранятся вместе с настройками материала.",
-  },
-  {
-    icon: <Scale aria-hidden="true" />,
-    title: "Юридические источники",
-    text: "Публичные ленты и разрешённые подключения отделены от закрытых и неподтверждённых данных.",
-  },
-  {
-    icon: <History aria-hidden="true" />,
-    title: "История согласования",
-    text: "Комментарии и решения относятся к конкретной версии и не теряются после правок.",
-  },
-];
 
 function SectionHeading({
   id,
@@ -383,15 +363,7 @@ export function ReferenceLanding() {
               title="Что уже есть для юридического редактора"
               description="Три контура, которые формируют проверяемый материал вместо безымянного текста от ИИ."
             />
-            <div className={styles.reviewGrid}>
-              {editorCapabilities.map((capability) => (
-                <article className={`${styles.reviewCard} ${styles.capabilityCard}`} key={capability.title}>
-                  <span className={styles.capabilityIcon}>{capability.icon}</span>
-                  <h3>{capability.title}</h3>
-                  <p>{capability.text}</p>
-                </article>
-              ))}
-            </div>
+            <EditorCapabilityCards />
           </div>
         </section>
 
