@@ -918,7 +918,10 @@ async function* streamOpenAi(
   requestTimeoutMs: number | null = 60_000,
   allowEmptyRetry = true,
 ): AsyncGenerator<string> {
-  const deepseek = runtime.id.startsWith("navy-deepseek");
+  // Engine ids are durable Aurora product slots, so model-specific request behavior must
+  // follow the actual provider model rather than the historical slot name.
+  const deepseek = runtime.model.startsWith("deepseek-");
+  const noReasoning = deepseek || runtime.model === "gpt-5.6-terra";
   const attempts = allowEmptyRetry && runtime.id.startsWith("navy-") ? 2 : 1;
   const requestSignal = withTimeout(signal, requestTimeoutMs);
   let inputTokens = 0;
@@ -933,8 +936,8 @@ async function* streamOpenAi(
     try {
       const source = streamOpenAiAttempt(runtime, attemptParams, requestSignal, {
         maxTokens: providerOutputTokens(runtime.id, outputTokens(p), attempt > 0),
-        reasoningEffort: deepseek ? "none" : undefined,
-        idempotencySuffix: deepseek
+        reasoningEffort: noReasoning ? "none" : undefined,
+        idempotencySuffix: noReasoning
           ? attempt > 0 ? "reasoning-none-expanded" : "reasoning-none"
           : attempt > 0 ? "visible-answer-expanded" : undefined,
       }, null);

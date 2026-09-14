@@ -346,7 +346,7 @@ else
         console.log(JSON.stringify({
           catalogStatus: catalog.status,
           modelCount: ids.length,
-          auroraEnginesPresent: ["gpt-5.4", "deepseek-v4-pro", "deepseek-v4-flash", "qwen3.6-27b", "minimax-m3"]
+          auroraEnginesPresent: ["qwen3.8-27b", "glm-5.3", "gpt-5.6-terra", "qwen3.6-27b", "deepseek-v4-flash"]
             .filter((id) => ids.includes(id)),
           sample: ids.slice(0, 40),
         }));
@@ -354,24 +354,14 @@ else
         console.log(JSON.stringify({ catalogFailure: String(error?.message || error).slice(0, 200) }));
       }
 
-      // Autopilot fails with `reasoning_without_content` (cut off mid-`<think>`) and
-      // `empty_generation` (no `content` at all) in roughly equal measure across every
-      // engine, so the question is not which model is broken but which request shape gets a
-      // visible answer out of this endpoint. Each variant isolates one knob: the deployed
-      // shape, an explicit thinking-disable, and a budget large enough to finish reasoning
-      // *and* answer. `reasoningChars` says whether the text is merely in the other field.
-      const thinkingOff = { chat_template_kwargs: { enable_thinking: false } };
+      // Probe the exact request shape deployed for every Aurora product slot.
+      // `reasoningChars` distinguishes a visible answer from hidden-only output.
       const variants = [
-        { label: "deepseek-v4-flash deployed shape", model: "deepseek-v4-flash", body: { max_tokens: 3000, reasoning_effort: "none" } },
-        { label: "deepseek-v4-flash budget=8000", model: "deepseek-v4-flash", body: { max_tokens: 8000, reasoning_effort: "none" } },
-        { label: "qwen3.6-27b deployed shape", model: "qwen3.6-27b", body: { max_tokens: 3000 } },
-        { label: "qwen3.6-27b enable_thinking=false", model: "qwen3.6-27b", body: { max_tokens: 3000, ...thinkingOff } },
-        { label: "qwen3.6-27b budget=8000", model: "qwen3.6-27b", body: { max_tokens: 8000 } },
-        { label: "minimax-m3 deployed shape", model: "minimax-m3", body: { max_tokens: 3000 } },
-        { label: "minimax-m3 enable_thinking=false", model: "minimax-m3", body: { max_tokens: 3000, ...thinkingOff } },
-        { label: "minimax-m3 budget=8000", model: "minimax-m3", body: { max_tokens: 8000 } },
-        { label: "gpt-5.4 deployed shape", model: "gpt-5.4", body: { max_tokens: 3000 } },
-        { label: "gpt-5.4 effort=none", model: "gpt-5.4", body: { max_tokens: 3000, reasoning_effort: "none" } },
+        { label: "Aurora Iskra / Qwen 3.8 27B", model: "qwen3.8-27b", body: { max_tokens: 3000 } },
+        { label: "Aurora Glubina / GLM-5.3", model: "glm-5.3", body: { max_tokens: 3000 } },
+        { label: "Aurora Redaktor / GPT-5.6 Terra", model: "gpt-5.6-terra", body: { max_tokens: 3000, reasoning_effort: "none" } },
+        { label: "Aurora Ritm / Qwen 3.6 27B", model: "qwen3.6-27b", body: { max_tokens: 3000 } },
+        { label: "Aurora Prizma / DeepSeek V4 Flash", model: "deepseek-v4-flash", body: { max_tokens: 3000, reasoning_effort: "none" } },
       ];
       for (const variant of variants) {
         const started = Date.now();

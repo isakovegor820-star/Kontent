@@ -1402,7 +1402,7 @@ describe("POST /api/ai/generate prerequisites", () => {
       fallbackUsed: true,
     }));
     const providerBodies = fetchMock.mock.calls.map((call) => JSON.parse(String(call[1]?.body)));
-    expect(providerBodies.map((body) => body.model)).toEqual(["deepseek-v4-flash", "qwen3.6-27b"]);
+    expect(providerBodies.map((body) => body.model)).toEqual(["qwen3.8-27b", "qwen3.6-27b"]);
     expect(mocks.commitAiUsageResult).not.toHaveBeenCalled();
     expect(mocks.releaseAiUsageRequest).not.toHaveBeenCalled();
     expect(mocks.stageGenerationResult).toHaveBeenCalled();
@@ -1508,8 +1508,8 @@ describe("POST /api/ai/generate prerequisites", () => {
     const headers = fetchMock.mock.calls.map((call) => new Headers(call[1]?.headers));
     const keys = headers.map((item) => item.get("idempotency-key"));
     expect(fetchMock).toHaveBeenCalledTimes(2);
-    expect(keys[0]).toMatch(/^[a-f0-9]{64}:reasoning-none$/u);
-    expect(keys[1]).toMatch(/^[a-f0-9]{64}:reasoning-none$/u);
+    expect(keys[0]).toMatch(/^[a-f0-9]{64}$/u);
+    expect(keys[1]).toMatch(/^[a-f0-9]{64}$/u);
     expect(keys[1]).not.toBe(keys[0]);
     expect(headers[1].get("x-request-id")).not.toBe(headers[0].get("x-request-id"));
     expect(mocks.stageGenerationResult).not.toHaveBeenCalled();

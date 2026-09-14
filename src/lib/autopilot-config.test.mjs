@@ -17,16 +17,14 @@ import {
 } from "./autopilot-config.mjs";
 
 describe("autopilot planning config", () => {
-  it("offers the engine it recommends first and demotes the one that cannot finish", () => {
-    // The dropdown renders this order, so leading with a model that never answers inside the
-    // attempt budget is how a channel ends up spending every draft on a timeout.
+  it("offers the recommended fast slot first and the depth slot last", () => {
     expect(AUTOPILOT_ENGINE_OPTIONS[0].id).toBe(DEFAULT_AUTOPILOT_ENGINE);
     expect(AUTOPILOT_ENGINE_OPTIONS.at(-1).id).toBe("navy-deepseek-pro");
     expect(AUTOPILOT_ENGINE_OPTIONS.map((option) => option.id)).toEqual([
       "navy-deepseek-flash",
-      "navy-minimax-m3",
-      "navy-gpt-5-4",
       "navy-qwen-3-6",
+      "navy-gpt-5-4",
+      "navy-minimax-m3",
       "navy-deepseek-pro",
     ]);
   });
@@ -35,12 +33,12 @@ describe("autopilot planning config", () => {
     expect(DEFAULT_AUTOPILOT_ENGINE).toBe("navy-deepseek-flash");
     expect(AUTOPILOT_FAST_FALLBACK_FLEET[0]).toBe("navy-deepseek-flash");
     expect(autopilotFallbackEngines("navy-gpt-5-4")[0]).toBe("navy-deepseek-flash");
-    // Recovery must not spend an attempt on the least reliable route first.
-    expect(AUTOPILOT_FAST_FALLBACK_FLEET.at(-1)).toBe("navy-gpt-5-4");
+    expect(AUTOPILOT_FAST_FALLBACK_FLEET.at(-1)).toBe("navy-deepseek-pro");
     expect(autopilotFallbackEngines("navy-deepseek-flash")).toEqual([
       "navy-qwen-3-6",
-      "navy-minimax-m3",
       "navy-gpt-5-4",
+      "navy-minimax-m3",
+      "navy-deepseek-pro",
     ]);
     expect(autopilotAiTimeouts({}).attemptTimeoutMs).toBe(30_000);
     expect(autopilotAiTimeouts({}).overallTimeoutMs).toBe(90_000);
