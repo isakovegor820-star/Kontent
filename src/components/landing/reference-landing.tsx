@@ -61,25 +61,36 @@ const features: Feature[] = [
 const steps = [
   {
     icon: <Settings2 aria-hidden="true" />,
+    tag: "Контекст",
     title: "Настройте проект",
     text: "Добавьте данные о практике, аудитории и правилах юридического контента.",
+    result: "Контекст собран",
   },
   {
     icon: <CalendarDays aria-hidden="true" />,
+    tag: "План",
     title: "Соберите контент-план",
     text: "Разложите темы по датам и подготовьте отдельные редактируемые материалы.",
+    result: "План готов",
   },
   {
     icon: <BookOpenCheck aria-hidden="true" />,
+    tag: "Проверка",
     title: "Привяжите доказательства",
     text: "Укажите источник, актуальность и допустимую формулировку для значимых фактов.",
+    result: "Источники связаны",
   },
   {
     icon: <Send aria-hidden="true" />,
+    tag: "Публикация",
     title: "Согласуйте и опубликуйте",
     text: "Подтвердите версию и отправьте её в Telegram. VK доступен после настройки интеграции.",
+    result: "Версия согласована",
   },
 ];
+
+const processRoutePath =
+  "M 150 74 C 250 22 350 126 450 74 S 650 22 750 74 S 950 126 1050 74";
 
 const editorCapabilities: Feature[] = [
   {
@@ -234,18 +245,69 @@ export function ReferenceLanding() {
               title="От идеи до согласованной публикации"
               description="Четыре шага сохраняют смысл, источники и ответственность за финальную версию."
             />
-            <ol className={styles.steps}>
-              {steps.map((step, index) => (
-                <li className={styles.step} key={step.title}>
-                  <div className={styles.stepTop}>
-                    <span className={styles.stepIcon}>{step.icon}</span>
-                    <span className={styles.stepNumber}>0{index + 1}</span>
-                  </div>
-                  <h3>{step.title}</h3>
-                  <p>{step.text}</p>
-                </li>
-              ))}
-            </ol>
+            <div className={styles.processBoard}>
+              <div className={styles.processAtmosphere} aria-hidden="true">
+                <span />
+                <span />
+              </div>
+              <svg
+                className={styles.processRoute}
+                viewBox="0 0 1200 150"
+                preserveAspectRatio="none"
+                aria-hidden="true"
+                focusable="false"
+              >
+                <defs>
+                  <linearGradient id="process-route-gradient" x1="0" y1="0" x2="1" y2="0">
+                    <stop offset="0" stopColor="#7aa2ff" stopOpacity="0" />
+                    <stop offset="0.16" stopColor="#2563ff" stopOpacity="0.72" />
+                    <stop offset="0.52" stopColor="#715cff" stopOpacity="0.72" />
+                    <stop offset="0.82" stopColor="#08a3c7" stopOpacity="0.72" />
+                    <stop offset="1" stopColor="#20a779" stopOpacity="0" />
+                  </linearGradient>
+                  <filter id="process-signal-glow" x="-200%" y="-200%" width="400%" height="400%">
+                    <feGaussianBlur stdDeviation="7" result="blur" />
+                    <feMerge>
+                      <feMergeNode in="blur" />
+                      <feMergeNode in="SourceGraphic" />
+                    </feMerge>
+                  </filter>
+                </defs>
+                <path className={styles.processRouteBase} d={processRoutePath} pathLength="1" />
+                <path className={styles.processRouteFlow} d={processRoutePath} pathLength="1" />
+                <g className={styles.processSignal} filter="url(#process-signal-glow)">
+                  <circle className={styles.processSignalHalo} r="13" />
+                  <circle className={styles.processSignalCore} r="4.5" />
+                  <animateMotion dur="7.2s" repeatCount="indefinite" path={processRoutePath} />
+                </g>
+                <g className={styles.processSignal} filter="url(#process-signal-glow)">
+                  <circle className={styles.processSignalHalo} r="10" />
+                  <circle className={styles.processSignalCore} r="3.5" />
+                  <animateMotion dur="7.2s" begin="-3.6s" repeatCount="indefinite" path={processRoutePath} />
+                </g>
+              </svg>
+              <ol className={styles.steps}>
+                {steps.map((step, index) => (
+                  <li className={styles.step} key={step.title}>
+                    <div className={styles.stepNode} aria-hidden="true">
+                      <span className={styles.stepIcon}>{step.icon}</span>
+                    </div>
+                    <article className={styles.stepCard}>
+                      <div className={styles.stepMeta}>
+                        <span className={styles.stepNumber}>Этап 0{index + 1}</span>
+                        <span className={styles.stepTag}>{step.tag}</span>
+                      </div>
+                      <h3>{step.title}</h3>
+                      <p>{step.text}</p>
+                      <span className={styles.stepResult}>
+                        <Check aria-hidden="true" />
+                        {step.result}
+                      </span>
+                    </article>
+                  </li>
+                ))}
+              </ol>
+            </div>
           </div>
         </section>
 

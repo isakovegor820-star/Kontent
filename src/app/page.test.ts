@@ -24,6 +24,11 @@ describe("production landing page", () => {
     expect(markup).toContain("Рабочий контур для юридической редакции");
     expect(markup).toContain("Планирование публикаций");
     expect(markup).toContain("От идеи до согласованной публикации");
+    expect(markup).toContain("Контекст собран");
+    expect(markup).toContain("План готов");
+    expect(markup).toContain("Источники связаны");
+    expect(markup).toContain("Версия согласована");
+    expect(markup).toContain("process-route-gradient");
     expect(markup).toContain("Проверяйте риски и доказательства до публикации");
     expect(markup).toContain("Пример проверки материала");
     expect(markup).toContain("Что уже есть для юридического редактора");
