@@ -6497,7 +6497,8 @@ async function buildAutopilotPlan(
     : configuredAiConcurrency(
         generationEngine,
         process.env,
-        generationEngine === "navy-minimax-m3" ? 2 : 3,
+        // The GLM depth route is slower and more expensive than the fast writing slots.
+        generationEngine === "navy-deepseek-pro" ? 2 : 3,
       );
   const targetedRepairIndexes = Array.isArray(repairIndexes)
     ? new Set(

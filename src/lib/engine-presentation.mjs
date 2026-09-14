@@ -1,5 +1,5 @@
-// Product names are shared by Studio and Autopilot. Provider IDs and model names
-// remain unchanged for routing, saved preferences and internal diagnostics.
+// Product names are shared by Studio and Autopilot. Durable engine ids remain unchanged
+// for saved preferences; provider model names stay internal and may evolve independently.
 export const ENGINE_PRESENTATION = Object.freeze({
   "navy-deepseek-pro": { label: "Аврора Глубина", note: "Развёрнутые материалы и подробная проработка темы." },
   "navy-deepseek-flash": { label: "Аврора Искра", note: "Повседневные посты, короткие тексты и новые варианты." },

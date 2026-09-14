@@ -68,7 +68,7 @@ describe("Autopilot ready-plan generation contract", () => {
     expect(source).toContain("{ throwOnUnavailable: true, acceptLengthLimitedOutput: true }");
     expect(source).toContain("coalesce(build_report, '{}'::jsonb) || $4::jsonb");
     expect(source).toContain("process.env.AUTOPILOT_SEMANTIC_ENGINE || DEFAULT_AUTOPILOT_ENGINE");
-    expect(source).toContain('generationEngine === "navy-minimax-m3" ? 2 : 3');
+    expect(source).toContain('generationEngine === "navy-deepseek-pro" ? 2 : 3');
   });
 
   it("keeps the settings mutex while requiring a separate human approval", () => {

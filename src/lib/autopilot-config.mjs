@@ -3,26 +3,14 @@
 // the public option lists.
 import { ENGINE_PRESENTATION } from "./engine-presentation.mjs";
 
-// This list is also the order the channel settings dropdown renders, so the first entry
-// reads as the recommendation. DeepSeek Pro used to lead it while being the one model that
-// does not answer inside the worker attempt budget at all, and a channel that picked it
-// spent every draft's first attempt waiting for a timeout. Reliability decides the order,
-// and the notes say plainly what a slow model costs.
+// This list is also the order the channel settings dropdown renders. The technical ids are
+// durable product slots; provider-facing names below document the model currently routed
+// through each slot, while ENGINE_PRESENTATION supplies the user-facing Aurora names.
 export const AUTOPILOT_ENGINE_OPTIONS = Object.freeze([
   {
     id: "navy-deepseek-flash",
-    label: "DeepSeek V4 Flash",
-    note: "Быстро и надёжно доводит план до конца — вариант по умолчанию.",
-  },
-  {
-    id: "navy-minimax-m3",
-    label: "MiniMax M3",
-    note: "Длинный контекст и вариативная подача, отвечает медленнее.",
-  },
-  {
-    id: "navy-gpt-5-4",
-    label: "GPT-5.4",
-    note: "Сильнее в сложной структуре и аккуратной редактуре.",
+    label: "Qwen 3.8 27B",
+    note: "Быстрый вариант по умолчанию.",
   },
   {
     id: "navy-qwen-3-6",
@@ -30,26 +18,32 @@ export const AUTOPILOT_ENGINE_OPTIONS = Object.freeze([
     note: "Экономный вариант для коротких постов и подборок.",
   },
   {
+    id: "navy-gpt-5-4",
+    label: "GPT-5.6 Terra",
+    note: "Структура и аккуратная редактура.",
+  },
+  {
+    id: "navy-minimax-m3",
+    label: "DeepSeek V4 Flash",
+    note: "Быстрые альтернативные варианты подачи.",
+  },
+  {
     id: "navy-deepseek-pro",
-    label: "DeepSeek V4 Pro",
-    note: "Самый подробный, но часто не укладывается в отведённое время.",
+    label: "GLM-5.3",
+    note: "Глубокая проработка, отвечает медленнее.",
   },
 ].map((engine) => ({ ...engine, ...ENGINE_PRESENTATION[engine.id] })));
 
-// DeepSeek Flash is the only Navy model that reliably finishes an Autopilot topic/post
-// inside the worker attempt budget. MiniMax and GPT-5.4 stay selectable, but they are
-// too slow or too bursty to be the automatic first hop.
+// The default product slot now routes to Qwen 3.8.
 export const DEFAULT_AUTOPILOT_ENGINE = "navy-deepseek-flash";
-// Fallback order is recovery order, so it must be ranked by observed reliability rather
-// than by capability. GPT-5.4 was the second hop while the upstream route behind it
-// answered every Autopilot request with a provider error, which spent one attempt of every
-// draft's budget before recovery could even begin. It stays in the fleet — the same route
-// recovers — but only after the models that actually complete a draft.
+// Fallback order is recovery order: stable Qwen routes first, then Terra, retained
+// DeepSeek Flash, and finally the slower GLM depth route.
 export const AUTOPILOT_FAST_FALLBACK_FLEET = Object.freeze([
   "navy-deepseek-flash",
   "navy-qwen-3-6",
-  "navy-minimax-m3",
   "navy-gpt-5-4",
+  "navy-minimax-m3",
+  "navy-deepseek-pro",
 ]);
 
 // A provider wave can fail without invalidating the plan. BullMQ retries the same durable

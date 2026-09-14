@@ -32,8 +32,7 @@ describe("shared direct/background AI completion service", () => {
     const fetchImpl = vi.fn(async () => Response.json({
       choices: [{ message: { content: "DONE" }, finish_reason: "stop" }],
     }));
-    // An unpinned surface must land on a route that answers. GPT-5.4 held this slot while
-    // returning HTTP 500 for every Autopilot request, so no unpinned plan could generate.
+    // An unpinned surface lands on the recommended fast product slot.
     expect(configuredServiceEngine(null, env)).toBe("navy-deepseek-flash");
     const result = await completeAiText(request, { env, fetchImpl });
 
@@ -47,7 +46,7 @@ describe("shared direct/background AI completion service", () => {
       expect.objectContaining({ method: "POST" }),
     );
     expect(JSON.parse(fetchImpl.mock.calls[0][1].body)).toMatchObject({
-      model: "deepseek-v4-flash",
+      model: "qwen3.8-27b",
       max_tokens: 3_000,
     });
   });
@@ -67,23 +66,39 @@ describe("shared direct/background AI completion service", () => {
     expect(headers.get("x-request-id")).toBe("req-site-analysis-41");
   });
 
-  it("gives every Navy engine room for hidden reasoning plus a visible answer", async () => {
-    // MiniMax and Qwen do not accept `reasoning_effort: "none"`, so a small budget was spent
-    // on reasoning and `content` came back empty. Autopilot read that as `empty_generation`
-    // on every draft until each engine's circuit opened and the fleet answered
-    // `provider_unavailable`.
+  it("gives a Qwen slot room for hidden reasoning plus a visible answer", async () => {
     const fetchImpl = vi.fn(async () => Response.json({
       choices: [{ message: { content: "DONE" }, finish_reason: "stop" }],
     }));
-    await completeAiText({ ...request, engine: "navy-minimax-m3", maxTokens: 60 }, {
+    await completeAiText({ ...request, engine: "navy-deepseek-flash", maxTokens: 60 }, {
       env: { NAVYAI_API_KEY: "secret", NAVYAI_API_URL: "https://navy.example/v1" },
       fetchImpl,
       allowFallback: false,
     });
 
     const body = JSON.parse(fetchImpl.mock.calls[0][1].body);
-    expect(body).toMatchObject({ model: "minimax-m3", max_tokens: 3_000 });
+    expect(body).toMatchObject({ model: "qwen3.8-27b", max_tokens: 3_000 });
     expect(body).not.toHaveProperty("reasoning_effort");
+  });
+
+  it.each([
+    ["navy-gpt-5-4", "gpt-5.6-terra", "none"],
+    ["navy-minimax-m3", "deepseek-v4-flash", "none"],
+    ["navy-deepseek-pro", "glm-5.3", undefined],
+  ])("bases reasoning policy for %s on its actual %s model", async (engine, model, reasoningEffort) => {
+    const fetchImpl = vi.fn(async () => Response.json({
+      choices: [{ message: { content: "DONE" }, finish_reason: "stop" }],
+    }));
+    await completeAiText({ ...request, engine }, {
+      env: { NAVYAI_API_KEY: "secret", NAVYAI_API_URL: "https://navy.example/v1" },
+      fetchImpl,
+      allowFallback: false,
+    });
+
+    const body = JSON.parse(fetchImpl.mock.calls[0][1].body);
+    expect(body).toMatchObject({ model });
+    if (reasoningEffort) expect(body.reasoning_effort).toBe(reasoningEffort);
+    else expect(body).not.toHaveProperty("reasoning_effort");
   });
 
   it("uses a surface-specific fallback fleet instead of an unhealthy local override", async () => {
@@ -132,11 +147,11 @@ describe("shared direct/background AI completion service", () => {
     expect(fetchImpl).toHaveBeenCalledTimes(2);
   });
 
-  it("recovers an Autopilot call by jumping to Flash instead of waiting on MiniMax", async () => {
+  it("recovers a stalled Terra call through the default Qwen slot", async () => {
     const env = { NAVYAI_API_KEY: "secret" };
     const fetchImpl = vi.fn((_url, init) => {
       const model = JSON.parse(init.body).model;
-      if (model === "gpt-5.4") {
+      if (model === "gpt-5.6-terra") {
         return new Promise((_resolve, reject) => {
           init.signal.addEventListener("abort", () => reject(init.signal.reason), { once: true });
         });
@@ -159,7 +174,7 @@ describe("shared direct/background AI completion service", () => {
       text: "Разбор :: Проверка оферты",
       fallbackUsed: true,
     });
-    expect(JSON.parse(fetchImpl.mock.calls[1][1].body).model).toBe("deepseek-v4-flash");
+    expect(JSON.parse(fetchImpl.mock.calls[1][1].body).model).toBe("qwen3.8-27b");
   });
 
   it("can disable provider fallback for one evidence-sensitive request", async () => {
