@@ -13,8 +13,14 @@ function Harness({ returnItemId }: { returnItemId?: string }) {
   return <AutopilotCalendar items={[pending, scheduled, blocked]} selected={selected} busy={false} channelName="Тестовый канал" storageKey="qa:autopilot" returnItemId={returnItemId}
     onSelect={(index) => setSelected((previous) => previous.has(index) ? new Set() : new Set([index]))} onSelectAll={(indexes) => setSelected(new Set(indexes))} onAdd={add} onEdit={edit} onReschedule={move} />;
 }
-beforeEach(() => { vi.stubGlobal("React", React); vi.clearAllMocks(); sessionStorage.clear(); });
-afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
+beforeEach(() => {
+  vi.useFakeTimers({ toFake: ["Date"] });
+  vi.setSystemTime(new Date("2026-09-07T12:00:00Z"));
+  vi.stubGlobal("React", React);
+  vi.clearAllMocks();
+  sessionStorage.clear();
+});
+afterEach(() => { cleanup(); vi.useRealTimers(); vi.unstubAllGlobals(); });
 
 describe("calendar inside Autopilot", () => {
   it("expands in place and selects only eligible posts, never already scheduled or blocked ones", () => {
