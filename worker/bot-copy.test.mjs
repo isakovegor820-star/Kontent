@@ -19,6 +19,13 @@ import {
 } from "./bot-copy.mjs";
 
 describe("Telegram competitor action copy", () => {
+  it("explains a connection transfer without claiming that the saved account was lost", () => {
+    const message = formatBotConnectionOnboarding({ available: true, moveRequired: true });
+    expect(message).toContain("Текущая связь сохранена");
+    expect(message).toContain("подтверди перенос");
+    expect(message).not.toContain("пока не связан");
+  });
+
   it("uses the platform-neutral action label", () => {
     expect(COMPETITOR_MECHANIC_ACTION_LABEL).toBe("Создать пост по механике");
     expect(COMPETITOR_MECHANIC_ACTION_LABEL).not.toContain("Сними это");

@@ -1,3 +1,4 @@
+import { telegramPollingRuntimeEnabled } from "./worker/telegram-polling-policy.mjs";
 import { parseTelegramPublicPage } from "./worker/telegram-public-page.mjs";
 import {
   claimRadarSearchRun, matureTrendBaseline, matureTrendRatio, trendHistoryBoundary,
@@ -344,6 +345,7 @@ import {
   consumeLegacyBotLink,
   createBotConnectionSession,
   disconnectBotChat,
+  getBotAccountConnection,
   maskBotAccountEmail,
   parseLegacyBotStartPayload,
 } from "./src/lib/bot-connection.mjs";
@@ -2441,13 +2443,17 @@ worker?.on("failed", (job, err) =>
 // добавляет секундный pending-count цикл перед каждым ответом.
 // ============================================================================
 
-const BOT_POLL = !AUTOPILOT_ONLY && !MEDIA_ONLY && !PUBLICATION_ONLY;
+const BOT_POLL = telegramPollingRuntimeEnabled(process.env);
+if (!BOT_POLL && TOKEN && !AUTOPILOT_ONLY && !MEDIA_ONLY && !PUBLICATION_ONLY) {
+  console.log("[bot] Приём команд отключён для этого процесса. Для локального тестового бота: отдельный токен и TG_POLLING_ENABLED=1. Привязки аккаунтов не изменены.");
+}
 const TELEGRAM_POLLING_OWNER = BOT_POLL ? createTelegramPollingLeaseOwner() : null;
 const TELEGRAM_POLLING_GUARD = BOT_POLL && TOKEN
   ? telegramPollingGuardConfiguration(TOKEN)
   : null;
 let telegramPollingLeaseHeld = false;
 let telegramPollingLeaseTimer = null;
+let telegramPollingLeaseRenewal = null;
 let telegramPollingQueueOpen = false;
 if (BOT_POLL && process.env.TG_WEBHOOK_URL) {
   console.warn("[bot] TG_WEBHOOK_URL игнорируется: webhook ingress не реализован, продолжаю long polling");
@@ -2456,17 +2462,7 @@ if (BOT_POLL && process.env.TG_WEBHOOK_URL) {
 function startTelegramPollingLeaseRenewal() {
   if (telegramPollingLeaseTimer || !TELEGRAM_POLLING_OWNER) return;
   telegramPollingLeaseTimer = setInterval(() => {
-    renewTelegramPollingLease(connection, TELEGRAM_POLLING_OWNER)
-      .then((renewed) => {
-        if (!renewed) {
-          telegramPollingLeaseHeld = false;
-          telegramPollingQueueOpen = false;
-        }
-      })
-      .catch(() => {
-        telegramPollingLeaseHeld = false;
-        telegramPollingQueueOpen = false;
-      });
+    void verifyTelegramPollingLease();
   }, TELEGRAM_POLLING_LEASE_RENEW_MS);
   telegramPollingLeaseTimer.unref();
 }
@@ -2478,14 +2474,38 @@ function stopTelegramPollingLeaseRenewal() {
 }
 
 async function ensureTelegramPollingLease() {
-  if (telegramPollingLeaseHeld) return true;
+  if (shutdownStarted) return false;
+  if (telegramPollingLeaseHeld) return verifyTelegramPollingLease();
   if (!TELEGRAM_POLLING_OWNER) return false;
   telegramPollingLeaseHeld = await acquireTelegramPollingLease(
     connection,
     TELEGRAM_POLLING_OWNER,
   );
+  if (shutdownStarted && telegramPollingLeaseHeld) {
+    await releaseTelegramPollingLease(connection, TELEGRAM_POLLING_OWNER).catch(() => false);
+    telegramPollingLeaseHeld = false;
+    return false;
+  }
   if (telegramPollingLeaseHeld) startTelegramPollingLeaseRenewal();
   return telegramPollingLeaseHeld;
+}
+
+async function verifyTelegramPollingLease() {
+  if (telegramPollingLeaseRenewal) return telegramPollingLeaseRenewal;
+  if (!telegramPollingLeaseHeld || !TELEGRAM_POLLING_OWNER) return false;
+  telegramPollingLeaseRenewal = (async () => {
+    const renewed = await renewTelegramPollingLease(connection, TELEGRAM_POLLING_OWNER).catch(() => false);
+    if (!renewed) {
+      telegramPollingLeaseHeld = false;
+      telegramPollingQueueOpen = false;
+    }
+    return renewed;
+  })();
+  try {
+    return await telegramPollingLeaseRenewal;
+  } finally {
+    telegramPollingLeaseRenewal = null;
+  }
 }
 
 async function refreshTelegramPollingHeartbeat(state = "up") {
@@ -2503,23 +2523,26 @@ async function waitForTelegramPollingConflict(cooldownMs) {
   while (!shutdownStarted && Date.now() < deadline) {
     await sleep(Math.min(30_000, Math.max(0, deadline - Date.now())));
     if (!shutdownStarted && Date.now() < deadline) {
+      if (!(await verifyTelegramPollingLease())) break;
       await refreshTelegramPollingHeartbeat("conflict").catch(() => {});
     }
   }
 }
 
 async function enableTelegramPollingGuard() {
-  if (!TELEGRAM_POLLING_GUARD) return false;
+  if (!TELEGRAM_POLLING_GUARD || !(await verifyTelegramPollingLease())) return false;
   const response = await tg("setWebhook", TELEGRAM_POLLING_GUARD, 10_000).catch(() => null);
   return response?.ok === true;
 }
 
 async function openTelegramPollingQueue() {
+  if (shutdownStarted) return false;
   // Arm the guard once before switching receive modes. This cancels an old in-flight
   // getUpdates request; the Redis lease then keeps normal Aurora workers singular.
   if (!(await enableTelegramPollingGuard())) {
     return false;
   }
+  if (shutdownStarted || !(await verifyTelegramPollingLease())) return false;
   const opened = await tg("deleteWebhook", { drop_pending_updates: false }, 10_000).catch(() => null);
   telegramPollingQueueOpen = opened?.ok === true;
   return telegramPollingQueueOpen;
@@ -2576,7 +2599,7 @@ async function botMenu(userId) {
   const project = await botProject(userId);
   if (!project) {
     return {
-      text: "Текущий проект не выбран. Выбери проект в Авроре, затем нажми нужную кнопку ещё раз.",
+      text: "Аккаунт подключён, но текущий проект не выбран или недоступен. Выбери проект командой /projects. Настройки каждого проекта сохранены.",
     };
   }
   await pool.query(
@@ -2720,6 +2743,18 @@ async function botRuntimeConnectionState() {
   }
 }
 
+async function botDisconnectPrompt(userId) {
+  const connection = await getBotAccountConnection(pool, userId);
+  if (!connection.connectionKey) return { text: "Этот чат уже отключён от аккаунта.", buttons: [] };
+  return {
+    text: formatBotDisconnectConfirmation(),
+    buttons: [
+      [{ text: "Отключить этот чат", data: `connection:disconnect_confirm:${connection.connectionKey}` }],
+      [{ text: "Отмена", data: "connection:disconnect_cancel" }],
+    ],
+  };
+}
+
 async function botConnectionStatus(userId) {
   const [account, project, runtime] = await Promise.all([
     pool.query(`select name, email from users where id = $1`, [userId]).then((result) => result.rows[0] ?? null),
@@ -2836,7 +2871,7 @@ async function botConnectionOnboarding(chatId, from, options = {}) {
   const connectBase = botAppUrl("/bot/connect", { allowLocalHttp: true });
   if (!connectBase) {
     return {
-      text: formatBotConnectionOnboarding({ available: false, disconnected: options.disconnected }),
+      text: formatBotConnectionOnboarding({ available: false, disconnected: options.disconnected, moveRequired: options.moveRequired }),
       buttons: [],
     };
   }
@@ -2854,6 +2889,7 @@ async function botConnectionOnboarding(chatId, from, options = {}) {
           available: true,
           localLink: !inlineButtonReady,
           disconnected: options.disconnected,
+          moveRequired: options.moveRequired,
         }),
         ...(!inlineButtonReady ? ["", url.toString()] : []),
       ].join("\n"),
@@ -2876,7 +2912,7 @@ async function botSendConnectionOnboarding(chatId, from, options = {}) {
 /** Кто написал и разрешён ли ему bot-only доступ. */
 async function userByChat(chatId) {
   return (await pool.query(
-    `select app_user.id, coalesce(control.enabled, true) as enabled
+    `select app_user.id, (app_user.blocked_at is null and coalesce(control.enabled, true)) as enabled
        from users app_user left join bot_user_controls control on control.user_id = app_user.id
       where app_user.tg_chat_id = $1`,
     [chatId],
@@ -3006,9 +3042,22 @@ async function handleTelegramChannelMembership(update) {
   return true;
 }
 
-/** /start <код> — привязка чата к аккаунту. Код одноразовый и живёт 15 минут. */
+/** Returning to the bot reads durable identity; it must not restart onboarding. */
+async function botResumeAccount(chatId) {
+  const account = await userByChat(chatId);
+  if (!account) return false;
+  if (account.enabled === false) {
+    await tgSend(chatId, "Доступ к боту временно приостановлен администратором Авроры. Данные аккаунта и проекты сохранены.");
+  } else {
+    await botSendMenu(chatId, Number(account.id));
+  }
+  return true;
+}
+
+/** /start resumes the account; only a fresh explicit link can connect a new chat. */
 async function handleStart(chatId, from, code) {
   if (!code) {
+    if (await botResumeAccount(chatId)) return;
     return botSendConnectionOnboarding(chatId, from);
   }
 
@@ -3020,9 +3069,16 @@ async function handleStart(chatId, from, code) {
   });
 
   if (link.state === "invalid") {
+    // The token expires, not the account. Never replay a stale channel intent or
+    // replace the stored project when an old settings link is opened again.
+    if (await botResumeAccount(chatId)) return;
     // Не говорим «неверный код» — код мог просто протухнуть, человек не виноват.
     await tgSend(chatId, "Ссылка устарела — они живут 15 минут. Открой «Настройки» в Авроре и нажми «Подключить бота» ещё раз.");
     return;
+  }
+
+  if (link.state === "move_required") {
+    return botSendConnectionOnboarding(chatId, from, { moveRequired: true });
   }
 
   if (link.state === "account_disabled") {
@@ -10545,10 +10601,8 @@ async function handleUpdate(u) {
         return void (await botSendPrimaryAction(chatId, userId, "notifications"));
       }
       if (command?.command === "disconnect") {
-        return void (await tgSend(chatId, formatBotDisconnectConfirmation(), [
-          [{ text: "Отключить этот чат", data: "connection:disconnect_confirm" }],
-          [{ text: "Отмена", data: "connection:disconnect_cancel" }],
-        ]));
+        const prompt = await botDisconnectPrompt(userId);
+        return void (await tgSend(chatId, prompt.text, prompt.buttons));
       }
       if (command?.command === "cancel") {
         return void (await tgSend(chatId, await botCancelActiveConversation(userId), [
@@ -10636,22 +10690,26 @@ async function handleUpdate(u) {
         }
         if (action === "disconnect") {
           await answerCb(cb.id, "Нужно подтверждение");
+          const prompt = await botDisconnectPrompt(userId);
           return void (await tgReplaceOrSend(
             chatId,
             cb.message?.message_id,
-            formatBotDisconnectConfirmation(),
-            [
-              [{ text: "Отключить этот чат", data: "connection:disconnect_confirm" }],
-              [{ text: "Отмена", data: "connection:disconnect_cancel" }],
-            ],
+            prompt.text,
+            prompt.buttons,
           ));
         }
         if (action === "disconnect_confirm") {
           const disconnected = await disconnectBotChat(pool, {
             userId,
             telegramChatId: Number(chatId),
+            expectedConnectionKey: id,
           });
-          await answerCb(cb.id, disconnected ? "Чат отключён" : "Чат уже отключён");
+          if (!disconnected) {
+            await answerCb(cb.id, "Подтверждение устарело. Связь не изменена.");
+            const prompt = await botDisconnectPrompt(userId);
+            return void (await tgReplaceOrSend(chatId, cb.message?.message_id, prompt.text, prompt.buttons));
+          }
+          await answerCb(cb.id, "Чат отключён");
           const onboarding = await botConnectionOnboarding(chatId, cb.from, { disconnected: true });
           return void (await tgReplaceOrSend(
             chatId,
@@ -10936,20 +10994,7 @@ async function handleUpdate(u) {
  */
 async function pollUpdates() {
   if (!TOKEN || !BOT_POLL) return;
-  const discussionSync = await syncTelegramDiscussionChats(pool, tg).catch((error) => {
-    console.error("[bot] не удалось сверить группы обсуждений:", error?.message);
-    return null;
-  });
-  if (discussionSync) {
-    console.log(
-      `[bot] Telegram-каналы сверены: ${discussionSync.synchronized}/${discussionSync.total}`
-      + (discussionSync.attention ? `, требуют внимания: ${discussionSync.attention}` : ""),
-    );
-  }
-  const commandSetup = await tg("setMyCommands", { commands: TELEGRAM_BOT_COMMANDS }).catch(() => null);
-  if (commandSetup?.ok !== true) {
-    console.error("[bot] не удалось обновить меню команд Telegram");
-  }
+  let telegramMenuConfigured = false;
   console.log("[bot] готов принять lease для команд (быстрый Telegram long polling)");
   const updateFailures = new Map();
   let consecutivePollingConflicts = 0;
@@ -10959,6 +11004,21 @@ async function pollUpdates() {
       if (!(await ensureTelegramPollingLease())) {
         await sleep(5_000);
         continue;
+      }
+      if (!telegramMenuConfigured) {
+        const discussionSync = await syncTelegramDiscussionChats(pool, tg).catch((error) => {
+          console.error("[bot] не удалось сверить группы обсуждений:", error?.message);
+          return null;
+        });
+        if (discussionSync) {
+          console.log(`[bot] Telegram-каналы сверены: ${discussionSync.synchronized}/${discussionSync.total}`
+            + (discussionSync.attention ? `, требуют внимания: ${discussionSync.attention}` : ""));
+        }
+        if (!(await verifyTelegramPollingLease()) || shutdownStarted) continue;
+        const commandSetup = await tg("setMyCommands", { commands: TELEGRAM_BOT_COMMANDS }).catch(() => null);
+        telegramMenuConfigured = commandSetup?.ok === true;
+        if (!telegramMenuConfigured) console.error("[bot] не удалось обновить меню команд Telegram");
+        if (!(await verifyTelegramPollingLease()) || shutdownStarted) continue;
       }
       if (!telegramPollingQueueOpen && !(await openTelegramPollingQueue())) {
         await sleep(2_000);
@@ -10972,6 +11032,9 @@ async function pollUpdates() {
         { offset, timeout: 25, limit: 100, allowed_updates: TELEGRAM_POLLING_GUARD?.allowed_updates },
         35_000,
       ).catch(() => null);
+      // Check Redis, not only the last timer result: ownership can change while a
+      // Telegram request or a long command is in flight.
+      if (!(await verifyTelegramPollingLease())) continue;
       if (!r?.ok) {
         telegramPollingQueueOpen = false;
         if (/conflict/i.test(r?.description || "")) {
@@ -10997,7 +11060,9 @@ async function pollUpdates() {
       // conflict/stale until a successful response confirms the still-owned receive loop.
       await refreshTelegramPollingHeartbeat();
       for (const u of Array.isArray(r.result) ? r.result : []) {
+        if (shutdownStarted || !(await verifyTelegramPollingLease())) break;
         const outcome = await handleUpdate(u);
+        if (shutdownStarted || !(await verifyTelegramPollingLease())) break;
         if (outcome?.retry) {
           const failure = nextTelegramUpdateFailure(updateFailures.get(u.update_id));
           if (failure.retry) {
@@ -11019,7 +11084,7 @@ async function pollUpdates() {
             errorCode: outcome.errorCode || "retry_exhausted",
           });
         }
-        await pool.query(`update bot_state set last_update = $1, updated_at = now() where id = 1`, [
+        await pool.query(`update bot_state set last_update = greatest(last_update, $1), updated_at = now() where id = 1`, [
           u.update_id,
         ]);
         updateFailures.delete(u.update_id);

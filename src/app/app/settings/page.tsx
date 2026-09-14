@@ -53,7 +53,7 @@ import {
   SettingsPreviewPanel,
 } from "@/components/app/settings-sections";
 import { TrackingSettingsSection } from "@/components/app/tracking-settings-section";
-import { Button } from "@/components/ui/button";
+import { Button, buttonClassName } from "@/components/ui/button";
 import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import {
   Badge,
@@ -890,20 +890,25 @@ function BotLink() {
   const s = useStore();
   const [phase, setPhase] = useState<"loading" | "ready" | "error">("loading");
   const [linked, setLinked] = useState(false);
+  const [connectionKey, setConnectionKey] = useState<string | null>(null);
+  const [unlinkTarget, setUnlinkTarget] = useState<string | null>(null);
   const [bot, setBot] = useState<string | null>(null);
   const [botStatus, setBotStatus] = useState<"up" | "down" | "not_configured" | "conflict">("not_configured");
   const [busy, setBusy] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
   const pollTimers = useRef<number[]>([]);
   const requestSeq = useRef(0);
+  const botActionPending = useRef(false);
 
   const load = useCallback(async () => {
+    if (botActionPending.current) return;
     const seq = ++requestSeq.current;
     try {
       const response = await fetch("/api/bot/link", { cache: "no-store" });
       const status = await parseBotLinkStatusResponse(response);
       if (seq !== requestSeq.current) return;
       setLinked(status.linked);
+      setConnectionKey(status.connectionKey ?? null);
       setBot(status.bot);
       setBotStatus(status.botStatus);
       setActionError(null);
@@ -917,7 +922,15 @@ function BotLink() {
   useEffect(() => {
     // eslint-disable-next-line react-hooks/set-state-in-effect -- load updates state only after the request settles
     void load();
+    // Connecting may take longer than the initial polling window. Refresh when
+    // returning from Telegram, including an already-open settings tab.
+    const onFocus = () => { void load(); };
+    const onVisible = () => { if (document.visibilityState === "visible") void load(); };
+    window.addEventListener("focus", onFocus);
+    document.addEventListener("visibilitychange", onVisible);
     return () => {
+      window.removeEventListener("focus", onFocus);
+      document.removeEventListener("visibilitychange", onVisible);
       requestSeq.current += 1;
       for (const timer of pollTimers.current) window.clearTimeout(timer);
     };
@@ -931,6 +944,7 @@ function BotLink() {
 
   const connect = async () => {
     if (busy || botStatus !== "up") return;
+    botActionPending.current = true;
     requestSeq.current += 1;
     setActionError(null);
     setBusy(true);
@@ -941,6 +955,7 @@ function BotLink() {
         url?: string;
         error?: string;
         needs?: string;
+        linked?: boolean;
       } | null;
       if (d?.error === "bot_not_configured") {
         const message = `Нужно имя бота в ${d.needs ?? "TG_BOT_USERNAME"} — без него ссылку не собрать.`;
@@ -958,6 +973,11 @@ function BotLink() {
       }
 
       window.open(d.url, "_blank", "noopener");
+      if (d.linked) {
+        setLinked(true);
+        s.toast({ kind: "info", title: "Бот уже подключён", body: "Аккаунт и настройки сохранены. Можно продолжить работу в Telegram." });
+        return;
+      }
       s.toast({
         kind: "info",
         title: "Открыл Telegram",
@@ -973,21 +993,27 @@ function BotLink() {
       setActionError("Не удалось создать ссылку на бота. Статус подключения не изменён.");
       s.toast({ kind: "danger", title: "Не получилось", body: "Проверь соединение." });
     } finally {
+      botActionPending.current = false;
       setBusy(false);
     }
   };
 
   const disconnect = async () => {
-    if (busy) return;
+    if (busy || !unlinkTarget) return;
+    botActionPending.current = true;
     requestSeq.current += 1;
     for (const timer of pollTimers.current) window.clearTimeout(timer);
     pollTimers.current = [];
     setActionError(null);
     setBusy(true);
     try {
-      const response = await fetch("/api/bot/link", { method: "DELETE" });
+      const response = await fetch("/api/bot/link", {
+        method: "DELETE", headers: { "content-type": "application/json" },
+        body: JSON.stringify({ confirm: true, connectionKey: unlinkTarget }),
+      });
       await requireBotUnlinkSuccess(response);
       setLinked(false);
+      setConnectionKey(null);
       s.toast({
         kind: "info",
         title: "Бот отвязан",
@@ -998,6 +1024,8 @@ function BotLink() {
       setPhase("error");
       s.toast({ kind: "danger", title: "Статус бота неизвестен", body: message });
     } finally {
+      setUnlinkTarget(null);
+      botActionPending.current = false;
       setBusy(false);
     }
   };
@@ -1027,6 +1055,7 @@ function BotLink() {
   const botAvailable = botStatus === "up";
 
   return linked ? (
+    <>
     <div
       role="status"
       aria-live="polite"
@@ -1063,16 +1092,31 @@ function BotLink() {
         </p>
       )}
       <div className="mt-3 flex flex-wrap gap-2">
+        {bot ? (
+          <a href={`https://t.me/${bot}`} target="_blank" rel="noopener noreferrer" className={buttonClassName({ size: "sm", variant: "outline" })}>
+            Открыть бота
+          </a>
+        ) : null}
         {!botAvailable ? (
           <Button size="sm" variant="outline" onClick={retryLoad} loading={busy}>
             Проверить снова
           </Button>
         ) : null}
-        <Button size="sm" variant="ghost" onClick={disconnect} loading={busy}>
+        <Button size="sm" variant="ghost" onClick={() => { if (connectionKey) setUnlinkTarget(connectionKey); else retryLoad(); }} loading={busy}>
           Отвязать чат
         </Button>
       </div>
     </div>
+    <ConfirmDialog
+      open={unlinkTarget !== null}
+      title="Отключить чат от Авроры?"
+      description="Команды и уведомления в этом Telegram-чате остановятся. Аккаунт, проекты, каналы и настройки сохранятся."
+      confirmLabel="Отключить чат"
+      busy={busy}
+      onCancel={() => setUnlinkTarget(null)}
+      onConfirm={() => { void disconnect(); }}
+    />
+    </>
   ) : (
     <div
       role="status"

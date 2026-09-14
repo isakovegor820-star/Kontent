@@ -114,12 +114,15 @@ export function formatBotConnectionOnboarding(input) {
   const disconnected = input?.disconnected === true;
   const available = input?.available !== false;
   const localLink = input?.localLink === true;
+  const moveRequired = input?.moveRequired === true;
   return [
     disconnected ? "Чат отключён от Авроры" : "✦ Подключение к Авроре",
     "",
     disconnected
       ? "Команды и уведомления в этом чате остановлены. Проекты и публикации сохранены."
-      : "Этот чат пока не связан с аккаунтом Авроры.",
+      : moveRequired
+        ? "Чат или аккаунт уже подключён. Текущая связь сохранена. Чтобы изменить её, проверь аккаунт в Авроре и подтверди перенос."
+        : "Этот чат пока не связан с аккаунтом Авроры.",
     "",
     available
       ? localLink
