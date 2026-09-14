@@ -1,4 +1,5 @@
 import type { ReactNode } from "react";
+import "@fontsource-variable/onest/wght.css";
 import {
   ArrowRight,
   BookOpenCheck,
@@ -15,6 +16,7 @@ import {
   UsersRound,
 } from "lucide-react";
 import { Logo } from "@/components/brand";
+import { AccessStatusCards } from "./access-status-cards";
 import { HeroProductScene } from "./hero-product-scene";
 import { LandingMobileNav } from "./landing-mobile-nav";
 import styles from "./reference-landing.module.css";
@@ -107,24 +109,6 @@ const editorCapabilities: Feature[] = [
     icon: <History aria-hidden="true" />,
     title: "История согласования",
     text: "Комментарии и решения относятся к конкретной версии и не теряются после правок.",
-  },
-];
-
-const accessCards = [
-  {
-    title: "Редактор и контент-план",
-    note: "Основной рабочий контур для подготовки юридического контента.",
-    features: ["Черновики и календарь", "Источники и доказательства", "Настройки тона, включая необязательный мат"],
-  },
-  {
-    title: "Telegram",
-    note: "Подключение канала, расписание и серверная публикация.",
-    features: ["Публикация по расписанию", "Статусы и история операций", "Повторная попытка без дублей"],
-  },
-  {
-    title: "ВКонтакте",
-    note: "Доступность зависит от настроенного приложения и тестового сообщества.",
-    features: ["Подключение сообщества", "Проверка разрешений", "Статус готовности внутри проекта"],
   },
 ];
 
@@ -418,17 +402,7 @@ export function ReferenceLanding() {
               title="Фактический статус рабочих контуров"
               description="Доступность каждого контура обозначена прямо и соответствует текущей конфигурации продукта."
             />
-            <div className={`${styles.pricingGrid} ${styles.accessGrid}`}>
-              {accessCards.map((card) => (
-                <article className={`${styles.priceCard} ${styles.accessCard}`} key={card.title}>
-                  <h3>{card.title}</h3>
-                  <p className={styles.planNote}>{card.note}</p>
-                  <ul>
-                    {card.features.map((feature) => <li key={feature}><Check aria-hidden="true" />{feature}</li>)}
-                  </ul>
-                </article>
-              ))}
-            </div>
+            <AccessStatusCards />
             <div className={styles.accessAction}>
               <a className={styles.secondaryButton} href="/register">
                 Создать аккаунт
