@@ -420,6 +420,14 @@ export function classifyE2eExpectedSessionExpiryWebKitPageError({
   }
   const expectedPaths = {
     "/app/calendar": ["/api/drafts", "/api/projects", "/api/projects/current"],
+    // WebKit can report cancelled loaders against the outgoing document while
+    // the expiry test's navigation to Calendar is still provisional.
+    "/app/settings": [
+      "/api/legal-sources",
+      "/api/bot/link",
+      "/api/tracking/settings",
+      "/api/tracking/templates",
+    ],
     "/app/studio": [
       "/api/studio/session",
       "/api/settings",

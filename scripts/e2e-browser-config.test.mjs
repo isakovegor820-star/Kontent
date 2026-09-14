@@ -446,7 +446,7 @@ describe("real E2E browser configuration", () => {
     })).toBeNull();
   });
 
-  it("classifies only exact WebKit loader cancellations inside the Calendar expiry window", () => {
+  it("classifies only exact WebKit loader cancellations inside the session-expiry window", () => {
     const baseUrl = "https://127.0.0.1:43190";
     const input = {
       active: true,
@@ -488,6 +488,18 @@ describe("real E2E browser configuration", () => {
         message: `/127.0.0.1:43190${path} due to access control checks.`,
       })?.detail).toBe(path);
     }
+    for (const path of [
+      "/api/legal-sources",
+      "/api/bot/link",
+      "/api/tracking/settings",
+      "/api/tracking/templates",
+    ]) {
+      expect(classifyE2eExpectedSessionExpiryWebKitPageError({
+        ...input,
+        currentUrl: `${baseUrl}/app/settings?section=integrations&setting=utm`,
+        message: `/127.0.0.1:43190${path} due to access control checks.`,
+      })?.detail).toBe(path);
+    }
     for (const override of [
       { active: false },
       { engine: "firefox" },
@@ -500,6 +512,8 @@ describe("real E2E browser configuration", () => {
       { message: "/127.0.0.1:43190/api/drafts failed with 500" },
       { currentUrl: `${baseUrl}/app/today` },
       { currentUrl: `${baseUrl}/app/studio`, message: "/127.0.0.1:43190/api/drafts due to access control checks." },
+      { currentUrl: `${baseUrl}/app/settings`, message: "/127.0.0.1:43190/api/settings due to access control checks." },
+      { currentUrl: `${baseUrl}/app/settings`, message: "/127.0.0.1:43190/api/legal-sources?unexpected=1 due to access control checks." },
       { currentUrl: "https://example.com/app/calendar" },
       { baseUrl: "https://localhost:43190" },
       { webPort: 43191 },
