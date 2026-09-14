@@ -1,7 +1,10 @@
+import { readFileSync } from "node:fs";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { baselineCoverage, normalizeTopicKey, opportunityConfidence, opportunityExpiry, opportunityFingerprint, release1Enabled } from "./content-intelligence";
 import type { GrowthMoveRecord } from "./growth";
+
+const source = readFileSync(new URL("./content-intelligence.ts", import.meta.url), "utf8");
 
 function move(overrides: Partial<GrowthMoveRecord> = {}): GrowthMoveRecord {
   return {
@@ -57,5 +60,15 @@ describe("Release 1 opportunity baseline", () => {
     const posts = ["Предоплата и конфликт с клиентом: порядок разговора", "Как составить оферту"];
     expect(baselineCoverage("Предоплата без конфликта с клиентом", posts)).toBe(1);
     expect(baselineCoverage("Налоговый вычет для семьи", posts)).toBe(0);
+  });
+
+  it("returns only fresh snapshots from the exact channel scope", () => {
+    expect(source).toContain("snapshot.project_id = $1 and snapshot.channel_id = $2");
+    expect(source).toContain("snapshot.expires_at > now()");
+  });
+
+  it("reads the stored independent angle when creating source context", () => {
+    expect(source).toContain("independent_angle as angle");
+    expect(source).not.toContain("select id, channel_id, title, angle,");
   });
 });
