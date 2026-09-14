@@ -15,5 +15,5 @@ export function materializeOpportunitySnapshots(
   moves: GrowthMoveRecord[],
 ): Promise<{ candidates: number; inserted: number }>;
 export function materializeAllOpportunitySnapshots(
-  db: Queryable,
+  db: Pool,
 ): Promise<{ channels: number; inserted: number; failed: number }>;

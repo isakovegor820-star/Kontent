@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { buildGrowthMoves, growthWeekStart, loadSignals, persistGrowthCandidates } from "./growth-candidates.mjs";
 
 export const OPPORTUNITY_FORMULA_VERSION = "opportunity-baseline-v1";
 
@@ -72,7 +73,7 @@ function evidenceObject(move, coverage) {
 /** Materializes immutable revision 1 snapshots. Replays are safe by both scoped uniques. */
 export async function materializeOpportunitySnapshots(db, scope, moves) {
   const candidates = moves.filter(
-    (move) => move.kind === "topic" && move.sourceKind === "competitor_post" && move.sourceId,
+    (move) => ["topic", "offer", "audience"].includes(move.kind) && move.sourceId,
   );
   if (candidates.length === 0) return { candidates: 0, inserted: 0 };
   const ownPostTexts = (await db.query(
@@ -155,7 +156,7 @@ async function recordOpportunityRefresh(db, scope, state, errorCode = null) {
   );
 }
 
-/** Worker/scheduler entry point. Existing growth moves are refreshed without an HTTP actor. */
+/** Worker/scheduler entry point. Discover new candidates without an HTTP visit. */
 export async function materializeAllOpportunitySnapshots(db) {
   const channels = (await db.query(
     `select channel.project_id, channel.id as channel_id
@@ -173,6 +174,25 @@ export async function materializeAllOpportunitySnapshots(db) {
   for (const channel of channels) {
     const scope = { projectId: Number(channel.project_id), channelId: Number(channel.channel_id) };
     try {
+      const signals = await loadSignals(db, scope);
+      const weekStart = growthWeekStart();
+      const client = await db.connect();
+      try {
+        await client.query("begin");
+        await client.query("select pg_advisory_xact_lock(hashtextextended($1, 0))", [`growth:${scope.channelId}:${weekStart}`]);
+        await persistGrowthCandidates(client, scope, buildGrowthMoves(signals, 100), weekStart);
+        await client.query(
+          `update growth_moves set action_href = case when kind = 'rhythm'
+             then '/app/autopilot?growthMove=' || id || '&channel=' || channel_id
+             else '/app/studio?growthMove=' || id || '&channel=' || channel_id || '&intent=create' end
+           where project_id = $1 and channel_id = $2 and week_start = $3 and action_href = '/app/growth'`,
+          [scope.projectId, scope.channelId, weekStart],
+        );
+        await client.query("commit");
+      } catch (error) {
+        await client.query("rollback");
+        throw error;
+      } finally { client.release(); }
       const moves = (await db.query(
         `select id, week_start::text, kind, confidence, title, prompt, source_kind,
                 source_id, fingerprint, evidence

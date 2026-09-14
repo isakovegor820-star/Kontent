@@ -60,7 +60,7 @@ function atomicPool(options: { failActionUpdateOnce?: boolean } = {}) {
     query: vi.fn(async (sql: string, values?: unknown[]) => {
       if (sql.includes("from growth_moves move")) return { rows: [] };
       if (sql.includes("from posts post") && sql.includes("interval '90 days'")) return { rows: [] };
-      if (sql.includes("from growth_moves")) {
+      if (sql.includes("from growth_moves") && !sql.includes("insert into growth_moves")) {
         return { rows: committed.filter((move) => move.week_start === String(values?.[1])) };
       }
       return readSignals(sql);
@@ -77,7 +77,7 @@ function atomicPool(options: { failActionUpdateOnce?: boolean } = {}) {
             await previous;
             return { rows: [] };
           }
-          if (sql.includes("from growth_moves")) {
+          if (sql.includes("from growth_moves") && !sql.includes("insert into growth_moves")) {
             const week = String(values?.[1]);
             return { rows: [...committed, ...staged].filter((move) => move.week_start === week) };
           }
