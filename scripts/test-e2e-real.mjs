@@ -1798,11 +1798,17 @@ async function waitForResponsiveLayout(targetPage) {
     requestAnimationFrame(() => requestAnimationFrame(resolveFrame));
   }));
   await targetPage.waitForFunction(() => {
-    const shell = [...document.querySelectorAll("div")]
-      .find((element) => element.classList.contains("lg:pl-[260px]"));
-    if (!shell) return true;
+    // Follow the actual shell and sidebar geometry; a renamed width utility must
+    // not silently skip this wait while the browser is changing breakpoints.
+    const sidebar = document.querySelector('aside nav[aria-label="Разделы платформы"]')?.closest("aside");
+    if (!sidebar) return true; // Public/admin screens do not use AppShell.
+    const shell = sidebar.closest(".app-v3")?.querySelector("main#main")?.parentElement;
+    if (!shell) return false;
     const desktop = matchMedia("(min-width: 64rem)").matches;
-    return getComputedStyle(shell).paddingLeft === (desktop ? "260px" : "0px");
+    const sidebarWidth = sidebar.getBoundingClientRect().width;
+    if (desktop && sidebarWidth === 0) return false;
+    const expectedPadding = desktop ? sidebarWidth : 0;
+    return Math.abs(parseFloat(getComputedStyle(shell).paddingLeft) - expectedPadding) < 0.5;
   }, undefined, { timeout: UI_WAIT_TIMEOUT_MS });
 }
 
