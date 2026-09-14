@@ -3515,6 +3515,10 @@ try {
     keyPrefix: "e2e-publication-typography",
   });
 
+  // Resolve the immediate publication slot at mutation time. The approval and
+  // typography setup above can cross the API's one-minute clock-skew boundary.
+  const publicationOperationInstant = new Date();
+  publicationOperationInstant.setUTCSeconds(0, 0);
   const operationRequest = {
     method: "POST",
     headers: { "idempotency-key": "e2e_publication_pipeline_1" },
@@ -3522,6 +3526,14 @@ try {
       draftId: publicationDraft.id,
       draftVersion: publicationDraft.version,
       timezone: "UTC",
+      schedule: {
+        scheduledAt: publicationOperationInstant.toISOString(),
+        localDate: publicationOperationInstant.toISOString().slice(0, 10),
+        localTime: publicationOperationInstant.toISOString().slice(11, 16),
+        timezone: "UTC",
+        offset: "+00:00",
+        disambiguation: "reject",
+      },
     },
   };
   const [operationLeft, operationRight] = await Promise.all([
