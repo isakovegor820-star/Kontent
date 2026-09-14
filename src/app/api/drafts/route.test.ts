@@ -1,11 +1,11 @@
+import { ProjectRequest } from "@/test/project-request";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { NextRequest } from "next/server";
 import { ProjectAccessError } from "@/lib/project-permissions";
 
 const mocks = vi.hoisted(() => ({
   getSessionUser: vi.fn(),
   createDraftForUser: vi.fn(),
-  listDraftsForUser: vi.fn(),
+  listDraftPageForUser: vi.fn(),
 }));
 
 vi.mock("@/lib/session", () => ({ getSessionUser: mocks.getSessionUser }));
@@ -14,7 +14,7 @@ vi.mock("@/lib/server-drafts", async (importOriginal) => {
   return {
     ...actual,
     createDraftForUser: mocks.createDraftForUser,
-    listDraftsForUser: mocks.listDraftsForUser,
+    listDraftPageForUser: mocks.listDraftPageForUser,
   };
 });
 
@@ -53,7 +53,7 @@ describe("POST /api/drafts", () => {
 
   it("requires a session before touching the model", async () => {
     mocks.getSessionUser.mockResolvedValue(null);
-    const response = await POST(new NextRequest("http://localhost/api/drafts", {
+    const response = await POST(new ProjectRequest(1, "http://localhost/api/drafts", {
       method: "POST",
       body: JSON.stringify(body),
     }));
@@ -63,7 +63,7 @@ describe("POST /api/drafts", () => {
   });
 
   it("rejects a cross-origin mutation before reading the session", async () => {
-    const response = await POST(new NextRequest("http://localhost/api/drafts", {
+    const response = await POST(new ProjectRequest(1, "http://localhost/api/drafts", {
       method: "POST",
       headers: { origin: "https://attacker.example", "sec-fetch-site": "cross-site" },
       body: JSON.stringify(body),
@@ -75,8 +75,8 @@ describe("POST /api/drafts", () => {
   });
 
   it("maps a missing selected-project membership to access denied", async () => {
-    mocks.listDraftsForUser.mockRejectedValue(new ProjectAccessError("membership_required"));
-    const response = await GET(new NextRequest("http://localhost/api/drafts"));
+    mocks.listDraftPageForUser.mockRejectedValue(new ProjectAccessError("membership_required"));
+    const response = await GET(new ProjectRequest(1, "http://localhost/api/drafts"));
 
     expect(response.status).toBe(403);
     await expect(response.json()).resolves.toEqual({ ok: false, error: "access_denied" });
@@ -84,7 +84,7 @@ describe("POST /api/drafts", () => {
 
   it("returns 200 and the same draft for an idempotency replay", async () => {
     mocks.createDraftForUser.mockResolvedValue({ draft, created: false });
-    const response = await POST(new NextRequest("http://localhost/api/drafts", {
+    const response = await POST(new ProjectRequest(1, "http://localhost/api/drafts", {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify(body),
@@ -105,7 +105,7 @@ describe("POST /api/drafts", () => {
       aiValidation: null,
       generationResultId: null,
     };
-    const request = new NextRequest("http://localhost/api/drafts", {
+    const request = new ProjectRequest(1, "http://localhost/api/drafts", {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify(referenceBody),
@@ -124,7 +124,7 @@ describe("POST /api/drafts", () => {
 
   it("does not turn a create permission failure into a server error", async () => {
     mocks.createDraftForUser.mockRejectedValue(new ProjectAccessError("permission_denied"));
-    const response = await POST(new NextRequest("http://localhost/api/drafts", {
+    const response = await POST(new ProjectRequest(1, "http://localhost/api/drafts", {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify(body),

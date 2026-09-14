@@ -1,3 +1,4 @@
+import { withProjectRoute } from "@/lib/project-route";
 import { randomUUID } from "node:crypto";
 import { NextRequest } from "next/server";
 
@@ -14,7 +15,7 @@ function dateParam(value: string | null) {
   return Number.isNaN(date.getTime()) ? new Date(Number.NaN) : date;
 }
 
-export async function GET(req: NextRequest) {
+async function handleGET(req: NextRequest) {
   const requestId = randomUUID();
   const user = await getSessionUser(req);
   if (!user) return trackingJson({ ok: false, error: "unauthorized" }, 401, requestId);
@@ -29,3 +30,5 @@ export async function GET(req: NextRequest) {
     return trackingApiError(error, requestId);
   }
 }
+
+export const GET = withProjectRoute(handleGET);

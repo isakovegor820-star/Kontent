@@ -1,4 +1,6 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { setProjectTransport } from "./project-transport";
+import { ProjectResponse } from "@/test/project-response";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { loadLatestTypographyRun } from "./typography-client";
 
@@ -19,7 +21,7 @@ describe("typography client persistence", () => {
   afterEach(() => vi.unstubAllGlobals());
 
   it("loads a durable review for the exact server draft", async () => {
-    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({
+    const fetchMock = vi.fn().mockResolvedValue(new ProjectResponse(7, JSON.stringify({
       ok: true,
       run: persistedRun,
     }), { status: 200, headers: { "content-type": "application/json" } }));
@@ -33,7 +35,7 @@ describe("typography client persistence", () => {
   });
 
   it("rejects malformed server state instead of inventing a review", async () => {
-    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(JSON.stringify({
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new ProjectResponse(7, JSON.stringify({
       ok: true,
       run: { ...persistedRun, rejectedSuggestionIds: "typ-a1" },
     }), { status: 200 })));
@@ -41,3 +43,6 @@ describe("typography client persistence", () => {
     await expect(loadLatestTypographyRun(41)).rejects.toThrow("invalid_response");
   });
 });
+
+beforeEach(() => setProjectTransport(7, true, 5));
+afterEach(() => setProjectTransport(null));

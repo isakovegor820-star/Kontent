@@ -1,4 +1,5 @@
-import { NextRequest, NextResponse } from "next/server";
+import { ProjectRequest } from "@/test/project-request";
+import { NextResponse } from "next/server";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
@@ -30,7 +31,7 @@ vi.mock("@/lib/legal-visual-render-queue.mjs", () => ({
 import { POST } from "./route";
 
 function request() {
-  return new NextRequest("http://localhost/api/legal-visuals/9/renders", {
+  return new ProjectRequest(1, "http://localhost/api/legal-visuals/9/renders", {
     method: "POST",
     headers: {
       origin: "http://localhost",

@@ -1,3 +1,4 @@
+import { withProjectRoute } from "@/lib/project-route";
 // Библиотека сохранённых постов. GET — список, POST — сохранить, DELETE — удалить.
 
 import { readJsonBodyValue } from "@/lib/bounded-request-body";
@@ -10,7 +11,7 @@ import { hasTrustedMutationOrigin } from "@/lib/request-origin";
 
 export const runtime = "nodejs";
 
-export async function GET(req: NextRequest) {
+async function handleGET(req: NextRequest) {
   const user = await getSessionUser(req);
   if (!user) return NextResponse.json({ error: "unauthorized" }, { status: 401 });
 
@@ -47,7 +48,7 @@ export async function GET(req: NextRequest) {
   }
 }
 
-export async function POST(req: NextRequest) {
+async function handlePOST(req: NextRequest) {
   if (!hasTrustedMutationOrigin(req)) {
     return NextResponse.json({ ok: false, error: "forbidden_origin" }, { status: 403 });
   }
@@ -127,7 +128,7 @@ export async function POST(req: NextRequest) {
   }
 }
 
-export async function DELETE(req: NextRequest) {
+async function handleDELETE(req: NextRequest) {
   if (!hasTrustedMutationOrigin(req)) {
     return NextResponse.json({ ok: false, error: "forbidden_origin" }, { status: 403 });
   }
@@ -145,3 +146,7 @@ export async function DELETE(req: NextRequest) {
     return NextResponse.json({ ok: false, error: "server" }, { status: 500 });
   }
 }
+
+export const GET = withProjectRoute(handleGET);
+export const POST = withProjectRoute(handlePOST);
+export const DELETE = withProjectRoute(handleDELETE);

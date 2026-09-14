@@ -1,5 +1,5 @@
+import { ProjectRequest } from "@/test/project-request";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { NextRequest } from "next/server";
 
 const mocks = vi.hoisted(() => ({
   getSessionUser: vi.fn(),
@@ -36,7 +36,7 @@ vi.mock("@/lib/autopilot-weekly-queue.mjs", () => ({
 import { POST } from "./route";
 
 function request(body: Record<string, unknown>, headers: Record<string, string> = {}) {
-  return new NextRequest("http://localhost/api/autopilot/settings", {
+  return new ProjectRequest(88, "http://localhost/api/autopilot/settings", {
     method: "POST",
     headers: { "content-type": "application/json", ...headers },
     body: JSON.stringify(body),
@@ -125,7 +125,7 @@ describe("POST /api/autopilot/settings", () => {
   });
 
   it("rejects oversized streamed input and unexpected fields", async () => {
-    const oversized = new NextRequest("http://localhost/api/autopilot/settings", {
+    const oversized = new ProjectRequest(88, "http://localhost/api/autopilot/settings", {
       method: "POST",
       headers: { "content-type": "application/json", "content-length": "2" },
       body: JSON.stringify({ channelId: 22, padding: "x".repeat(17 * 1024) }),
@@ -140,7 +140,7 @@ describe("POST /api/autopilot/settings", () => {
   });
 
   it("requires JSON instead of parsing an ambiguous content type", async () => {
-    const response = await POST(new NextRequest("http://localhost/api/autopilot/settings", {
+    const response = await POST(new ProjectRequest(88, "http://localhost/api/autopilot/settings", {
       method: "POST",
       headers: { "content-type": "text/plain" },
       body: JSON.stringify({ channelId: 22 }),

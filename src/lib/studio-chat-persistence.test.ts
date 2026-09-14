@@ -1,7 +1,16 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({ query: vi.fn() }));
-vi.mock("./db", () => ({ getPool: () => ({ query: mocks.query }) }));
+vi.mock("./db", () => ({ getPool: () => ({ query: mocks.query, connect: async () => ({
+  query: (sql: string, args: unknown[]) => ["begin", "commit", "rollback"].includes(sql)
+    ? Promise.resolve({ rows: [] }) : mocks.query(sql, args), release: vi.fn(),
+}) }) }));
+
+vi.mock("./project-permissions", async (importOriginal) => ({
+  ...await importOriginal<typeof import("./project-permissions")>(),
+  requireSelectedProjectPermission: vi.fn(async () => ({projectId: 11})),
+  requireProjectPermission: vi.fn(async () => ({projectId: 11})),
+}));
 
 import { serializeStudioChatSession, type StudioChatSession } from "./studio-chat-session";
 import {
@@ -58,7 +67,7 @@ describe("studio chat persistence", () => {
     expect(result).toMatchObject({ saved: true, session: { revision: 4 } });
     expect(mocks.query).toHaveBeenCalledWith(
       expect.stringContaining("with updated as"),
-      [7, JSON.stringify(payload), 3],
+      [7, JSON.stringify(payload), 3, 11],
     );
   });
 

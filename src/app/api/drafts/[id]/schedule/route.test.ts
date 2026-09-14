@@ -1,5 +1,5 @@
+import { ProjectRequest } from "@/test/project-request";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { NextRequest } from "next/server";
 
 const mocks = vi.hoisted(() => ({
   getSessionUser: vi.fn(),
@@ -39,7 +39,7 @@ describe("PATCH /api/drafts/:id/schedule", () => {
       version: 4,
       scheduled_at: schedule.scheduledAt,
     });
-    const response = await PATCH(new NextRequest("http://localhost/api/drafts/41/schedule", {
+    const response = await PATCH(new ProjectRequest(1, "http://localhost/api/drafts/41/schedule", {
       method: "PATCH",
       headers: { "content-type": "application/json", origin: "http://localhost" },
       body: JSON.stringify(schedule),
@@ -59,7 +59,7 @@ describe("PATCH /api/drafts/:id/schedule", () => {
       version: 4,
       scheduled_at: "2026-08-22T08:30:00.000Z",
     } as never));
-    const response = await PATCH(new NextRequest("http://localhost/api/drafts/41/schedule", {
+    const response = await PATCH(new ProjectRequest(1, "http://localhost/api/drafts/41/schedule", {
       method: "PATCH",
       headers: { "content-type": "application/json", origin: "http://localhost" },
       body: JSON.stringify(schedule),

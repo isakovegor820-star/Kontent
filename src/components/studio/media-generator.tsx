@@ -1,4 +1,6 @@
 "use client";
+import { useProjectFetch } from "@/lib/use-project-transport";
+
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
@@ -206,6 +208,7 @@ export function MediaGenerator({
   sourceText?: string;
   onUse: (generation: MediaGeneration) => void;
 }) {
+  const fetch = useProjectFetch();
   const kind: MediaKind = "image";
   const [promptOverride, setPromptOverride] = useState<string | null>(null);
   const [exactText, setExactText] = useState("");
@@ -268,7 +271,7 @@ export function MediaGenerator({
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [fetch]);
 
   useEffect(() => {
     const targets = JSON.parse(activePollPlan) as ActiveMediaPollTarget[];
@@ -306,7 +309,7 @@ export function MediaGenerator({
       stop();
       controller.abort();
     };
-  }, [activePollPlan]);
+  }, [activePollPlan, fetch]);
 
   useEffect(() => {
     if (!currentId) return;

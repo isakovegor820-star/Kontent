@@ -1,3 +1,4 @@
+import { selectedProjectDto } from "./project-dto";
 import { describe, expect, it, vi } from "vitest";
 
 import { seedState } from "./mock";
@@ -82,8 +83,13 @@ describe("client workspace isolation", () => {
   it("accepts only the dedicated server response as the selected project authority", () => {
     expect(parseServerSelectedProjectId({ projectId: 44 })).toBeNull();
     expect(parseServerSelectedProjectId({ detail: { projectId: 44 } })).toBeNull();
-    expect(parseServerSelectedProjectId({ ok: true, project: { projectId: 44 } })).toBe(44);
-    expect(parseServerSelectedProjectId({ ok: true, project: { projectId: 0 } })).toBeNull();
+    expect(parseServerSelectedProjectId({ ok: true, project: { projectId: 44 } })).toBeNull();
+    const response = JSON.parse(JSON.stringify({ ok: true, project: selectedProjectDto({
+      projectId: 44, name: "Workspace", timezone: "UTC", role: "owner", version: 1, personal: true,
+    }) }));
+    expect(parseServerSelectedProjectId(response)).toBe(44);
+    expect(parseServerSelectedProjectId({ ...response, project: { ...response.project, id: 0 } })).toBeNull();
+    expect(parseServerSelectedProjectId({ ...response, project: { ...response.project, role: "unknown" } })).toBeNull();
   });
 
   it("aborts superseded requests and rejects late responses from another workspace", () => {

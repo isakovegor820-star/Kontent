@@ -1,5 +1,5 @@
+import { ProjectRequest } from "@/test/project-request";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { NextRequest } from "next/server";
 
 const mocks = vi.hoisted(() => ({
   getSessionUser: vi.fn(),
@@ -38,7 +38,7 @@ describe("GET /api/channels/tenchat", () => {
     process.env.TENCHAT_OFFICIAL_ACCESS_GRANT_ID = "official-grant-2026";
     process.env.TENCHAT_OFFICIAL_API_BASE_URL = "https://api.tenchat.ru/v1";
     process.env.TENCHAT_OFFICIAL_API_TOKEN = "S".repeat(48);
-    const response = await GET(new NextRequest("http://localhost/api/channels/tenchat"));
+    const response = await GET(new ProjectRequest(31, "http://localhost/api/channels/tenchat"));
     const body = await response.json();
     expect(response.status).toBe(200);
     expect(body.provider).toMatchObject({
@@ -54,7 +54,7 @@ describe("GET /api/channels/tenchat", () => {
 
   it("requires an authenticated project member", async () => {
     mocks.getSessionUser.mockResolvedValue(null);
-    const response = await GET(new NextRequest("http://localhost/api/channels/tenchat"));
+    const response = await GET(new ProjectRequest(31, "http://localhost/api/channels/tenchat"));
     expect(response.status).toBe(401);
     expect(mocks.requireSelectedProjectPermission).not.toHaveBeenCalled();
   });

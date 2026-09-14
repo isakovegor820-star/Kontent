@@ -1,3 +1,4 @@
+import { withProjectRoute } from "@/lib/project-route";
 import { readJsonBodyValue } from "@/lib/bounded-request-body";
 import { NextRequest, NextResponse } from "next/server";
 
@@ -11,7 +12,7 @@ export const runtime = "nodejs";
 type Context = { params: Promise<{ id: string }> };
 type OpportunityState = "saved" | "dismissed" | "used";
 
-export async function POST(req: NextRequest, { params }: Context) {
+async function handlePOST(req: NextRequest, { params }: Context) {
   if (!hasTrustedMutationOrigin(req)) {
     return NextResponse.json({ ok: false, error: "forbidden_origin" }, { status: 403 });
   }
@@ -42,10 +43,9 @@ export async function POST(req: NextRequest, { params }: Context) {
          join rss_feeds f on f.id = i.feed_id
          join channels c on c.id = f.channel_id
         where i.id = $1
-          and f.user_id = $2
           and f.source_kind = 'legal_opportunity'
-          and c.project_id = $3`,
-      [itemId, user.id, membership.projectId],
+          and c.project_id = $2`,
+      [itemId, membership.projectId],
     );
     if (!owned.rowCount) return NextResponse.json({ ok: false, error: "not_found" }, { status: 404 });
 
@@ -91,3 +91,5 @@ export async function POST(req: NextRequest, { params }: Context) {
     return NextResponse.json({ ok: false, error: "server" }, { status: 500 });
   }
 }
+
+export const POST = withProjectRoute(handlePOST);

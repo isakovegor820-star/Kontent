@@ -1,3 +1,5 @@
+import { ProjectAccessError, requireSelectedProjectPermission } from "@/lib/project-permissions";
+import { withProjectRoute } from "@/lib/project-route";
 import { readJsonBodyValue } from "@/lib/bounded-request-body";
 import { NextRequest, NextResponse } from "next/server";
 
@@ -18,7 +20,7 @@ type StoredExportSnapshot = {
   snapshot: LibraryRegistrySnapshot;
 };
 
-function exportResponse(stored: StoredExportSnapshot, replay: boolean) {
+function exportResponse(stored: StoredExportSnapshot, replay: boolean, projectId: number) {
   const id = Number(stored.id);
   return NextResponse.json(
     {
@@ -29,14 +31,14 @@ function exportResponse(stored: StoredExportSnapshot, replay: boolean) {
       count: stored.snapshot.items.length,
       formats: LIBRARY_EXPORT_FORMATS.map((format) => ({
         format,
-        href: `/api/library/exports/${id}?format=${format}`,
+        href: `/api/library/exports/${id}?format=${format}&projectId=${projectId}`,
       })),
     },
     { status: replay ? 200 : 201 },
   );
 }
 
-export async function POST(req: NextRequest) {
+async function handlePOST(req: NextRequest) {
   if (!hasTrustedMutationOrigin(req)) {
     return NextResponse.json({ ok: false, error: "forbidden_origin" }, { status: 403 });
   }
@@ -54,14 +56,16 @@ export async function POST(req: NextRequest) {
   }
   try {
     const pool = getPool();
+    const membership = await requireSelectedProjectPermission(pool, user.id, "project.read");
     const existing = (
       await pool.query<StoredExportSnapshot>(
         `select id, snapshot from library_export_snapshots
-          where user_id = $1 and request_key = $2 and expires_at > now()`,
-        [user.id, requestKey],
+          where user_id = $1 and request_key = $2 and expires_at > now()
+            and exists (select 1 from channels c where c.id = library_export_snapshots.channel_id and c.project_id = $3)`,
+        [user.id, requestKey, membership.projectId],
       )
     ).rows[0];
-    if (existing) return exportResponse(existing, true);
+    if (existing) return exportResponse(existing, true, membership.projectId);
 
     const snapshot = await buildLibraryRegistrySnapshot(
       user.id,
@@ -80,14 +84,18 @@ export async function POST(req: NextRequest) {
     const stored = inserted.rows[0] ?? (
       await pool.query<StoredExportSnapshot>(
         `select id, snapshot from library_export_snapshots
-          where user_id = $1 and request_key = $2 and expires_at > now()`,
-        [user.id, requestKey],
+          where user_id = $1 and request_key = $2 and expires_at > now()
+            and exists (select 1 from channels c where c.id = library_export_snapshots.channel_id and c.project_id = $3)`,
+        [user.id, requestKey, membership.projectId],
       )
     ).rows[0];
     if (!stored) return NextResponse.json({ ok: false, error: "snapshot_expired" }, { status: 410 });
-    return exportResponse(stored, replay);
+    return exportResponse(stored, replay, membership.projectId);
   } catch (error) {
+    if (error instanceof ProjectAccessError) return NextResponse.json({ ok: false, error: "access_denied" }, { status: 403 });
     console.error("[/api/library/exports] POST", { errorName: error instanceof Error ? error.name : "Error" });
     return NextResponse.json({ ok: false, error: "server" }, { status: 500 });
   }
 }
+
+export const POST = withProjectRoute(handlePOST);

@@ -1,5 +1,5 @@
+import { ProjectRequest } from "@/test/project-request";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { NextRequest } from "next/server";
 
 const mocks = vi.hoisted(() => ({
   getSessionUser: vi.fn(),
@@ -37,7 +37,7 @@ const failedItems = [
 ];
 
 function request(body: Record<string, unknown>) {
-  return new NextRequest("http://localhost/api/autopilot/repair", {
+  return new ProjectRequest(88, "http://localhost/api/autopilot/repair", {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify(body),
@@ -130,7 +130,7 @@ describe("POST /api/autopilot/repair", () => {
   });
 
   it("rejects an untrusted mutation origin before reading session state", async () => {
-    const response = await POST(new NextRequest("http://localhost/api/autopilot/repair", {
+    const response = await POST(new ProjectRequest(88, "http://localhost/api/autopilot/repair", {
       method: "POST",
       headers: { "content-type": "application/json", origin: "https://evil.example" },
       body: JSON.stringify(validBody()),

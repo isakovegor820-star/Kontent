@@ -1,3 +1,5 @@
+import { resolveProviderLiveWriteBoundary } from "./provider-write-boundary.mjs";
+
 const TERMINAL_DELIVERY_STATUSES = new Set([
   "published",
   "published_unverified",
@@ -70,11 +72,12 @@ function concurrencyFailure(operation, expectedRevision, expectedStatus) {
 
 async function lockedPosts(client, operationId, projectId) {
   return (await client.query(
-    `select id, status, schedule_revision, provider_started_at
-       from posts
-      where publication_operation_id = $1 and project_id = $2
-      order by id
-      for update`,
+    `select post.id, post.status, post.schedule_revision, post.provider_started_at, channel.network
+       from posts post
+       join channels channel on channel.id = post.channel_id and channel.project_id = post.project_id
+      where post.publication_operation_id = $1 and post.project_id = $2
+      order by post.id
+      for update of post`,
     [operationId, projectId],
   )).rows;
 }
@@ -283,6 +286,11 @@ export async function reschedulePublicationOperation(input) {
     if (fenced) {
       await rollback(client);
       return fenced;
+    }
+    const unavailable = posts.map((post) => resolveProviderLiveWriteBoundary(post.network)).find((boundary) => !boundary.allowed);
+    if (unavailable) {
+      await rollback(client);
+      return mutationFailure(unavailable.code, 409, { message: unavailable.message });
     }
     const scheduleRevision = Number(operation.schedule_revision) + 1;
     const postIds = posts.map((post) => Number(post.id));

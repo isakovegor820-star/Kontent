@@ -1,5 +1,5 @@
+import { ProjectRequest } from "@/test/project-request";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { NextRequest } from "next/server";
 
 const mocks = vi.hoisted(() => ({
   getSessionUser: vi.fn(),
@@ -30,7 +30,7 @@ import { POST } from "./route";
 const previousToken = process.env.TG_BOT_TOKEN;
 
 function request() {
-  return new NextRequest("http://localhost/api/channels/connect", {
+  return new ProjectRequest(12, "http://localhost/api/channels/connect", {
     method: "POST",
     headers: { origin: "http://localhost", "content-type": "application/json" },
     body: JSON.stringify({ handle: "@team" }),

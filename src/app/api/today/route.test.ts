@@ -1,5 +1,5 @@
+import { ProjectRequest } from "@/test/project-request";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { NextRequest } from "next/server";
 import { ProjectAccessError } from "@/lib/project-permissions";
 import { TodayError } from "@/lib/today";
 
@@ -24,33 +24,33 @@ describe("GET /api/today", () => {
   });
 
   it("passes only a positive safe channel selector to the board service", async () => {
-    await GET(new NextRequest("http://localhost/api/today?channel=12"));
+    await GET(new ProjectRequest(1, "http://localhost/api/today?channel=12"));
     expect(mocks.loadTodayBoard).toHaveBeenCalledWith({ actorUserId: 9, channelId: 12 });
 
-    const invalid = await GET(new NextRequest("http://localhost/api/today?channel=invalid"));
+    const invalid = await GET(new ProjectRequest(1, "http://localhost/api/today?channel=invalid"));
     expect(invalid.status).toBe(422);
     await expect(invalid.json()).resolves.toEqual({ error: "bad_channel" });
     expect(mocks.loadTodayBoard).toHaveBeenCalledTimes(1);
 
-    await GET(new NextRequest("http://localhost/api/today"));
+    await GET(new ProjectRequest(1, "http://localhost/api/today"));
     expect(mocks.loadTodayBoard).toHaveBeenLastCalledWith({ actorUserId: 9, channelId: null });
   });
 
   it("rejects unauthenticated requests", async () => {
     mocks.getSessionUser.mockResolvedValue(null);
-    const response = await GET(new NextRequest("http://localhost/api/today"));
+    const response = await GET(new ProjectRequest(1, "http://localhost/api/today"));
     expect(response.status).toBe(401);
     expect(mocks.loadTodayBoard).not.toHaveBeenCalled();
   });
 
   it("reports invalid channels and project isolation without leaking data", async () => {
     mocks.loadTodayBoard.mockRejectedValueOnce(new TodayError("channel_not_found"));
-    const invalid = await GET(new NextRequest("http://localhost/api/today?channel=999"));
+    const invalid = await GET(new ProjectRequest(1, "http://localhost/api/today?channel=999"));
     expect(invalid.status).toBe(404);
     await expect(invalid.json()).resolves.toEqual({ error: "channel_not_found" });
 
     mocks.loadTodayBoard.mockRejectedValueOnce(new ProjectAccessError("permission_denied"));
-    const denied = await GET(new NextRequest("http://localhost/api/today?channel=12"));
+    const denied = await GET(new ProjectRequest(1, "http://localhost/api/today?channel=12"));
     expect(denied.status).toBe(403);
     await expect(denied.json()).resolves.toEqual({ error: "access_denied" });
   });

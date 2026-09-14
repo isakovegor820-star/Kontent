@@ -1,4 +1,4 @@
-import { NextRequest } from "next/server";
+import { ProjectRequest } from "@/test/project-request";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
@@ -24,7 +24,7 @@ describe("GET /api/drafts/:id/revisions", () => {
     mocks.session.mockResolvedValue({ id: 7 });
     mocks.list.mockResolvedValue([{ id: 9, draftId: 12, draftVersion: 3, snapshot: { text: "Версия" } }]);
     const response = await GET(
-      new NextRequest("http://localhost/api/drafts/12/revisions"),
+      new ProjectRequest(1, "http://localhost/api/drafts/12/revisions"),
       { params: Promise.resolve({ id: "12" }) },
     );
     expect(response.status).toBe(200);
@@ -34,9 +34,9 @@ describe("GET /api/drafts/:id/revisions", () => {
 
   it("does not query history for anonymous or invalid requests", async () => {
     mocks.session.mockResolvedValue(null);
-    expect((await GET(new NextRequest("http://localhost/api/drafts/12/revisions"), { params: Promise.resolve({ id: "12" }) })).status).toBe(401);
+    expect((await GET(new ProjectRequest(1, "http://localhost/api/drafts/12/revisions"), { params: Promise.resolve({ id: "12" }) })).status).toBe(401);
     mocks.session.mockResolvedValue({ id: 7 });
-    expect((await GET(new NextRequest("http://localhost/api/drafts/no/revisions"), { params: Promise.resolve({ id: "no" }) })).status).toBe(400);
+    expect((await GET(new ProjectRequest(1, "http://localhost/api/drafts/no/revisions"), { params: Promise.resolve({ id: "no" }) })).status).toBe(400);
     expect(mocks.list).not.toHaveBeenCalled();
   });
 });

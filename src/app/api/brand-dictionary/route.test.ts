@@ -1,5 +1,5 @@
+import { ProjectRequest } from "@/test/project-request";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { NextRequest } from "next/server";
 
 const mocks = vi.hoisted(() => ({
   create: vi.fn(),
@@ -25,11 +25,11 @@ vi.mock("@/lib/rate-limit", async (original) => ({
 import { GET, POST } from "./route";
 
 function getRequest() {
-  return new NextRequest("http://localhost/api/brand-dictionary");
+  return new ProjectRequest(23, "http://localhost/api/brand-dictionary");
 }
 
 function postRequest(origin = "http://localhost") {
-  return new NextRequest("http://localhost/api/brand-dictionary", {
+  return new ProjectRequest(23, "http://localhost/api/brand-dictionary", {
     method: "POST",
     headers: { origin, "content-type": "application/json" },
     body: JSON.stringify({

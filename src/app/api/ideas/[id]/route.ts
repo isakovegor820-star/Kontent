@@ -1,3 +1,5 @@
+import { ProjectAccessError, requireSelectedProjectPermission } from "@/lib/project-permissions";
+import { withProjectRoute } from "@/lib/project-route";
 // Д.7 — действия над идеей: «в черновик» (drafted) или «скрыть» (dismissed).
 
 import { readJsonBodyValue } from "@/lib/bounded-request-body";
@@ -8,7 +10,7 @@ import { hasTrustedMutationOrigin } from "@/lib/request-origin";
 
 export const runtime = "nodejs";
 
-export async function PATCH(req: NextRequest, ctx: { params: Promise<{ id: string }> }) {
+async function handlePATCH(req: NextRequest, ctx: { params: Promise<{ id: string }> }) {
   if (!hasTrustedMutationOrigin(req)) {
     return NextResponse.json({ ok: false, error: "forbidden_origin" }, { status: 403 });
   }
@@ -30,14 +32,18 @@ export async function PATCH(req: NextRequest, ctx: { params: Promise<{ id: strin
   if (!status) return NextResponse.json({ ok: false, error: "bad_action" }, { status: 422 });
 
   try {
-    await getPool().query(`update content_ideas set status = $3 where id = $1 and user_id = $2`, [
+    const membership = await requireSelectedProjectPermission(getPool(), user.id, "content.edit");
+    await getPool().query(`update content_ideas set status = $3 where id = $1 and exists (select 1 from competitors competitor join channels channel on channel.id = competitor.channel_id where competitor.id = content_ideas.competitor_id and channel.project_id = $2)`, [
       id,
-      user.id,
+      membership.projectId,
       status,
     ]);
     return NextResponse.json({ ok: true });
   } catch (err) {
+    if (err instanceof ProjectAccessError) return NextResponse.json({ ok: false, error: "access_denied" }, { status: 403 });
     console.error("[/api/ideas/[id]]", err);
     return NextResponse.json({ ok: false, error: "server" }, { status: 500 });
   }
 }
+
+export const PATCH = withProjectRoute(handlePATCH);

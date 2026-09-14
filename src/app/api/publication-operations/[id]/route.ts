@@ -1,3 +1,4 @@
+import { withProjectRoute } from "@/lib/project-route";
 import { readJsonBodyValue } from "@/lib/bounded-request-body";
 import { NextRequest, NextResponse } from "next/server";
 
@@ -75,7 +76,7 @@ function logPublicationEvent(event: string, result: PublicationMutationResult, r
   });
 }
 
-export async function GET(
+async function handleGET(
   req: NextRequest,
   ctx: OperationRouteContext,
 ) {
@@ -280,7 +281,7 @@ export async function GET(
   }
 }
 
-export async function DELETE(
+async function handleDELETE(
   req: NextRequest,
   ctx: OperationRouteContext,
 ) {
@@ -335,7 +336,7 @@ export async function DELETE(
   }
 }
 
-export async function PATCH(
+async function handlePATCH(
   req: NextRequest,
   ctx: OperationRouteContext,
 ) {
@@ -434,3 +435,7 @@ export async function PATCH(
     return NextResponse.json({ ok: false, error: "operation_not_rescheduled" }, { status: 500 });
   }
 }
+
+export const GET = withProjectRoute(handleGET);
+export const DELETE = withProjectRoute(handleDELETE);
+export const PATCH = withProjectRoute(handlePATCH);

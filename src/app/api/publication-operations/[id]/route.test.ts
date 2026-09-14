@@ -1,5 +1,5 @@
+import { ProjectRequest } from "@/test/project-request";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { NextRequest } from "next/server";
 
 const mocks = vi.hoisted(() => ({
   getPool: vi.fn(),
@@ -36,7 +36,7 @@ import { ProjectAccessError } from "@/lib/project-permissions";
 const context = { params: Promise.resolve({ id: "7" }) };
 
 function request(method: "DELETE" | "PATCH", body: object, origin = "http://localhost") {
-  return new NextRequest("http://localhost/api/publication-operations/7", {
+  return new ProjectRequest(23, "http://localhost/api/publication-operations/7", {
     method,
     headers: {
       "content-type": "application/json",
@@ -213,7 +213,7 @@ describe("publication lifecycle mutation route", () => {
       });
     mocks.getPool.mockReturnValue({ query });
 
-    const response = await GET(new NextRequest(
+    const response = await GET(new ProjectRequest(23,
       "http://localhost/api/publication-operations/7",
     ), context);
 

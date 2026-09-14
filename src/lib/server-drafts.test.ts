@@ -345,11 +345,11 @@ describe("server draft transactions", () => {
       expect(sql).not.toContain("d.user_id = $1");
       expect(sql).toContain("draft_author.id = d.user_id");
       expect(sql).toContain("editorial_workflow.project_id = d.project_id");
-      if (sql.includes("limit 200")) {
+      if (sql.includes("order by d.id desc limit")) {
         expect(sql).toContain("operation.approved_revision_id is not null");
         expect(sql).toContain("operation.status in ('queued', 'published_unverified', 'published')");
       }
-      if (params?.length === 1) return { rowCount: 1, rows: [row] };
+      if (params?.[1] === 201) return { rowCount: 1, rows: [row] };
       expect(params).toEqual([7, 41]);
       return { rowCount: 1, rows: [row] };
     });
@@ -369,7 +369,7 @@ describe("server draft transactions", () => {
       5,
       "project.read",
     );
-    expect(query.mock.calls.filter(([, params]) => (params as unknown[])?.length === 2))
+    expect(query.mock.calls.filter(([, params]) => (params as unknown[])?.[1] === 41))
       .toHaveLength(2);
   });
 

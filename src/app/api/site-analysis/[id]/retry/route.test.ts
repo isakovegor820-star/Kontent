@@ -1,5 +1,5 @@
+import { ProjectRequest } from "@/test/project-request";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { NextRequest } from "next/server";
 
 const mocks = vi.hoisted(() => ({
   getSessionUser: vi.fn(),
@@ -52,7 +52,7 @@ const queued = {
 };
 
 function request(origin = "http://localhost") {
-  return new NextRequest("http://localhost/api/site-analysis/41/retry", {
+  return new ProjectRequest(31, "http://localhost/api/site-analysis/41/retry", {
     method: "POST",
     headers: { origin, "content-type": "application/json", "idempotency-key": "site-analysis-retry-1234" },
     body: JSON.stringify({ clientKey: "site-analysis-retry-1234" }),

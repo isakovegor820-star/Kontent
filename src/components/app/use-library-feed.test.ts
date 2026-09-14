@@ -86,4 +86,16 @@ describe("live library feed", () => {
     await advance(LIBRARY_REFRESH_INTERVAL);
     expect(fetch).toHaveBeenCalledTimes(1);
   });
+
+  it("uses the project-scoped transport supplied by the registry", async () => {
+    const scopedFetch = vi.fn().mockResolvedValue(response([item("a")]) as Response);
+    const { result } = renderHook(() => useLibraryFeed("channel=7", false, scopedFetch));
+    await advance(250);
+    expect(scopedFetch).toHaveBeenCalledWith(
+      "/api/library/registry?channel=7",
+      expect.objectContaining({ cache: "no-store", signal: expect.any(AbortSignal) }),
+    );
+    expect(fetch).not.toHaveBeenCalled();
+    expect(result.current.items.map((row) => row.id)).toEqual(["a"]);
+  });
 });

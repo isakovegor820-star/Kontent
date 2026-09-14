@@ -1,5 +1,5 @@
+import { ProjectRequest } from "@/test/project-request";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { NextRequest } from "next/server";
 
 const mocks = vi.hoisted(() => ({
   getSessionUser: vi.fn(),
@@ -8,6 +8,10 @@ const mocks = vi.hoisted(() => ({
   query: vi.fn(),
 }));
 
+vi.mock("@/lib/project-permissions", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/lib/project-permissions")>();
+  return { ...actual, requireSelectedProjectPermission: vi.fn(async () => ({ projectId: 1, userId: 7, role: "owner", version: 1 })) };
+});
 vi.mock("@/lib/session", () => ({ getSessionUser: mocks.getSessionUser }));
 vi.mock("@/lib/request-origin", () => ({ hasTrustedMutationOrigin: mocks.hasTrustedMutationOrigin }));
 vi.mock("@/lib/library-registry", () => ({ buildLibraryRegistrySnapshot: mocks.buildLibraryRegistrySnapshot }));
@@ -16,7 +20,7 @@ vi.mock("@/lib/db", () => ({ getPool: () => ({ query: mocks.query }) }));
 import { POST } from "./route";
 
 function request(key = "library_export_123456789") {
-  return new NextRequest("http://localhost/api/library/exports", {
+  return new ProjectRequest(1, "http://localhost/api/library/exports", {
     method: "POST",
     headers: { "content-type": "application/json", "idempotency-key": key, origin: "http://localhost" },
     body: JSON.stringify({ filters: { channel: 11, scoreMin: 70 } }),

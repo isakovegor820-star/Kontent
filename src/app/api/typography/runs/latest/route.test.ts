@@ -1,5 +1,5 @@
+import { ProjectRequest } from "@/test/project-request";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { NextRequest } from "next/server";
 
 const mocks = vi.hoisted(() => ({
   latest: vi.fn(),
@@ -26,7 +26,7 @@ describe("GET /api/typography/runs/latest", () => {
   it("delegates project selection and draft authorization to the server service", async () => {
     const pool = { query: vi.fn() };
     mocks.getPool.mockReturnValue(pool);
-    const response = await GET(new NextRequest("http://localhost/api/typography/runs/latest?draftId=41"));
+    const response = await GET(new ProjectRequest(1, "http://localhost/api/typography/runs/latest?draftId=41"));
 
     expect(response.status).toBe(200);
     expect(mocks.latest).toHaveBeenCalledWith({ db: pool, actorUserId: 5, draftId: 41 });
@@ -34,7 +34,7 @@ describe("GET /api/typography/runs/latest", () => {
   });
 
   it("rejects an invalid draft before database access", async () => {
-    const response = await GET(new NextRequest("http://localhost/api/typography/runs/latest?draftId=other"));
+    const response = await GET(new ProjectRequest(1, "http://localhost/api/typography/runs/latest?draftId=other"));
     expect(response.status).toBe(400);
     expect(mocks.getPool).not.toHaveBeenCalled();
     expect(mocks.latest).not.toHaveBeenCalled();
@@ -42,7 +42,7 @@ describe("GET /api/typography/runs/latest", () => {
 
   it("requires an authenticated session", async () => {
     mocks.session.mockResolvedValue(null);
-    const response = await GET(new NextRequest("http://localhost/api/typography/runs/latest?draftId=41"));
+    const response = await GET(new ProjectRequest(1, "http://localhost/api/typography/runs/latest?draftId=41"));
     expect(response.status).toBe(401);
     expect(mocks.latest).not.toHaveBeenCalled();
   });

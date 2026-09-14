@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
+import { setProjectTransport } from "@/lib/project-transport";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AudienceAssistantPanel } from "./audience-assistant-panel";
 
 const inquiry = {
@@ -9,7 +10,8 @@ const inquiry = {
   status: "reply_ready", version: 1, canSendViaTelegram: true, canDeliverReply: true,
   createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(),
 };
-afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
+beforeEach(() => setProjectTransport(7, true, 3));
+afterEach(() => { cleanup(); setProjectTransport(null); vi.unstubAllGlobals(); });
 
 describe("audience draft controls", () => {
   it("deletes an unsent draft and refreshes the ready counter", async () => {
@@ -19,13 +21,13 @@ describe("audience draft controls", () => {
         expect(init?.method).toBe("DELETE");
         expect(JSON.parse(String(init?.body))).toEqual({ expectedVersion: 1 });
         deleted = true;
-        return Response.json({ inquiry: { ...inquiry, suggestedReply: null, status: "pending", version: 2 } });
+        return Response.json({ inquiry: { ...inquiry, suggestedReply: null, status: "pending", version: 2 } }, { headers: { "x-aurora-project-id": "7" } });
       }
       return Response.json({
         inquiries: [{ ...inquiry, ...(deleted ? { suggestedReply: null, status: "pending", version: 2 } : {}) }],
         stats: { waiting: deleted ? 1 : 0, ready: deleted ? 0 : 1, answered: 0, dismissed: 0, highRisk: 0 },
         capabilities: { canEdit: true, canSend: true },
-      });
+      }, { headers: { "x-aurora-project-id": "7" } });
     });
     vi.stubGlobal("fetch", fetch);
     render(<AudienceAssistantPanel />);
@@ -41,7 +43,7 @@ describe("audience draft controls", () => {
       inquiries: [{ ...inquiry, status: "approved" }],
       stats: { waiting: 0, ready: 1, answered: 0, dismissed: 0, highRisk: 0 },
       capabilities: { canEdit: true, canSend: true },
-    })));
+    }, { headers: { "x-aurora-project-id": "7" } })));
     render(<AudienceAssistantPanel />);
     fireEvent.click(await screen.findByRole("button", { name: "Черновики · 1" }));
     expect(screen.queryByRole("button", { name: "Удалить черновик" })).toBeNull();

@@ -1,5 +1,5 @@
+import { ProjectRequest } from "@/test/project-request";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { NextRequest } from "next/server";
 
 const mocks = vi.hoisted(() => ({
   getSessionUser: vi.fn(),
@@ -97,7 +97,7 @@ const GENERATION_ID = 41;
 let ledger: Ledger;
 
 function generationRequest(requestKey: string) {
-  return new NextRequest("http://localhost/api/media/generations", {
+  return new ProjectRequest(PROJECT_ID, "http://localhost/api/media/generations", {
     method: "POST",
     headers: {
       origin: "http://localhost",
@@ -193,7 +193,7 @@ function configureStatefulInfrastructure() {
     throw new Error(`unexpected transaction query: ${sql}`);
   });
   mocks.poolQuery.mockImplementation(async (sql: string, params?: unknown[]) => {
-    if (sql.includes("from user_project_preferences preference")) {
+    if (sql.includes("from project_members member")) {
       return {
         rows: [{
           project_id: PROJECT_ID,
