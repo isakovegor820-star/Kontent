@@ -10,18 +10,18 @@ export async function resolveLibraryChannel(userId: number, wanted?: number | nu
   if (wanted) {
     const own = await pool.query<{ id: string }>(
       `select id from channels
-        where id = $1 and user_id = $2 and project_id = $3
+        where id = $1 and project_id = $2
           and is_active = true and status = 'active'`,
-      [wanted, userId, membership.projectId],
+      [wanted, membership.projectId],
     );
     return own.rows[0] ? Number(own.rows[0].id) : null;
   }
   const first = await pool.query<{ id: string }>(
     `select id from channels
-      where user_id = $1 and project_id = $2
+      where project_id = $1
         and is_active = true and status = 'active'
       order by id limit 1`,
-    [userId, membership.projectId],
+    [membership.projectId],
   );
   return first.rows[0] ? Number(first.rows[0].id) : null;
 }

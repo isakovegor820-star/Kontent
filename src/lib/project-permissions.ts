@@ -1,4 +1,5 @@
 import type { PoolClient } from "pg";
+import { getProjectRequestContext, requestProjectMatches } from "./project-request-context";
 
 export const PROJECT_ROLES = ["owner", "author", "approver", "publisher"] as const;
 export type ProjectRole = (typeof PROJECT_ROLES)[number];
@@ -52,7 +53,7 @@ const ROLE_PERMISSIONS: Readonly<Record<ProjectRole, ReadonlySet<ProjectPermissi
 };
 
 export class ProjectAccessError extends Error {
-  readonly code: "invalid_project_selector" | "membership_required" | "permission_denied";
+  readonly code: "project_context_mismatch" | "invalid_project_selector" | "membership_required" | "permission_denied";
 
   constructor(code: ProjectAccessError["code"]) {
     super(code);
@@ -81,6 +82,7 @@ export async function getActiveProjectMembership(
   db: Queryable,
   userId: number,
   projectId: number,
+  options: { lock?: boolean } = {},
 ): Promise<ActiveProjectMembership | null> {
   if (!positiveId(userId) || !positiveId(projectId)) {
     throw new ProjectAccessError("invalid_project_selector");
@@ -98,7 +100,7 @@ export async function getActiveProjectMembership(
         and member.user_id = $2
         and member.status = 'active'
         and project.is_archived = false
-      limit 1`,
+      limit 1${options.lock ? " for share of member, project" : ""}`,
     [projectId, userId],
   );
   const row = result.rows[0];
@@ -117,10 +119,20 @@ export async function requireProjectPermission(
   userId: number,
   projectId: number,
   permission: ProjectPermission,
+  options: { lock?: boolean } = {},
 ): Promise<ActiveProjectMembership> {
-  const membership = await getActiveProjectMembership(db, userId, projectId);
-  if (!membership) throw new ProjectAccessError("membership_required");
+  if (!requestProjectMatches(projectId)) throw new ProjectAccessError("project_context_mismatch");
+  // Use lock only on the transaction client performing the protected operation. SHARE
+  // conflicts with role/revocation UPDATE, so permission cannot expire before commit.
+  const membership = await getActiveProjectMembership(db, userId, projectId, options);
+  if (!membership) {
+    const context = getProjectRequestContext();
+    if (context) context.denied = true;
+    throw new ProjectAccessError("membership_required");
+  }
   if (!roleAllows(membership.role, permission)) {
+    const context = getProjectRequestContext();
+    if (context) context.denied = true;
     throw new ProjectAccessError("permission_denied");
   }
   return membership;
@@ -135,6 +147,11 @@ export async function requireSelectedProjectPermission(
   userId: number,
   permission: ProjectPermission,
 ): Promise<ActiveProjectMembership> {
+  const context = getProjectRequestContext();
+  if (context) {
+    if (!context.projectId) throw new ProjectAccessError("invalid_project_selector");
+    return requireProjectPermission(db, userId, context.projectId, permission);
+  }
   if (!positiveId(userId)) throw new ProjectAccessError("invalid_project_selector");
   const result = await db.query<{
     project_id: number | string;
@@ -166,6 +183,8 @@ export async function requireSelectedProjectPermission(
     version: Number(row.version),
   };
   if (!roleAllows(membership.role, permission)) {
+    const context = getProjectRequestContext();
+    if (context) context.denied = true;
     throw new ProjectAccessError("permission_denied");
   }
   return membership;

@@ -1,15 +1,6 @@
-export type ClientProjectRole = "owner" | "author" | "approver" | "publisher";
-
-export type ClientProject = {
-  id: number;
-  name: string;
-  timezone: string;
-  role: ClientProjectRole;
-  version: number;
-  personal: boolean;
-  selected: boolean;
-  createdAt: string;
-};
+import type { ProjectDto } from "./project-dto";
+export type ClientProjectRole = ProjectDto["role"];
+export type ClientProject = ProjectDto;
 
 const ROLES: readonly ClientProjectRole[] = ["owner", "author", "approver", "publisher"];
 
@@ -44,4 +35,10 @@ export function parseProjectsResponse(value: unknown): ClientProject[] | null {
   if (!isRecord(value) || value.ok !== true || !Array.isArray(value.projects)) return null;
   const projects = value.projects.map(parseClientProject);
   return projects.every((project): project is ClientProject => project !== null) ? projects : null;
+}
+
+export function parseSelectedProjectResponse(value: unknown): ClientProject | null {
+  if (!isRecord(value) || value.ok !== true) return null;
+  const project = parseClientProject(value.project);
+  return project?.selected ? project : null;
 }

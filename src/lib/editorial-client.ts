@@ -1,3 +1,4 @@
+import { projectFetch as fetch, captureProjectFetch } from "./project-transport";
 import type { ProjectRole } from "./project-permissions";
 
 export type ClientEditorialState = "draft" | "in_review" | "changes_requested" | "approved";
@@ -245,10 +246,10 @@ async function responseBody(response: Response): Promise<Record<string, unknown>
   return record(await response.json().catch(() => null));
 }
 
-async function mutate(draftId: number, path: string, payload: Record<string, unknown>): Promise<void> {
+async function mutate(draftId: number, path: string, payload: Record<string, unknown>, fetcher = fetch): Promise<void> {
   let response: Response;
   try {
-    response = await fetch(`/api/drafts/${draftId}/editorial/${path}`, {
+    response = await fetcher(`/api/drafts/${draftId}/editorial/${path}`, {
       method: "POST",
       credentials: "same-origin",
       headers: { "content-type": "application/json" },
@@ -269,10 +270,11 @@ async function mutate(draftId: number, path: string, payload: Record<string, unk
 export async function loadEditorialSnapshot(
   draftId: number,
   signal?: AbortSignal,
+  fetcher = fetch,
 ): Promise<ClientEditorialSnapshot> {
   let response: Response;
   try {
-    response = await fetch(`/api/drafts/${draftId}/editorial`, {
+    response = await fetcher(`/api/drafts/${draftId}/editorial`, {
       credentials: "same-origin",
       cache: "no-store",
       signal,
@@ -293,12 +295,12 @@ export async function loadEditorialSnapshot(
   return snapshot;
 }
 
-export function submitEditorialReview(draftId: number, snapshot: ClientEditorialSnapshot): Promise<void> {
+export function submitEditorialReview(draftId: number, snapshot: ClientEditorialSnapshot, fetcher = fetch): Promise<void> {
   return mutate(draftId, "submit", {
     revisionId: snapshot.currentRevision.id,
     contentHash: snapshot.currentRevision.contentHash,
     workflowVersion: snapshot.workflow.version,
-  });
+  }, fetcher);
 }
 
 export function addEditorialComment(
@@ -318,6 +320,7 @@ export function decideEditorialReview(
   snapshot: ClientEditorialSnapshot,
   decision: ClientEditorialDecision,
   note: string | null,
+  fetcher = fetch,
 ): Promise<void> {
   if (!snapshot.request) throw new EditorialRequestError("stale_request", 409);
   return mutate(draftId, "decisions", {
@@ -328,7 +331,7 @@ export function decideEditorialReview(
     contentHash: snapshot.currentRevision.contentHash,
     decision,
     note,
-  });
+  }, fetcher);
 }
 
 /**
@@ -340,17 +343,18 @@ export async function approvePersonalDraftForPublication(
   draftId: number,
   expectedDraftVersion: number,
 ): Promise<ClientEditorialSnapshot> {
-  let current = await loadEditorialSnapshot(draftId);
+  const fetcher = captureProjectFetch();
+  let current = await loadEditorialSnapshot(draftId, undefined, fetcher);
   if (current.currentRevision.draftVersion !== expectedDraftVersion) {
     throw new EditorialRequestError("stale_revision", 409);
   }
   if (current.workflow.state === "draft" || current.workflow.state === "changes_requested") {
-    await submitEditorialReview(draftId, current);
-    current = await loadEditorialSnapshot(draftId);
+    await submitEditorialReview(draftId, current, fetcher);
+    current = await loadEditorialSnapshot(draftId, undefined, fetcher);
   }
   if (current.workflow.state === "in_review") {
-    await decideEditorialReview(draftId, current, "approve", null);
-    current = await loadEditorialSnapshot(draftId);
+    await decideEditorialReview(draftId, current, "approve", null, fetcher);
+    current = await loadEditorialSnapshot(draftId, undefined, fetcher);
   }
   if (
     current.workflow.state !== "approved"

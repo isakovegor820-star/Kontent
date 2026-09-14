@@ -1,3 +1,4 @@
+import { withProjectRoute } from "@/lib/project-route";
 import { NextRequest, NextResponse } from "next/server";
 
 import { createOpportunitySourceContext, isContentIntelligenceError } from "@/lib/content-intelligence";
@@ -9,7 +10,7 @@ export const runtime = "nodejs";
 
 type Context = { params: Promise<{ id: string }> };
 
-export async function POST(req: NextRequest, context: Context) {
+async function handlePOST(req: NextRequest, context: Context) {
   if (!hasTrustedMutationOrigin(req)) return NextResponse.json({ error: "forbidden_origin" }, { status: 403 });
   const user = await getSessionUser(req);
   if (!user) return NextResponse.json({ error: "unauthorized" }, { status: 401 });
@@ -27,3 +28,5 @@ export async function POST(req: NextRequest, context: Context) {
     return NextResponse.json({ error: "draft_context_unavailable" }, { status: 503 });
   }
 }
+
+export const POST = withProjectRoute(handlePOST);

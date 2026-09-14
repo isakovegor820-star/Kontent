@@ -1,3 +1,5 @@
+import { requireSelectedProjectPermission } from "@/lib/project-permissions";
+import { withProjectRoute } from "@/lib/project-route";
 // Д.6+ — находки агента: «похоже, это твои соседи».
 //
 // Платформа НЕ добавляет их сама. Она приносит проверенный список с обоснованием — кто
@@ -30,7 +32,7 @@ interface Row {
   on_topic: boolean | null;
 }
 
-export async function GET(req: NextRequest) {
+async function handleGET(req: NextRequest) {
   const user = await getSessionUser(req);
   if (!user) return NextResponse.json({ suggestions: [] });
 
@@ -106,12 +108,13 @@ export async function GET(req: NextRequest) {
 }
 
 /** Запустить поиск сейчас. Сам поиск делает воркер — он ходит наружу, не роут. */
-export async function POST(req: NextRequest) {
+async function handlePOST(req: NextRequest) {
   if (!hasTrustedMutationOrigin(req)) {
     return NextResponse.json({ ok: false, error: "forbidden_origin" }, { status: 403 });
   }
   const user = await getSessionUser(req);
   if (!user) return NextResponse.json({ ok: false, error: "unauthorized" }, { status: 401 });
+  await requireSelectedProjectPermission(getPool(), user.id, "content.create");
 
   try {
     // Ищем соседей тому каналу, который человек сейчас смотрит.
@@ -135,12 +138,13 @@ export async function POST(req: NextRequest) {
 }
 
 /** Принять находку (добавить в конкуренты) или отклонить. */
-export async function PATCH(req: NextRequest) {
+async function handlePATCH(req: NextRequest) {
   if (!hasTrustedMutationOrigin(req)) {
     return NextResponse.json({ ok: false, error: "forbidden_origin" }, { status: 403 });
   }
   const user = await getSessionUser(req);
   if (!user) return NextResponse.json({ ok: false, error: "unauthorized" }, { status: 401 });
+  await requireSelectedProjectPermission(getPool(), user.id, "content.create");
 
   let body: { id?: unknown; action?: unknown };
   try {
@@ -220,3 +224,7 @@ export async function PATCH(req: NextRequest) {
     return NextResponse.json({ ok: false, error: "server" }, { status: 500 });
   }
 }
+
+export const GET = withProjectRoute(handleGET);
+export const POST = withProjectRoute(handlePOST);
+export const PATCH = withProjectRoute(handlePATCH);

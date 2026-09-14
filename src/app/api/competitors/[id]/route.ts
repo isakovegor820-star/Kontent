@@ -1,3 +1,5 @@
+import { ProjectAccessError, requireSelectedProjectPermission } from "@/lib/project-permissions";
+import { withProjectRoute } from "@/lib/project-route";
 // Д.6 — досье конкурента. Всё из ОТКРЫТЫХ данных (competitor_posts, competitor_stats).
 //
 // Честность здесь важнее полноты:
@@ -62,7 +64,7 @@ function median(xs: number[]): number {
   return a.length % 2 ? a[m] : Math.round((a[m - 1] + a[m]) / 2);
 }
 
-export async function GET(req: NextRequest, ctx: { params: Promise<{ id: string }> }) {
+async function handleGET(req: NextRequest, ctx: { params: Promise<{ id: string }> }) {
   const user = await getSessionUser(req);
   if (!user) return NextResponse.json({ error: "unauthorized" }, { status: 401 });
 
@@ -71,12 +73,13 @@ export async function GET(req: NextRequest, ctx: { params: Promise<{ id: string 
 
   try {
     const pool = getPool();
+    const membership = await requireSelectedProjectPermission(pool, user.id, req.method === "GET" ? "project.read" : "content.edit");
     const comp = (
       await pool.query(
         `select id, network, handle, title, custom_title, avatar_url, subscribers, status,
                 last_error, collected_at, added_at, is_active, connection_method
-           from competitors where id = $1 and user_id = $2`,
-        [cid, user.id],
+           from competitors where id = $1 and exists (select 1 from channels channel where channel.id = competitors.channel_id and channel.project_id = $2)`,
+        [cid, membership.projectId],
       )
     ).rows[0];
     if (!comp) return NextResponse.json({ error: "not_found" }, { status: 404 });
@@ -304,12 +307,13 @@ export async function GET(req: NextRequest, ctx: { params: Promise<{ id: string 
       aiInsight: null,
     });
   } catch (err) {
+    if (err instanceof ProjectAccessError) return NextResponse.json({ ok: false, error: "access_denied" }, { status: 403 });
     console.error("[/api/competitors/[id]]", err);
     return NextResponse.json({ error: "server" }, { status: 500 });
   }
 }
 
-export async function PATCH(req: NextRequest, ctx: { params: Promise<{ id: string }> }) {
+async function handlePATCH(req: NextRequest, ctx: { params: Promise<{ id: string }> }) {
   if (!hasTrustedMutationOrigin(req)) {
     return NextResponse.json({ ok: false, error: "forbidden_origin" }, { status: 403 });
   }
@@ -334,10 +338,11 @@ export async function PATCH(req: NextRequest, ctx: { params: Promise<{ id: strin
 
   try {
     const pool = getPool();
+    const membership = await requireSelectedProjectPermission(pool, user.id, req.method === "GET" ? "project.read" : "content.edit");
     const source = (
       await pool.query<{ id: number; is_active: boolean }>(
-        `select id, is_active from competitors where id = $1 and user_id = $2`,
-        [cid, user.id],
+        `select id, is_active from competitors where id = $1 and exists (select 1 from channels channel where channel.id = competitors.channel_id and channel.project_id = $2)`,
+        [cid, membership.projectId],
       )
     ).rows[0];
     if (!source) return NextResponse.json({ ok: false, error: "not_found" }, { status: 404 });
@@ -347,8 +352,8 @@ export async function PATCH(req: NextRequest, ctx: { params: Promise<{ id: strin
         `update competitors
             set is_active = false, status = 'paused', last_error = null,
                 sync_requested_at = null, sync_started_at = null
-          where id = $1 and user_id = $2`,
-        [cid, user.id],
+          where id = $1 and exists (select 1 from channels channel where channel.id = competitors.channel_id and channel.project_id = $2)`,
+        [cid, membership.projectId],
       );
       return NextResponse.json({ ok: true, status: "paused", isActive: false });
     }
@@ -357,8 +362,8 @@ export async function PATCH(req: NextRequest, ctx: { params: Promise<{ id: strin
       `update competitors
           set is_active = true, status = 'refreshing', last_error = null,
               sync_requested_at = now()
-        where id = $1 and user_id = $2`,
-      [cid, user.id],
+        where id = $1 and exists (select 1 from channels channel where channel.id = competitors.channel_id and channel.project_id = $2)`,
+      [cid, membership.projectId],
     );
     try {
       await getStatsQueue().add(
@@ -375,12 +380,13 @@ export async function PATCH(req: NextRequest, ctx: { params: Promise<{ id: strin
     }
     return NextResponse.json({ ok: true, status: "refreshing", isActive: true });
   } catch (err) {
+    if (err instanceof ProjectAccessError) return NextResponse.json({ ok: false, error: "access_denied" }, { status: 403 });
     console.error("[/api/competitors/[id]] PATCH", err);
     return NextResponse.json({ ok: false, error: "server" }, { status: 500 });
   }
 }
 
-export async function DELETE(req: NextRequest, ctx: { params: Promise<{ id: string }> }) {
+async function handleDELETE(req: NextRequest, ctx: { params: Promise<{ id: string }> }) {
   if (!hasTrustedMutationOrigin(req)) {
     return NextResponse.json({ ok: false, error: "forbidden_origin" }, { status: 403 });
   }
@@ -391,10 +397,16 @@ export async function DELETE(req: NextRequest, ctx: { params: Promise<{ id: stri
   if (!Number.isInteger(cid)) return NextResponse.json({ ok: false, error: "not_found" }, { status: 404 });
 
   try {
-    await getPool().query(`delete from competitors where id = $1 and user_id = $2`, [cid, user.id]);
+    const membership = await requireSelectedProjectPermission(getPool(), user.id, "content.edit");
+    await getPool().query(`delete from competitors where id = $1 and exists (select 1 from channels channel where channel.id = competitors.channel_id and channel.project_id = $2)`, [cid, membership.projectId]);
     return NextResponse.json({ ok: true });
   } catch (err) {
+    if (err instanceof ProjectAccessError) return NextResponse.json({ ok: false, error: "access_denied" }, { status: 403 });
     console.error("[/api/competitors/[id]] DELETE", err);
     return NextResponse.json({ ok: false, error: "server" }, { status: 500 });
   }
 }
+
+export const GET = withProjectRoute(handleGET);
+export const PATCH = withProjectRoute(handlePATCH);
+export const DELETE = withProjectRoute(handleDELETE);

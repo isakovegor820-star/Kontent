@@ -1,4 +1,6 @@
 "use client";
+import { useProjectFetch } from "@/lib/use-project-transport";
+
 
 // А10. Автопилот (ТЗ 5.6, Д.9). ИИ собирает план недели по аналитике (Д.5) и залётам (Д.7),
 // в стиле пользователя. Одобрил — посты уходят в ту же очередь публикации (Д.3). Настоящие
@@ -992,6 +994,7 @@ function BuildAttemptPanel({
 }
 
 export default function AutopilotPage() {
+  const fetch = useProjectFetch();
   const s = useStore();
   const router = useRouter();
   const projects = useProjects();
@@ -1101,7 +1104,7 @@ export default function AutopilotPage() {
     } finally {
       if (sequence === loadSequence.current) setLoading(false);
     }
-  }, [chId]);
+  }, [chId, fetch]);
 
   useEffect(() => {
     let cancelled = false;
@@ -1176,7 +1179,7 @@ export default function AutopilotPage() {
       if (timer) clearTimeout(timer);
       controller?.abort();
     };
-  }, [chId]);
+  }, [chId, fetch]);
 
   useEffect(() => {
     const moveId = Number(new URLSearchParams(window.location.search).get("growthMove"));
@@ -1199,7 +1202,7 @@ export default function AutopilotPage() {
         if ((error as Error)?.name === "AbortError") return;
       });
     return () => controller.abort();
-  }, []);
+  }, [fetch]);
 
   const building = data?.buildAttempt?.status === "building" || [
     "auto_retry_scheduled",

@@ -1,5 +1,5 @@
+import { ProjectRequest } from "@/test/project-request";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { NextRequest } from "next/server";
 import { ProjectAccessError } from "@/lib/project-permissions";
 import { TodayActionError } from "@/lib/today-actions";
 
@@ -23,7 +23,7 @@ function request(body: unknown = {
   fingerprint: "a".repeat(64),
   actionKind: "create_opportunity_draft",
 }) {
-  return new NextRequest("http://localhost/api/today/action", {
+  return new ProjectRequest(1, "http://localhost/api/today/action", {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify(body),
@@ -50,7 +50,7 @@ describe("POST /api/today/action", () => {
   it("runs only an allowlisted action for the selected channel and disables caching", async () => {
     const response = await POST(request());
     expect(response.status).toBe(200);
-    expect(response.headers.get("cache-control")).toBe("no-store");
+    expect(response.headers.get("cache-control")).toBe("private, no-store");
     expect(mocks.performTodaySmartAction).toHaveBeenCalledWith({
       actorUserId: 9,
       channelId: 11,

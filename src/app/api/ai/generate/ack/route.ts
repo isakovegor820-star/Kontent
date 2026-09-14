@@ -1,7 +1,8 @@
+import { withProjectRoute } from "@/lib/project-route";
 import { NextRequest, NextResponse } from "next/server";
 
 import { acknowledgeAiUsageResult } from "@/lib/ai-usage";
-import { acknowledgeGenerationArtifact } from "@/lib/generation-artifacts";
+import { acknowledgeGenerationArtifact, authorizeGenerationAcknowledgement } from "@/lib/generation-artifacts";
 import { hasTrustedMutationOrigin } from "@/lib/request-origin";
 import { getSessionUser } from "@/lib/session";
 
@@ -23,7 +24,7 @@ function ackJson(
  * Second phase of paid text generation. The browser calls this only after it parsed the
  * NDJSON `done` event and reached clean EOF; repeated calls are safe and never double-count.
  */
-export async function POST(req: NextRequest) {
+async function handlePOST(req: NextRequest) {
   const requestId = crypto.randomUUID();
   if (!hasTrustedMutationOrigin(req)) {
     return ackJson(requestId, { ok: false, error: "forbidden_origin", retryable: false }, 403);
@@ -44,6 +45,9 @@ export async function POST(req: NextRequest) {
   }
 
   try {
+    if (!await authorizeGenerationAcknowledgement(user.id, `web:${clientKey}`)) {
+      return ackJson(requestId, { ok: false, error: "generation_operation_unavailable", retryable: false }, 409);
+    }
     const finalized = await acknowledgeAiUsageResult(user.id, `web:${clientKey}`);
     if (finalized.status === "committed" && finalized.result) {
       const generationResultId = await acknowledgeGenerationArtifact(user.id, `web:${clientKey}`);
@@ -79,3 +83,5 @@ export async function POST(req: NextRequest) {
     return ackJson(requestId, { ok: false, error: "usage_ack_unavailable", retryable: true }, 503);
   }
 }
+
+export const POST = withProjectRoute(handlePOST);

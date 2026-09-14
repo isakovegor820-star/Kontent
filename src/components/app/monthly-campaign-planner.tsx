@@ -1,4 +1,7 @@
 "use client";
+import { useProjectFetch } from "@/lib/use-project-transport";
+import { useProjects } from "@/components/app/project-provider";
+
 
 import Link from "next/link";
 import { useRouter } from "next/navigation";
@@ -43,18 +46,10 @@ import {
   type MonthlyCampaignClientPlan,
   type MonthlyCampaignClientSummary,
   type MonthlyCampaignEditorialWeek,
-  type MonthlyCampaignRole,
 } from "@/lib/monthly-campaign-client";
 import { isCurrentMonthlyDetailRequest, monthlyDetailRequestIdentity } from "@/lib/monthly-detail-request-race";
 import { useStore } from "@/lib/store";
 import { cn, plural } from "@/lib/utils";
-
-type ProjectContext = {
-  projectId: number;
-  name: string;
-  timezone: string;
-  role: MonthlyCampaignRole;
-};
 
 type CampaignForm = {
   month: string;
@@ -187,11 +182,12 @@ function prefersReducedMotion() {
 }
 
 export function MonthlyCampaignPlanner() {
+  const fetch = useProjectFetch();
   const router = useRouter();
   const store = useStore();
   const [pickedChannel, setPickedChannel] = useState<number | null>(null);
   const { tgChannels, channelId } = useChannelChoice(store.realChannels, pickedChannel);
-  const [project, setProject] = useState<ProjectContext | null>(null);
+  const { current: project, ready: projectReady } = useProjects();
   const [brief, setBrief] = useState<Brief | null>(null);
   const [campaigns, setCampaigns] = useState<MonthlyCampaignClientSummary[]>([]);
   const [campaignId, setCampaignId] = useState<number | null>(null);
@@ -226,7 +222,7 @@ export function MonthlyCampaignPlanner() {
       : parsed[0]?.id ?? null;
     campaignIdRef.current = nextId;
     setCampaignId(nextId);
-  }, []);
+  }, [fetch]);
 
   const loadDetail = useCallback(async (id: number, quiet = false) => {
     const ticket = detailRequestFence.start(monthlyDetailRequestIdentity(id));
@@ -253,27 +249,15 @@ export function MonthlyCampaignPlanner() {
         setLoading(false);
       }
     }
-  }, [detailRequestFence]);
+  }, [detailRequestFence, fetch]);
 
   useEffect(() => {
     let cancelled = false;
-    void Promise.all([
-      fetch("/api/projects/current", { cache: "no-store" }).then((response) => response.json()),
-      fetch("/api/monthly-campaigns", { cache: "no-store" }).then((response) => response.json()),
-    ]).then(([projectPayload, campaignPayload]) => {
+    if (!projectReady) return;
+    void fetch("/api/monthly-campaigns", { cache: "no-store" }).then(async (response) => {
+      const parsedCampaigns = parseMonthlyCampaignList(await response.json());
       if (cancelled) return;
-      const source = projectPayload?.project;
-      const parsedCampaigns = parseMonthlyCampaignList(campaignPayload);
-      if (!source || !Number.isSafeInteger(Number(source.projectId))
-          || typeof source.timezone !== "string"
-          || !["owner", "author", "approver", "publisher"].includes(source.role)
-          || !parsedCampaigns) throw new Error("monthly_initial_state_invalid");
-      setProject({
-        projectId: Number(source.projectId),
-        name: typeof source.name === "string" ? source.name : "Текущий проект",
-        timezone: source.timezone,
-        role: source.role,
-      });
+      if (!response.ok || !parsedCampaigns) throw new Error("monthly_initial_state_invalid");
       setCampaigns(parsedCampaigns);
       const requestedCampaignId = Number(new URLSearchParams(window.location.search).get("campaign"));
       const selectedId = Number.isSafeInteger(requestedCampaignId)
@@ -290,7 +274,7 @@ export function MonthlyCampaignPlanner() {
       if (!cancelled) setLoading(false);
     });
     return () => { cancelled = true; };
-  }, []);
+  }, [fetch, projectReady]);
 
   useEffect(() => {
     if (!campaignId || creating) return;
@@ -332,7 +316,7 @@ export function MonthlyCampaignPlanner() {
       })
       .catch(() => {});
     return () => controller.abort();
-  }, [channelId]);
+  }, [channelId, fetch]);
 
   const plan = latestPlan(detail);
   const latestRegeneration = plan

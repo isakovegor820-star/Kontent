@@ -1,5 +1,5 @@
+import { ProjectRequest } from "@/test/project-request";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { NextRequest } from "next/server";
 
 const mocks = vi.hoisted(() => ({
   query: vi.fn(),
@@ -117,7 +117,7 @@ const approvedItem = {
 const planBinding = { planId: 44, planRevision: 3, itemId: 2 };
 
 function rejectRequest() {
-  return new NextRequest("http://localhost/api/autopilot/item", {
+  return new ProjectRequest(88, "http://localhost/api/autopilot/item", {
     method: "PATCH",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ channelId: 7, index: 2, action: "reject", ...planBinding }),
@@ -142,7 +142,7 @@ function mockTransaction(
 
 describe("PATCH /api/autopilot/item approve", () => {
   it("rejects legacy one-item scheduling before any plan or queue side effect", async () => {
-    const response = await PATCH(new NextRequest("http://localhost/api/autopilot/item", {
+    const response = await PATCH(new ProjectRequest(88, "http://localhost/api/autopilot/item", {
       method: "PATCH",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
@@ -321,7 +321,7 @@ describe("PATCH /api/autopilot/item replace", () => {
       return { rows: [], rowCount: 1 };
     });
 
-    const response = await PATCH(new NextRequest("http://localhost/api/autopilot/item", {
+    const response = await PATCH(new ProjectRequest(88, "http://localhost/api/autopilot/item", {
       method: "PATCH",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
@@ -379,7 +379,7 @@ describe("PATCH /api/autopilot/item edit quality provenance", () => {
     });
 
     const response = await PATCH(
-      new NextRequest("http://localhost/api/autopilot/item", {
+      new ProjectRequest(88, "http://localhost/api/autopilot/item", {
         method: "PATCH",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({

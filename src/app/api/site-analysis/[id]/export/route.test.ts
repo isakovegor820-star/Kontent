@@ -1,5 +1,5 @@
+import { ProjectRequest } from "@/test/project-request";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { NextRequest } from "next/server";
 
 const mocks = vi.hoisted(() => ({
   getSessionUser: vi.fn(),
@@ -46,7 +46,7 @@ describe("GET /api/site-analysis/:id/export", () => {
 
   it("exports only the authenticated user's immutable ready result", async () => {
     const response = await GET(
-      new NextRequest("http://localhost/api/site-analysis/41/export?format=json"),
+      new ProjectRequest(31, "http://localhost/api/site-analysis/41/export?format=json"),
       { params: Promise.resolve({ id: "41" }) },
     );
     expect(response.status).toBe(200);
@@ -57,9 +57,9 @@ describe("GET /api/site-analysis/:id/export", () => {
 
   it("fails closed for unauthenticated and unsupported requests", async () => {
     mocks.getSessionUser.mockResolvedValueOnce(null);
-    expect((await GET(new NextRequest("http://localhost/api/site-analysis/41/export?format=json"), { params: Promise.resolve({ id: "41" }) })).status).toBe(401);
+    expect((await GET(new ProjectRequest(31, "http://localhost/api/site-analysis/41/export?format=json"), { params: Promise.resolve({ id: "41" }) })).status).toBe(401);
     mocks.getSessionUser.mockResolvedValueOnce({ id: 7 });
-    expect((await GET(new NextRequest("http://localhost/api/site-analysis/41/export?format=xml"), { params: Promise.resolve({ id: "41" }) })).status).toBe(400);
+    expect((await GET(new ProjectRequest(31, "http://localhost/api/site-analysis/41/export?format=xml"), { params: Promise.resolve({ id: "41" }) })).status).toBe(400);
     expect(mocks.query).not.toHaveBeenCalled();
   });
 });

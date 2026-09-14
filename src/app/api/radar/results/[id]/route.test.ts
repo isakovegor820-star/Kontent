@@ -1,5 +1,5 @@
+import { ProjectRequest } from "@/test/project-request";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { NextRequest } from "next/server";
 
 const mocks = vi.hoisted(() => ({
   query: vi.fn(),
@@ -9,6 +9,10 @@ const mocks = vi.hoisted(() => ({
   trusted: vi.fn(),
 }));
 
+vi.mock("@/lib/project-permissions", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/lib/project-permissions")>();
+  return { ...actual, requireSelectedProjectPermission: vi.fn(async () => ({ projectId: 1, userId: 7, role: "owner", version: 1 })) };
+});
 vi.mock("@/lib/db", () => ({ getPool: () => ({ query: mocks.query }) }));
 vi.mock("@/lib/session", () => ({ getSessionUser: mocks.session }));
 vi.mock("@/lib/autopilot", () => ({ resolveChannel: mocks.resolveChannel }));
@@ -48,7 +52,7 @@ describe("radar result actions", () => {
       if (sql.includes("insert into competitors")) return { rowCount: 1, rows: [{ id: "81" }] };
       return { rowCount: 0, rows: [] };
     });
-    const response = await POST(new NextRequest("http://localhost/api/radar/results/41", {
+    const response = await POST(new ProjectRequest(1, "http://localhost/api/radar/results/41", {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ action: "add_competitor", channelId: 11 }),
@@ -56,7 +60,7 @@ describe("radar result actions", () => {
     expect(response.status).toBe(200);
     await expect(response.json()).resolves.toMatchObject({ ok: true, id: 81, handle: "umsadovnik" });
     expect(mocks.queueAdd).toHaveBeenCalledWith("competitor", { id: 81 }, expect.any(Object));
-    expect(mocks.query).toHaveBeenCalledWith(expect.stringContaining("result.user_id = $2"), [41, 7]);
+    expect(mocks.query).toHaveBeenCalledWith(expect.stringContaining("result.user_id = $2"), [41, 7, 1]);
   });
 
   it("saves a verified post as a deduplicated library reference", async () => {
@@ -68,7 +72,7 @@ describe("radar result actions", () => {
       if (sql.includes("insert into saved_posts")) return { rowCount: 1, rows: [{ id: "55" }] };
       return { rowCount: 0, rows: [] };
     });
-    const response = await POST(new NextRequest("http://localhost/api/radar/results/41", {
+    const response = await POST(new ProjectRequest(1, "http://localhost/api/radar/results/41", {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ action: "save_idea", channelId: 11 }),
@@ -95,7 +99,7 @@ describe("radar result actions", () => {
       if (sql.includes("insert into saved_posts")) return { rowCount: 1, rows: [{ id: "56" }] };
       return { rowCount: 0, rows: [] };
     });
-    const response = await POST(new NextRequest("http://localhost/api/radar/results/41", {
+    const response = await POST(new ProjectRequest(1, "http://localhost/api/radar/results/41", {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ action: "save_reference", channelId: 11 }),
@@ -107,7 +111,7 @@ describe("radar result actions", () => {
 
   it("returns not found instead of acting on another user's result", async () => {
     mocks.query.mockResolvedValue({ rowCount: 0, rows: [] });
-    const response = await POST(new NextRequest("http://localhost/api/radar/results/41", {
+    const response = await POST(new ProjectRequest(1, "http://localhost/api/radar/results/41", {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ action: "save_idea", channelId: 11 }),

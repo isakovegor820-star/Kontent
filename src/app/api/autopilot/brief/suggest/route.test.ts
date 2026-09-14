@@ -1,5 +1,5 @@
+import { ProjectRequest } from "@/test/project-request";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { NextRequest } from "next/server";
 
 const mocks = vi.hoisted(() => ({
   getSessionUser: vi.fn(),
@@ -29,7 +29,7 @@ vi.mock("@/lib/ai-completion-service.mjs", () => ({ completeAiText: mocks.comple
 import { POST } from "./route";
 
 function request(channelId: number) {
-  return new NextRequest("http://localhost/api/autopilot/brief/suggest", {
+  return new ProjectRequest(88, "http://localhost/api/autopilot/brief/suggest", {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ channelId }),

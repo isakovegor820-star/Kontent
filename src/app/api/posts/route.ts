@@ -1,3 +1,5 @@
+import { calendarQuery, CalendarQueryError } from "@/lib/calendar-query";
+import { withProjectRoute } from "@/lib/project-route";
 // Д.3/Д.4 — список реальных постов пользователя (для календаря).
 
 import { NextRequest, NextResponse } from "next/server";
@@ -7,12 +9,13 @@ import { getSessionUser } from "@/lib/session";
 
 export const runtime = "nodejs";
 
-export async function GET(req: NextRequest) {
+async function handleGET(req: NextRequest) {
   try {
     const user = await getSessionUser(req);
     if (!user) return NextResponse.json({ error: "unauthorized" }, { status: 401 });
     const pool = getPool();
     const membership = await requireSelectedProjectPermission(pool, user.id, "project.read");
+    const query = await calendarQuery(pool, membership.projectId, "posts", req.nextUrl.searchParams);
     const rows = await pool.query(
       `select p.id, p.user_id as author_user_id,
               coalesce(nullif(btrim(post_author.name), ''), 'Участник ' || p.user_id::text) as author_name,
@@ -49,12 +52,13 @@ export async function GET(req: NextRequest) {
              from publication_parts pp where pp.post_id = p.id
          ) parts on true
         where p.project_id = $1
-        order by p.scheduled_at nulls last, p.id desc
-        limit 200`,
-      [membership.projectId],
+        ${query.tail}`,
+      query.values,
     );
+    const page = query.page(rows.rows);
     return NextResponse.json({
-      posts: rows.rows.map((post) => ({
+      hasMore: page.hasMore, nextCursor: page.nextCursor,
+      posts: page.items.map((post) => ({
         ...post,
         // PostgreSQL `bigint` arrives through node-postgres as a string. The client-side
         // RealPost contract uses numbers and compares channel ids with RealChannel ids, so
@@ -74,6 +78,7 @@ export async function GET(req: NextRequest) {
       })),
     });
   } catch (err) {
+    if (err instanceof CalendarQueryError) return NextResponse.json({ error: err.message }, { status: 400 });
     if (err instanceof ProjectAccessError) {
       return NextResponse.json({ error: "access_denied" }, { status: 403 });
     }
@@ -81,3 +86,5 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ error: "unavailable" }, { status: 503 });
   }
 }
+
+export const GET = withProjectRoute(handleGET);

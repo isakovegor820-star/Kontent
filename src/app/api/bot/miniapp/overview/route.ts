@@ -59,6 +59,7 @@ export async function GET(req: NextRequest) {
   return NextResponse.json({
     ok: true,
     overview: {
+      projectId: Number(overview.id),
       project: overview.name,
       timezone: overview.timezone || "UTC",
       role: overview.role,

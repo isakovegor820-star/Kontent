@@ -1,5 +1,5 @@
+import { ProjectRequest } from "@/test/project-request";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { NextRequest } from "next/server";
 
 const mocks = vi.hoisted(() => ({
   query: vi.fn(),
@@ -8,7 +8,7 @@ const mocks = vi.hoisted(() => ({
   queueAdd: vi.fn(),
 }));
 
-vi.mock("@/lib/db", () => ({ getPool: () => ({ query: mocks.query }) }));
+vi.mock("@/lib/db", () => ({ getPool: () => ({ query: mocks.query, connect: async () => ({ query: mocks.query, release: vi.fn() }) }) }));
 vi.mock("@/lib/session", () => ({ getSessionUser: mocks.getSessionUser }));
 vi.mock("@/lib/request-origin", () => ({ hasTrustedMutationOrigin: () => true }));
 vi.mock("@/lib/project-permissions", async (importOriginal) => {
@@ -28,6 +28,7 @@ beforeEach(() => {
   mocks.requireSelectedProjectPermission.mockResolvedValue({ projectId: 17, userId: 5, role: "owner" });
   mocks.queueAdd.mockResolvedValue(undefined);
   mocks.query.mockImplementation(async (sql: string) => {
+    if (sql.includes("from project_members member")) return { rows: [{project_id: 17, user_id: 5, role: "owner", version: 1}], rowCount: 1 };
     if (sql.includes("from channels")) return { rows: [{ id: "7" }], rowCount: 1 };
     if (sql.includes("bool_or(auto_publish_enabled)")) {
       return { rows: [{ enabled: false }], rowCount: 1 };
@@ -38,8 +39,8 @@ beforeEach(() => {
 });
 
 describe("POST /api/rss/bootstrap", () => {
-  it("does not carry auto-publish permission when sources move to another channel", async () => {
-    const response = await POST(new NextRequest("http://localhost/api/rss/bootstrap", {
+  it("creates a separate subscription without carrying another channel’s auto-publish permission", async () => {
+    const response = await POST(new ProjectRequest(17, "http://localhost/api/rss/bootstrap", {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ channelId: 7 }),
@@ -50,7 +51,7 @@ describe("POST /api/rss/bootstrap", () => {
       autoPublishEnabled: false,
     });
     const insert = mocks.query.mock.calls.find(([sql]) => String(sql).includes("insert into rss_feeds"));
-    expect(insert?.[0]).toContain("auto_publish_enabled = excluded.auto_publish_enabled");
-    expect(insert?.[1]).toEqual([5, 7, "https://law.test/rss", "Law", false]);
+    expect(insert?.[0]).not.toContain("on conflict (user_id, url)");
+    expect(insert?.[1]).toEqual([5, 7, "https://law.test/rss", "Law", true, true, false, "legal_opportunity", 3, false]);
   });
 });

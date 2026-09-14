@@ -25,7 +25,7 @@ describe("worker provider capability contract", () => {
   });
 
   it("permits a worker write only after credentials and permissions are proven", () => {
-    expect(resolveProviderOperation("vk", "livePublish", {
+    expect(resolveProviderOperation("tg", "livePublish", {
       credentialState: PROVIDER_CREDENTIAL_STATES.READY,
       permissionState: PROVIDER_PERMISSION_STATES.READY,
     })).toMatchObject({ available: true, state: "ready" });

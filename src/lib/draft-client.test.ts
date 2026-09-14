@@ -1,4 +1,6 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { setProjectTransport } from "./project-transport";
+import { ProjectResponse } from "@/test/project-response";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
   activeComposerNetworks,
@@ -112,7 +114,7 @@ describe("draft client coordination", () => {
     const fetchMock = vi.fn(async (_request: RequestInfo | URL, _init?: RequestInit) => {
       void _request;
       void _init;
-      return new Response(JSON.stringify({
+      return new ProjectResponse(7, JSON.stringify({
         ok: true,
         created: true,
         draft: { id: 41 },
@@ -136,7 +138,7 @@ describe("draft client coordination", () => {
     const fetchMock = vi.fn(async (_request: RequestInfo | URL, _init?: RequestInit) => {
       void _request;
       void _init;
-      return new Response(JSON.stringify({
+      return new ProjectResponse(7, JSON.stringify({
         ok: true,
         created: true,
         requestId: "req-library-1",
@@ -183,7 +185,7 @@ describe("draft client coordination", () => {
         offset: "+02:00",
       },
     };
-    const fetchMock = vi.fn(async () => new Response(JSON.stringify({
+    const fetchMock = vi.fn(async () => new ProjectResponse(7, JSON.stringify({
       ok: true,
       draft: { id: 41, version: 4, scheduled_at: input.scheduledAt },
     }), { status: 200, headers: { "content-type": "application/json" } }));
@@ -213,7 +215,7 @@ describe("draft client coordination", () => {
       channelIds: [11],
       tracking: null,
     };
-    const fetchMock = vi.fn(async () => new Response(JSON.stringify({
+    const fetchMock = vi.fn(async () => new ProjectResponse(7, JSON.stringify({
       ok: true,
       created: false,
       draft: { id: 99, origin: "manual" },
@@ -491,7 +493,7 @@ describe("draft client coordination", () => {
       updated_at: "2026-08-01T12:05:00.000Z",
       destinations: [],
     };
-    const fetchMock = vi.fn(async () => new Response(
+    const fetchMock = vi.fn(async () => new ProjectResponse(7,
       JSON.stringify({ ok: true, draft: acknowledged }),
       { status: 200, headers: { "content-type": "application/json" } },
     ));
@@ -555,3 +557,6 @@ describe("draft client coordination", () => {
     })).toBeNull();
   });
 });
+
+beforeEach(() => setProjectTransport(7, true, 5));
+afterEach(() => setProjectTransport(null));

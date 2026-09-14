@@ -305,11 +305,24 @@ describe("publication extra retry", () => {
     status: "failed",
     kind: "first_comment",
     request_snapshot: { providerId: "tg" },
+    network: "tg",
     provider_started_at: "2026-08-12T10:00:00.000Z",
     last_error_code: "delivery_unknown",
     post_id: 12,
     post_status: "published",
   };
+
+  it("rejects VK retry before clearing its failure or scheduling an external write", async () => {
+    const { pool, query } = transactionPool((sql) => {
+      if (sql.includes("from audit_events")) return { rows: [] };
+      if (sql.includes("from publication_extra_operations extra")) return { rows: [{ ...ambiguousRow, network: "vk", request_snapshot: { providerId: "vk" } }] };
+      throw new Error(`unexpected sql: ${sql}`);
+    });
+    await expect(retryPublicationExtraOperation({ pool: pool as never, actorUserId: 7, operationId: 77,
+      expectedFingerprint: operationFingerprint, verifiedAbsent: true, idempotencyKey: "blocked-vk-retry",
+    })).rejects.toMatchObject({ readiness: { reason: "vk_auth_flow_unverified" } });
+    expect(query.mock.calls.some(([sql]) => String(sql).includes("update publication_extra_operations"))).toBe(false);
+  });
 
   it("requires an explicit external absence check before retrying ambiguous Telegram comment", async () => {
     const { pool, query } = transactionPool((sql) => {

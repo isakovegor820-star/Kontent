@@ -1,3 +1,4 @@
+import { withProjectRoute } from "@/lib/project-route";
 import { NextRequest } from "next/server";
 
 import { readJsonBodyValue } from "@/lib/bounded-request-body";
@@ -15,7 +16,7 @@ import { jsonWithRequest, resolveSiteRoute, siteErrorResponse } from "./_shared"
 
 export const runtime = "nodejs";
 
-export async function GET(req: NextRequest) {
+async function handleGET(req: NextRequest) {
   const resolved = await resolveSiteRoute(req, "project.read", { label: "/api/sites GET" });
   if (!resolved.ok) return resolved.response;
   const { pool, projectId, requestId } = resolved.context;
@@ -32,7 +33,7 @@ export async function GET(req: NextRequest) {
  * это ограничивает только публикацию (этап 2), а стартовый аудит публичных страниц
  * доступен любому участнику проекта с правом создавать контент.
  */
-export async function POST(req: NextRequest) {
+async function handlePOST(req: NextRequest) {
   const resolved = await resolveSiteRoute(req, "content.create", { mutation: true, label: "/api/sites POST" });
   if (!resolved.ok) return resolved.response;
   const { pool, projectId, userId, requestId } = resolved.context;
@@ -80,3 +81,6 @@ export async function POST(req: NextRequest) {
     return siteErrorResponse(error, "/api/sites POST", requestId);
   }
 }
+
+export const GET = withProjectRoute(handleGET);
+export const POST = withProjectRoute(handlePOST);

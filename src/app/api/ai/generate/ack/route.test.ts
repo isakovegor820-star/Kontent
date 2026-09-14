@@ -1,22 +1,24 @@
+import { ProjectRequest } from "@/test/project-request";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { NextRequest } from "next/server";
 
 const mocks = vi.hoisted(() => ({
   getSessionUser: vi.fn(),
   acknowledgeAiUsageResult: vi.fn(),
   acknowledgeGenerationArtifact: vi.fn(),
+  authorizeGenerationAcknowledgement: vi.fn(),
 }));
 
 vi.mock("@/lib/session", () => ({ getSessionUser: mocks.getSessionUser }));
 vi.mock("@/lib/ai-usage", () => ({ acknowledgeAiUsageResult: mocks.acknowledgeAiUsageResult }));
 vi.mock("@/lib/generation-artifacts", () => ({
   acknowledgeGenerationArtifact: mocks.acknowledgeGenerationArtifact,
+  authorizeGenerationAcknowledgement: mocks.authorizeGenerationAcknowledgement,
 }));
 
 import { POST } from "./route";
 
 function request(key = "studio_stream_test_1") {
-  return new NextRequest("http://localhost/api/ai/generate/ack", {
+  return new ProjectRequest(1, "http://localhost/api/ai/generate/ack", {
     method: "POST",
     headers: { "idempotency-key": key },
   });
@@ -32,6 +34,7 @@ describe("POST /api/ai/generate/ack", () => {
       result: { protocol: "ndjson", text: "done", generationResultId: 501 },
     });
     mocks.acknowledgeGenerationArtifact.mockResolvedValue(501);
+    mocks.authorizeGenerationAcknowledgement.mockResolvedValue(true);
   });
 
   it("commits only the authenticated user's staged stable request", async () => {
@@ -69,7 +72,7 @@ describe("POST /api/ai/generate/ack", () => {
   });
 
   it("fails closed on cross-site mutation before touching session or quota", async () => {
-    const response = await POST(new NextRequest("https://aurora.test/api/ai/generate/ack", {
+    const response = await POST(new ProjectRequest(1, "https://aurora.test/api/ai/generate/ack", {
       method: "POST",
       headers: {
         origin: "https://attacker.example",

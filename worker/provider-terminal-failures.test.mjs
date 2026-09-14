@@ -17,6 +17,6 @@ describe("worker terminal provider failure", () => {
 
   it("does not intercept supported live providers", () => {
     expect(providerTerminalFailure("tg")).toBeNull();
-    expect(providerTerminalFailure("vk")).toBeNull();
+    expect(providerTerminalFailure("vk")).toMatchObject({ status: "failed", terminal: true, retryable: false, livePublished: false, errorCode: "vk_auth_flow_unverified" });
   });
 });
