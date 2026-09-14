@@ -201,13 +201,13 @@ async function oneCompletion(request, runtime, { fetchImpl, signal, timeoutMs })
         }),
       });
     } else if (runtime.protocol === "openai") {
-      // Every Navy model on this endpoint can spend output tokens on hidden reasoning before
-      // it emits anything visible, and only DeepSeek accepts `reasoning_effort: "none"`.
-      // MiniMax and Qwen therefore used to burn a 1_200-token budget on reasoning and return
-      // an empty `content`, which this service reports as `empty_generation`. Autopilot saw
-      // that on every draft until each engine's circuit opened and the whole fleet answered
-      // `provider_unavailable`. One budget for the whole endpoint keeps room for both phases.
+      // Navy models can spend output tokens on hidden reasoning before they emit anything
+      // visible. Keep one larger provider budget for that endpoint and disable hidden
+      // reasoning only for models whose API contract supports it. Product-slot ids are
+      // durable, so request behavior must follow the provider model currently behind a slot.
       const providerMaxTokens = providerOutputTokens(runtime.id, maxTokens);
+      const noReasoning = runtime.model.startsWith("deepseek-")
+        || runtime.model === "gpt-5.6-terra";
       response = await fetchImpl(`${runtime.baseUrl}/chat/completions`, {
         method: "POST",
         headers: { "content-type": "application/json", authorization: `Bearer ${runtime.key}`, ...correlationHeaders },
@@ -216,10 +216,7 @@ async function oneCompletion(request, runtime, { fetchImpl, signal, timeoutMs })
           model: runtime.model,
           temperature,
           max_tokens: providerMaxTokens,
-          // Reasoning-capable Navy models can spend a small output budget before producing
-          // visible content. The larger provider cap above gives them room for both phases;
-          // DeepSeek also supports disabling hidden reasoning for this background path.
-          ...(runtime.id.startsWith("navy-deepseek") ? { reasoning_effort: "none" } : {}),
+          ...(noReasoning ? { reasoning_effort: "none" } : {}),
           messages,
         }),
       });

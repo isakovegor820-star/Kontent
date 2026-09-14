@@ -49,7 +49,7 @@ function openAiSuccess(response: ServerResponse, body: { stream?: boolean }) {
 const provider = createServer(async (request, response) => {
   const body = await jsonBody(request);
   requests.push(body);
-  const primary = body.model === "deepseek-v4-pro";
+  const primary = body.model === "glm-5.3";
   if (mode === "all-fail") {
     response.writeHead(503);
     response.end("unavailable");

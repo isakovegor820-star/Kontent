@@ -1,9 +1,11 @@
 const ENGINES = Object.freeze({
-  "navy-deepseek-pro": { label: "DeepSeek V4 Pro", protocol: "openai", model: "deepseek-v4-pro", baseUrl: "https://api.navy/v1", key: "NAVYAI_API_KEY" },
-  "navy-deepseek-flash": { label: "DeepSeek V4 Flash", protocol: "openai", model: "deepseek-v4-flash", baseUrl: "https://api.navy/v1", key: "NAVYAI_API_KEY" },
-  "navy-gpt-5-4": { label: "GPT-5.4", protocol: "openai", model: "gpt-5.4", baseUrl: "https://api.navy/v1", key: "NAVYAI_API_KEY" },
+  // These five keys are durable product-slot IDs stored in user/autopilot settings.
+  // Keep them stable while the provider model behind each Aurora variant evolves.
+  "navy-deepseek-pro": { label: "GLM-5.3", protocol: "openai", model: "glm-5.3", baseUrl: "https://api.navy/v1", key: "NAVYAI_API_KEY" },
+  "navy-deepseek-flash": { label: "Qwen 3.8 27B", protocol: "openai", model: "qwen3.8-27b", baseUrl: "https://api.navy/v1", key: "NAVYAI_API_KEY" },
+  "navy-gpt-5-4": { label: "GPT-5.6 Terra", protocol: "openai", model: "gpt-5.6-terra", baseUrl: "https://api.navy/v1", key: "NAVYAI_API_KEY" },
   "navy-qwen-3-6": { label: "Qwen 3.6 27B", protocol: "openai", model: "qwen3.6-27b", baseUrl: "https://api.navy/v1", key: "NAVYAI_API_KEY" },
-  "navy-minimax-m3": { label: "MiniMax M3", protocol: "openai", model: "minimax-m3", baseUrl: "https://api.navy/v1", key: "NAVYAI_API_KEY" },
+  "navy-minimax-m3": { label: "DeepSeek V4 Flash", protocol: "openai", model: "deepseek-v4-flash", baseUrl: "https://api.navy/v1", key: "NAVYAI_API_KEY" },
   local: { label: "Hermes 3", protocol: "ollama", model: "hermes3", baseUrl: "http://127.0.0.1:11434", key: null },
   openai: { label: "GPT-4o mini", protocol: "openai", model: "gpt-4o-mini", baseUrl: "https://api.openai.com/v1", key: "OPENAI_API_KEY" },
   claude: { label: "Claude Haiku", protocol: "anthropic", model: "claude-haiku-4-5-20251001", baseUrl: "https://api.anthropic.com/v1", key: "ANTHROPIC_API_KEY" },
@@ -81,11 +83,8 @@ export function resolveAiEngineRuntime(engineId, env = process.env) {
 export function configuredServiceEngine(requested = null, env = process.env) {
   if (isConfiguredEngineId(requested)) return requested;
   if (isConfiguredEngineId(env.AI_SERVICE_ENGINE)) return env.AI_SERVICE_ENGINE;
-  // Every surface that does not pin an engine lands here, so this constant decides the
-  // health of the whole background fleet. GPT-5.4's upstream route answers Autopilot's
-  // request shape with HTTP 500, which is why unpinned plans recorded
-  // `generation_engine: navy-gpt-5-4` and died on `provider_error` before any fallback
-  // could earn a draft. DeepSeek Flash serves the same key and completes in a few seconds.
+  // Every surface that does not pin an engine lands here, so this durable slot decides the
+  // health of the whole background fleet. It currently routes to the fast Qwen 3.8 model.
   if (env.NAVYAI_API_KEY) return "navy-deepseek-flash";
   if (env.OPENAI_API_KEY || env.AI_API_KEY) return "openai";
   if (env.ANTHROPIC_API_KEY) return "claude";
@@ -105,17 +104,14 @@ export function configuredAiFallbacks(primary, env = process.env) {
   // as an automatic safety net; this neither changes data residency nor sends the prompt to
   // another vendor. Explicit operator fallbacks are attempted first because they encode the
   // latest observed provider health; the remaining same-provider fleet is the final tier.
-  // This tier is recovery order, so it is ranked by which routes actually answer rather
-  // than by capability. GPT-5.4 (HTTP 500) and DeepSeek Pro (no response inside 45s) are
-  // the two that currently fail, and leading with them spent the attempt budget before a
-  // healthy model was ever asked. They stay last so recovery still reaches them once the
-  // upstream route heals.
+  // This tier is recovery order, ranked by current reliability and latency. DeepSeek Flash
+  // is intentionally retained as a later fallback, while slow GLM-5.3 remains last.
   const sameProvider = primary.startsWith("navy-")
     ? [
         "navy-deepseek-flash",
         "navy-qwen-3-6",
-        "navy-minimax-m3",
         "navy-gpt-5-4",
+        "navy-minimax-m3",
         "navy-deepseek-pro",
       ]
     : [];
@@ -130,10 +126,10 @@ export function configuredAiFallbacks(primary, env = process.env) {
     });
 }
 
-/** Leave time for a working fallback while GPT-5.4's upstream is timing out. */
+/** GLM-5.3 has a slower first token; let the depth slot answer before fallback. */
 export function recoveryAttemptTimeoutMs(engine, timeoutMs, hasFallback) {
-  return hasFallback && engine === "navy-gpt-5-4" && timeoutMs > 0
-    ? Math.min(timeoutMs, 12_000)
+  return hasFallback && engine === "navy-deepseek-pro" && timeoutMs > 0
+    ? Math.max(timeoutMs, 20_000)
     : timeoutMs;
 }
 
