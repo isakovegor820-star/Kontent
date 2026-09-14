@@ -4,13 +4,14 @@ import { createContext, useContext, useEffect, useId, useRef, useState } from "r
 import Link from "next/link";
 import Image from "next/image";
 import { usePathname, useSearchParams } from "next/navigation";
-import { ArrowRight, BookOpen, ChevronLeft, CircleHelp, Search, X, Minus, Plus } from "lucide-react";
+import { ArrowRight, BookOpen, ChevronLeft, CircleHelp, Search, X, Minus, Plus, GripHorizontal, MoveDiagonal2, RotateCcw } from "lucide-react";
 import { Button, buttonClassName } from "@/components/ui/button";
 import { Input } from "@/components/ui/primitives";
 import { useModalFocus } from "@/components/ui/use-modal-focus";
 import { APP_ROUTES, type AppNavRouteId } from "@/lib/app-routes";
 import { currentDiscoverySection, DISCOVERY_SECTIONS, guideHref, searchDiscovery, SECTION_HELP, type DiscoveryEntry } from "@/lib/aurora-discovery";
 import { cn } from "@/lib/utils";
+import { useGuideWindow } from "./use-guide-window";
 import "./aurora-discovery.css";
 
 type DiscoveryContextValue = {
@@ -210,6 +211,9 @@ function GuidePanel({ section, current, step, setStep, collapsed, setCollapsed, 
   const [targetFound, setTargetFound] = useState(false);
   const [navigationMessage, setNavigationMessage] = useState("");
   const collapseRef = useRef<HTMLButtonElement>(null);
+  const { stageRef, headerRef, rect: windowRect, interaction, announcement, start, reset, onKeyDown: windowKeyDown, pointerHandlers, cancelGesture } = useGuideWindow(collapsed);
+  const moveHintId = useId();
+  const resizeHintId = useId();
   const help = SECTION_HELP[section];
   const activeStep = step !== null && current === section ? help.steps?.[step] : undefined;
   const activeEntry = DISCOVERY_SECTIONS.find((entry) => entry.sectionId === section)!;
@@ -233,40 +237,67 @@ function GuidePanel({ section, current, step, setStep, collapsed, setCollapsed, 
   }, [activeStep, suspended]);
 
   return (
-    <aside id="aurora-guide-panel" aria-labelledby={titleId} className="aurora-guide-panel fixed z-[60] flex flex-col rounded-md border border-line-strong bg-surface text-text shadow-float" onKeyDown={(event) => { if (event.key === "Escape" && !event.defaultPrevented) { event.stopPropagation(); onClose(); } }}>
-      <div className="flex shrink-0 items-center gap-2 border-b border-line p-3">
-        <Avatar /><div className="min-w-0 flex-1"><h2 id={titleId} ref={titleRef} tabIndex={-1} className="rounded-xs text-[14px] font-semibold">Гид Авроры</h2><p className="text-[12px] text-text-2">{collapsed ? APP_ROUTES[section].label : "Помогу разобраться"}</p></div>
-        <Button ref={collapseRef} variant="ghost" size="icon" aria-label={collapsed ? "Развернуть гида" : "Свернуть гида"} aria-expanded={!collapsed} aria-controls={!collapsed ? contentId : undefined} onClick={() => setCollapsed(!collapsed)}>{collapsed ? <Plus className="h-4 w-4" aria-hidden /> : <Minus className="h-4 w-4" aria-hidden />}</Button>
-        <Button variant="ghost" size="icon" aria-label="Закрыть гида" onClick={onClose}><X className="h-4 w-4" aria-hidden /></Button>
+    <div ref={stageRef} className="aurora-guide-stage">
+    <aside id="aurora-guide-panel" aria-labelledby={titleId} data-collapsed={collapsed} data-interaction={interaction ?? undefined}
+      style={windowRect ? { left: windowRect.x, top: windowRect.y, width: windowRect.width, height: collapsed ? undefined : windowRect.height, right: "auto", bottom: "auto" } : undefined}
+      className="aurora-guide-panel shadow-float" {...pointerHandlers}
+      onKeyDown={(event) => { if (event.key === "Escape" && !event.defaultPrevented) { event.stopPropagation(); event.preventDefault(); if (!cancelGesture()) onClose(); } }}>
+      <div ref={headerRef} className="aurora-guide-header" onPointerDown={(event) => {
+        if (!(event.target as HTMLElement).closest("button")) start(event, "move");
+      }}>
+        <button type="button" className="aurora-guide-move" aria-label="Переместить окно гида" aria-describedby={moveHintId}
+          onPointerDown={(event) => start(event, "move")} onKeyDown={(event) => windowKeyDown(event, "move")}>
+          <Avatar /><GripHorizontal className="aurora-guide-grip" size={14} aria-hidden />
+        </button>
+        <div className="aurora-guide-heading"><h2 id={titleId} ref={titleRef} tabIndex={-1}>Гид Авроры</h2><p>{collapsed ? APP_ROUTES[section].label : "Перетащите за шапку"}</p></div>
+        <div className="aurora-guide-header-actions">
+          <Button ref={collapseRef} variant="ghost" size="icon" aria-label={collapsed ? "Развернуть гида" : "Свернуть гида"} aria-expanded={!collapsed} aria-controls={!collapsed ? contentId : undefined} onClick={() => setCollapsed(!collapsed)}>{collapsed ? <Plus className="h-4 w-4" aria-hidden /> : <Minus className="h-4 w-4" aria-hidden />}</Button>
+          <Button variant="ghost" size="icon" aria-label="Закрыть гида" onClick={onClose}><X className="h-4 w-4" aria-hidden /></Button>
+        </div>
       </div>
-      {!collapsed && <div id={contentId} className="min-h-0 overflow-y-auto overscroll-contain p-4">
+      <span id={moveHintId} className="sr-only">Перетащите мышью или используйте стрелки. Shift увеличивает шаг. Home возвращает исходный вид.</span>
+      <span id={resizeHintId} className="sr-only">Потяните за угол. С клавиатуры: влево и вправо — ширина, вверх и вниз — высота. Shift увеличивает шаг. Home возвращает исходный вид.</span>
+      <span role="status" className="sr-only">{announcement}</span>
+      {!collapsed && <div id={contentId} className="aurora-guide-body">
         {!activeStep ? <>
           <label htmlFor={selectId} className="mb-2 block text-[12px] font-medium text-text-2">Какой раздел объяснить?</label>
           <select id={selectId} value={section} onChange={(event) => { setNavigationMessage(""); onSelect(event.target.value as AppNavRouteId); }} className="min-h-11 w-full rounded-xs border border-line-strong bg-surface px-3 text-base text-text">
             {DISCOVERY_SECTIONS.map((entry) => <option key={entry.id} value={entry.sectionId}>{entry.label}</option>)}
           </select>
-          <p className="mt-4 text-[14px] leading-relaxed">{help.description}</p>
-          <div className="mt-4 rounded-sm bg-surface-inset p-3"><h3 className="text-[13px] font-semibold">С чего начать</h3><p className="mt-1 text-[13px] leading-relaxed text-text-2">{help.firstStep}</p></div>
-          <div className="mt-4 flex flex-wrap gap-2">
+          <p className="aurora-guide-description">{help.description}</p>
+          <div className="aurora-guide-first-step"><h3 className="text-[13px] font-semibold">С чего начать</h3><p className="mt-1 text-[13px] leading-relaxed text-text-2">{help.firstStep}</p></div>
+          <div className="aurora-guide-actions">
             {current === section && help.steps ? <Button variant="primary" size="sm" onClick={() => setStep(0)}>Показать, как<ArrowRight className="h-4 w-4" aria-hidden /></Button> : current !== section ? <Link href={help.steps ? guideHref(activeEntry) : activeEntry.href} prefetch={false} onNavigate={(event) => { if (document.querySelector('[data-settings-dirty="true"]')) { event.preventDefault(); setNavigationMessage("Сохраните или отмените изменения в настройках перед переходом."); } }} className={buttonClassName({ variant: "primary", size: "sm" })}>{help.steps ? "Открыть и показать" : "Открыть раздел"}<ArrowRight className="h-4 w-4" aria-hidden /></Link> : null}
             <Button variant="ghost" size="sm" onClick={onClose}>Понятно</Button>
           </div>
           {navigationMessage && <p role="alert" className="mt-3 text-[13px] leading-relaxed text-text-2">{navigationMessage}</p>}
-          <p className="mt-3 text-[12px] leading-relaxed text-text-3">Пока гид открыт, кнопки «?» в меню объясняют разделы.</p>
+          <p className="aurora-guide-note">Пока гид открыт, кнопки «?» в меню объясняют разделы.</p>
         </> : <>
-          <div aria-live="polite" aria-atomic="true">
+          <div aria-live="polite" aria-atomic="true" className="aurora-guide-step">
+            <div className="aurora-guide-progress" aria-hidden>{help.steps!.map((_, index) => <span key={index} data-complete={index <= step!} />)}</div>
             <p className="text-[12px] font-medium tabular-nums text-text-2">{APP_ROUTES[section].label} · Шаг {step! + 1} из {help.steps!.length}</p>
             <h3 className="mt-2 text-[17px] font-semibold leading-snug">{activeStep.title}</h3>
             <p className="mt-3 text-[14px] leading-relaxed text-text-2">{activeStep.body}</p>
             <p className="mt-3 rounded-sm bg-surface-inset p-3 text-[13px] leading-relaxed text-text-2">{targetFound ? "Нужный элемент выделен рамкой. Гид не выполняет действия за вас." : activeStep.unavailable}</p>
           </div>
           {targetFound && <Button variant="ghost" size="sm" className="mt-2" onClick={() => { setCollapsed(true); requestAnimationFrame(() => collapseRef.current?.focus({ preventScroll: true })); }}>Свернуть и посмотреть экран</Button>}
-          <div className="mt-4 flex flex-wrap justify-between gap-2">
+          <div className="aurora-guide-actions aurora-guide-step-actions">
             <Button size="sm" variant="ghost" onClick={() => setStep(step! > 0 ? step! - 1 : null)}><ChevronLeft className="h-4 w-4" aria-hidden />Назад</Button>
             <Button size="sm" variant="primary" onClick={() => step! + 1 < help.steps!.length ? setStep(step! + 1) : onClose()}>{step! + 1 < help.steps!.length ? "Далее" : "Завершить"}</Button>
           </div>
         </>}
       </div>}
+      {!collapsed && <>
+        <div className="aurora-guide-footer">
+          <button type="button" className="aurora-guide-reset" onClick={reset}><RotateCcw size={15} aria-hidden />Сбросить вид</button>
+          <span className="aurora-guide-resize-note">Потяните за угол</span>
+          <button type="button" className="aurora-guide-resize" aria-label="Изменить размер окна гида" aria-describedby={resizeHintId}
+            onPointerDown={(event) => start(event, "resize")} onKeyDown={(event) => windowKeyDown(event, "resize")}><MoveDiagonal2 size={20} aria-hidden /></button>
+        </div>
+        <button type="button" className="aurora-guide-resize-start" aria-label="Изменить размер от верхнего левого угла" aria-describedby={resizeHintId}
+          onPointerDown={(event) => start(event, "resize-start")} onKeyDown={(event) => windowKeyDown(event, "resize")}><MoveDiagonal2 size={14} aria-hidden /></button>
+      </>}
     </aside>
+    </div>
   );
 }
