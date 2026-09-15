@@ -3,6 +3,7 @@ import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/re
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ReactNode } from "react";
 import StudioPage from "./page";
+import { AI_USAGE_FINALIZATION_RECOVERY_RU } from "@/lib/ai-client-recovery";
 import { serializeStudioChatSession } from "@/lib/studio-chat-session";
 import { setProjectTransport } from "@/lib/project-transport";
 import { projectJson } from "@/test/project-response";
@@ -33,6 +34,40 @@ beforeEach(() => {
 afterEach(() => { cleanup(); setProjectTransport(null); vi.unstubAllGlobals(); });
 
 describe("Studio message actions", () => {
+  it("hides the technical persistence warning without removing recovery actions", async () => {
+    const source = "Черновик поста, который модель уже успела сгенерировать.";
+    const session = JSON.parse(serializeStudioChatSession(7, {
+      messages: [{
+        id: "legacy-finalization-warning",
+        role: "ai",
+        text: source,
+        postable: false,
+        reviewable: false,
+        retryable: true,
+        interrupted: true,
+        errorMessage: AI_USAGE_FINALIZATION_RECOVERY_RU,
+      }],
+      draft: "",
+      workspaceMode: "chat",
+      generations: [],
+    }));
+    const fetch = vi.fn(async (url: string) => {
+      if (url === "/api/studio/session") return projectJson(7, { session, revision: 1 });
+      if (url === "/api/settings") return Response.json({ postSettings: { qualityMode: "fast" } });
+      if (url === "/api/ai/engines") return Response.json({ engines: [], current: null });
+      throw new Error(`Unexpected request ${url}`);
+    });
+    vi.stubGlobal("fetch", fetch);
+
+    render(<StudioPage />);
+
+    await screen.findByText(source);
+    expect(screen.queryByText(AI_USAGE_FINALIZATION_RECOVERY_RU)).toBeNull();
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect(screen.getByRole("button", { name: "Повторить запрос" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Скопировать черновик" })).toBeTruthy();
+  });
+
   it.each(["Короче", "Улучшить"])("%s sends the selected message and excludes unrelated chat history", async (label) => {
     const source = "Тестовый черновик: встреча клуба 20 сентября в 18:00. Вход бесплатный.";
     const session = JSON.parse(serializeStudioChatSession(7, {
