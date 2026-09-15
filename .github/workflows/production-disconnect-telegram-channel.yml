@@ -1,0 +1,74 @@
+name: Production disconnect Telegram channel
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: "Type DISCONNECT-vibekodim88"
+        type: string
+        required: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: production-deploy
+  cancel-in-progress: false
+
+jobs:
+  disconnect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment: production
+    steps:
+      - name: Check explicit confirmation
+        shell: bash
+        env:
+          CONFIRM: ${{ inputs.confirm }}
+        run: |
+          set -Eeuo pipefail
+          [[ "$CONFIRM" == "DISCONNECT-vibekodim88" ]]
+
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Configure SSH
+        env:
+          PRODUCTION_SSH_KEY: ${{ secrets.PRODUCTION_SSH_KEY }}
+          PRODUCTION_SSH_HOST: ${{ secrets.PRODUCTION_SSH_HOST }}
+          PRODUCTION_SSH_KNOWN_HOSTS: ${{ secrets.PRODUCTION_SSH_KNOWN_HOSTS }}
+          PRODUCTION_SSH_HOST_FINGERPRINT: ${{ secrets.PRODUCTION_SSH_HOST_FINGERPRINT }}
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test -n "$PRODUCTION_SSH_KEY"
+          test -n "$PRODUCTION_SSH_HOST"
+          test -n "$PRODUCTION_SSH_KNOWN_HOSTS"
+          test -n "$PRODUCTION_SSH_HOST_FINGERPRINT"
+          umask 077
+          mkdir -p ~/.ssh
+          printf '%s\n' "$PRODUCTION_SSH_KEY" > ~/.ssh/deploy_key
+          printf '%s\n' "$PRODUCTION_SSH_KNOWN_HOSTS" > ~/.ssh/known_hosts
+          bash scripts/verify-ssh-host-identity.sh \
+            ~/.ssh/known_hosts \
+            "$PRODUCTION_SSH_HOST" \
+            "$PRODUCTION_SSH_HOST_FINGERPRINT"
+
+      - name: Disconnect the verified channel
+        env:
+          PRODUCTION_SSH_HOST: ${{ secrets.PRODUCTION_SSH_HOST }}
+          PRODUCTION_SSH_USER: ${{ secrets.PRODUCTION_SSH_USER }}
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test -n "$PRODUCTION_SSH_HOST"
+          test -n "$PRODUCTION_SSH_USER"
+          ssh -i ~/.ssh/deploy_key \
+            -o StrictHostKeyChecking=yes \
+            -o BatchMode=yes \
+            -o IdentitiesOnly=yes \
+            -o ServerAliveInterval=15 \
+            -o ServerAliveCountMax=8 \
+            "${PRODUCTION_SSH_USER}@${PRODUCTION_SSH_HOST}" \
+            "AURORA_DISCONNECT_CHANNEL_ID=33 AURORA_DISCONNECT_USER_ID=31 AURORA_DISCONNECT_PROJECT_ID=13 AURORA_DISCONNECT_HANDLE=vibekodim88 AURORA_DISCONNECT_TG_CHAT_ID=-1004476244444 AURORA_DISCONNECT_OWNER_EMAIL=alibek5898@gmail.com AURORA_DISCONNECT_REQUEST_ID=operator-prod-20260915-disconnect-channel-33-user31 bash -s" \
+            < scripts/production-disconnect-telegram-channel.sh
