@@ -70,5 +70,5 @@ jobs:
             -o ServerAliveInterval=15 \
             -o ServerAliveCountMax=8 \
             "${PRODUCTION_SSH_USER}@${PRODUCTION_SSH_HOST}" \
-            "AURORA_DISCONNECT_CHANNEL_ID=33 AURORA_DISCONNECT_USER_ID=31 AURORA_DISCONNECT_PROJECT_ID=13 AURORA_DISCONNECT_HANDLE=vibekodim88 AURORA_DISCONNECT_TG_CHAT_ID=-1004476244444 AURORA_DISCONNECT_OWNER_EMAIL=alibek5898@gmail.com AURORA_DISCONNECT_REQUEST_ID=operator-prod-20260915-disconnect-channel-33-user31 bash -s" \
+            "AURORA_DISCONNECT_HANDLE=vibekodim88 AURORA_DISCONNECT_OWNER_EMAIL=alibek5898@gmail.com AURORA_DISCONNECT_REQUEST_ID=operator-prod-20260915-disconnect-vibekodim88 bash -s" \
             < scripts/production-disconnect-telegram-channel.sh

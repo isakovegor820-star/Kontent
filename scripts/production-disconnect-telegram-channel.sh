@@ -6,20 +6,12 @@
 # sent, and is idempotent through its channel_events request id.
 set -Eeuo pipefail
 
-TARGET_CHANNEL_ID="${AURORA_DISCONNECT_CHANNEL_ID:?AURORA_DISCONNECT_CHANNEL_ID is required}"
-TARGET_USER_ID="${AURORA_DISCONNECT_USER_ID:?AURORA_DISCONNECT_USER_ID is required}"
-TARGET_PROJECT_ID="${AURORA_DISCONNECT_PROJECT_ID:?AURORA_DISCONNECT_PROJECT_ID is required}"
 TARGET_HANDLE="${AURORA_DISCONNECT_HANDLE:?AURORA_DISCONNECT_HANDLE is required}"
-TARGET_TG_CHAT_ID="${AURORA_DISCONNECT_TG_CHAT_ID:?AURORA_DISCONNECT_TG_CHAT_ID is required}"
 TARGET_OWNER_EMAIL="${AURORA_DISCONNECT_OWNER_EMAIL:?AURORA_DISCONNECT_OWNER_EMAIL is required}"
 TARGET_REQUEST_ID="${AURORA_DISCONNECT_REQUEST_ID:?AURORA_DISCONNECT_REQUEST_ID is required}"
 CURRENT_LINK="${AURORA_CURRENT_LINK:-/opt/aurora-current}"
 
-[[ "$TARGET_CHANNEL_ID" =~ ^[1-9][0-9]*$ ]] || { echo "invalid channel id" >&2; exit 1; }
-[[ "$TARGET_USER_ID" =~ ^[1-9][0-9]*$ ]] || { echo "invalid user id" >&2; exit 1; }
-[[ "$TARGET_PROJECT_ID" =~ ^[1-9][0-9]*$ ]] || { echo "invalid project id" >&2; exit 1; }
 [[ "$TARGET_HANDLE" =~ ^[A-Za-z0-9_]{5,32}$ ]] || { echo "invalid Telegram handle" >&2; exit 1; }
-[[ "$TARGET_TG_CHAT_ID" =~ ^-100[0-9]+$ ]] || { echo "invalid Telegram channel id" >&2; exit 1; }
 [[ "$TARGET_OWNER_EMAIL" =~ ^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$ ]] || { echo "invalid owner email" >&2; exit 1; }
 [[ "$TARGET_REQUEST_ID" =~ ^[A-Za-z0-9._:-]{12,160}$ ]] || { echo "invalid request id" >&2; exit 1; }
 
@@ -40,11 +32,7 @@ psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -P pager=off <<SQL
 begin;
 set local statement_timeout = '15s';
 \o /dev/null
-select set_config('aurora.operator.channel_id', '$TARGET_CHANNEL_ID', true);
-select set_config('aurora.operator.user_id', '$TARGET_USER_ID', true);
-select set_config('aurora.operator.project_id', '$TARGET_PROJECT_ID', true);
 select set_config('aurora.operator.handle', lower('$TARGET_HANDLE'), true);
-select set_config('aurora.operator.tg_chat_id', '$TARGET_TG_CHAT_ID', true);
 select set_config('aurora.operator.owner_email', lower('$TARGET_OWNER_EMAIL'), true);
 select set_config('aurora.operator.request_id', '$TARGET_REQUEST_ID', true);
 \o
@@ -53,15 +41,25 @@ do \$operation\$
 declare
   target channels%rowtype;
   blocking_count integer;
+  active_match_count integer;
 begin
+  select count(*) into active_match_count
+    from channels channel
+    join users owner on owner.id = channel.user_id
+   where channel.network = 'tg'
+     and channel.is_active
+     and lower(trim(leading '@' from coalesce(channel.handle, ''))) = current_setting('aurora.operator.handle')
+     and lower(owner.email) = current_setting('aurora.operator.owner_email');
+
+  if active_match_count <> 1 then
+    raise exception 'production_active_channel_match_count:%', active_match_count;
+  end if;
+
   select channel.* into target
     from channels channel
     join users owner on owner.id = channel.user_id
-   where channel.id = current_setting('aurora.operator.channel_id')::bigint
-     and channel.user_id = current_setting('aurora.operator.user_id')::bigint
-     and channel.project_id = current_setting('aurora.operator.project_id')::bigint
-     and channel.network = 'tg'
-     and channel.tg_chat_id = current_setting('aurora.operator.tg_chat_id')::bigint
+   where channel.network = 'tg'
+     and channel.is_active
      and lower(trim(leading '@' from coalesce(channel.handle, ''))) = current_setting('aurora.operator.handle')
      and lower(owner.email) = current_setting('aurora.operator.owner_email')
    for update of channel;
@@ -104,11 +102,7 @@ end
 commit;
 
 select json_build_object(
-  'channelId', channel.id,
-  'userId', channel.user_id,
-  'projectId', channel.project_id,
   'handle', channel.handle,
-  'telegramChatId', channel.tg_chat_id,
   'status', channel.status,
   'active', channel.is_active,
   'disconnectedAt', channel.disconnected_at,
@@ -120,5 +114,10 @@ select json_build_object(
   )
 ) as production_channel_result
 from channels channel
-where channel.id = $TARGET_CHANNEL_ID;
+join users owner on owner.id = channel.user_id
+where channel.network = 'tg'
+  and lower(trim(leading '@' from coalesce(channel.handle, ''))) = lower('$TARGET_HANDLE')
+  and lower(owner.email) = lower('$TARGET_OWNER_EMAIL')
+order by channel.updated_at desc, channel.id desc
+limit 1;
 SQL
