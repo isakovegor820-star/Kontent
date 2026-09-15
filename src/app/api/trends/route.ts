@@ -418,7 +418,7 @@ async function handleGET(req: NextRequest) {
                 (select count(*)::int from competitor_posts p where p.competitor_id = c.id) as posts,
                 (select max(p.posted_at) from competitor_posts p where p.competitor_id = c.id) as newest_post_at
            from competitors c
-          where c.channel_id = $1 and c.network = 'tg'
+          where c.channel_id = $1 and c.network = 'tg' and c.is_active
           order by c.added_at`,
         [channelId],
       )
@@ -435,7 +435,7 @@ async function handleGET(req: NextRequest) {
                     and cp.collected_at >= cp.posted_at + interval '${TREND_MATURE_HOURS} hours') as is_mature
              from competitor_posts cp
              join competitors c on c.id = cp.competitor_id
-            where c.channel_id = $1 and c.network = 'tg'
+            where c.channel_id = $1 and c.network = 'tg' and c.is_active
               and cp.views is not null and cp.posted_at is not null
          ),
          med as (
@@ -472,7 +472,7 @@ async function handleGET(req: NextRequest) {
                 count(*)::int as matured
            from competitor_posts cp
            join competitors c on c.id = cp.competitor_id
-          where c.channel_id = $1 and c.network = 'tg'
+          where c.channel_id = $1 and c.network = 'tg' and c.is_active
             and cp.views is not null and cp.posted_at is not null
             and cp.posted_at >= now() - interval '${TREND_BASELINE_DAYS} days'
             and cp.posted_at < now() - interval '${TREND_MATURE_HOURS} hours'
@@ -485,7 +485,7 @@ async function handleGET(req: NextRequest) {
     const waiting = (
       await pool.query<{ n: number }>(
         `select count(*)::int as n from competitor_suggestions
-          where channel_id = $1 and status = 'new' and on_topic is distinct from false`,
+          where channel_id = $1 and status = 'new' and on_topic = true`,
         [channelId],
       )
     ).rows[0].n;

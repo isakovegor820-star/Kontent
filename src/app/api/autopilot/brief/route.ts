@@ -11,6 +11,8 @@ import { RUBRICS, briefComplete, normalizeBrief } from "@/lib/brief";
 import { ensureSettings, loadBrief, resolveChannel } from "@/lib/autopilot";
 import { selectAutopilotNewsSources } from "@/lib/autopilot-source-selection";
 import { hasTrustedMutationOrigin } from "@/lib/request-origin";
+import { getStatsQueue } from "@/lib/queue";
+import { competitorDiscoveryJobId } from "@/lib/competitor-topic-fit.mjs";
 import { ProjectAccessError, requireSelectedProjectPermission } from "@/lib/project-permissions";
 
 export const runtime = "nodejs";
@@ -104,6 +106,28 @@ async function handlePOST(req: NextRequest) {
           where project_id = $1 and channel_id = $2`,
         [membership.projectId, channelId, JSON.stringify(selectAutopilotNewsSources(b))],
       );
+      await pool.query(
+        `delete from competitor_suggestions where channel_id = $1 and status = 'new'`,
+        [channelId],
+      );
+      // Подключение канала запускает первый проход раньше, чем пользователь подтверждает
+      // тему в онбординге. Новый jobId гарантирует второй, уже тематический проход.
+      try {
+        await getStatsQueue().add(
+          "discover",
+          { userId: user.id, channelId },
+          {
+            jobId: competitorDiscoveryJobId({ userId: user.id, channelId, topic: b.niche }),
+            removeOnComplete: true,
+            attempts: 2,
+            backoff: { type: "fixed", delay: 15_000 },
+          },
+        );
+      } catch (queueError) {
+        // Бриф уже сохранён. Не заставляем человека повторять ввод из-за временного Redis:
+        // ручной «Найти» и следующий плановый проход смогут безопасно повторить поиск.
+        console.error("[/api/autopilot/brief] discovery enqueue", queueError);
+      }
     }
     return NextResponse.json({ ok: true, brief: b });
   } catch (err) {
