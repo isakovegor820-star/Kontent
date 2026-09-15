@@ -8,10 +8,12 @@ const mocks = vi.hoisted(() => ({
   ensureSettings: vi.fn(),
   query: vi.fn(),
   requireSelectedProjectPermission: vi.fn(),
+  queueAdd: vi.fn(),
 }));
 
 vi.mock("@/lib/session", () => ({ getSessionUser: mocks.getSessionUser }));
 vi.mock("@/lib/db", () => ({ getPool: () => ({ query: mocks.query }) }));
+vi.mock("@/lib/queue", () => ({ getStatsQueue: () => ({ add: mocks.queueAdd }) }));
 vi.mock("@/lib/autopilot", () => ({
   resolveChannel: mocks.resolveChannel,
   loadBrief: mocks.loadBrief,
@@ -45,6 +47,7 @@ describe("POST /api/autopilot/brief", () => {
     mocks.resolveChannel.mockResolvedValue(21);
     mocks.ensureSettings.mockResolvedValue({});
     mocks.query.mockResolvedValue({ rows: [], rowCount: 1 });
+    mocks.queueAdd.mockResolvedValue({});
   });
 
   it("persists a complete onboarding brief with source quiz", async () => {
@@ -82,6 +85,15 @@ describe("POST /api/autopilot/brief", () => {
     expect(mocks.query).toHaveBeenCalledWith(
       expect.stringContaining("set news_sources = $3::jsonb"),
       [88, 21, expect.stringContaining("consultant")],
+    );
+    expect(mocks.query).toHaveBeenCalledWith(
+      expect.stringContaining("delete from competitor_suggestions"),
+      [21],
+    );
+    expect(mocks.queueAdd).toHaveBeenCalledWith(
+      "discover",
+      { userId: 7, channelId: 21 },
+      expect.objectContaining({ jobId: expect.stringMatching(/^discover-topic-7-21-/u) }),
     );
   });
 

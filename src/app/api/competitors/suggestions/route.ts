@@ -14,6 +14,10 @@ import { getStatsQueue } from "@/lib/queue";
 import { resolveChannel } from "@/lib/autopilot";
 import { MAX_COMPETITORS } from "@/lib/competitors";
 import { hasTrustedMutationOrigin } from "@/lib/request-origin";
+import {
+  competitorDiscoveryJobId,
+  confirmedDiscoveryTopic,
+} from "@/lib/competitor-topic-fit.mjs";
 
 export const runtime = "nodejs";
 
@@ -40,9 +44,15 @@ async function handleGET(req: NextRequest) {
     const pool = getPool();
     const channelId = await resolveChannel(user.id, Number(req.nextUrl.searchParams.get("channel")) || null);
     if (!channelId) return NextResponse.json({ suggestions: [], seeds: 0 });
-    // on_topic = false — ИИ сверил посты кандидата с брифом и сказал «другая тема». Не
-    // показываем: именно так сюда приезжали PR-агентство и софтверный блог — на них просто
-    // кто-то сослался. null — движка не было, судить было некому: показываем, но честно помечаем.
+    const brief = (
+      await pool.query<{ niche: string | null; ready: boolean }>(
+        `select niche, ready from content_brief where channel_id = $1`,
+        [channelId],
+      )
+    ).rows[0];
+    const topic = confirmedDiscoveryTopic(brief) || null;
+    // Fail closed: null означает, что тему никто не подтвердил. Такой канал нельзя показывать
+    // как рекомендацию — общий справочник содержит источники из всех ниш.
     const rows = (
       await pool.query<Row>(
         // to_jsonb делает чтение обратно совместимым во время rolling deploy: если новая
@@ -59,8 +69,8 @@ async function handleGET(req: NextRequest) {
                 s.sources,
                 s.on_topic
            from competitor_suggestions s
-          where s.channel_id = $1 and s.status = 'new' and s.on_topic is distinct from false
-          order by s.on_topic desc nulls last, s.mentioned_by desc, s.subscribers desc nulls last
+          where s.channel_id = $1 and s.status = 'new' and s.on_topic = true
+          order by s.mentioned_by desc, s.subscribers desc nulls last
           limit 24`,
         [channelId],
       )
@@ -70,7 +80,8 @@ async function handleGET(req: NextRequest) {
     const seeds = (
       await pool.query<{ n: number }>(
         `select (
-           (select count(*) from competitors where channel_id = $1 and network = 'tg')
+           (select count(*) from competitors
+             where channel_id = $1 and network = 'tg' and is_active)
            + (select count(*) from channels where id = $1 and handle is not null)
          )::int as n`,
         [channelId],
@@ -97,6 +108,7 @@ async function handleGET(req: NextRequest) {
       })),
       seeds,
       channelId,
+      topic,
     });
   } catch (err) {
     console.error("[/api/competitors/suggestions]", err);
@@ -120,11 +132,21 @@ async function handlePOST(req: NextRequest) {
     // Ищем соседей тому каналу, который человек сейчас смотрит.
     const channelId = await resolveChannel(user.id, Number(req.nextUrl.searchParams.get("channel")) || null);
     if (!channelId) return NextResponse.json({ ok: false, error: "no_channel" }, { status: 422 });
+    const brief = (
+      await getPool().query<{ niche: string | null; ready: boolean }>(
+        `select niche, ready from content_brief where channel_id = $1`,
+        [channelId],
+      )
+    ).rows[0];
+    const topic = confirmedDiscoveryTopic(brief);
+    if (!topic) {
+      return NextResponse.json({ ok: false, error: "topic_required" }, { status: 409 });
+    }
     await getStatsQueue().add(
       "discover",
       { userId: user.id, channelId },
       {
-        jobId: `discover-${user.id}-${channelId}`,
+        jobId: competitorDiscoveryJobId({ userId: user.id, channelId, topic }),
         removeOnComplete: true,
         attempts: 2,
         backoff: { type: "fixed", delay: 15000 },

@@ -58,6 +58,7 @@ async function handleGET(req: NextRequest) {
                    ) recent) as latest_posts
            from competitors c
           where c.channel_id = $1 and c.network in ('tg','instagram')
+            and (not c.auto_added or c.is_active)
           order by c.added_at desc`,
         [channelId],
       )

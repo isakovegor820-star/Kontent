@@ -34,7 +34,7 @@ import {
 
 import { AppShell } from "@/components/app/shell";
 import { ChannelPicker, useChannelChoice } from "@/components/app/channel-picker";
-import { Button } from "@/components/ui/button";
+import { Button, buttonClassName } from "@/components/ui/button";
 import {
   Badge,
   Card,
@@ -332,7 +332,7 @@ interface Suggestion {
   postsPerWeek: number | null;
   mentionedBy: number;
   sources: string[];
-  /** true — ИИ сверил посты кандидата с твоим брифом; null — движка не было, не судили */
+  /** API выдаёт только кандидатов, чья лента подтверждена как тематическая. */
   onTopic: boolean | null;
   link: string;
 }
@@ -510,11 +510,7 @@ function SuggestionPreviewDialog({
         <section className="mt-5" aria-labelledby={`${titleId}-reason`}>
           <h3 id={`${titleId}-reason`} className="text-[13px] font-bold text-text">Почему показали</h3>
           <div className="mt-2 flex flex-wrap items-center gap-1.5">
-            {item.onTopic === true ? (
-              <Badge tone="success">совпадает с твоей темой</Badge>
-            ) : (
-              <Badge tone="neutral">тема ещё не проверена</Badge>
-            )}
+            <Badge tone="success">совпадает с твоей темой</Badge>
             {item.mentionedBy > 1 && <Badge tone="brand">{item.mentionedBy} независимые ссылки</Badge>}
           </div>
           <p className="mt-2 text-[13px] leading-relaxed text-text-2">
@@ -578,6 +574,7 @@ function Suggestions({
   const s = useStore();
   const [items, setItems] = useState<Suggestion[]>([]);
   const [seeds, setSeeds] = useState(0);
+  const [topic, setTopic] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -597,9 +594,10 @@ function Suggestions({
         cache: "no-store",
       });
       if (!r.ok) throw new Error("suggestions_unavailable");
-      const d = (await r.json()) as { suggestions?: Suggestion[]; seeds?: number };
+      const d = (await r.json()) as { suggestions?: Suggestion[]; seeds?: number; topic?: string | null };
       setItems(d.suggestions ?? []);
       setSeeds(d.seeds ?? 0);
+      setTopic(d.topic ?? null);
       setLoadError(false);
     } catch {
       setLoadError(true);
@@ -617,20 +615,23 @@ function Suggestions({
     setBusy(true);
     try {
       const response = await fetch(`/api/competitors/suggestions?channel=${channelId}`, { method: "POST" });
-      const data = (await response.json().catch(() => null)) as { ok?: boolean } | null;
-      if (!response.ok || !data?.ok) throw new Error("suggestion_search_failed");
+      const data = (await response.json().catch(() => null)) as { ok?: boolean; error?: string } | null;
+      if (!response.ok || !data?.ok) throw new Error(data?.error || "suggestion_search_failed");
       s.toast({
         kind: "info",
         title: "Ищу соседей",
-        body: "Ищу каналы твоей ниши в открытом интернете и проверяю их на t.me. Займёт минуту.",
+        body: `Ищу каналы по теме «${topic}» и проверяю их открытые публикации. Это займёт около минуты.`,
       });
       setTimeout(load, 12_000);
       setTimeout(load, 30_000);
-    } catch {
+    } catch (error) {
+      const topicRequired = error instanceof Error && error.message === "topic_required";
       s.toast({
         kind: "danger",
-        title: "Поиск не запущен",
-        body: "Проверь соединение с сервером и попробуй ещё раз.",
+        title: topicRequired ? "Сначала укажи тему" : "Поиск не запущен",
+        body: topicRequired
+          ? "Сохрани тему и аудиторию канала в настройках — по ним я отберу конкурентов."
+          : "Проверь соединение с сервером и попробуй ещё раз.",
       });
     } finally {
       setBusy(false);
@@ -693,16 +694,36 @@ function Suggestions({
 
   if (!channelId) return null;
 
+  if (!topic) {
+    return (
+      <Card className="mb-6 flex flex-wrap items-center gap-x-4 gap-y-3 p-4">
+        <Radar className="h-[18px] w-[18px] shrink-0 text-brand" strokeWidth={2} aria-hidden />
+        <div className="min-w-0 flex-1">
+          <p className="text-[14px] font-semibold text-text">Сначала укажи тему канала</p>
+          <p className="mt-0.5 text-[13px] leading-relaxed text-text-2">
+            Подбор начнётся после сохранения темы и аудитории. Так в список не попадут случайные каналы.
+          </p>
+        </div>
+        <Link
+          href={`/app/settings?channel=${channelId}#channel-niche`}
+          className={buttonClassName({ variant: "secondary", size: "sm" })}
+        >
+          Указать тему
+        </Link>
+      </Card>
+    );
+  }
+
   if (!items.length) {
     return (
       <Card className="mb-6 flex flex-wrap items-center gap-x-4 gap-y-3 p-4">
         <Radar className="h-[18px] w-[18px] shrink-0 text-brand" strokeWidth={2} aria-hidden />
         <div className="min-w-0 flex-1">
-          <p className="text-[14px] font-semibold text-text">Найти соседей по нише</p>
+          <p className="text-[14px] font-semibold text-text">Найти каналы по теме «{topic}»</p>
           <p className="mt-0.5 text-[13px] leading-relaxed text-text-2">
             {seeds === 0
-              ? "Пойду в открытый интернет по нише канала и проверю публичные Telegram-страницы. Добавлять в список будешь ты."
-              : "Поищу в открытом интернете, в ссылках твоих каналов и в уже проверенной базе. Каждый кандидат сверю на t.me — в список попадёт только живой канал."}
+              ? "Проверю открытые Telegram-каналы и их последние публикации. В рекомендации попадут только каналы с подтверждённым совпадением темы."
+              : "Поищу в открытом интернете, ссылках тематических каналов и проверенной базе. Каждый результат сверю с темой по последним публикациям."}
           </p>
         </div>
         <Button size="sm" variant="soft" onClick={search} loading={busy}>
@@ -771,11 +792,7 @@ function Suggestions({
 
               <div className="mt-2 flex flex-wrap items-center gap-1.5">
                 {it.mentionedBy > 1 && <Badge tone="brand">×{it.mentionedBy} ссылки</Badge>}
-                {it.onTopic === true ? (
-                  <Badge tone="success">твоя тема</Badge>
-                ) : (
-                  <Badge tone="neutral">тему не проверил</Badge>
-                )}
+                <Badge tone="success">твоя тема</Badge>
               </div>
 
               <span className="mt-auto flex w-full items-center justify-between gap-3 pt-3 text-[12px] font-semibold text-text-3 transition-colors group-hover:text-brand">
@@ -1058,7 +1075,7 @@ function CompetitorsPageContent() {
         </div>
       )}
 
-      <Suggestions onAdded={load} onManageLimit={manageCompetitorLimit} atLimit={atLimit} channelId={channelId} />
+      <Suggestions key={channelId ?? "none"} onAdded={load} onManageLimit={manageCompetitorLimit} atLimit={atLimit} channelId={channelId} />
 
       {listLoadError && (
         <Card className="mb-6 flex flex-wrap items-center gap-x-4 gap-y-3 p-4" role="alert">
