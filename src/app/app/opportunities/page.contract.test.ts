@@ -21,7 +21,8 @@ describe("opportunities page states", () => {
     expect(source).toContain("useChannelChoice(store.realChannels, requestedChannelId)");
     expect(source).toContain("`/api/opportunities?channel=${channelId}`");
     expect(source).toContain("item.channelId !== channelId");
-    expect(source).toContain("`/app/competitors${channelId ? `?channel=${channelId}` : \"\"}`");
+    expect(source).toContain('href="/app/settings?section=content"');
+    expect(source).toContain("без конкурентов и истории публикаций");
   });
 
   it("offers progressive disclosure without showing stale-state controls", () => {
@@ -29,5 +30,11 @@ describe("opportunities page states", () => {
     expect(source).toContain("Источник и методика");
     expect(source).toContain("Развернуть подробности");
     expect(source).not.toContain('epistemicState === "stale"');
+  });
+
+  it("lets the user undo an accidental not-relevant decision", () => {
+    expect(source).toContain("Не подходит");
+    expect(source).toContain("Отменить");
+    expect(source).toContain('{ method: "DELETE" }');
   });
 });

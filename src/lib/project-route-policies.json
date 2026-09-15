@@ -805,6 +805,16 @@
     "policy": "project"
   },
   {
+    "path": "/api/opportunities/[id]/state",
+    "method": "DELETE",
+    "policy": "project"
+  },
+  {
+    "path": "/api/opportunities/[id]/state",
+    "method": "POST",
+    "policy": "project"
+  },
+  {
     "path": "/api/opportunities",
     "method": "GET",
     "policy": "project"

@@ -1,5 +1,10 @@
 // Shared by the HTTP and BullMQ paths: new evidence can add candidates throughout the week.
 import { createHash } from "node:crypto";
+import {
+    buildProfileFallbackCandidates,
+    loadChannelMarketCandidates,
+    researchProfile,
+} from "./opportunity-market.mjs";
 export const GROWTH_TIME_ZONE = "Europe/Moscow";
 const STOP_WORDS = new Set([
     "этот", "эта", "это", "того", "также", "после", "перед", "только", "можно",
@@ -102,7 +107,8 @@ export function rankGrowthMoves(drafts, goal, limit = 3) {
     return drafts
         .map((draft) => ({
         draft,
-        score: goalFitForMove(goal, draft.kind)
+        score: (Number(draft.evidence.priorityScore) || 0) / 5
+            + goalFitForMove(goal, draft.kind)
             + evidenceWeight(draft.confidence)
             + Math.max(0, Math.min(4, draft.evidence.opportunityStrength))
             + Math.max(0, Math.min(3, draft.evidence.urgency))
@@ -121,6 +127,81 @@ function evidence(input) {
         freshnessLabel: input.observedAt ? humanFreshness(input.observedAt) : "Дата источника недоступна",
     };
 }
+
+function marketSourceType(candidate) {
+    if (candidate.type === "breaking_news") return "Свежая новость";
+    if (candidate.sourceKind === "channel_profile") return "Профиль канала";
+    return "Рыночный сигнал";
+}
+
+function marketMove(candidate) {
+    const isProfileFallback = candidate.sourceKind === "channel_profile";
+    const hasStrongEvidence = candidate.sourceCount >= 2 && candidate.trust >= 60;
+    const primarySource = candidate.sources?.[0];
+    const whyNow = candidate.type === "breaking_news"
+        ? "Новость свежая: выпусти разбор, пока тема находится в активной повестке."
+        : candidate.type === "rising_topic"
+            ? "Тема появилась в открытых источниках и подходит профилю канала."
+            : "В профиле канала есть тема, которую можно раскрыть даже без истории публикаций.";
+    const formatSuggestion = candidate.type === "breaking_news" ? "Короткий разбор новости"
+        : candidate.type === "rising_topic" ? "Авторский разбор с практическим выводом"
+            : "Практический пост";
+    return {
+        kind: "topic",
+        confidence: hasStrongEvidence ? "answered" : "hypothesis",
+        title: candidate.title,
+        reason: clip(candidate.summary || whyNow, 320),
+        prompt: clip([
+            `Напиши ${formatSuggestion.toLocaleLowerCase("ru-RU")} в голосе канала на тему: «${candidate.title}».`,
+            candidate.summary,
+            isProfileFallback
+                ? "Опирайся на подтверждённый профиль канала и не придумывай внешние факты."
+                : "Проверь факты по указанным источникам, добавь собственный вывод и не копируй исходный текст.",
+            "Не обещай результат, которого нет в фактах.",
+        ].filter(Boolean).join(" "), 2_000),
+        sourceKind: candidate.sourceKind,
+        sourceId: candidate.sourceId,
+        sourceLabel: candidate.sourceLabel,
+        missingSlots: null,
+        fingerprint: growthFingerprint({
+            kind: "topic",
+            sourceKind: candidate.sourceKind,
+            sourceId: candidate.sourceId,
+        }),
+        evidence: evidence({
+            sourceType: marketSourceType(candidate),
+            sourceLabel: candidate.sourceLabel,
+            href: primarySource?.url || (isProfileFallback ? "/app/settings?section=content" : "/app/radar"),
+            sampleSize: candidate.sourceCount,
+            periodLabel: candidate.type === "breaking_news" ? "последние 7 дней" : "последние 30 дней",
+            observedAt: candidate.observedAt,
+            methodology: isProfileFallback
+                ? "Стартовая возможность построена из подтверждённой ниши и рубрик канала. Это гипотеза, которую нужно проверить публикацией."
+                : "Аврора сопоставляет публичный сигнал с нишей, аудиторией и рубриками канала, затем оценивает свежесть, надёжность и свободное место в контенте.",
+            metricLabel: isProfileFallback
+                ? "Стартовая тема из профиля; внешних источников пока нет"
+                : `${candidate.sourceCount} ${candidate.sourceCount === 1 ? "открытый источник" : "открытых источника"}; релевантность ${candidate.relevance}%`,
+            opportunityStrength: Math.max(1, Math.ceil(candidate.priority / 25)),
+            urgency: candidate.type === "breaking_news" ? 3 : candidate.type === "rising_topic" ? 2 : 1,
+            effort: candidate.type === "breaking_news" ? "Небольшое" : "Среднее",
+            opportunityType: candidate.type,
+            priorityScore: candidate.priority,
+            profileHash: candidate.profileHash,
+            publishBefore: candidate.publishBefore,
+            expiresAt: candidate.expiresAt,
+            sourceCount: candidate.sourceCount,
+            sources: candidate.sources,
+            whyNow,
+            relevanceScore: candidate.relevance,
+            momentumScore: candidate.momentum,
+            freshnessScore: candidate.freshness,
+            trustScore: candidate.trust,
+            whitespaceScore: 75,
+            formatSuggestion,
+        }),
+    };
+}
+
 export function buildGrowthMoves(signals, limit = 3) {
     const drafts = [];
     const covered = [...signals.ownPosts30d];
@@ -165,6 +246,18 @@ export function buildGrowthMoves(signals, limit = 3) {
                 effort: "Среднее",
             }),
         });
+    }
+    const marketCandidates = [
+        ...(signals.marketCandidates ?? []),
+        ...buildProfileFallbackCandidates(signals.researchProfile),
+    ];
+    const seenFingerprints = new Set(drafts.map((draft) => draft.fingerprint));
+    for (const candidate of marketCandidates) {
+        if (!candidate.title?.trim() || coversTopic(signals.ownPosts30d, candidate.title)) continue;
+        const draft = marketMove(candidate);
+        if (seenFingerprints.has(draft.fingerprint)) continue;
+        seenFingerprints.add(draft.fingerprint);
+        drafts.push(draft);
     }
     if (signals.competitorWeeklyMedian != null && signals.competitorCount >= 2) {
         const target = Math.max(3, Math.round(signals.competitorWeeklyMedian));
@@ -372,11 +465,35 @@ export async function loadSignals(pool, input) {
         order by priority desc, occurrences desc, last_seen_at desc, id desc
         limit 12`, [input.projectId])).rows;
     const audienceRow = audienceRows[0];
-    const briefRow = (await pool.query(`select nullif(btrim(goal), '') as goal
+    const briefRow = (await pool.query(`select nullif(btrim(niche), '') as niche,
+              nullif(btrim(audience), '') as audience,
+              coalesce(rubrics, '{}'::text[]) as rubrics,
+              nullif(btrim(goal), '') as goal,
+              nullif(btrim(taboo), '') as taboo,
+              coalesce(formats, '{}'::text[]) as formats,
+              coalesce(opportunity_keywords, '{}'::text[]) as opportunity_keywords,
+              coalesce(excluded_keywords, '{}'::text[]) as excluded_keywords,
+              coalesce(nullif(btrim(language), ''), 'ru') as language,
+              nullif(btrim(region), '') as region
          from content_brief
         where project_id = $1 and channel_id = $2
         order by ready desc, updated_at desc
         limit 1`, [input.projectId, input.channelId])).rows[0];
+    const profile = briefRow ? researchProfile({
+        niche: briefRow.niche,
+        audience: briefRow.audience,
+        rubrics: briefRow.rubrics,
+        goal: briefRow.goal,
+        taboo: briefRow.taboo,
+        formats: briefRow.formats,
+        opportunityKeywords: briefRow.opportunity_keywords,
+        excludedKeywords: briefRow.excluded_keywords,
+        language: briefRow.language,
+        region: briefRow.region,
+    }) : null;
+    const marketCandidates = profile && (profile.niche || profile.rubrics.length || profile.opportunityKeywords.length)
+        ? await loadChannelMarketCandidates(pool, input, profile)
+        : [];
     const ownPublishedCount = Number((await pool.query(`select count(*)::int as n
          from posts
         where project_id = $1 and channel_id = $2
@@ -414,6 +531,8 @@ export async function loadSignals(pool, input) {
             : null,
         audienceQuestions: audienceRows.map(row => ({ id: Number(row.id), question: row.question, occurrences: Number(row.occurrences) || 1, lastSeenAt: row.last_seen_at })),
         goal: briefRow?.goal ?? null,
+        researchProfile: profile,
+        marketCandidates,
         ownPublishedCount,
         latestDataAt,
         trackingStatus,

@@ -13,6 +13,7 @@ import {
 } from "./opportunity-snapshot-materializer.mjs";
 import { requireSelectedProjectPermission } from "./project-permissions";
 import { createDraftForUser } from "./server-drafts";
+import { syncPublicMarketSignals } from "./opportunity-market.mjs";
 
 type Queryable = Pick<Pool | PoolClient, "query">;
 
@@ -54,6 +55,20 @@ export type OpportunitySnapshot = {
   sourceContextDraftId: number | null;
   actionable: boolean;
   actionHref?: string;
+  opportunityType: "breaking_news" | "rising_topic" | "evergreen_gap" | "competitor_gap" | "audience_need" | "offer_gap";
+  priorityScore: number;
+  publishBefore: string | null;
+  sourceCount: number;
+  sources: Array<{ url: string; label: string | null; trust: number | null }>;
+  whyNow: string | null;
+  formatSuggestion: string | null;
+  userState: "saved" | "used" | null;
+};
+
+export type OpportunityMapContext = {
+  profileReady: boolean;
+  researchState: "ready" | "profile_required" | "researching";
+  lastRefreshAt: string | null;
 };
 
 export class ContentIntelligenceError extends Error {
@@ -115,6 +130,7 @@ export async function refreshOpportunitySnapshots(input: {
 }, db: Queryable = getPool()): Promise<OpportunitySnapshot[]> {
   const scope = await resolveChannelScope(db, input.actorUserId, input.channelId);
   if (!await release1Enabled(db, scope)) throw new ContentIntelligenceError("feature_disabled");
+  await syncPublicMarketSignals(db);
   const board = await ensureGrowthBoard({ actorUserId: input.actorUserId, channelId: scope.channelId });
   await materializeOpportunitySnapshots(db, scope, board.moves);
   return listOpportunitySnapshots(input, db);
@@ -126,12 +142,27 @@ type OpportunityRow = {
   formula_version: string; evidence: Record<string, unknown>; observed_at: string | null; expires_at: string;
   source_context_draft_id: string | null;
   growth_move_id?: string; artifact_draft_id?: string | null;
+  opportunity_type: OpportunitySnapshot["opportunityType"];
+  priority_score: number;
+  publish_before: string | null;
+  source_count: number;
+  user_state: "saved" | "dismissed" | "used" | "not_relevant" | null;
 };
 
 function mapOpportunity(row: OpportunityRow, now = new Date()): OpportunitySnapshot {
   const evidence = row.evidence && typeof row.evidence === "object" ? row.evidence : {};
   const expired = new Date(row.expires_at).getTime() <= now.getTime();
   const sourceKind = typeof evidence.sourceKind === "string" ? evidence.sourceKind : null;
+  const sources = Array.isArray(evidence.sources) ? evidence.sources.flatMap((candidate) => {
+    if (!candidate || typeof candidate !== "object" || Array.isArray(candidate)) return [];
+    const value = candidate as Record<string, unknown>;
+    if (typeof value.url !== "string" || !/^https:\/\//u.test(value.url)) return [];
+    return [{
+      url: value.url,
+      label: typeof value.label === "string" ? value.label : null,
+      trust: Number.isFinite(Number(value.trust)) ? Number(value.trust) : null,
+    }];
+  }).slice(0, 8) : [];
   return {
     id: Number(row.id), projectId: Number(row.project_id), channelId: Number(row.channel_id), revision: Number(row.revision),
     channelLabel: row.channel_title?.trim() || (row.channel_handle ? `@${row.channel_handle.replace(/^@/u, "")}` : "Канал"),
@@ -150,6 +181,14 @@ function mapOpportunity(row: OpportunityRow, now = new Date()): OpportunitySnaps
       ? row.artifact_draft_id ? `/app/composer?draft=${row.artifact_draft_id}&from=opportunities`
         : `/app/studio?growthMove=${row.growth_move_id}&channel=${row.channel_id}&intent=create`
       : undefined,
+    opportunityType: row.opportunity_type,
+    priorityScore: Number(row.priority_score) || 0,
+    publishBefore: row.publish_before,
+    sourceCount: Number(row.source_count) || 0,
+    sources,
+    whyNow: typeof evidence.whyNow === "string" ? evidence.whyNow : null,
+    formatSuggestion: typeof evidence.formatSuggestion === "string" ? evidence.formatSuggestion : null,
+    userState: row.user_state === "saved" || row.user_state === "used" ? row.user_state : null,
   };
 }
 
@@ -161,17 +200,93 @@ export async function listOpportunitySnapshots(input: {
   if (!await release1Enabled(db, scope)) throw new ContentIntelligenceError("feature_disabled");
   const rows = (await db.query<OpportunityRow>(
     `select snapshot.*, move.id as growth_move_id, move.artifact_draft_id,
+            state.state as user_state,
             channel.title as channel_title, channel.handle as channel_handle
-       from opportunity_snapshots snapshot
+       from (
+         select distinct on (candidate.growth_move_id) candidate.*
+           from opportunity_snapshots candidate
+          where candidate.project_id = $1 and candidate.channel_id = $2
+            and candidate.expires_at > now()
+          order by candidate.growth_move_id, candidate.revision desc
+       ) snapshot
        left join growth_moves move on move.id = snapshot.growth_move_id
          and move.project_id = snapshot.project_id and move.channel_id = snapshot.channel_id
       join channels channel on channel.id = snapshot.channel_id and channel.project_id = snapshot.project_id
-      where snapshot.project_id = $1 and snapshot.channel_id = $2
-        and snapshot.expires_at > now()
-      order by snapshot.expires_at desc, snapshot.id desc limit 50`,
-    [scope.projectId, scope.channelId],
+      left join opportunity_states state on state.project_id = snapshot.project_id
+        and state.channel_id = snapshot.channel_id and state.opportunity_snapshot_id = snapshot.id
+        and state.user_id = $3
+      where coalesce(state.state, '') not in ('dismissed','not_relevant')
+      order by snapshot.priority_score desc, snapshot.publish_before asc nulls last,
+               snapshot.expires_at desc, snapshot.id desc limit 12`,
+    [scope.projectId, scope.channelId, input.actorUserId],
   )).rows;
   return rows.map((row) => mapOpportunity(row));
+}
+
+export async function getOpportunityMapContext(input: {
+  actorUserId: number;
+  channelId: number | null;
+}, db: Queryable = getPool()): Promise<OpportunityMapContext> {
+  const scope = await resolveChannelScope(db, input.actorUserId, input.channelId);
+  const row = (await db.query<{
+    profile_ready: boolean; last_refresh_at: string | null; opportunity_count: number;
+  }>(
+    `select exists(
+       select 1 from content_brief brief
+        where brief.project_id = $1 and brief.channel_id = $2
+          and (nullif(btrim(brief.niche), '') is not null or cardinality(brief.rubrics) > 0)
+     ) as profile_ready,
+     (select last_success_at::text from today_source_refreshes
+       where project_id = $1 and channel_id = $2 and source = 'opportunities') as last_refresh_at,
+     (select count(*)::int from opportunity_snapshots
+       where project_id = $1 and channel_id = $2 and expires_at > now()) as opportunity_count`,
+    [scope.projectId, scope.channelId],
+  )).rows[0];
+  const profileReady = row?.profile_ready === true;
+  return {
+    profileReady,
+    researchState: !profileReady ? "profile_required" : Number(row?.opportunity_count ?? 0) > 0 ? "ready" : "researching",
+    lastRefreshAt: row?.last_refresh_at ?? null,
+  };
+}
+
+export async function setOpportunityState(input: {
+  actorUserId: number;
+  opportunityId: number;
+  state: "saved" | "dismissed" | "used" | "not_relevant";
+  reasonCode?: "wrong_topic" | "already_covered" | "weak_source" | "bad_timing" | "other" | null;
+}, db: Queryable = getPool()): Promise<void> {
+  const membership = await requireSelectedProjectPermission(db, input.actorUserId, "project.read");
+  const snapshot = (await db.query<{ channel_id: string }>(
+    `select channel_id from opportunity_snapshots where id = $1 and project_id = $2`,
+    [input.opportunityId, membership.projectId],
+  )).rows[0];
+  if (!snapshot) throw new ContentIntelligenceError("opportunity_not_found");
+  await db.query(
+    `insert into opportunity_states
+       (project_id, channel_id, user_id, opportunity_snapshot_id, state, reason_code)
+     values ($1,$2,$3,$4,$5,$6)
+     on conflict (project_id, channel_id, user_id, opportunity_snapshot_id) do update
+       set state=excluded.state, reason_code=excluded.reason_code,
+           version=opportunity_states.version + 1, updated_at=now()`,
+    [membership.projectId, Number(snapshot.channel_id), input.actorUserId, input.opportunityId, input.state, input.reasonCode ?? null],
+  );
+}
+
+export async function clearOpportunityState(input: {
+  actorUserId: number;
+  opportunityId: number;
+}, db: Queryable = getPool()): Promise<void> {
+  const membership = await requireSelectedProjectPermission(db, input.actorUserId, "project.read");
+  await db.query(
+    `delete from opportunity_states state
+      using opportunity_snapshots snapshot
+      where state.project_id = $1 and state.user_id = $2
+        and state.opportunity_snapshot_id = $3
+        and snapshot.id = state.opportunity_snapshot_id
+        and snapshot.project_id = state.project_id and snapshot.channel_id = state.channel_id`,
+    [membership.projectId, input.actorUserId, input.opportunityId],
+  );
 }
 
 export async function createOpportunitySourceContext(input: {

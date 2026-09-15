@@ -1,5 +1,5 @@
-import { readFileSync } from "node:fs";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { readFileSync } from "node:fs";
 
 import { baselineCoverage, normalizeTopicKey, opportunityConfidence, opportunityExpiry, opportunityFingerprint, release1Enabled } from "./content-intelligence";
 import type { GrowthMoveRecord } from "./growth";
@@ -63,8 +63,9 @@ describe("Release 1 opportunity baseline", () => {
   });
 
   it("returns only fresh snapshots from the exact channel scope", () => {
-    expect(source).toContain("snapshot.project_id = $1 and snapshot.channel_id = $2");
-    expect(source).toContain("snapshot.expires_at > now()");
+    expect(source).toContain("candidate.project_id = $1 and candidate.channel_id = $2");
+    expect(source).toContain("candidate.expires_at > now()");
+    expect(source).toContain("distinct on (candidate.growth_move_id)");
   });
 
   it("reads the stored independent angle when creating source context", () => {

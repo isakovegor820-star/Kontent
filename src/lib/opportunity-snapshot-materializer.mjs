@@ -1,7 +1,8 @@
 import { createHash } from "node:crypto";
 import { buildGrowthMoves, growthWeekStart, loadSignals, persistGrowthCandidates } from "./growth-candidates.mjs";
+import { opportunityWindow, syncPublicMarketSignals } from "./opportunity-market.mjs";
 
-export const OPPORTUNITY_FORMULA_VERSION = "opportunity-baseline-v1";
+export const OPPORTUNITY_FORMULA_VERSION = "opportunity-market-v2";
 
 const TOPIC_STOP_WORDS = new Set([
   "как", "для", "или", "что", "это", "про", "свой", "своя", "свои",
@@ -17,9 +18,9 @@ export function normalizeTopicKey(value) {
   return [...new Set(words)].join(" ").slice(0, 200) || "topic";
 }
 
-function topicLabel(value) {
+function topicLabel(value, sourceKind = null) {
   const text = String(value || "");
-  const quoted = text.match(/[«"]([^»"]{3,200})[»"]/u)?.[1]?.trim();
+  const quoted = sourceKind === "competitor_post" ? text.match(/[«"]([^»"]{3,200})[»"]/u)?.[1]?.trim() : null;
   return (quoted || text.replace(/^напиши\s+(?:свой\s+)?пост\s+про\s+/iu, "").trim() || "Новая тема").slice(0, 200);
 }
 
@@ -37,7 +38,15 @@ export function baselineCoverage(topic, ownPostTexts) {
 }
 
 export function opportunityFingerprint(move) {
-  return sha(`${OPPORTUNITY_FORMULA_VERSION}:${move.weekStart}:${move.fingerprint}`);
+  return sha([
+    OPPORTUNITY_FORMULA_VERSION,
+    move.weekStart,
+    move.fingerprint,
+    move.reason ?? "no-reason",
+    move.evidence?.profileHash ?? "no-profile",
+    move.evidence?.priorityScore ?? 0,
+    move.evidence?.sourceCount ?? move.evidence?.sampleSize ?? 0,
+  ].join(":"));
 }
 
 export function opportunityConfidence(move) {
@@ -46,10 +55,8 @@ export function opportunityConfidence(move) {
   return "low";
 }
 
-export function opportunityExpiry(observedAt, now = new Date()) {
-  const observed = observedAt ? new Date(observedAt) : now;
-  const base = Number.isFinite(observed.getTime()) ? observed : now;
-  return new Date(Math.max(base.getTime(), now.getTime()) + 7 * 86_400_000);
+export function opportunityExpiry(observedAt, now = new Date(), type = "rising_topic") {
+  return opportunityWindow(type, observedAt, now).expiresAt;
 }
 
 function evidenceObject(move, coverage) {
@@ -65,12 +72,24 @@ function evidenceObject(move, coverage) {
     metricLabel: move.evidence?.metricLabel,
     demand: Math.max(0, Math.min(4, move.evidence?.opportunityStrength ?? 0)),
     coverage,
-    saturation: Math.max(1, Math.min(4, (move.evidence?.opportunityStrength ?? 1) - 1)),
+    saturation: Math.max(0, Math.min(4, Math.ceil((100 - (move.evidence?.whitespaceScore ?? 50)) / 25))),
+    opportunityType: move.evidence?.opportunityType,
+    priorityScore: move.evidence?.priorityScore,
+    profileHash: move.evidence?.profileHash,
+    publishBefore: move.evidence?.publishBefore,
+    sourceCount: move.evidence?.sourceCount ?? move.evidence?.sampleSize ?? 0,
+    sources: Array.isArray(move.evidence?.sources) ? move.evidence.sources : [],
+    whyNow: move.evidence?.whyNow,
+    relevanceScore: move.evidence?.relevanceScore,
+    momentumScore: move.evidence?.momentumScore,
+    freshnessScore: move.evidence?.freshnessScore,
+    trustScore: move.evidence?.trustScore,
+    formatSuggestion: move.evidence?.formatSuggestion,
     growthMoveFingerprint: move.fingerprint,
   };
 }
 
-/** Materializes immutable revision 1 snapshots. Replays are safe by both scoped uniques. */
+/** Materializes immutable revisions. A changed evidence fingerprint creates the next revision. */
 export async function materializeOpportunitySnapshots(db, scope, moves) {
   const candidates = moves.filter(
     (move) => ["topic", "offer", "audience"].includes(move.kind) && move.sourceId,
@@ -83,32 +102,53 @@ export async function materializeOpportunitySnapshots(db, scope, moves) {
     [scope.projectId, scope.channelId],
   )).rows.map((row) => row.text);
   let inserted = 0;
+  const now = new Date();
   for (const move of candidates) {
     const observedAt = move.evidence?.observedAt ?? null;
-    const expiresAt = opportunityExpiry(observedAt);
+    const opportunityType = move.evidence?.opportunityType ?? (move.kind === "audience" ? "audience_need" : move.kind === "offer" ? "offer_gap" : move.sourceKind === "competitor_post" ? "competitor_gap" : "evergreen_gap");
+    const window = opportunityWindow(opportunityType, observedAt, now);
+    const expiresAt = move.evidence?.expiresAt ? new Date(move.evidence.expiresAt) : window.expiresAt;
+    if (!Number.isFinite(expiresAt.getTime()) || expiresAt.getTime() <= now.getTime()) continue;
     const confidence = opportunityConfidence(move);
-    const label = topicLabel(move.title);
+    const label = topicLabel(move.title, move.sourceKind);
+    const fingerprint = opportunityFingerprint(move);
+    const latest = (await db.query(
+      `select revision, fingerprint from opportunity_snapshots
+        where project_id = $1 and channel_id = $2 and growth_move_id = $3
+        order by revision desc limit 1`,
+      [scope.projectId, scope.channelId, move.id],
+    )).rows[0];
+    if (latest?.fingerprint === fingerprint) continue;
+    const revision = Number(latest?.revision ?? 0) + 1;
     const result = await db.query(
       `insert into opportunity_snapshots
          (project_id, channel_id, growth_move_id, revision, fingerprint, topic_key, title,
           independent_angle, confidence, epistemic_state, formula_version, evidence,
-          observed_at, expires_at)
-       values ($1, $2, $3, 1, $4, $5, $6, $7, $8, $9, $10, $11::jsonb, $12, $13)
+          observed_at, expires_at, opportunity_type, priority_score, publish_before,
+          source_count, profile_hash)
+       values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12::jsonb, $13, $14,
+               $15, $16, $17, $18, $19)
        on conflict (growth_move_id, revision) do nothing`,
       [
         scope.projectId,
         scope.channelId,
         move.id,
-        opportunityFingerprint(move),
+        revision,
+        fingerprint,
         normalizeTopicKey(label),
         label,
-        String(move.prompt).slice(0, 2_000),
+        String(move.reason || move.prompt).slice(0, 2_000),
         confidence,
         confidence === "low" ? "insufficient_data" : "inferred",
         OPPORTUNITY_FORMULA_VERSION,
         JSON.stringify(evidenceObject(move, baselineCoverage(label, ownPostTexts))),
         observedAt,
         expiresAt,
+        opportunityType,
+        Math.max(0, Math.min(100, Math.round(Number(move.evidence?.priorityScore) || 0))),
+        move.evidence?.publishBefore ?? window.publishBefore,
+        Math.max(0, Math.round(Number(move.evidence?.sourceCount ?? move.evidence?.sampleSize) || 0)),
+        move.evidence?.profileHash ?? null,
       ],
     );
     inserted += result.rowCount ?? 0;
@@ -124,6 +164,7 @@ function mapGrowthMove(row) {
     kind: row.kind,
     confidence: row.confidence,
     title: row.title,
+    reason: row.reason,
     prompt: row.prompt,
     sourceKind: row.source_kind,
     sourceId: row.source_id,
@@ -158,6 +199,7 @@ async function recordOpportunityRefresh(db, scope, state, errorCode = null) {
 
 /** Worker/scheduler entry point. Discover new candidates without an HTTP visit. */
 export async function materializeAllOpportunitySnapshots(db) {
+  await syncPublicMarketSignals(db);
   const channels = (await db.query(
     `select channel.project_id, channel.id as channel_id
        from channels channel
@@ -194,7 +236,7 @@ export async function materializeAllOpportunitySnapshots(db) {
         throw error;
       } finally { client.release(); }
       const moves = (await db.query(
-        `select id, week_start::text, kind, confidence, title, prompt, source_kind,
+        `select id, week_start::text, kind, confidence, title, reason, prompt, source_kind,
                 source_id, fingerprint, evidence
            from growth_moves
           where project_id = $1 and channel_id = $2 and status = 'open'

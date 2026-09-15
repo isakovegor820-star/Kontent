@@ -39,6 +39,20 @@ export type GrowthEvidence = {
   opportunityStrength: number;
   urgency: number;
   effort: "Небольшое" | "Среднее" | "Заметное";
+  opportunityType?: "breaking_news" | "rising_topic" | "evergreen_gap" | "competitor_gap" | "audience_need" | "offer_gap";
+  priorityScore?: number;
+  profileHash?: string;
+  publishBefore?: string | null;
+  expiresAt?: string;
+  sourceCount?: number;
+  sources?: Array<{ url: string; label?: string | null; trust?: number }>;
+  whyNow?: string;
+  relevanceScore?: number;
+  momentumScore?: number;
+  freshnessScore?: number;
+  trustScore?: number;
+  whitespaceScore?: number;
+  formatSuggestion?: string;
 };
 
 export type GrowthLifecycle =
@@ -87,7 +101,9 @@ export type GrowthMoveDraft = {
   title: string;
   reason: string;
   prompt: string;
-  sourceKind: "competitor_post" | "site_analysis" | "audience_question" | "stats" | null;
+  sourceKind: "competitor_post" | "site_analysis" | "audience_question" | "stats"
+    | "market_signal" | "news_event" | "trend_post" | "radar_result" | "rss_item"
+    | "channel_profile" | null;
   sourceId: string | null;
   sourceLabel: string | null;
   missingSlots: number | null;
@@ -141,6 +157,41 @@ type SiteOffer = {
   landing?: string | null;
 };
 type AudienceAsk = { id: number; question: string; occurrences?: number; lastSeenAt?: string | null };
+type ResearchProfile = {
+  niche: string;
+  audience: string;
+  goal: string;
+  taboo: string;
+  rubrics: string[];
+  formats: string[];
+  opportunityKeywords: string[];
+  excludedKeywords: string[];
+  language: string;
+  region: string | null;
+  searchText: string;
+  terms: string[];
+  excludedTerms: string[];
+  hash: string;
+};
+type MarketCandidate = {
+  sourceKind: "market_signal" | "news_event" | "channel_profile";
+  sourceId: string;
+  sourceLabel: string;
+  title: string;
+  summary: string;
+  observedAt: string;
+  type: NonNullable<GrowthEvidence["opportunityType"]>;
+  priority: number;
+  sourceCount: number;
+  sources: Array<{ url: string; label?: string | null; trust?: number }>;
+  relevance: number;
+  momentum: number;
+  freshness: number;
+  trust: number;
+  profileHash: string;
+  publishBefore: string | null;
+  expiresAt: string;
+};
 
 export type GrowthSignals = {
   ownPosts30d: OwnPost[];
@@ -152,6 +203,8 @@ export type GrowthSignals = {
   audienceQuestion: AudienceAsk | null;
   audienceQuestions?: AudienceAsk[];
   goal: string | null;
+  researchProfile?: ResearchProfile | null;
+  marketCandidates?: MarketCandidate[];
   ownPublishedCount: number;
   latestDataAt: string | null;
   trackingStatus: string | null;
@@ -171,7 +224,7 @@ export function buildGrowthDiagnosis(signals: GrowthSignals): {
   const gaps: string[] = [];
 
   if (signals.competitorCount < 2) {
-    gaps.push("Добавь хотя бы двух конкурентов — иначе сравнивать ритм и темы не с чем.");
+    gaps.push("Без конкурентов карта уже использует профиль канала и открытые источники. Их добавление сделает сравнение тем и ритма точнее.");
   }
   if (!signals.siteOffer) {
     gaps.push("Нет разбора сайта — ход про услугу не ставлю.");
@@ -274,11 +327,18 @@ function fallbackEvidence(row: {
     : row.source_kind === "site_analysis" ? "Разбор сайта"
       : row.source_kind === "audience_question" ? "Запрос аудитории"
         : row.source_kind === "stats" ? "Статистика публикаций"
+          : row.source_kind === "news_event" || row.source_kind === "rss_item" ? "Свежая новость"
+            : row.source_kind === "market_signal" || row.source_kind === "trend_post" || row.source_kind === "radar_result" ? "Рыночный сигнал"
+              : row.source_kind === "channel_profile" ? "Профиль канала"
           : "Источник не сохранён";
   const href = row.source_kind === "competitor_post" ? "/app/competitors"
     : row.source_kind === "site_analysis" ? "/app/site-analysis"
       : row.source_kind === "audience_question" ? "/app/studio/questions"
-        : row.source_kind === "stats" ? "/app/analytics" : null;
+        : row.source_kind === "stats" ? "/app/analytics"
+          : row.source_kind === "channel_profile" ? "/app/settings?section=content"
+            : row.source_kind === "news_event" || row.source_kind === "rss_item"
+              || row.source_kind === "market_signal" || row.source_kind === "trend_post" || row.source_kind === "radar_result"
+              ? "/app/radar" : null;
   return {
     sourceType,
     sourceLabel: row.source_label,
@@ -302,6 +362,7 @@ function parseEvidence(value: unknown, row: Parameters<typeof fallbackEvidence>[
   const source = value as Partial<GrowthEvidence>;
   const fallback = fallbackEvidence(row);
   return {
+    ...source,
     sourceType: typeof source.sourceType === "string" ? source.sourceType : fallback.sourceType,
     sourceLabel: typeof source.sourceLabel === "string" ? source.sourceLabel : fallback.sourceLabel,
     href: typeof source.href === "string" ? source.href : fallback.href,
