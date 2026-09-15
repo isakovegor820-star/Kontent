@@ -6,22 +6,22 @@
 # sent, and is idempotent through its channel_events request id.
 set -Eeuo pipefail
 
-CHANNEL_ID="${AURORA_DISCONNECT_CHANNEL_ID:?AURORA_DISCONNECT_CHANNEL_ID is required}"
-USER_ID="${AURORA_DISCONNECT_USER_ID:?AURORA_DISCONNECT_USER_ID is required}"
-PROJECT_ID="${AURORA_DISCONNECT_PROJECT_ID:?AURORA_DISCONNECT_PROJECT_ID is required}"
-HANDLE="${AURORA_DISCONNECT_HANDLE:?AURORA_DISCONNECT_HANDLE is required}"
-TG_CHAT_ID="${AURORA_DISCONNECT_TG_CHAT_ID:?AURORA_DISCONNECT_TG_CHAT_ID is required}"
-OWNER_EMAIL="${AURORA_DISCONNECT_OWNER_EMAIL:?AURORA_DISCONNECT_OWNER_EMAIL is required}"
-REQUEST_ID="${AURORA_DISCONNECT_REQUEST_ID:?AURORA_DISCONNECT_REQUEST_ID is required}"
+TARGET_CHANNEL_ID="${AURORA_DISCONNECT_CHANNEL_ID:?AURORA_DISCONNECT_CHANNEL_ID is required}"
+TARGET_USER_ID="${AURORA_DISCONNECT_USER_ID:?AURORA_DISCONNECT_USER_ID is required}"
+TARGET_PROJECT_ID="${AURORA_DISCONNECT_PROJECT_ID:?AURORA_DISCONNECT_PROJECT_ID is required}"
+TARGET_HANDLE="${AURORA_DISCONNECT_HANDLE:?AURORA_DISCONNECT_HANDLE is required}"
+TARGET_TG_CHAT_ID="${AURORA_DISCONNECT_TG_CHAT_ID:?AURORA_DISCONNECT_TG_CHAT_ID is required}"
+TARGET_OWNER_EMAIL="${AURORA_DISCONNECT_OWNER_EMAIL:?AURORA_DISCONNECT_OWNER_EMAIL is required}"
+TARGET_REQUEST_ID="${AURORA_DISCONNECT_REQUEST_ID:?AURORA_DISCONNECT_REQUEST_ID is required}"
 CURRENT_LINK="${AURORA_CURRENT_LINK:-/opt/aurora-current}"
 
-[[ "$CHANNEL_ID" =~ ^[1-9][0-9]*$ ]] || { echo "invalid channel id" >&2; exit 1; }
-[[ "$USER_ID" =~ ^[1-9][0-9]*$ ]] || { echo "invalid user id" >&2; exit 1; }
-[[ "$PROJECT_ID" =~ ^[1-9][0-9]*$ ]] || { echo "invalid project id" >&2; exit 1; }
-[[ "$HANDLE" =~ ^[A-Za-z0-9_]{5,32}$ ]] || { echo "invalid Telegram handle" >&2; exit 1; }
-[[ "$TG_CHAT_ID" =~ ^-100[0-9]+$ ]] || { echo "invalid Telegram channel id" >&2; exit 1; }
-[[ "$OWNER_EMAIL" =~ ^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$ ]] || { echo "invalid owner email" >&2; exit 1; }
-[[ "$REQUEST_ID" =~ ^[A-Za-z0-9._:-]{12,160}$ ]] || { echo "invalid request id" >&2; exit 1; }
+[[ "$TARGET_CHANNEL_ID" =~ ^[1-9][0-9]*$ ]] || { echo "invalid channel id" >&2; exit 1; }
+[[ "$TARGET_USER_ID" =~ ^[1-9][0-9]*$ ]] || { echo "invalid user id" >&2; exit 1; }
+[[ "$TARGET_PROJECT_ID" =~ ^[1-9][0-9]*$ ]] || { echo "invalid project id" >&2; exit 1; }
+[[ "$TARGET_HANDLE" =~ ^[A-Za-z0-9_]{5,32}$ ]] || { echo "invalid Telegram handle" >&2; exit 1; }
+[[ "$TARGET_TG_CHAT_ID" =~ ^-100[0-9]+$ ]] || { echo "invalid Telegram channel id" >&2; exit 1; }
+[[ "$TARGET_OWNER_EMAIL" =~ ^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$ ]] || { echo "invalid owner email" >&2; exit 1; }
+[[ "$TARGET_REQUEST_ID" =~ ^[A-Za-z0-9._:-]{12,160}$ ]] || { echo "invalid request id" >&2; exit 1; }
 
 current_path="$(readlink -f "$CURRENT_LINK")"
 [[ -n "$current_path" && -f "$current_path/.env.production" ]] || {
@@ -39,13 +39,15 @@ test -n "${DATABASE_URL:-}"
 psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -P pager=off <<SQL
 begin;
 set local statement_timeout = '15s';
-select set_config('aurora.operator.channel_id', '$CHANNEL_ID', true);
-select set_config('aurora.operator.user_id', '$USER_ID', true);
-select set_config('aurora.operator.project_id', '$PROJECT_ID', true);
-select set_config('aurora.operator.handle', lower('$HANDLE'), true);
-select set_config('aurora.operator.tg_chat_id', '$TG_CHAT_ID', true);
-select set_config('aurora.operator.owner_email', lower('$OWNER_EMAIL'), true);
-select set_config('aurora.operator.request_id', '$REQUEST_ID', true);
+\o /dev/null
+select set_config('aurora.operator.channel_id', '$TARGET_CHANNEL_ID', true);
+select set_config('aurora.operator.user_id', '$TARGET_USER_ID', true);
+select set_config('aurora.operator.project_id', '$TARGET_PROJECT_ID', true);
+select set_config('aurora.operator.handle', lower('$TARGET_HANDLE'), true);
+select set_config('aurora.operator.tg_chat_id', '$TARGET_TG_CHAT_ID', true);
+select set_config('aurora.operator.owner_email', lower('$TARGET_OWNER_EMAIL'), true);
+select set_config('aurora.operator.request_id', '$TARGET_REQUEST_ID', true);
+\o
 
 do \$operation\$
 declare
@@ -118,5 +120,5 @@ select json_build_object(
   )
 ) as production_channel_result
 from channels channel
-where channel.id = $CHANNEL_ID;
+where channel.id = $TARGET_CHANNEL_ID;
 SQL
