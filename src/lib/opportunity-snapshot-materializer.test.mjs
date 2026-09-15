@@ -20,21 +20,21 @@ const move = {
     sourceLabel: "Публичный канал",
     sampleSize: 3,
     opportunityStrength: 4,
-    observedAt: "2026-08-20T10:00:00.000Z",
+    observedAt: new Date().toISOString(),
     methodology: "Наблюдение публичного источника",
   },
 };
 
 describe("opportunity snapshot materializer", () => {
   it("uses stable fingerprints and does not duplicate a replay", async () => {
-    let inserted = false;
+    let latest = null;
     const db = {
-      query: vi.fn(async (sql) => {
+      query: vi.fn(async (sql, params) => {
         if (sql.includes("select text from posts")) return { rows: [{ text: "Согласование договора" }] };
+        if (sql.includes("select revision, fingerprint")) return { rows: latest ? [latest] : [] };
         if (sql.includes("insert into opportunity_snapshots")) {
-          const rowCount = inserted ? 0 : 1;
-          inserted = true;
-          return { rows: [], rowCount };
+          latest = { revision: params[3], fingerprint: params[4] };
+          return { rows: [], rowCount: 1 };
         }
         throw new Error(`unexpected query: ${sql}`);
       }),
@@ -47,6 +47,27 @@ describe("opportunity snapshot materializer", () => {
     expect(second).toEqual({ candidates: 1, inserted: 0 });
     expect(opportunityFingerprint(move)).toBe(opportunityFingerprint({ ...move }));
     const inserts = db.query.mock.calls.filter(([query]) => query.includes("insert into opportunity_snapshots"));
-    expect(inserts[0][1][3]).toBe(inserts[1][1][3]);
+    expect(inserts).toHaveLength(1);
+    expect(inserts[0][1][3]).toBe(1);
+  });
+
+  it("creates a new immutable revision when scored evidence changes", async () => {
+    let latest = null;
+    const revisions = [];
+    const db = {
+      query: vi.fn(async (sql, params) => {
+        if (sql.includes("select text from posts")) return { rows: [] };
+        if (sql.includes("select revision, fingerprint")) return { rows: latest ? [latest] : [] };
+        if (sql.includes("insert into opportunity_snapshots")) {
+          latest = { revision: params[3], fingerprint: params[4] };
+          revisions.push(params[3]);
+          return { rows: [], rowCount: 1 };
+        }
+        throw new Error(`unexpected query: ${sql}`);
+      }),
+    };
+    await materializeOpportunitySnapshots(db, { projectId: 7, channelId: 11 }, [{ ...move, evidence: { ...move.evidence, priorityScore: 70 } }]);
+    await materializeOpportunitySnapshots(db, { projectId: 7, channelId: 11 }, [{ ...move, evidence: { ...move.evidence, priorityScore: 82 } }]);
+    expect(revisions).toEqual([1, 2]);
   });
 });

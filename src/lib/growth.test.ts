@@ -14,6 +14,7 @@ import {
   tokenOverlap,
   type GrowthSignals,
 } from "./growth";
+import { researchProfile } from "./opportunity-market.mjs";
 
 function signals(overrides: Partial<GrowthSignals> = {}): GrowthSignals {
   return {
@@ -96,6 +97,38 @@ describe("growth diagnosis and moves", () => {
     expect(next).toHaveLength(1);
     expect(next[0]?.kind).toBe("audience");
     expect(next[0]?.prompt).toContain("Сколько стоит первичная консультация?");
+  });
+
+  it("builds a useful cold-start map from the channel profile without competitors", () => {
+    const next = buildGrowthMoves(signals({
+      researchProfile: researchProfile({
+        niche: "Загородное строительство",
+        audience: "Владельцы участков",
+        rubrics: ["Выбор материалов", "Ошибки проекта"],
+      }),
+    }), 10);
+    expect(next).toHaveLength(5);
+    expect(next.every((move) => move.sourceKind === "channel_profile")).toBe(true);
+    expect(next.every((move) => move.confidence === "hypothesis")).toBe(true);
+    expect(next[0]?.prompt).toMatch(/профиль канала/u);
+  });
+
+  it("ranks a relevant fresh market signal ahead of profile fallbacks", () => {
+    const profile = researchProfile({ niche: "Искусственный интеллект", rubrics: ["Новости AI"] });
+    const [first] = buildGrowthMoves(signals({
+      researchProfile: profile,
+      marketCandidates: [{
+        sourceKind: "news_event", sourceId: "14", sourceLabel: "example.org",
+        title: "Новая модель искусственного интеллекта", summary: "Вышел свежий публичный анонс",
+        observedAt: "2026-09-15T10:00:00.000Z", type: "breaking_news", priority: 91,
+        sourceCount: 2, sources: [{ url: "https://example.org/news", label: "Example", trust: 80 }],
+        relevance: 90, momentum: 85, freshness: 100, trust: 80, profileHash: profile.hash,
+        publishBefore: "2026-09-16T10:00:00.000Z", expiresAt: "2026-09-18T10:00:00.000Z",
+      }],
+    }), 10);
+    expect(first?.sourceKind).toBe("news_event");
+    expect(first?.evidence.priorityScore).toBe(91);
+    expect(first?.evidence.sources?.[0]?.url).toBe("https://example.org/news");
   });
 
   it("names rhythm, topic and unused site offer without promising subscribers", () => {

@@ -102,6 +102,7 @@ import { indexKnowledgeSource } from "./worker/knowledge-indexer.mjs";
 import { knowledgeStyleSamples } from "./src/lib/knowledge-style.mjs";
 import { createProjectExportWorker } from "./worker/project-export-worker.mjs";
 import { materializeAllOpportunitySnapshots } from "./src/lib/opportunity-snapshot-materializer.mjs";
+import { refreshOpportunityMarket } from "./src/lib/opportunity-market-discovery.mjs";
 import {
   KNOWLEDGE_INDEX_JOB,
   reconcilePendingKnowledgeSources,
@@ -12005,6 +12006,7 @@ const cronWorker = AUTOPILOT_ONLY || MEDIA_ONLY || PUBLICATION_ONLY ? null : new
       case "stats":    return collectAllProjectStats();
       case "recon":    await collectCompetitors(); return checkNicheAlerts();
       case "trend":    return collectTrendSources();
+      case "market-signals": return refreshOpportunityMarket(pool, statsProducerQueue);
       case "today-opportunities": return materializeAllOpportunitySnapshots(pool);
       case "knowledge-index": return reconcilePendingKnowledgeSources(pool, statsProducerQueue, { model: sharedEmbedder.identity });
       case "discover": return discoverAll();
@@ -12241,7 +12243,7 @@ if (!AUTOPILOT_ONLY && !MEDIA_ONLY && !PUBLICATION_ONLY) {
 // Стартовая свежесть: разовые задачи сразу после запуска, чтобы не ждать первого тика.
 // Идут через ту же очередь (concurrency: 1) — не долбят t.me все разом при старте.
 // weekly НЕ запускаем: планы не должны перестраиваться при каждом рестарте (лечит баг «плана нет»).
-for (const name of AUTOPILOT_ONLY || MEDIA_ONLY || PUBLICATION_ONLY ? [] : ["stats", "recon", "trend", "today-opportunities", "knowledge-index", "discover", "exports"]) {
+for (const name of AUTOPILOT_ONLY || MEDIA_ONLY || PUBLICATION_ONLY ? [] : ["stats", "recon", "trend", "market-signals", "today-opportunities", "knowledge-index", "discover", "exports"]) {
   await cronQueue.add(name, {}, { jobId: `startup-${name}`, removeOnComplete: true }).catch(() => {});
 }
 

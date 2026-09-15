@@ -6574,3 +6574,94 @@ alter table knowledge_chunks add column if not exists embedding_model text;
 create index if not exists knowledge_sources_retry_idx on knowledge_sources (next_retry_at, last_attempt_at, id) where status <> 'error';
 
 alter table discovered_sources add column if not exists content_embedding_model text;
+
+-- Opportunity market v2: cold-start profiles, public-only signals and personal feedback.
+alter table content_brief add column if not exists language varchar(16) not null default 'ru';
+alter table content_brief add column if not exists region varchar(80);
+alter table content_brief add column if not exists opportunity_keywords text[] not null default '{}';
+alter table content_brief add column if not exists excluded_keywords text[] not null default '{}';
+alter table content_brief add column if not exists research_profile_hash char(64);
+alter table content_brief add column if not exists research_profile_updated_at timestamptz;
+alter table content_brief drop constraint if exists content_brief_language_check;
+alter table content_brief add constraint content_brief_language_check check (length(btrim(language)) between 2 and 16);
+alter table content_brief drop constraint if exists content_brief_region_check;
+alter table content_brief add constraint content_brief_region_check check (region is null or length(btrim(region)) between 2 and 80);
+alter table content_brief drop constraint if exists content_brief_research_profile_hash_check;
+alter table content_brief add constraint content_brief_research_profile_hash_check check (research_profile_hash is null or research_profile_hash ~ '^[0-9a-f]{64}$');
+
+create table if not exists market_signals (
+  id bigint generated always as identity primary key,
+  kind text not null check (kind in ('news','rising_topic','evergreen_gap','public_post')),
+  canonical_hash char(64) not null unique,
+  title varchar(300) not null check (length(btrim(title)) between 3 and 300),
+  summary text not null default '',
+  language varchar(16) not null default 'ru' check (length(btrim(language)) between 2 and 16),
+  region varchar(80) check (region is null or length(btrim(region)) between 2 and 80),
+  topic_keys text[] not null default '{}',
+  entities text[] not null default '{}',
+  momentum_score smallint not null default 0,
+  trust_score smallint not null default 0,
+  published_at timestamptz,
+  first_seen_at timestamptz not null default now(),
+  last_seen_at timestamptz not null default now(),
+  status text not null default 'active' check (status in ('active','stale','rejected')),
+  raw_metadata jsonb not null default '{}'::jsonb check (jsonb_typeof(raw_metadata) = 'object'),
+  tsv tsvector generated always as (to_tsvector('russian', coalesce(title, '') || ' ' || coalesce(summary, ''))) stored,
+  constraint market_signals_score_check check (momentum_score between 0 and 100 and trust_score between 0 and 100)
+);
+create index if not exists market_signals_active_seen_idx on market_signals (status, last_seen_at desc, id desc);
+create index if not exists market_signals_tsv_idx on market_signals using gin (tsv);
+
+create table if not exists market_signal_sources (
+  id bigint generated always as identity primary key,
+  signal_id bigint not null references market_signals (id) on delete cascade,
+  provider varchar(80) not null check (length(btrim(provider)) between 2 and 80),
+  source_url text not null check (source_url ~ '^https?://'),
+  source_url_hash char(64) not null,
+  source_domain varchar(253) not null check (length(source_domain) between 1 and 253 and source_domain !~ '[/?#@]'),
+  source_title varchar(300),
+  published_at timestamptz,
+  fetched_at timestamptz not null default now(),
+  is_primary boolean not null default false,
+  trust_score smallint not null default 0 check (trust_score between 0 and 100),
+  raw_metadata jsonb not null default '{}'::jsonb check (jsonb_typeof(raw_metadata) = 'object'),
+  constraint market_signal_sources_signal_url_uniq unique (signal_id, source_url_hash),
+  constraint market_signal_sources_url_hash_check check (source_url_hash ~ '^[0-9a-f]{64}$')
+);
+create index if not exists market_signal_sources_signal_idx on market_signal_sources (signal_id, trust_score desc, fetched_at desc, id desc);
+
+alter table growth_moves drop constraint if exists growth_moves_source_kind_check;
+alter table growth_moves add constraint growth_moves_source_kind_check check (source_kind is null or source_kind in (
+  'competitor_post','site_analysis','audience_question','stats','market_signal','news_event','trend_post','radar_result','rss_item','channel_profile'
+));
+alter table opportunity_snapshots add column if not exists opportunity_type text not null default 'evergreen_gap';
+alter table opportunity_snapshots add column if not exists priority_score smallint not null default 0;
+alter table opportunity_snapshots add column if not exists publish_before timestamptz;
+alter table opportunity_snapshots add column if not exists source_count integer not null default 1;
+alter table opportunity_snapshots add column if not exists profile_hash char(64);
+alter table opportunity_snapshots drop constraint if exists opportunity_snapshots_type_check;
+alter table opportunity_snapshots add constraint opportunity_snapshots_type_check check (opportunity_type in ('breaking_news','rising_topic','evergreen_gap','competitor_gap','audience_need','offer_gap'));
+alter table opportunity_snapshots drop constraint if exists opportunity_snapshots_priority_check;
+alter table opportunity_snapshots add constraint opportunity_snapshots_priority_check check (priority_score between 0 and 100);
+alter table opportunity_snapshots drop constraint if exists opportunity_snapshots_source_count_check;
+alter table opportunity_snapshots add constraint opportunity_snapshots_source_count_check check (source_count between 0 and 10000);
+alter table opportunity_snapshots drop constraint if exists opportunity_snapshots_profile_hash_check;
+alter table opportunity_snapshots add constraint opportunity_snapshots_profile_hash_check check (profile_hash is null or profile_hash ~ '^[0-9a-f]{64}$');
+create index if not exists opportunity_snapshots_channel_rank_idx on opportunity_snapshots (project_id, channel_id, priority_score desc, expires_at desc, id desc);
+
+create table if not exists opportunity_states (
+  project_id bigint not null references projects (id) on delete cascade,
+  channel_id bigint not null references channels (id) on delete cascade,
+  user_id bigint not null references users (id) on delete cascade,
+  opportunity_snapshot_id bigint not null,
+  state text not null check (state in ('saved','dismissed','used','not_relevant')),
+  reason_code varchar(80) check (reason_code is null or reason_code in ('wrong_topic','already_covered','weak_source','bad_timing','other')),
+  version bigint not null default 1 check (version > 0),
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  primary key (project_id,channel_id,user_id,opportunity_snapshot_id),
+  constraint opportunity_states_member_fk foreign key (project_id,user_id) references project_members(project_id,user_id) on delete cascade,
+  constraint opportunity_states_channel_project_fk foreign key (channel_id,project_id) references channels(id,project_id) on delete cascade,
+  constraint opportunity_states_snapshot_scope_fk foreign key (opportunity_snapshot_id,project_id,channel_id) references opportunity_snapshots(id,project_id,channel_id) on delete cascade
+);
+create index if not exists opportunity_states_user_state_idx on opportunity_states (user_id,project_id,channel_id,state,updated_at desc);
