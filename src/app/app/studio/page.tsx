@@ -38,7 +38,12 @@ import { PostSettingsMenu } from "@/components/studio/post-settings-menu";
 import { requiresBriefConfirmation } from "@/lib/brief-confirmation";
 import { type AiCommand } from "@/lib/ai";
 import { acknowledgeAiTerminal as unscopedAcknowledgeAiTerminal, AiTerminalAckError } from "@/lib/ai-client-idempotency";
-import { aiFailureRecoveryRu, type AiFailureInfo } from "@/lib/ai-client-recovery";
+import {
+  AI_TERMINAL_ACK_RECOVERY_RU,
+  aiFailureRecoveryRu,
+  visibleStudioAiErrorRu,
+  type AiFailureInfo,
+} from "@/lib/ai-client-recovery";
 import {
   aiDraftPhaseLabel,
   createAiDraftProjection,
@@ -274,6 +279,7 @@ function MessageRow({
   }
 
   const ready = !msg.streaming && msg.text.trim().length > 0;
+  const visibleErrorMessage = visibleStudioAiErrorRu(msg.errorMessage);
 
   // ИИ — обычный читаемый текст без ещё одной карточки вокруг карточки.
   return (
@@ -305,9 +311,9 @@ function MessageRow({
           <TaskStatus className="mt-2" label={msg.progressLabel} onStop={onStop} announce={false} />
         )}
 
-        {msg.errorMessage && (
+        {visibleErrorMessage && (
           <div role="alert" className="mt-3 max-w-[72ch] rounded-sm border border-danger-text/25 bg-danger-soft px-3 py-2 text-[12px] leading-relaxed text-danger-text">
-            <p>{msg.errorMessage}</p>
+            <p>{visibleErrorMessage}</p>
           </div>
         )}
 
@@ -1792,7 +1798,7 @@ function StudioPageInner() {
             const ackRequestId = error instanceof AiTerminalAckError ? error.requestId : null;
             setMsg({
               text: completion.text,
-              errorMessage: "Ответ получен, но подтверждение списания не завершилось. Повтори тот же запрос: сохранённый результат вернётся без нового вызова модели.",
+              errorMessage: AI_TERMINAL_ACK_RECOVERY_RU,
               progressLabel: undefined,
               requestId: ackRequestId ?? terminalRequestId,
               streaming: false,

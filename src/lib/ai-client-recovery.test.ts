@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { aiFailureRecoveryRu } from "./ai-client-recovery";
+import {
+  AI_TERMINAL_ACK_RECOVERY_RU,
+  AI_USAGE_FINALIZATION_RECOVERY_RU,
+  aiFailureRecoveryRu,
+  visibleStudioAiErrorRu,
+} from "./ai-client-recovery";
 
 describe("AI client recovery copy", () => {
   it("does not blame the model when the internal operation budget is exhausted", () => {
@@ -42,5 +47,11 @@ describe("AI client recovery copy", () => {
     expect(recovery).toContain(expected);
     expect(recovery).not.toContain("Аврора Искра");
     expect(recovery).not.toContain("сейчас недоступен");
+  });
+
+  it("hides only the technical persistence card after a visible Studio draft", () => {
+    expect(visibleStudioAiErrorRu(AI_USAGE_FINALIZATION_RECOVERY_RU)).toBeNull();
+    expect(visibleStudioAiErrorRu(AI_TERMINAL_ACK_RECOVERY_RU)).toBeNull();
+    expect(visibleStudioAiErrorRu("Модель не успела ответить.")).toBe("Модель не успела ответить.");
   });
 });

@@ -29,6 +29,12 @@ describe("Studio responsive recovery controls", () => {
     expect(pageSource).toContain('event.type === "fallback"');
   });
 
+  it("does not render the legacy persistence warning as a red card", () => {
+    expect(pageSource).toContain("visibleStudioAiErrorRu(msg.errorMessage)");
+    expect(pageSource).toContain("{visibleErrorMessage && (");
+    expect(pageSource).not.toContain("{msg.errorMessage && (");
+  });
+
   it("shows only ready text models in a clearly separate model control", () => {
     expect(pageSource).toContain("readyStudioEngines(d.engines ?? [])");
     expect(pageSource).toContain("Вариант Авроры:");

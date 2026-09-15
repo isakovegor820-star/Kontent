@@ -30,6 +30,8 @@ describe("composer UX protection contract", () => {
     expect(source).toContain('params.get("idea")?.trim().slice(0, 1_000)');
     expect(source).toContain('params.get("assistant") === "script"');
     expect(source).toContain("seededSuggestionRef.current === ideaParam");
+    expect(source).toContain("aiFailureRecoveryRu(info, response.status)");
+    expect(source).not.toContain("Генерация сейчас недоступна. Исходный текст не изменён.");
   });
 
   it("exposes three publication paths without covering the mobile editor", () => {

@@ -103,6 +103,7 @@ import {
   stableAiClientRequest,
   type AiClientRequestIdentity,
 } from "@/lib/ai-client-idempotency";
+import { aiFailureRecoveryRu, type AiFailureInfo } from "@/lib/ai-client-recovery";
 import { getAiUsageMetrics } from "@/lib/ai-usage-sync";
 import { createPostFromSource, SourcePostCreationError } from "@/lib/source-post-client";
 import {
@@ -1324,13 +1325,13 @@ export default function ComposerPage() {
         });
         requestId = response.headers.get("x-ai-request-id") ?? undefined;
         if (!response.ok || !response.body) {
-          const info = (await response.json().catch(() => null)) as { error?: string; requestId?: string } | null;
+          const info = (await response.json().catch(() => null)) as AiFailureInfo | null;
           requestId = info?.requestId ?? requestId;
           const message = response.status === 429
             ? "Дневной лимит исчерпан. Счётчик обновлён с сервера."
             : info?.error === "brief_insufficient_facts"
               ? "Для безопасного текста не хватает фактов. Добавь детали в бриф."
-              : "Генерация сейчас недоступна. Исходный текст не изменён.";
+              : aiFailureRecoveryRu(info, response.status);
           s.toast({
             kind: "danger",
             title: "Не получилось",
