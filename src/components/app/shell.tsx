@@ -23,12 +23,12 @@ import {
   ShieldCheck,
   Menu,
   Map,
+  Newspaper,
   Pencil,
   Radar,
   Globe2,
   SearchCode,
   Rocket,
-  Scale,
   ScanSearch,
   Settings,
   Sparkles,
@@ -57,10 +57,6 @@ import {
   isAppRouteActive,
   type AppNavRouteId,
 } from "@/lib/app-routes";
-import {
-  LEGAL_OPPORTUNITY_UNREAD_EVENT,
-  safeLegalOpportunityUnreadCount,
-} from "@/lib/legal-opportunity-unread";
 import { useStore } from "@/lib/store";
 import type { User } from "@/lib/types";
 import { cn, fmtNum, plural } from "@/lib/utils";
@@ -74,7 +70,7 @@ const NAV_ICONS: Record<AppNavRouteId, LucideIcon> & Partial<Record<keyof typeof
   studio: Sparkles,
   autopilot: Rocket,
   library: Bookmark,
-  rss: Scale,
+  rss: Newspaper,
   recon: ScanSearch,
   opportunities: Map,
   radar: Radar,
@@ -108,16 +104,21 @@ function isActive(pathname: string, item: NavItem) {
   return isAppRouteActive(pathname, item.routeId);
 }
 
-function useLegalOpportunityUnreadCount(userId: number | null) {
+function safeOpportunityCount(value: unknown): number {
+  const count = Number(value);
+  return Number.isSafeInteger(count) && count > 0 ? Math.min(count, 999) : 0;
+}
+
+function useOpportunityUnreadCount(userId: number | null) {
   const fetch = useProjectFetch();
   const [count, setCount] = useState(0);
 
   const refresh = useCallback(async () => {
     try {
-      const response = await fetch("/api/rss/items?summary=unread", { cache: "no-store" });
+      const response = await fetch("/api/opportunities?surface=market&view=active", { cache: "no-store" });
       if (!response.ok) return;
-      const body = await response.json() as { unreadCount?: unknown };
-      setCount(safeLegalOpportunityUnreadCount(body.unreadCount));
+      const body = await response.json() as { opportunities?: unknown };
+      setCount(safeOpportunityCount(Array.isArray(body.opportunities) ? body.opportunities.length : 0));
     } catch {
       // Сбой фонового badge не должен перекрывать навигацию или старое корректное число.
     }
@@ -128,20 +129,14 @@ function useLegalOpportunityUnreadCount(userId: number | null) {
 
     const startupTimer = window.setTimeout(() => void refresh(), 0);
     const interval = window.setInterval(() => void refresh(), 60_000);
-    const handleUnread = (event: Event) => {
-      const detail = (event as CustomEvent<{ count?: unknown }>).detail;
-      setCount(safeLegalOpportunityUnreadCount(detail?.count));
-    };
     const handleProjectChange = () => {
       setCount(0);
       void refresh();
     };
-    window.addEventListener(LEGAL_OPPORTUNITY_UNREAD_EVENT, handleUnread);
     window.addEventListener("aurora:project-changed", handleProjectChange);
     return () => {
       window.clearTimeout(startupTimer);
       window.clearInterval(interval);
-      window.removeEventListener(LEGAL_OPPORTUNITY_UNREAD_EVENT, handleUnread);
       window.removeEventListener("aurora:project-changed", handleProjectChange);
     };
   }, [refresh, userId]);
@@ -458,7 +453,7 @@ export function AppShell({
   const router = useRouter();
   const pathname = usePathname();
   const [menuOpen, setMenuOpen] = useState(false);
-  const opportunityUnreadCount = useLegalOpportunityUnreadCount(
+  const opportunityUnreadCount = useOpportunityUnreadCount(
     ready && authReady && user ? user.id : null,
   );
 
