@@ -218,7 +218,7 @@ function PulseArtwork({ values }: { values: number[] }) {
 }
 
 function PulseEmptyGraphic({ text }: { text: string }) {
-  return <div className="grid min-h-28 place-items-center rounded-sm bg-surface-inset px-5 text-center"><div><BarChart3 className="mx-auto h-5 w-5 text-text-3" aria-hidden /><p className="mt-2 type-caption text-text-3">{text}</p></div></div>;
+  return <div className="grid h-full min-h-28 place-items-center rounded-sm bg-surface-inset px-5 text-center"><div><BarChart3 className="mx-auto h-5 w-5 text-text-3" aria-hidden /><p className="mt-2 type-caption text-text-3">{text}</p></div></div>;
 }
 
 function pulseCollectedLabel(value: string | null): string {
@@ -332,7 +332,7 @@ function ChannelPulse({ pulse, channelId, refreshing, onRefresh }: {
   }
   return (
     <Card as="section" className="overflow-hidden p-5 sm:p-6" aria-labelledby="today-pulse-title">
-      <div className="grid items-center gap-7 md:grid-cols-[minmax(0,0.92fr)_minmax(15rem,1.08fr)]">
+      <div className="grid items-stretch gap-7 md:grid-cols-[minmax(0,0.92fr)_minmax(15rem,1.08fr)]">
         <div className="min-w-0">
           <div className="flex flex-wrap items-center gap-2 text-text-3"><BarChart3 className="h-4 w-4 shrink-0 text-brand" aria-hidden /><p className="type-caption font-semibold">{pulse.periodLabel}</p><Badge tone="neutral">Только реальные данные</Badge></div>
           <h2 id="today-pulse-title" className="mt-2">Пульс канала за 7 дней</h2>
@@ -343,7 +343,7 @@ function ChannelPulse({ pulse, channelId, refreshing, onRefresh }: {
           </dl>
           {pulse.latestPost ? <LatestPostSummary pulse={pulse} /> : null}
         </div>
-        <div className="min-w-0" role="img" aria-label={`${pulse.publishedCount} публикаций за 7 дней, ${pulse.postsWithStats} со статистикой. Линия построена по просмотрам публикаций.`}>{pulse.series.length > 0 ? <PulseArtwork values={pulse.series.map((point) => point.views)} /> : <PulseEmptyGraphic text="Просмотры пока недоступны" />}</div>
+        <div className="min-w-0 self-stretch" role="img" aria-label={`${pulse.publishedCount} публикаций за 7 дней, ${pulse.postsWithStats} со статистикой. Линия построена по просмотрам публикаций.`}>{pulse.series.length > 0 ? <div className="flex h-full items-center"><PulseArtwork values={pulse.series.map((point) => point.views)} /></div> : <PulseEmptyGraphic text="Просмотры пока недоступны" />}</div>
       </div>
       <PulseDetails pulse={pulse} channelId={channelId} />
     </Card>
