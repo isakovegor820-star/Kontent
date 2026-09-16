@@ -21,6 +21,17 @@ beforeEach(()=>{ failing=false; delayed=null; shouldDelay=false; setProjectTrans
 })); });
 afterEach(()=>{cleanup();vi.unstubAllGlobals();});
 describe("calendar complete-view state",()=>{
+  it("does not let an earlier range request undo an acknowledged move",async()=>{
+    const {result}=renderHook(()=>useCalendarData(7,"UTC","2030-01-01","2030-02-01",0));
+    await waitFor(()=>expect(result.current.ready).toBe(true));
+    shouldDelay=true;let pending!:Promise<void>;
+    act(()=>{pending=result.current.refresh();});
+    await waitFor(()=>expect(delayed).not.toBeNull());
+    const release=delayed!;
+    act(()=>result.current.updatePost({id:702,scheduled_at:"2030-01-15T10:00:00Z",schedule_revision:2}));
+    await act(async()=>{release(new Response(JSON.stringify({posts:[],hasMore:false,nextCursor:null}),{headers:{"x-aurora-project-id":"7"}}));await pending;});
+    expect(result.current.posts.find(post=>post.id===702)).toMatchObject({scheduled_at:"2030-01-15T10:00:00Z",schedule_revision:2});
+  });
   it("keeps the previous full collection on a next-page error and recovers",async()=>{
     const {result}=renderHook(()=>useCalendarData(7,"UTC","2030-01-01","2030-02-01",0));
     await waitFor(()=>expect(result.current.ready).toBe(true));

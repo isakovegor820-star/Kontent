@@ -72,6 +72,8 @@ import {
   calendarRecordStatus,
 } from "@/lib/calendar-team-filters";
 import type { ClientProjectRole } from "@/lib/project-client";
+import { rescheduleAutopilotCalendarPost } from "@/lib/calendar-autopilot-reschedule";
+import { projectTransportSnapshot } from "@/lib/project-transport";
 import {
   resolveCalendarDayMove,
   withOptimisticCalendarSchedule,
@@ -131,6 +133,8 @@ type CalendarPost = Post & {
   publicationOperationId?: number;
   operationStatus?: string;
   operationScheduleRevision?: number;
+  postScheduleRevision?: number;
+  autopilotCanReschedule?: boolean;
   scheduleTimezone?: string;
   scheduledOffset?: string | null;
   scheduleDisambiguation?: "reject" | "earlier" | "later";
@@ -271,6 +275,8 @@ function realToPost(rp: RealPost): CalendarPost {
     publicationOperationId: rp.publication_operation_id ?? undefined,
     operationStatus: rp.publication_operation_status ?? undefined,
     operationScheduleRevision: rp.operation_schedule_revision ?? undefined,
+    postScheduleRevision: rp.schedule_revision,
+    autopilotCanReschedule: rp.autopilot_can_reschedule,
     scheduleTimezone: rp.scheduled_timezone ?? undefined,
     scheduledOffset: rp.scheduled_offset,
     scheduleDisambiguation: rp.scheduled_disambiguation ?? undefined,
@@ -1541,7 +1547,7 @@ export default function CalendarPage() {
   const serverDrafts = calendarData.drafts;
   const draftsError = calendarData.error;
   const draftsReadyForUser = calendarData.ready;
-  const { refresh: refreshDrafts, updateDraft } = calendarData;
+  const { refresh: refreshDrafts, updateDraft, updatePost } = calendarData;
 
   useEffect(() => {
     if (!s.ready || focusedPostRef.current) return;
@@ -1686,6 +1692,10 @@ export default function CalendarPage() {
       const draft = serverDrafts.find((candidate) => candidate.id === post.serverDraftId);
       return canEdit && post.draftVersion != null && draft?.purpose !== "source_context";
     }
+    if (post.publicationOperationId == null && post.origin === "autopilot") {
+      return canPublish && post.status === "scheduled" && post.autopilotCanReschedule === true
+        && Number.isSafeInteger(post.postScheduleRevision) && Number(post.postScheduleRevision) > 0;
+    }
     return canPublish
       && post.status === "scheduled"
       && post.publicationOperationId != null
@@ -1719,6 +1729,10 @@ export default function CalendarPage() {
     if (post.status === "published") return "Опубликованный пост является историей и не переносится.";
     if (post.status === "publishing") return "Публикация уже отправляется и временно не переносится.";
     if (post.status !== "scheduled") return "Публикацию с этим статусом нельзя переносить между днями.";
+    if (post.origin === "autopilot" && post.publicationOperationId == null && !post.autopilotCanReschedule) {
+      return "Перенос недоступен: нет действующей связи с планом автопилота или отправка уже началась.";
+    }
+    if (post.origin === "autopilot" && post.autopilotCanReschedule && post.postScheduleRevision != null) return undefined;
     if (
       post.publicationOperationId == null
       || post.operationScheduleRevision == null
@@ -1904,6 +1918,8 @@ export default function CalendarPage() {
 
     movingPostRef.current = post.id;
     setMovingPostId(post.id);
+    const requestScope = projectTransportSnapshot();
+    let queuePending: boolean | null = false;
     try {
       const draft = post.serverDraftId == null || post.publicationOperationId != null
         ? null
@@ -1917,7 +1933,7 @@ export default function CalendarPage() {
         disambiguation: sameTimezone ? draft?.scheduled_disambiguation ?? post.scheduleDisambiguation : null,
         offset: sameTimezone ? draft?.scheduled_offset ?? post.scheduledOffset : null,
       });
-      if (new Date(moved.scheduledAt).getTime() <= Date.now() + 30_000) {
+      if (new Date(moved.scheduledAt).getTime() <= Date.now() + 60_000) {
         throw new ScheduleValidationError("past_time");
       }
 
@@ -1967,6 +1983,33 @@ export default function CalendarPage() {
             await s.refreshReal();
             return true;
           }
+          if (post.origin === "autopilot" && post.postScheduleRevision != null) {
+            const result = await rescheduleAutopilotCalendarPost(fetch, {
+              postId: realId(post.id), scheduleRevision: post.postScheduleRevision, ...moved,
+            });
+            if (projectTransportSnapshot() !== requestScope) return false;
+            if (result.kind === "saved") {
+              updatePost(result.post);
+              queuePending = result.queuePending;
+              // Other screens read the shared publication store. A refresh failure must
+              // not turn an acknowledged move into a reported rollback.
+              void s.refreshReal().catch(() => undefined);
+              return true;
+            }
+            if (result.kind === "rejected" && result.post) updatePost(result.post);
+            const uncertain = result.kind === "unconfirmed";
+            const body = uncertain
+              ? "Не удалось подтвердить новую дату. Обновите календарь после восстановления связи; перенос мог сохраниться."
+              : result.error === "past"
+                ? "Выберите время не раньше чем через минуту."
+                : result.error === "access_denied"
+                  ? "Для переноса нужно право публикации в этом проекте."
+                  : "Пост или его план изменился либо отправка уже началась. Обновляем календарь — проверьте актуальную дату.";
+            setMoveAnnouncement(body);
+            s.toast({ kind: uncertain ? "info" : "danger", title: uncertain ? "Проверяем дату публикации" : "Перенос не подтверждён", body });
+            await refreshDrafts();
+            return false;
+          }
           throw new Error("calendar_move_not_supported");
         },
         clear: () => setOptimisticSchedules((current) => {
@@ -1978,11 +2021,11 @@ export default function CalendarPage() {
       });
       if (!persisted) return;
 
-      const successBody = `${fmtDateTime(moved.scheduledAt, moved.timezone)}. Время публикации сохранено.`;
+      const successBody = `${fmtDateTime(moved.scheduledAt, moved.timezone)}. Время публикации сохранено.${queuePending ? " Очередь отправки временно недоступна; постановка повторится автоматически." : ""}`;
       setMoveAnnouncement(
         `Публикация перенесена на ${moved.localDate}, ${moved.localTime}.`,
       );
-      s.toast({ kind: "success", title: "Публикация перенесена", body: successBody });
+      s.toast({ kind: queuePending ? "info" : "success", title: "Публикация перенесена", body: successBody });
     } catch (error) {
       const scheduleError = error instanceof ScheduleValidationError ? error.code : null;
       const conflict = error instanceof DraftRequestError && error.kind === "conflict";
@@ -2012,10 +2055,11 @@ export default function CalendarPage() {
       setDraggedPostId(null);
       setDragOverDay(null);
     }
-  }, [updateDraft, canManageCalendarMove, calendarTimezone, serverDrafts, s, rescheduleServerDraft, reschedulePublication, publicationFailure, refreshDrafts]);
+  }, [updateDraft, updatePost, fetch, canManageCalendarMove, calendarTimezone, serverDrafts, s, rescheduleServerDraft, reschedulePublication, publicationFailure, refreshDrafts]);
 
   const canDropPostOn = useCallback((post: DatedPost, day: Date) => {
-    const timezone = post.scheduleTimezone ?? currentProjectTimezone ?? calendarTimezone;
+    const timezone = calendarTimezone;
+    const sameTimezone = post.scheduleTimezone === timezone;
     if (
       day.getTime() < today.getTime()
       || calendarDateKeyForInstant(post.scheduledAt, timezone) === dayKey(day)
@@ -2025,14 +2069,14 @@ export default function CalendarPage() {
         scheduledAt: post.scheduledAt,
         targetDay: day,
         timezone,
-        disambiguation: post.scheduleDisambiguation,
-        offset: post.scheduledOffset,
+        disambiguation: sameTimezone ? post.scheduleDisambiguation : null,
+        offset: sameTimezone ? post.scheduledOffset : null,
       });
-      return new Date(moved.scheduledAt).getTime() > Date.now() + 30_000;
+      return new Date(moved.scheduledAt).getTime() > Date.now() + 60_000;
     } catch {
       return false;
     }
-  }, [calendarTimezone, currentProjectTimezone, today]);
+  }, [calendarTimezone, today]);
 
   const canDropDraggedPostOn = useCallback((day: Date) => Boolean(
     draggedPost

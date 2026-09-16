@@ -33,6 +33,20 @@ async function handleGET(req: NextRequest) {
               p.publication_operation_id, operation.draft_id as publication_draft_id,
               operation.status as publication_operation_status,
               operation.schedule_revision as operation_schedule_revision,
+              (p.publication_origin = 'autopilot' and p.publication_operation_id is null
+                and p.status = 'scheduled' and p.provider_started_at is null
+                and exists (
+                  select 1 from autopilot_schedule_outbox o
+                  join autopilot_plan plan on plan.id = o.plan_id and plan.project_id = o.project_id
+                  where o.post_id = p.id and o.project_id = p.project_id
+                    and o.channel_id = p.channel_id and plan.channel_id = p.channel_id
+                    and o.status <> 'cancelled'
+                    and exists (select 1 from jsonb_array_elements(plan.items) item
+                      where item->>'postId' = p.id::text and item->>'i' = o.item_index::text
+                        and item->>'status' in ('pending', 'expired', 'approved'))
+                ) and not exists (select 1 from publication_parts started where started.post_id = p.id
+                  and (started.external_message_id is not null or started.send_status not in ('pending', 'failed')))
+              ) as autopilot_can_reschedule,
               p.channel_id, c.network, c.title as channel_title, c.handle, c.vk_group_id,
               coalesce(parts.items, '[]'::jsonb) as publication_parts
          from posts p
@@ -75,6 +89,7 @@ async function handleGET(req: NextRequest) {
         publication_draft_id: post.publication_draft_id == null
           ? null
           : Number(post.publication_draft_id),
+        schedule_revision: Number(post.schedule_revision),
       })),
     });
   } catch (err) {

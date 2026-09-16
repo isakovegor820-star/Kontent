@@ -16,11 +16,11 @@ export function useCalendarData(projectId: number | undefined, timezone: string,
   const transport = useSyncExternalStore(subscribeProjectTransport, projectTransportSnapshot, projectTransportSnapshot);
   const key = `${transport.epoch}:${projectId}:${timezone}:${from}:${to}`;
   const [data, setData] = useState<Data | null>(null);
-  const active = useRef<{ controller: AbortController; sequence: number } | null>(null);
+  const active = useRef<{ controller: AbortController; sequence: number; key: string } | null>(null);
   const refresh = useCallback(async () => {
     if (!projectId) return;
     active.current?.controller.abort();
-    const ticket = { controller: new AbortController(), sequence: (active.current?.sequence ?? 0) + 1 };
+    const ticket = { controller: new AbortController(), sequence: (active.current?.sequence ?? 0) + 1, key };
     active.current = ticket;
     const current = () => active.current === ticket && !ticket.controller.signal.aborted;
     const selections: CalendarSelection[] = [{ view: "range", from, to, timezone }, { view: "undated" }, { view: "attention" }];
@@ -50,5 +50,14 @@ export function useCalendarData(projectId: number | undefined, timezone: string,
   const updateDraft = useCallback((draft: ServerDraft) => {
     setData(previous => previous?.key === key ? { ...previous, drafts: previous.drafts.map(item => item.id === draft.id ? draft : item) } : previous);
   }, [key]);
-  return { posts: visible?.posts ?? EMPTY_POSTS, drafts: visible?.drafts ?? EMPTY_DRAFTS, ready: visible?.ready ?? false, error: visible?.error ?? false, refresh, updateDraft };
+  const updatePost = useCallback((post: Pick<RealPost, "id"> & Partial<RealPost>) => {
+    // In-flight range reads may contain the old schedule. Do not let them replace an
+    // acknowledged mutation; the caller can start a fresh read afterwards.
+    if (active.current?.key !== key) return;
+    active.current.controller.abort();
+    setData(previous => previous?.key === key ? {
+      ...previous, posts: previous.posts.map(item => item.id === post.id ? { ...item, ...post } : item),
+    } : previous);
+  }, [key]);
+  return { posts: visible?.posts ?? EMPTY_POSTS, drafts: visible?.drafts ?? EMPTY_DRAFTS, ready: visible?.ready ?? false, error: visible?.error ?? false, refresh, updateDraft, updatePost };
 }
