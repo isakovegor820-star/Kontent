@@ -326,7 +326,7 @@ function MessageRow({
         )}
 
 
-        {!msg.streaming && msg.retryable && (
+        {!msg.streaming && msg.retryable && !msg.reviewable && (
           <div className="mt-2 flex flex-wrap gap-1.5">
             <Button variant="soft" size="sm" onClick={onRetry}>
               <RefreshCw className="h-3.5 w-3.5" strokeWidth={2} aria-hidden />
@@ -1418,7 +1418,8 @@ function StudioPageInner() {
     const generation = genRef.current.get(messageId);
     const generatedMessage = messages.find((message) => message.id === messageId);
     const generationResultId = options?.generationResultId ?? generatedMessage?.generationResultId;
-    if (!generationResultId) {
+    const generationRequestKey = generation?.requestKey;
+    if (!generationResultId && !generationRequestKey) {
       s.toast({
         kind: "danger",
         title: "Текст ещё нельзя открыть в редакторе",
@@ -1430,6 +1431,23 @@ function StudioPageInner() {
     setCreatingPostId(messageId);
     const request = (async () => {
       try {
+        // The model result may already be durable while the short terminal ACK request
+        // was interrupted. Recover that exact result here; never run the model again and
+        // never mint a manual draft from unacknowledged client text.
+        const confirmedGenerationResultId = generationResultId
+          ?? (await acknowledgeAiTerminal(generationRequestKey!)).generationResultId;
+        if (!generationResultId) {
+          setMessages((current) => current.map((message) => message.id === messageId
+            ? {
+                ...message,
+                generationResultId: confirmedGenerationResultId,
+                reviewable: true,
+                interrupted: false,
+                retryable: false,
+                errorMessage: undefined,
+              }
+            : message));
+        }
         const result = await createServerDraft({
           text,
           media: null,
@@ -1438,7 +1456,7 @@ function StudioPageInner() {
           sourceRef: null,
           channelIds: [destinationChannelId],
           aiValidation: null,
-          generationResultId,
+          generationResultId: confirmedGenerationResultId,
           clientKey,
           growthMoveId: growthMoveIdRef.current,
         });
@@ -1517,9 +1535,13 @@ function StudioPageInner() {
       } catch (error) {
         s.toast({
           kind: "danger",
-          title: "Пост не создан",
+          title: error instanceof AiTerminalAckError
+            ? "Текст ещё подтверждается"
+            : "Пост не создан",
           body:
-            error instanceof DraftRequestError && error.kind === "offline"
+            error instanceof AiTerminalAckError
+              ? "Готовый текст остался в чате. Нажми «В пост» ещё раз — модель повторно не запустится."
+              : error instanceof DraftRequestError && error.kind === "offline"
               ? "Нет связи с сервером. Текст остался в чате — повтори, когда соединение восстановится."
               : "Черновик не удалось сохранить. Текст остался в чате, можно безопасно повторить.",
         });
@@ -1534,7 +1556,7 @@ function StudioPageInner() {
 
   // Настоящая генерация Д.8: стрим из /api/ai/generate (за ним переходник → Hermes).
   // Сервер подкладывает прошлые посты как образец стиля и считает дневной лимит.
-  const startStream = async (id: string, gen: Gen) => {
+  const startStream = async (id: string, gen: Gen, options?: { showPreviousText?: boolean }) => {
     const requestKey = gen.requestKey ?? crypto.randomUUID();
     if (!gen.requestKey) {
       gen = { ...gen, requestKey };
@@ -1669,7 +1691,7 @@ function StudioPageInner() {
       const dec = new TextDecoder();
       if (res.headers.get("content-type")?.includes("application/x-ndjson")) {
         let buffer = "";
-        let projection = createAiDraftProjection(previousText);
+        let projection = createAiDraftProjection(options?.showPreviousText === false ? "" : previousText);
         let failed = false;
         let validationBlocked = false;
         let validationRequiresReview = false;
@@ -1803,9 +1825,11 @@ function StudioPageInner() {
               requestId: ackRequestId ?? terminalRequestId,
               streaming: false,
               postable: false,
-              reviewable: false,
+              // The complete result remains a normal working draft. "В пост"
+              // retries only the terminal ACK before creating the protected server draft.
+              reviewable: true,
               requiresReview: false,
-              interrupted: true,
+              interrupted: false,
               retryable: true,
             });
             clearCancel();
@@ -1864,6 +1888,7 @@ function StudioPageInner() {
         streaming: false,
         progressLabel: undefined,
         postable: Boolean(acc.trim()),
+        reviewable: Boolean(acc.trim()),
       });
       clearCancel();
       void s.refreshAiUsage();
@@ -2063,6 +2088,7 @@ function StudioPageInner() {
         m.id === id
           ? {
               ...m,
+              text: "",
               progressLabel: "Готовлю новый вариант…",
               streaming: true,
               postable: false,
@@ -2083,7 +2109,9 @@ function StudioPageInner() {
           : m,
       ),
     );
-    void startStream(id, next);
+    // A previous Russian (or otherwise stale) variant must not remain visible while
+    // a newly configured English variant is being written.
+    void startStream(id, next, { showPreviousText: false });
   };
 
   const retryGeneration = (id: string) => {

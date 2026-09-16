@@ -14,6 +14,12 @@ describe("composer UX protection contract", () => {
     expect(source).toContain("<PostSettingsMenu");
   });
 
+  it("makes every assistant command follow the language of the visible post", () => {
+    expect(source).toContain("postSettingsForSourceLanguage");
+    expect(source).toContain("text.trim() || source");
+    expect(source).toContain("postSettings: assistantPostSettings");
+  });
+
   it("treats every terminal AI result as ready without judging the post in the UI", () => {
     expect(source).toContain('streamState.validation = "none"');
     expect(source).not.toContain("Вариант требует правки");
@@ -49,7 +55,10 @@ describe("composer UX protection contract", () => {
     expect(source).toContain('className="hidden h-[var(--composer-action-bar-clearance,18rem)] lg:block"');
     expect(source).toContain('window.matchMedia("(min-width: 1024px)")');
     expect(source).toContain("Другие действия");
-    expect(source).toContain('className="hidden flex-wrap gap-2 sm:flex"');
+    expect(source).toContain('className="hidden flex-wrap gap-2 sm:flex lg:flex-nowrap"');
+    expect(source).toContain("lg:grid-cols-[minmax(9rem,1fr)_auto]");
+    expect(source).toContain("lg:flex-nowrap lg:justify-end");
+    expect(source.match(/onClick=\{c\.publishNow\}/gu)?.length).toBeGreaterThanOrEqual(3);
     expect(source).toContain("new ResizeObserver(updateClearance)");
     expect(source).toContain("scroll-mb-72");
   });
@@ -59,6 +68,12 @@ describe("composer UX protection contract", () => {
     expect(source).toContain("getPublicationOperationEditorContext(publicationParam");
     expect(source).toContain("composerPersistedDraftHref(window.location.search, draft.id)");
     expect(source).toContain("Обновить публикацию");
+    const activePublicationActions = source.slice(
+      source.indexOf(") : c.activePublication ? ("),
+      source.indexOf("Добавить в календарь", source.indexOf(") : c.activePublication ? (") + 1),
+    );
+    expect(activePublicationActions).toContain("onClick={c.publishNow}");
+    expect(activePublicationActions).toContain("Опубликовать сейчас");
     expect(source).toContain("Запланировать снова");
     expect(source).toContain("Отменить запланированную публикацию?");
     expect(source).toContain("publicationOperationIsSettled(activePublication)");
