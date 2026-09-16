@@ -64,10 +64,15 @@ describe("Autopilot ready-plan generation contract", () => {
     expect(source.match(/autopilotProviderWaitingItem\(\{/g)?.length).toBeGreaterThanOrEqual(2);
     expect(source).toContain('buildState === "waiting_provider"');
     expect(source).toContain('recoveryState: "waiting_provider"');
+    expect(source.match(/expectedPlan\?\.build_report && typeof expectedPlan\.build_report/g)?.length).toBe(2);
     expect(source).toContain("isRetryableAiCompletionError(error)");
     expect(source).toContain("{ throwOnUnavailable: true, acceptLengthLimitedOutput: true }");
     expect(source).toContain("coalesce(build_report, '{}'::jsonb) || $4::jsonb");
-    expect(source).toContain("process.env.AUTOPILOT_SEMANTIC_ENGINE || DEFAULT_AUTOPILOT_ENGINE");
+    expect(source).toContain("engine: process.env.AI_SEMANTIC_ENGINE");
+    expect(source).not.toContain("process.env.AI_SEMANTIC_ENGINE || DEFAULT_AUTOPILOT_ENGINE");
+    expect(source).toContain("env: process.env");
+    expect(source).not.toContain("process.env.AUTOPILOT_SEMANTIC_TIMEOUT_MS");
+    expect(source).not.toContain('fallbackEngines: ["navy-deepseek-flash", "navy-gpt-5-4"]');
     expect(source).toContain('generationEngine === "navy-deepseek-pro" ? 2 : 3');
   });
 
@@ -174,9 +179,12 @@ describe("Autopilot ready-plan generation contract", () => {
   });
 
   it("turns an unfinished quality pass into a durable automatic continuation", () => {
-    expect(source).toContain("autopilotAutoRecoveryReport(report");
+    expect(source).toContain("expectedPlan?.build_report && typeof expectedPlan.build_report");
+    expect(source).toContain("...report,");
+    expect(source).toContain("trackProgress: true");
     expect(source).toContain("dispatchAutopilotContinuation({");
     expect(source).toContain("claimAutopilotContinuationJob(job)");
+    expect(source).toContain("in ('auto_repair_running', 'waiting_provider')");
     expect(source).toContain("status = 'partial'");
     expect(source).toContain("last_repair_job_id = $9::uuid");
   });
