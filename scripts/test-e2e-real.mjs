@@ -1746,6 +1746,13 @@ async function runTodayWorkspacePass(targetPage, channels, draftId) {
   );
 
   await targetPage.getByRole("button", { name: "Выйти из режима", exact: true }).click();
+  // Exiting quick mode restores focus on the next animation frame. Let that
+  // finish before tabbing, or WebKit can move focus away between Tab and Space.
+  await waitFor(
+    async () => summary.evaluate((element) => element === document.activeElement),
+    "Today quick-mode exit did not restore focus to the summary",
+    5_000,
+  );
 
   const moreActions = targetPage.locator('summary[aria-label="Дополнительные действия"]').first();
   await tabTo(targetPage, moreActions, "Today additional actions");
