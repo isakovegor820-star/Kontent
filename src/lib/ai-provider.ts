@@ -921,7 +921,7 @@ async function* streamOpenAi(
   // Engine ids are durable Aurora product slots, so model-specific request behavior must
   // follow the actual provider model rather than the historical slot name.
   const deepseek = runtime.model.startsWith("deepseek-");
-  const noReasoning = deepseek || runtime.model === "gpt-5.6-terra";
+  const noReasoning = deepseek || runtime.model === "gpt-5.6-terra" || runtime.model === "gpt-5.6-sol";
   const attempts = allowEmptyRetry && runtime.id.startsWith("navy-") ? 2 : 1;
   const requestSignal = withTimeout(signal, requestTimeoutMs);
   let inputTokens = 0;

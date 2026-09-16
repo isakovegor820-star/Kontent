@@ -72,7 +72,7 @@ describe("configured semantic AI adapter", () => {
         evidenceIds: ["source-1"],
         reasonCode: "direct_source_support",
       }],
-      model: "glm-5.3",
+      model: "gpt-5.6-sol",
     });
     expect(fetchImpl).toHaveBeenCalledTimes(1);
     expect(fetchImpl.mock.calls[0][0]).toBe("https://navy.example/v1/chat/completions");

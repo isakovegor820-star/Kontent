@@ -29,15 +29,15 @@ export const AUTOPILOT_ENGINE_OPTIONS = Object.freeze([
   },
   {
     id: "navy-deepseek-pro",
-    label: "GLM-5.3",
-    note: "Глубокая проработка, отвечает медленнее.",
+    label: "GPT-5.6 Sol",
+    note: "Развёрнутые материалы и подробный анализ.",
   },
 ].map((engine) => ({ ...engine, ...ENGINE_PRESENTATION[engine.id] })));
 
 // The default product slot now routes to Qwen 3.8.
 export const DEFAULT_AUTOPILOT_ENGINE = "navy-deepseek-flash";
 // Fallback order is recovery order: stable Qwen routes first, then Terra, retained
-// DeepSeek Flash, and finally the slower GLM depth route.
+// DeepSeek Flash, and finally the depth route.
 export const AUTOPILOT_FAST_FALLBACK_FLEET = Object.freeze([
   "navy-deepseek-flash",
   "navy-qwen-3-6",
