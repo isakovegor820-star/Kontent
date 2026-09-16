@@ -3,7 +3,6 @@ import {
   configuredAiFallbacks,
   configuredServiceEngine,
   resolveAiEngineRuntime,
-  recoveryAttemptTimeoutMs,
 } from "./ai-engine-policy.mjs";
 import { stripAiReasoning } from "./ai-visible-content.mjs";
 
@@ -207,7 +206,8 @@ async function oneCompletion(request, runtime, { fetchImpl, signal, timeoutMs })
       // durable, so request behavior must follow the provider model currently behind a slot.
       const providerMaxTokens = providerOutputTokens(runtime.id, maxTokens);
       const noReasoning = runtime.model.startsWith("deepseek-")
-        || runtime.model === "gpt-5.6-terra";
+        || runtime.model === "gpt-5.6-terra"
+        || runtime.model === "gpt-5.6-sol";
       response = await fetchImpl(`${runtime.baseUrl}/chat/completions`, {
         method: "POST",
         headers: { "content-type": "application/json", authorization: `Bearer ${runtime.key}`, ...correlationHeaders },
@@ -373,9 +373,7 @@ export async function completeAiText(request, options = {}) {
         fetchImpl,
         signal,
         timeoutMs: Math.min(
-          runtime.protocol === "ollama" ? localTimeoutMs : recoveryAttemptTimeoutMs(
-            engine, timeoutMs, attempts < maxAttempts && index + 1 < candidates.length,
-          ),
+          runtime.protocol === "ollama" ? localTimeoutMs : timeoutMs,
           remainingMs,
         ),
       });

@@ -346,7 +346,7 @@ else
         console.log(JSON.stringify({
           catalogStatus: catalog.status,
           modelCount: ids.length,
-          auroraEnginesPresent: ["qwen3.8-27b", "glm-5.3", "gpt-5.6-terra", "qwen3.6-27b", "deepseek-v4-flash"]
+          auroraEnginesPresent: ["qwen3.8-27b", "gpt-5.6-sol", "gpt-5.6-terra", "qwen3.6-27b", "deepseek-v4-flash"]
             .filter((id) => ids.includes(id)),
           sample: ids.slice(0, 40),
         }));
@@ -358,7 +358,7 @@ else
       // `reasoningChars` distinguishes a visible answer from hidden-only output.
       const variants = [
         { label: "Aurora Iskra / Qwen 3.8 27B", model: "qwen3.8-27b", body: { max_tokens: 3000 } },
-        { label: "Aurora Glubina / GLM-5.3", model: "glm-5.3", body: { max_tokens: 3000 } },
+        { label: "Aurora Glubina / GPT-5.6 Sol", model: "gpt-5.6-sol", body: { max_tokens: 3000, reasoning_effort: "none" } },
         { label: "Aurora Redaktor / GPT-5.6 Terra", model: "gpt-5.6-terra", body: { max_tokens: 3000, reasoning_effort: "none" } },
         { label: "Aurora Ritm / Qwen 3.6 27B", model: "qwen3.6-27b", body: { max_tokens: 3000 } },
         { label: "Aurora Prizma / DeepSeek V4 Flash", model: "deepseek-v4-flash", body: { max_tokens: 3000, reasoning_effort: "none" } },

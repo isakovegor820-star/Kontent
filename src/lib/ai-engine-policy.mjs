@@ -1,7 +1,7 @@
 const ENGINES = Object.freeze({
   // These five keys are durable product-slot IDs stored in user/autopilot settings.
   // Keep them stable while the provider model behind each Aurora variant evolves.
-  "navy-deepseek-pro": { label: "GLM-5.3", protocol: "openai", model: "glm-5.3", baseUrl: "https://api.navy/v1", key: "NAVYAI_API_KEY" },
+  "navy-deepseek-pro": { label: "GPT-5.6 Sol", protocol: "openai", model: "gpt-5.6-sol", baseUrl: "https://api.navy/v1", key: "NAVYAI_API_KEY" },
   "navy-deepseek-flash": { label: "Qwen 3.8 27B", protocol: "openai", model: "qwen3.8-27b", baseUrl: "https://api.navy/v1", key: "NAVYAI_API_KEY" },
   "navy-gpt-5-4": { label: "GPT-5.6 Terra", protocol: "openai", model: "gpt-5.6-terra", baseUrl: "https://api.navy/v1", key: "NAVYAI_API_KEY" },
   "navy-qwen-3-6": { label: "Qwen 3.6 27B", protocol: "openai", model: "qwen3.6-27b", baseUrl: "https://api.navy/v1", key: "NAVYAI_API_KEY" },
@@ -105,7 +105,7 @@ export function configuredAiFallbacks(primary, env = process.env) {
   // another vendor. Explicit operator fallbacks are attempted first because they encode the
   // latest observed provider health; the remaining same-provider fleet is the final tier.
   // This tier is recovery order, ranked by current reliability and latency. DeepSeek Flash
-  // is intentionally retained as a later fallback, while slow GLM-5.3 remains last.
+  // is intentionally retained as a later fallback, with the depth model reserved for later recovery.
   const sameProvider = primary.startsWith("navy-")
     ? [
         "navy-deepseek-flash",
@@ -124,13 +124,6 @@ export function configuredAiFallbacks(primary, env = process.env) {
       const runtime = resolveAiEngineRuntime(id, env);
       return runtime.supported && runtime.configured;
     });
-}
-
-/** GLM-5.3 has a slower first token; let the depth slot answer before fallback. */
-export function recoveryAttemptTimeoutMs(engine, timeoutMs, hasFallback) {
-  return hasFallback && engine === "navy-deepseek-pro" && timeoutMs > 0
-    ? Math.max(timeoutMs, 20_000)
-    : timeoutMs;
 }
 
 /**

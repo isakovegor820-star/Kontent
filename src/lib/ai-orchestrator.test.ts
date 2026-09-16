@@ -181,7 +181,7 @@ describe("AI provider orchestration", () => {
     await expect(stream.next()).rejects.toMatchObject({ code: "first_token_timeout" });
   });
 
-  it("gives the GLM depth slot at least 20 seconds before a fast fallback", async () => {
+  it("honors the configured first-token deadline for the replacement depth model", async () => {
     vi.useFakeTimers();
     const calls: string[] = [];
     const factory: AiStreamFactory = async function* (_input, engine, signal) {
@@ -199,7 +199,7 @@ describe("AI provider orchestration", () => {
       fallbackEngines: ["navy-deepseek-flash"],
       streamFactory: factory,
     }));
-    await vi.advanceTimersByTimeAsync(20_000);
+    await vi.advanceTimersByTimeAsync(5_000);
     const events = await run;
     expect(calls).toEqual(["navy-deepseek-pro", "navy-deepseek-flash"]);
     expect(events).toContainEqual(expect.objectContaining({

@@ -78,7 +78,7 @@ describe("Aurora product names", () => {
       return [engine.label, engine.model, Boolean(engine.recommended)];
     })).toEqual([
       ["Аврора Искра", "qwen3.8-27b", true],
-      ["Аврора Глубина", "glm-5.3", false],
+      ["Аврора Глубина", "gpt-5.6-sol", false],
       ["Аврора Редактор", "gpt-5.6-terra", false],
       ["Аврора Ритм", "qwen3.6-27b", false],
       ["Аврора Призма", "deepseek-v4-flash", false],
