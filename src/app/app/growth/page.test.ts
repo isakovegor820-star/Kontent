@@ -22,7 +22,8 @@ describe("growth page contract", () => {
     expect(studio).toContain('searchParams.get("growthMove")');
     expect(studio).toContain("/api/growth/moves/");
     expect(studio).toContain("setDraft(body.move.prompt)");
-    expect(studio).toContain("growthMoveId: growthMoveIdRef.current");
+    expect(studio).toContain("growthMoveId: generation?.growthMoveId ?? growthMoveIdRef.current");
+    expect(studio).toContain("growthMoveId: pending.moveId");
     expect(autopilot).toContain('window.location.search).get("growthMove")');
     expect(autopilot).toContain("/api/growth/moves/");
     expect(autopilot).toContain("growthMoveId,");

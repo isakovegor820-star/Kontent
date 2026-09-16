@@ -19,7 +19,7 @@ describe("opportunities page states", () => {
 
   it("binds every request and recovery action to the selected channel", () => {
     expect(source).toContain("useChannelChoice(store.realChannels, requestedChannelId)");
-    expect(source).toContain("`/api/opportunities?channel=${channelId}`");
+    expect(source).toContain("`/api/opportunities?channel=${channelId}");
     expect(source).toContain("item.channelId !== channelId");
     expect(source).toContain('href="/app/settings?section=content"');
     expect(source).toContain("без конкурентов и истории публикаций");
@@ -36,5 +36,23 @@ describe("opportunities page states", () => {
     expect(source).toContain("Не подходит");
     expect(source).toContain("Отменить");
     expect(source).toContain('{ method: "DELETE" }');
+  });
+
+  it("hands an actionable infopovod to Studio using owned identifiers only", () => {
+    expect(source).toContain("opportunityStudioHref({");
+    expect(source).toContain("growthMoveId: item.growthMoveId");
+    expect(source).toContain("opportunityId: item.id");
+    expect(source).toContain('createLabel={isNews ? "Создать пост" : undefined}');
+  });
+
+  it("preserves the established full-width infopovody design for the news surface", () => {
+    expect(source).toContain("function NewsOpportunityCard");
+    expect(source).toContain('data-ui="opportunity-monitoring-compact"');
+    expect(source).toContain('data-ui="opportunity-card"');
+    expect(source).toContain("Почему сейчас");
+    expect(source).toContain("Идея подачи");
+    expect(source).toContain("Подробнее о событии");
+    expect(source).toContain("Открыть источник");
+    expect(source).toContain('if (isNews) {');
   });
 });
