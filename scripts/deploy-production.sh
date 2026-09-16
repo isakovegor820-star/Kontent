@@ -9,6 +9,7 @@ set -euo pipefail
 
 DEPLOY_SHA="${AURORA_DEPLOY_SHA:?AURORA_DEPLOY_SHA is required}"
 DEPLOY_ACTION="${AURORA_DEPLOY_ACTION:-deploy}"
+EXPECTED_CURRENT_SHA="${AURORA_EXPECTED_CURRENT_SHA:-}"
 RELEASES_DIR="${AURORA_RELEASES_DIR:-/opt/aurora-releases}"
 CURRENT_LINK="${AURORA_CURRENT_LINK:-/opt/aurora-current}"
 KEEP_RELEASES="${AURORA_KEEP_RELEASES:-2}"
@@ -41,6 +42,10 @@ if [[ "$DEPLOY_ACTION" != "deploy" && "$DEPLOY_ACTION" != "rollback" ]]; then
   exit 1
 fi
 if [[ "$DEPLOY_ACTION" == "deploy" ]]; then
+  if [[ ! "$EXPECTED_CURRENT_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+    echo "AURORA_EXPECTED_CURRENT_SHA must identify the audited current release" >&2
+    exit 1
+  fi
   expected_build_archive="/tmp/aurora-build-${DEPLOY_SHA}.tar.gz"
   if [[ "$BUILD_ARCHIVE" != "$expected_build_archive" ]]; then
     echo "AURORA_BUILD_ARCHIVE must equal $expected_build_archive" >&2
@@ -146,6 +151,14 @@ if [[ "$DEPLOY_ACTION" == "rollback" ]]; then
   printf '%s\n' "rolled-back" >> "$state_file"
   echo "ROLLBACK_OK sha=$DEPLOY_SHA release=$previous"
   exit 0
+fi
+
+# The workflow's rollback evidence belongs to this exact production version.
+# Refuse a stale plan before any cleanup, installation or schema write.
+locked_current_sha="$(git -C "$(readlink -f "$CURRENT_LINK")" rev-parse --verify HEAD)"
+if [[ "$locked_current_sha" != "$EXPECTED_CURRENT_SHA" ]]; then
+  echo "production changed after release planning; refusing a stale deploy" >&2
+  exit 1
 fi
 
 short_sha="$(printf '%s' "$DEPLOY_SHA" | cut -c1-7)"

@@ -167,21 +167,25 @@ describe("production deployment shell contract", () => {
     expect(workflow).toContain("types: [completed]");
     expect(workflow).toContain("github.event.workflow_run.conclusion == 'success'");
     expect(workflow).toContain("vars.AUTO_DEPLOY_ENABLED == 'true'");
-    expect(workflow).toContain("ref: ${{ github.event.workflow_run.head_sha || github.sha }}");
-    expect(workflow).toContain("AURORA_DEPLOY_SHA: ${{ github.event.workflow_run.head_sha || github.sha }}");
+    expect(workflow).toContain('git checkout --detach "$AURORA_DEPLOY_SHA"');
+    expect(workflow).toContain("production-release-plan.mjs validate-target");
+    expect(workflow).toContain("github.event.workflow_run.event == 'push'");
+    expect(workflow).toContain("AURORA_DEPLOY_SHA: ${{ inputs.target_sha || github.event.workflow_run.head_sha }}");
   });
 
   it("fails closed before deploy writes when readiness or rollback evidence is missing", () => {
     const preflight = workflow.indexOf("Verify current production readiness before deploy");
     const configureSsh = workflow.indexOf("Configure SSH");
-    const boundary = workflow.indexOf("Verify exact rollback boundary");
+    const boundary = workflow.indexOf("Plan exact release and rollback boundary");
     const deploy = workflow.indexOf("Deploy release");
     expect(preflight).toBeGreaterThan(0);
     expect(configureSsh).toBeGreaterThan(preflight);
     expect(boundary).toBeGreaterThan(configureSsh);
     expect(deploy).toBeGreaterThan(boundary);
-    expect(workflow).toContain('expected="${current_sha}:${AURORA_DEPLOY_SHA}"');
-    expect(workflow).toContain('[[ "$AURORA_SCHEMA_ROLLBACK_AUDIT" == "$expected" ]]');
+    expect(workflow).toContain('AURORA_CURRENT_SHA="$current_sha" node scripts/production-release-plan.mjs plan');
+    expect(workflow).toContain("AURORA_EXPECTED_CURRENT_SHA: ${{ steps.release.outputs.current_sha }}");
+    expect(workflow).toContain("AURORA_SCHEMA_ROLLBACK_AUDIT: ${{ steps.release.outputs.rollback_audit }}");
+    expect(script).toContain('[[ "$locked_current_sha" != "$EXPECTED_CURRENT_SHA" ]]');
   });
 
   it("allows only the explicit degraded-mail release profile override", () => {

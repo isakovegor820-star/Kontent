@@ -22,7 +22,28 @@ This block is written and re-added by `next dev` — verify at `node_modules/nex
 ## Production deploys
 
 - Never ask the user for SSH host, password, or keys.
-- Deploy only via `gh workflow run "Deploy production" --ref main` after CI is green.
-  Watch the run with `gh run watch`.
+- Record the exact target SHA once the requested changes are merged. Wait for the
+  successful `CI` / `build` aggregate for that SHA; it includes server/migration
+  checks, production build, Trends hydration and all three browser engines.
+- Do not change the target merely because another task advances `main`. Do not
+  expand a release into fixing unrelated changes that arrived after that target.
+- First inspect existing `Deploy production` runs. Their title is `Deploy <full SHA>`.
+  Automatic deployment follows successful main CI when `AUTO_DEPLOY_ENABLED=true`.
+  Watch an existing queued/running release with `gh run watch <run-id>`; do not
+  dispatch a duplicate or cancel a healthy deployment.
+- When no matching automatic release exists, or after correcting a demonstrated
+  failed precondition, deploy only via
+  `gh workflow run "Deploy production" --ref main -f target_sha=<full-SHA>`.
+  Watch that exact run. Never use a moving branch name as the application target.
+- The workflow skips already installed versions and candidates superseded by
+  production. Report that decision accurately instead of claiming a new install.
+  Completion means the target (or a verified descendant containing it) is healthy
+  in production; a newer unrelated main CI is not a reason to prolong this task.
+- Unchanged schema/migration/deploy files are verified automatically. Changed
+  boundaries still require a rehearsed exact `SCHEMA_ROLLBACK_AUDIT` current:target
+  pair. Never just update the variable to silence the gate. The server rechecks
+  the expected current SHA under its deploy lock before any release mutation.
+- Report the stages separately: CI, artifact build, server installation and
+  production verification. Preserve the actual run IDs and measured durations.
 - Server credentials already live in the GitHub environment `production`.
 - Do not print secrets or `.env.production`.
