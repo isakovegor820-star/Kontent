@@ -109,29 +109,34 @@ function safeOpportunityCount(value: unknown): number {
   return Number.isSafeInteger(count) && count > 0 ? Math.min(count, 999) : 0;
 }
 
-function useOpportunityUnreadCount(userId: number | null) {
+function useOpportunityUnreadCount(userId: number | null, channelId: number | null) {
   const fetch = useProjectFetch();
   const [count, setCount] = useState(0);
 
   const refresh = useCallback(async () => {
+    if (userId == null || channelId == null) {
+      setCount(0);
+      return;
+    }
     try {
-      const response = await fetch("/api/opportunities?surface=market&view=active", { cache: "no-store" });
+      const response = await fetch(`/api/opportunities?channel=${channelId}&surface=market&view=active`, { cache: "no-store" });
       if (!response.ok) return;
       const body = await response.json() as { opportunities?: unknown };
       setCount(safeOpportunityCount(Array.isArray(body.opportunities) ? body.opportunities.length : 0));
     } catch {
       // Сбой фонового badge не должен перекрывать навигацию или старое корректное число.
     }
-  }, [fetch]);
+  }, [channelId, fetch, userId]);
 
   useEffect(() => {
-    if (userId == null) return;
+    if (userId == null || channelId == null) return;
 
     const startupTimer = window.setTimeout(() => void refresh(), 0);
     const interval = window.setInterval(() => void refresh(), 60_000);
     const handleProjectChange = () => {
+      // The store clears and reloads channels under the new project fence. Do not
+      // issue a request with the previous project's channel during that transition.
       setCount(0);
-      void refresh();
     };
     window.addEventListener("aurora:project-changed", handleProjectChange);
     return () => {
@@ -139,7 +144,7 @@ function useOpportunityUnreadCount(userId: number | null) {
       window.clearInterval(interval);
       window.removeEventListener("aurora:project-changed", handleProjectChange);
     };
-  }, [refresh, userId]);
+  }, [channelId, refresh, userId]);
 
   return count;
 }
@@ -449,12 +454,16 @@ export function AppShell({
   stickyHeaderOnMobile?: boolean;
   workspace?: boolean;
 }) {
-  const { ready, authReady, authError, user, signOut, refreshAuth } = useStore();
+  const { ready, authReady, authError, user, signOut, refreshAuth, realChannels, realReady } = useStore();
   const router = useRouter();
   const pathname = usePathname();
   const [menuOpen, setMenuOpen] = useState(false);
+  const opportunityChannelId = realReady
+    ? realChannels.find((channel) => channel.is_active && (channel.status == null || channel.status === "active"))?.id ?? null
+    : null;
   const opportunityUnreadCount = useOpportunityUnreadCount(
     ready && authReady && user ? user.id : null,
+    opportunityChannelId,
   );
 
   const burgerRef = useRef<HTMLButtonElement>(null);
