@@ -32,6 +32,24 @@ describe("production deployment safety gates", () => {
       previousSha, targetSha, attestation: "" })).toMatchObject({ compatible: true, reason: "schema_unchanged" });
   });
 
+  it("never lets an older successful check hide a new run or a different SHA/provider", () => {
+    const check = { id: 10, name: "build", status: "completed", conclusion: "success",
+      head_sha: targetSha, app: { slug: "github-actions" }, completed_at: "2026-09-16T10:00:00Z" };
+    expect(verifyRequiredChecks({ check_runs: [check] }, "build,build", { targetSha })).toEqual(["build"]);
+    for (const override of [
+      { id: 11, status: "in_progress", conclusion: null, started_at: "2026-09-16T09:59:00Z" },
+      { id: 11, status: "queued", conclusion: null },
+      { id: 11, conclusion: "failure" },
+    ]) {
+      expect(() => verifyRequiredChecks({ check_runs: [check, { ...check, ...override }] }, "build", { targetSha }))
+        .toThrow("not successful");
+    }
+    for (const override of [{ head_sha: previousSha }, { app: { slug: "other-ci" } }]) {
+      expect(() => verifyRequiredChecks({ check_runs: [{ ...check, ...override }] }, "build", { targetSha }))
+        .toThrow("missing");
+    }
+  });
+
   it("blocks schema-changing rollback unless the protected audit names the exact SHA pair", () => {
     const previousManifest = { migrations: [migration("one.sql")] };
     const targetManifest = { migrations: [migration("one.sql"), migration("two.sql")] };
