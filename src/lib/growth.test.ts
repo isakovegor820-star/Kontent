@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   buildGrowthDiagnosis,
   buildGrowthMoves,
+  buildReadiness,
   coversTopic,
   growthActionHref,
   growthFingerprint,
@@ -38,6 +39,18 @@ describe("growth week", () => {
     expect(growthWeekStart(new Date("2026-08-19T10:00:00+02:00"))).toBe("2026-08-17");
     expect(previousGrowthWeekStart("2026-08-17")).toBe("2026-08-10");
     expect(growthPeriodLabel("2026-08-17")).toBe("17–23 августа");
+  });
+});
+
+describe("growth readiness navigation", () => {
+  it("points every missing signal to its working destination", () => {
+    const readiness = buildReadiness(signals());
+    expect(readiness.map(({ id, href }) => ({ id, href }))).toEqual([
+      { id: "competitors", href: "/app/competitors" },
+      { id: "site", href: "/app/site-analysis" },
+      { id: "posts", href: "/app/studio" },
+      { id: "tracking", href: "/app/settings?section=integrations&setting=tracking" },
+    ]);
   });
 });
 

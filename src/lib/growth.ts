@@ -678,7 +678,7 @@ async function enrichMoveLifecycle(
   });
 }
 
-function buildReadiness(signals: GrowthSignals): GrowthReadinessItem[] {
+export function buildReadiness(signals: GrowthSignals): GrowthReadinessItem[] {
   const items: GrowthReadinessItem[] = [];
   if (signals.competitorCount < 2) items.push({
     id: "competitors",
@@ -700,7 +700,7 @@ function buildReadiness(signals: GrowthSignals): GrowthReadinessItem[] {
   if (signals.trackingStatus !== "active") items.push({
     id: "tracking", title: "Подключи tracking",
     body: "Аврора сможет подтверждать переходы и заявки, а не принимать их отсутствие за ноль.",
-    href: "/app/settings?section=tracking", cta: "Настроить tracking",
+    href: "/app/settings?section=integrations&setting=tracking", cta: "Настроить tracking",
   });
   return items;
 }
