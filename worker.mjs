@@ -209,6 +209,7 @@ import {
 import {
   AUTOPILOT_CONTINUATION_JOB,
   autopilotAutoRecoveryReport,
+  autopilotContinuationRepairIndexes,
   dispatchAutopilotContinuation,
   enqueueWeeklyAutopilotPlan,
   isAutopilotAutoRecoveryStrategy,
@@ -454,17 +455,9 @@ const AUTOPILOT_AI_CIRCUIT_OPEN_MS = Math.min(
   30_000,
   Math.max(5_000, Number(process.env.AUTOPILOT_AI_CIRCUIT_OPEN_MS) || 15_000),
 );
-const AUTOPILOT_SEMANTIC_TIMEOUT_MS = Math.min(
-  30_000,
-  Math.max(5_000, Number(process.env.AUTOPILOT_SEMANTIC_TIMEOUT_MS) || 20_000),
-);
 const semanticPublicationAdapter = createConfiguredSemanticAdapter({
-  engine: process.env.AUTOPILOT_SEMANTIC_ENGINE || DEFAULT_AUTOPILOT_ENGINE,
-  env: {
-    ...process.env,
-    AI_SEMANTIC_TIMEOUT_MS: String(AUTOPILOT_SEMANTIC_TIMEOUT_MS),
-  },
-  fallbackEngines: ["navy-deepseek-flash", "navy-gpt-5-4"],
+  engine: process.env.AI_SEMANTIC_ENGINE,
+  env: process.env,
   telemetry: (event) => {
     if (event.outcome === "failed" || event.type === "fallback") {
       console.warn("[semantic ai]", {
@@ -7211,6 +7204,9 @@ async function buildAutopilotPlan(
     if (providerWaitingItems.length > 0) {
       const firstFailure = providerWaitingItems[0]?._providerFailure || {};
       const recoveryReport = {
+        ...(expectedPlan?.build_report && typeof expectedPlan.build_report === "object"
+          ? expectedPlan.build_report
+          : {}),
         ...report,
         recoveryState: "waiting_provider",
         providerFailureCode: String(firstFailure.code || "provider_unavailable"),
@@ -7291,15 +7287,25 @@ async function buildAutopilotPlan(
       );
     }
     const recoveryAllowed = st?.enabled === true || report.requestedBy === "human";
-    const autoRecoveryEnabled = expectedPlanId != null &&
+    const autoRecoveryEligible = expectedPlanId != null &&
       automaticRepairIndexes.length > 0 &&
       isAutopilotAutoRecoveryStrategy(report.primaryFix);
-    const persistedPartialReport = autoRecoveryEnabled
-      ? autopilotAutoRecoveryReport(report, {
+    const persistedPartialReport = autoRecoveryEligible
+      ? autopilotAutoRecoveryReport({
+          ...(expectedPlan?.build_report && typeof expectedPlan.build_report === "object"
+            ? expectedPlan.build_report
+            : {}),
+          ...report,
+        }, {
           enabled: recoveryAllowed,
           attemptNumber: Math.max(1, Number(expectedPlan?.repair_attempt || 0) + 1),
+          readyCount: selectedPairs.length,
+          repairIndexes: automaticRepairIndexes,
+          trackProgress: true,
+          resetNoProgress: expectedPlan?.build_report?.recoveryState === "manual_repair",
         })
       : report;
+    const autoRecoveryScheduled = persistedPartialReport?.recoveryState === "auto_retry_scheduled";
     const recoveryJobId = typeof persistedPartialReport?.autoRecovery?.jobId === "string"
       ? persistedPartialReport.autoRecovery.jobId
       : null;
@@ -7413,7 +7419,7 @@ async function buildAutopilotPlan(
     } finally {
       partialTx.release();
     }
-    if (recoveryAllowed && recoveryJobId && autopilotQueue) {
+    if (recoveryAllowed && autoRecoveryScheduled && recoveryJobId && autopilotQueue) {
       await dispatchAutopilotContinuation({
         queue: autopilotQueue,
         row: {
@@ -7450,7 +7456,7 @@ async function buildAutopilotPlan(
       attemptNumber: Number(expectedPlan?.repair_attempt || 0) + 1,
       generationEngine,
       durationMs: Date.now() - buildStartedAt,
-      terminalOutcome: autoRecoveryEnabled ? "recovering" : "partial",
+      terminalOutcome: autoRecoveryScheduled ? "recovering" : "partial",
       aiCallCount,
     });
     return {
@@ -11212,6 +11218,7 @@ async function claimAutopilotContinuationJob(job) {
         and plan.channel_id = $4 and plan.status = 'partial'
         and settings.project_id = plan.project_id and settings.channel_id = plan.channel_id
         and (settings.enabled = true or plan.build_report->>'requestedBy' = 'human')
+        and plan.build_report->>'recoveryState' in ('auto_retry_scheduled', 'waiting_quota')
         and plan.build_report #>> '{autoRecovery,jobId}' = $5
       returning plan.id`,
     [planId, projectId, userId, channelId, recoveryJobId],
@@ -11226,6 +11233,7 @@ async function claimAutopilotContinuationJob(job) {
       where plan.id = $1 and plan.project_id = $2 and plan.user_id = $3
         and plan.channel_id = $4 and plan.status = 'building'
         and (settings.enabled = true or plan.build_report->>'requestedBy' = 'human')
+        and plan.build_report->>'recoveryState' in ('auto_repair_running', 'waiting_provider')
         and plan.build_report #>> '{autoRecovery,jobId}' = $5`,
     [planId, projectId, userId, channelId, recoveryJobId],
   );
@@ -11269,7 +11277,8 @@ async function processAutopilotPlanJob(job) {
   const repairOperationId = job.name === "autopilot-repair"
     ? Number(job.data?.operationId)
     : null;
-  const repairIndexes = job.name === "autopilot-repair" && Array.isArray(job.data?.repairIndexes)
+  let repairIndexes = ["autopilot-repair", AUTOPILOT_CONTINUATION_JOB].includes(job.name) &&
+      Array.isArray(job.data?.repairIndexes)
     ? job.data.repairIndexes.map(Number)
     : null;
   const continuationRecoveryJobId = job.name === AUTOPILOT_CONTINUATION_JOB
@@ -11280,6 +11289,17 @@ async function processAutopilotPlanJob(job) {
     (!Number.isSafeInteger(repairOperationId) || repairOperationId <= 0)
   ) {
     throw new UnrecoverableError("autopilot-repair: bad_operation_id");
+  }
+  if (continuationRecoveryJobId && (!Array.isArray(repairIndexes) || repairIndexes.length === 0)) {
+    const recoveryPlan = (
+      await pool.query(
+        `select items, publication_target_count, expected_post_count, build_report
+           from autopilot_plan
+          where id = $1 and project_id = $2 and channel_id = $3 and status = 'building'`,
+        [planId, projectId, channelId],
+      )
+    ).rows[0];
+    repairIndexes = autopilotContinuationRepairIndexes(recoveryPlan);
   }
   if (repairOperationId != null) {
     const claimed = await pool.query(

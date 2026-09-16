@@ -171,12 +171,16 @@ interface BuildAttempt {
     | "auto_retry_scheduled"
     | "auto_repair_running"
     | "paused"
+    | "paused_no_progress"
+    | "paused_by_user"
     | "waiting_quota"
     | "manual_repair"
     | null;
   providerFailureCode: string | null;
   attemptNumber: number;
   maxAttempts: number;
+  noProgressAttempts: number;
+  maxNoProgressAttempts: number;
   nextRetryAt: string | null;
   retryableItemIndexes: number[];
   readerReadyItems: PlanItem[];
@@ -855,18 +859,37 @@ function BuildAttemptPanel({
 }) {
   const readyCount = Math.min(attempt.readyCount, attempt.publicationTargetCount);
   const remaining = Math.max(0, attempt.publicationTargetCount - readyCount);
-  const automaticRecovery = ["auto_retry_scheduled", "auto_repair_running"].includes(
-    String(attempt.recoveryState || ""),
-  );
+  const scheduledRecovery = attempt.recoveryState === "auto_retry_scheduled";
+  const activeAutomaticRecovery = attempt.recoveryState === "auto_repair_running";
+  const automaticRecovery = scheduledRecovery || activeAutomaticRecovery;
   const waitingForQuota = attempt.recoveryState === "waiting_quota";
-  const pausedRecovery = attempt.recoveryState === "paused";
+  const pausedWithAutopilot = attempt.recoveryState === "paused";
+  const pausedForNoProgress = attempt.recoveryState === "paused_no_progress";
+  const pausedByUser = attempt.recoveryState === "paused_by_user";
   const terminal = attempt.status !== "building" && !automaticRecovery && !waitingForQuota;
   const canContinue = attempt.retryableItemIndexes.length > 0 &&
-    !automaticRecovery && !waitingForQuota && !pausedRecovery;
+    !automaticRecovery && !waitingForQuota && !pausedWithAutopilot;
   const waitingForProvider = attempt.status === "building" && attempt.recoveryState === "waiting_provider";
-  const title = automaticRecovery
-    ? `Аврора добирает план: ${readyCount} из ${attempt.publicationTargetCount}`
-    : waitingForQuota || pausedRecovery
+  const activelyWorking = attempt.status === "building" || activeAutomaticRecovery || waitingForProvider;
+  const canPause = activelyWorking || scheduledRecovery || waitingForQuota;
+  const nextRetryLabel = attempt.nextRetryAt
+    ? `${fmtTimeMsk(attempt.nextRetryAt)} МСК`
+    : null;
+  const attemptMeta = [
+    attempt.attemptNumber > 0 ? `Попытка ${attempt.attemptNumber}` : null,
+    attempt.maxNoProgressAttempts > 0 && attempt.noProgressAttempts > 0
+      ? `без прогресса: ${attempt.noProgressAttempts} из ${attempt.maxNoProgressAttempts}`
+      : null,
+  ].filter(Boolean).join(" · ");
+  const title = scheduledRecovery
+    ? `Сохранено ${readyCount} из ${attempt.publicationTargetCount} — повтор запланирован`
+    : activeAutomaticRecovery
+      ? `Аврора добирает план: ${readyCount} из ${attempt.publicationTargetCount}`
+      : pausedForNoProgress
+        ? `Автоповторы приостановлены: готово ${readyCount} из ${attempt.publicationTargetCount}`
+        : pausedByUser
+          ? `Сборка приостановлена: готово ${readyCount} из ${attempt.publicationTargetCount}`
+          : waitingForQuota || pausedWithAutopilot
       ? `Сохранено ${readyCount} из ${attempt.publicationTargetCount}`
       : waitingForProvider
         ? "ИИ временно не ответил"
@@ -875,11 +898,17 @@ function BuildAttemptPanel({
           : attempt.status === "partial"
             ? "Нужно дополнить план"
             : "Сборка остановилась";
-  const description = automaticRecovery
-    ? `Готовые тексты сохранены. Недостающие ${remaining} ${plural(remaining, "пост", "поста", "постов")} Аврора переписывает и проверяет сама.`
+  const description = scheduledRecovery
+    ? `Готовые тексты сохранены. ${nextRetryLabel ? `Следующая попытка — ${nextRetryLabel}. ` : ""}Аврора проверит только ${attempt.retryableItemIndexes.length || remaining} ${plural(attempt.retryableItemIndexes.length || remaining, "недостающий кандидат", "недостающих кандидата", "недостающих кандидатов")}.`
+    : activeAutomaticRecovery
+      ? `Готовые тексты сохранены. Аврора переписывает и проверяет только недостающие ${remaining} ${plural(remaining, "пост", "поста", "постов")}.`
+      : pausedForNoProgress
+        ? `Последние ${attempt.maxNoProgressAttempts || attempt.noProgressAttempts} ${plural(attempt.maxNoProgressAttempts || attempt.noProgressAttempts, "попытка", "попытки", "попыток")} не добавили готовых постов. Ничего не удалено: можно уточнить источники или продолжить сборку вручную.`
+        : pausedByUser
+          ? "Готовые тексты и черновики сохранены. Продолжить можно с того же места."
     : waitingForQuota
       ? "Готовые тексты сохранены. Добор продолжится автоматически после обновления дневного лимита."
-      : pausedRecovery
+      : pausedWithAutopilot
         ? "Готовые тексты сохранены. Включи Автопилот — он сам доберёт недостающие публикации."
         : waitingForProvider
           ? readyCount > 0
@@ -916,21 +945,26 @@ function BuildAttemptPanel({
       role={terminal ? "alert" : "status"}
       aria-live={terminal ? "assertive" : "polite"}
       aria-atomic="true"
-      aria-busy={attempt.status === "building" || automaticRecovery || waitingForQuota || undefined}
+      aria-busy={activelyWorking || undefined}
     >
       <div className="flex min-w-0 items-start gap-3">
-        {attempt.status === "building" || automaticRecovery || waitingForQuota ? (
+        {activelyWorking ? (
           <Loader2
             className={cn("mt-0.5 h-5 w-5 shrink-0 text-brand", autopilotBuildSpinnerClass(reducedMotion))}
             aria-hidden
           />
+        ) : scheduledRecovery || waitingForQuota ? (
+          <Clock className="mt-0.5 h-5 w-5 shrink-0 text-brand" aria-hidden />
+        ) : pausedForNoProgress || pausedByUser || pausedWithAutopilot ? (
+          <Pause className="mt-0.5 h-5 w-5 shrink-0 text-brand" aria-hidden />
         ) : (
           <AlertTriangle className="mt-0.5 h-5 w-5 shrink-0 text-brand" aria-hidden />
         )}
         <div className="min-w-0 flex-1">
           <p className="text-[15px] font-semibold leading-snug text-text tabular-nums">{title}</p>
           <p className="mt-1 text-[13px] leading-relaxed text-text-3">{description}</p>
-          {attempt.causes.length > 0 && attempt.status !== "building" && (
+          {attemptMeta ? <p className="mt-2 text-[12px] tabular-nums text-text-3">{attemptMeta}</p> : null}
+          {attempt.causes.length > 0 && !activelyWorking ? (
             <ul className="mt-3 space-y-2" aria-label="Причины незавершённой сборки">
               {attempt.causes.map((cause) => (
                 <li key={cause.code} className="rounded-md border border-line bg-surface-inset px-3 py-2">
@@ -941,21 +975,22 @@ function BuildAttemptPanel({
                 </li>
               ))}
             </ul>
-          )}
+          ) : null}
           <div className="mt-4 flex flex-col gap-2 sm:flex-row sm:flex-wrap">
-            {automaticRecovery || waitingForQuota ? (
-              <p className="text-[12px] font-medium text-brand" role="status">
-                Можно закрыть страницу — работа продолжится в фоне.
-              </p>
-            ) : pausedRecovery ? (
+            {canPause ? (
+              <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+                <p className="text-[12px] font-medium text-brand" role="status">
+                  Можно закрыть страницу — состояние сохранено.
+                </p>
+                <Button variant="secondary" size="sm" onClick={onCancel} loading={busy} disabled={busy}>
+                  <Pause className="h-4 w-4" aria-hidden />
+                  Приостановить сборку
+                </Button>
+              </div>
+            ) : pausedWithAutopilot ? (
               <p className="text-[12px] font-medium text-text-3">
                 Возобнови Автопилот в верхнем блоке — отдельный повтор не нужен.
               </p>
-            ) : attempt.status === "building" ? (
-              <Button variant="secondary" size="sm" onClick={onCancel} loading={busy} disabled={busy}>
-                <X className="h-4 w-4" aria-hidden />
-                Остановить сборку
-              </Button>
             ) : attempt.primaryFix === "add_knowledge" ? (
               <Link href={`/app/knowledge${channelId ? `?channel=${channelId}` : ""}`} className={commonLinkClass}>
                 Добавить материалы
@@ -1213,16 +1248,21 @@ export default function AutopilotPage() {
     if (!building) return;
     let cancelled = false;
     let timer: ReturnType<typeof setTimeout> | null = null;
+    const scheduledRetry = data?.buildAttempt?.recoveryState === "auto_retry_scheduled";
+    const retryAtMs = Date.parse(String(data?.buildAttempt?.nextRetryAt || ""));
+    const pollingDelay = scheduledRetry
+      ? Math.min(15_000, Math.max(3_000, Number.isFinite(retryAtMs) ? retryAtMs - Date.now() : 15_000))
+      : 3_000;
     const poll = async () => {
       await load();
-      if (!cancelled) timer = setTimeout(poll, 3000);
+      if (!cancelled) timer = setTimeout(poll, pollingDelay);
     };
-    timer = setTimeout(poll, 3000);
+    timer = setTimeout(poll, pollingDelay);
     return () => {
       cancelled = true;
       if (timer) clearTimeout(timer);
     };
-  }, [building, load]);
+  }, [building, data?.buildAttempt?.nextRetryAt, data?.buildAttempt?.recoveryState, load]);
 
   const generate = async () => {
     if (busy) return;
@@ -1260,7 +1300,7 @@ export default function AutopilotPage() {
         s.toast({
           kind: "info",
           title: `Собираю ${publicationCount} ${plural(publicationCount, "пост", "поста", "постов")}`,
-          body: `Готовый план появится целиком. Обычно это занимает ${duration}; можно продолжать работу в других разделах.`,
+          body: `Первая попытка обычно занимает ${duration}. Если часть текстов не пройдёт проверку, готовые сохранятся, а здесь появится время следующего точечного повтора.`,
         });
         await load();
       } else {
@@ -1435,14 +1475,14 @@ export default function AutopilotPage() {
         body: JSON.stringify({ channelId: chId }),
       });
       const result = (await response.json().catch(() => null)) as
-        | { ok?: boolean; cancelled?: boolean }
+        | { ok?: boolean; paused?: boolean; cancelled?: boolean }
         | null;
       if (response.ok && result?.ok) {
         s.toast({
           kind: "info",
-          title: result.cancelled ? "Сборка остановлена" : "Сборка уже завершилась",
-          body: result.cancelled
-            ? "Готовые публикации не затронуты. Можно выбрать другой период и запустить снова."
+          title: result.paused || result.cancelled ? "Сборка приостановлена" : "Сборка уже завершилась",
+          body: result.paused || result.cancelled
+            ? "Готовые тексты и черновики сохранены. Продолжить можно с того же места."
             : "Обновляю актуальное состояние плана.",
         });
       } else {
@@ -1933,7 +1973,7 @@ export default function AutopilotPage() {
   const scheduleItems = [...realScheduleItems, ...planScheduleItems].sort((a, b) => Date.parse(a.scheduledAt) - Date.parse(b.scheduledAt));
   const query = typeof window === "undefined" ? null : new URLSearchParams(window.location.search);
   const returnItemId = query?.get("post") ? `real-${query.get("post")}` : query?.has("item") && Number(query.get("plan")) === plan?.id ? `plan-${plan.id}-${query.get("item")}` : null;
-  const planningSummary = `До ${planEndLabel} · ${plannedCount} ${plural(plannedCount, "публикация", "публикации", "публикаций")} · сборка — ${plannedDuration}`;
+  const planningSummary = `До ${planEndLabel} · ${plannedCount} ${plural(plannedCount, "публикация", "публикации", "публикаций")} · первая попытка — ${plannedDuration}`;
   const openEditor = async (item: AutopilotCalendarItem) => {
     if (busy || !item.editable) return;
     setBusy(true);
@@ -2099,10 +2139,10 @@ export default function AutopilotPage() {
 
       <ConfirmDialog
         open={cancelBuildConfirmation}
-        title="Остановить текущую сборку?"
-        description="Готовые тексты сохранятся, но недостающие посты перестанут собираться. Новые публикации в календарь не добавятся."
-        confirmLabel="Остановить сборку"
-        confirmVariant="danger"
+        title="Приостановить текущую сборку?"
+        description="Готовые тексты и черновики сохранятся. Автоповторы остановятся, а продолжить сборку можно будет с того же места."
+        confirmLabel="Приостановить сборку"
+        confirmVariant="primary"
         onConfirm={() => {
           setCancelBuildConfirmation(false);
           void cancelBuild();

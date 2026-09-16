@@ -15,11 +15,11 @@ describe("Autopilot build UI contract", () => {
     expect(source).toContain('role="progressbar"');
     expect(source).toContain("attempt.readyCount");
     expect(source).toContain("data?.buildAttempt?.status");
-    expect(source).toContain("Остановить сборку");
+    expect(source).toContain("Приостановить сборку");
     expect(source).toContain('method: "DELETE"');
     expect(source).toContain("attempt.publicationTargetCount");
     expect(source).not.toContain("Резерв автоматически не публикуется");
-    expect(source).not.toContain("кандидатов");
+    expect(source).toContain("недостающих кандидатов");
     expect(source).toContain("Требует внимания");
   });
 
@@ -79,7 +79,7 @@ describe("Autopilot build UI contract", () => {
     expect(source).toContain("Уже запланированные публикации остаются в календаре");
     expect(source).toContain("disabled={busy || blocked}");
     expect(source).not.toContain("disabled={busy || blocked || building}");
-    expect(source).toContain("!automaticRecovery && !waitingForQuota && !pausedRecovery");
+    expect(source).toContain("!automaticRecovery && !waitingForQuota && !pausedWithAutopilot");
     expect(source).toContain("отдельный повтор не нужен");
   });
 
@@ -104,7 +104,8 @@ describe("Autopilot build UI contract", () => {
 
   it("waits for each poll to finish and reports generation/cancel network failures", () => {
     expect(source).not.toContain("setInterval(load, 3000)");
-    expect(source).toContain("setTimeout(poll, 3000)");
+    expect(source).toContain("setTimeout(poll, pollingDelay)");
+    expect(source).toContain('attempt.recoveryState === "auto_retry_scheduled"');
     expect(source).toContain("Не удалось запустить сборку");
     expect(source).toContain("Не удалось остановить сборку");
   });
@@ -145,8 +146,11 @@ describe("Autopilot build UI contract", () => {
   it("uses an accessible in-app confirmation for calendar scheduling", () => {
     expect(source).toContain("<ConfirmDialog");
     expect(source).toContain('confirmVariant="primary"');
-    expect(source).toContain('confirmVariant="danger"');
-    expect(source).toContain("Остановить текущую сборку?");
+    expect(source).not.toContain('confirmVariant="danger"');
+    expect(source).toContain("Приостановить текущую сборку?");
+    expect(source).toContain('attempt.recoveryState === "paused_no_progress"');
+    expect(source).toContain("attempt.nextRetryAt");
+    expect(source).toContain("Ничего не удалено");
     expect(source).not.toContain("window.confirm(");
     expect(source).not.toContain("window.alert(");
   });
