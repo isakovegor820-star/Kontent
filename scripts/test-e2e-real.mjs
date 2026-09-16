@@ -1937,6 +1937,22 @@ function inspectPdf(buffer) {
   }
 }
 
+// CI builds once, then restores this exact input-digested runtime on isolated runners.
+// Build-only must never instantiate a database/Redis client or report a journey as passed.
+if (process.argv.includes("--build-only")) {
+  const release = acquireBuildLock({ token: e2eBuildLockToken });
+  try {
+    if (buildMode !== "build") throw new Error("--build-only requires E2E_BUILD_MODE=build");
+    await buildProductionRuntime();
+    console.log(`[e2e-build] ready: ${e2eInputSnapshot.digest}; no browser journey executed`);
+  } catch (error) {
+    console.error(logs.slice(-30).join("\n"));
+    throw error;
+  } finally {
+    await Promise.all(children.map((subprocess) => stopChild(subprocess, "E2E build")));
+    release();
+  }
+} else {
 const releaseE2eBuildLock = acquireBuildLock({ token: e2eBuildLockToken });
 try {
   pool = new pg.Pool({ connectionString: databaseUrl, ssl: false, max: 12 });
@@ -6190,4 +6206,6 @@ try {
   if (pool) await pool.query("create schema public").catch(() => {});
   if (pool) await pool.end().catch(() => {});
   releaseE2eBuildLock();
+}
+
 }
