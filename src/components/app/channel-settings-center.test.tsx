@@ -58,6 +58,7 @@ describe("Autopilot channel settings", () => {
     expect(slider("Эмодзи").value).toBe("2");
     expect((screen.getByRole("combobox", { name: "Модель для постов" }) as HTMLSelectElement).value).toBe("navy-deepseek-pro");
     expect(screen.getByRole("switch").getAttribute("aria-checked")).toBe("true");
+    expect(screen.queryByRole("button", { name: "К параметрам" })).toBeNull();
     expect(screen.queryByRole("button", { name: "Сохранить автопилот" })).toBeNull();
     expect(mocks.fetch).toHaveBeenCalledTimes(1);
   });

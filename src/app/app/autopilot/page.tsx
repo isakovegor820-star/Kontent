@@ -6,7 +6,7 @@ import { useProjectFetch } from "@/lib/use-project-transport";
 // в стиле пользователя. Одобрил — посты уходят в ту же очередь публикации (Д.3). Настоящие
 // данные, никаких фейков: нет движка/аналитики — честно помечаем.
 
-import { useCallback, useEffect, useId, useRef, useState, type CSSProperties } from "react";
+import { useCallback, useEffect, useRef, useState, type CSSProperties } from "react";
 import Image from "next/image";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
@@ -30,7 +30,6 @@ import {
   Settings2,
   Sparkles,
   Wand2,
-  X,
 } from "lucide-react";
 import { AppShell } from "@/components/app/shell";
 import { EvidenceCard } from "@/components/app/evidence-card";
@@ -352,6 +351,7 @@ function AutopilotHero({
   busy,
   blocked,
   onToggle,
+  children,
 }: {
   enabled: boolean;
   building: boolean;
@@ -361,6 +361,7 @@ function AutopilotHero({
   busy: boolean;
   blocked: boolean;
   onToggle: () => void;
+  children?: React.ReactNode;
 }) {
   const status = enabled ? "Автопилот активен" : "Автопилот на паузе";
   const title = building
@@ -386,36 +387,37 @@ function AutopilotHero({
     <Card
       as="section"
       aria-labelledby="autopilot-hero-title"
-      className="relative overflow-hidden bg-info-soft p-0 ring-1 ring-brand/10"
+      className="overflow-hidden bg-info-soft p-0 ring-1 ring-brand/10"
     >
-      <div className="relative z-10 flex min-h-[14.75rem] max-w-[48rem] flex-col items-start justify-center p-5 sm:p-7 lg:p-8">
-        <Badge tone={enabled ? "success" : "neutral"} className="gap-1.5 px-3 py-1.5">
-          {status}
-          <span className={cn("h-1.5 w-1.5 rounded-full", enabled ? "bg-success" : "bg-text-3")} aria-hidden />
-        </Badge>
-        <h2 id="autopilot-hero-title" className="mt-5 text-balance text-[22px] font-extrabold leading-tight tracking-tight text-text sm:text-[25px]">
-          {title}
-        </h2>
-        <p className="mt-2 max-w-[60ch] text-pretty text-[14px] leading-relaxed text-text-2">
-          {description}
-        </p>
-        <Button
-          type="button"
-          variant="outline"
-          size="md"
-          onClick={onToggle}
-          loading={busy}
-          disabled={busy || blocked}
-          className="mt-6 bg-surface/85"
-        >
-          {enabled ? (
-            <Pause className="h-[18px] w-[18px]" strokeWidth={2} aria-hidden />
-          ) : (
-            <Play className="h-[18px] w-[18px]" strokeWidth={2} aria-hidden />
-          )}
-          {enabled ? "Приостановить" : "Включить автопилот"}
-        </Button>
-      </div>
+      <div className="relative overflow-hidden">
+        <div className="relative z-10 flex min-h-[14.75rem] max-w-[48rem] flex-col items-start justify-center p-5 sm:p-7 lg:p-8">
+          <Badge tone={enabled ? "success" : "neutral"} className="gap-1.5 px-3 py-1.5">
+            {status}
+            <span className={cn("h-1.5 w-1.5 rounded-full", enabled ? "bg-success" : "bg-text-3")} aria-hidden />
+          </Badge>
+          <h2 id="autopilot-hero-title" className="mt-5 text-balance text-[22px] font-extrabold leading-tight tracking-tight text-text sm:text-[25px]">
+            {title}
+          </h2>
+          <p className="mt-2 max-w-[60ch] text-pretty text-[14px] leading-relaxed text-text-2">
+            {description}
+          </p>
+          <Button
+            type="button"
+            variant="outline"
+            size="md"
+            onClick={onToggle}
+            loading={busy}
+            disabled={busy || blocked}
+            className="mt-6 bg-surface/85"
+          >
+            {enabled ? (
+              <Pause className="h-[18px] w-[18px]" strokeWidth={2} aria-hidden />
+            ) : (
+              <Play className="h-[18px] w-[18px]" strokeWidth={2} aria-hidden />
+            )}
+            {enabled ? "Приостановить" : "Включить автопилот"}
+          </Button>
+        </div>
 
       <div className="pointer-events-none absolute inset-y-0 right-0 hidden w-[42%] overflow-hidden sm:block" aria-hidden>
         <div className="absolute top-2 right-3 h-52 w-52 rounded-full bg-brand/10 blur-2xl" />
@@ -427,6 +429,8 @@ function AutopilotHero({
         <div className="absolute right-[10rem] bottom-[-2rem] h-36 w-36 rounded-full bg-surface" />
         <div className="absolute right-[2rem] bottom-[-3rem] h-32 w-32 rounded-full bg-surface" />
       </div>
+      </div>
+      {children}
     </Card>
   );
 }
@@ -650,98 +654,60 @@ function quickSettingsSummary(settings: AutopilotQuickSettings) {
   return `${settings.newsPerWeek} ${plural(settings.newsPerWeek, "новость", "новости", "новостей")} в неделю · ${detail} · ${energy} · ${emoji}`;
 }
 
-function QuickSettingsDialog({
-  open,
+function PlanSettingsPanel({
   settings,
   postFrequency,
   planningWeeks,
   planningSummary,
   disabled,
   saving,
+  dirty,
   saveError,
-  channelId,
+  building,
+  hasUsablePlan,
   onChange,
   onPlanningWeeksChange,
   onSave,
-  onClose,
+  onBuild,
 }: {
-  open: boolean;
   settings: AutopilotQuickSettings;
   postFrequency: number;
   planningWeeks: number;
   planningSummary: string;
   disabled: boolean;
   saving: boolean;
+  dirty: boolean;
   saveError: string | null;
-  channelId: number | null;
+  building: boolean;
+  hasUsablePlan: boolean;
   onChange: (settings: AutopilotQuickSettings) => void;
   onPlanningWeeksChange: (weeks: number) => void;
   onSave: () => void;
-  onClose: () => void;
+  onBuild: () => void;
 }) {
-  const dialogRef = useRef<HTMLDialogElement>(null);
-  const openerRef = useRef<HTMLElement | null>(null);
-  const titleId = useId();
-  const descriptionId = useId();
-
-  useEffect(() => {
-    const dialog = dialogRef.current;
-    if (!dialog) return;
-    if (open && !dialog.open) {
-      openerRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
-      dialog.showModal();
-    }
-    if (!open && dialog.open) dialog.close();
-  }, [open]);
-
-  const restoreOpenerFocus = () => {
-    const opener = openerRef.current;
-    if (!opener?.isConnected) return;
-    requestAnimationFrame(() => opener.focus());
-  };
-
   return (
-    <dialog
-      ref={dialogRef}
-      aria-labelledby={titleId}
-      aria-describedby={descriptionId}
+    <section
+      aria-labelledby="autopilot-plan-settings-title"
+      aria-describedby="autopilot-plan-settings-description"
       aria-busy={disabled || saving || undefined}
-      onKeyDown={(event) => {
-        if (event.key !== "Escape") return;
-        event.preventDefault();
-        if (saving) return;
-        onClose();
-      }}
-      onClose={() => {
-        onClose();
-        restoreOpenerFocus();
-      }}
-      className="m-auto max-h-[calc(100dvh-2rem)] w-[min(680px,calc(100%-2rem))] overflow-y-auto rounded-lg border border-line bg-surface p-0 text-text shadow-card backdrop:bg-black/45"
+      className="border-t border-line bg-surface p-4 sm:p-6"
     >
-      <div className="p-4 sm:p-5">
-        <div className="flex items-start justify-between gap-4">
-          <div className="min-w-0">
-            <h2 id={titleId} className="text-balance text-[18px] font-bold leading-tight text-text">
-              Параметры следующего плана
-            </h2>
-            <p id={descriptionId} className="mt-1 max-w-[60ch] text-pretty text-[13px] leading-relaxed text-text-3">
-              Сохрани параметры один раз — их использует и ручная, и автоматическая сборка. Правила канала останутся без изменений.
-            </p>
-          </div>
-          <Button
-            type="button"
-            variant="ghost"
-            size="icon"
-            aria-label="Закрыть настройки постов"
-            onClick={onClose}
-            disabled={saving}
-            className="shrink-0"
-          >
-            <X className="h-4 w-4" aria-hidden />
-          </Button>
+      <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between sm:gap-6">
+        <div className="min-w-0">
+          <h2 id="autopilot-plan-settings-title" className="text-balance text-[18px] font-extrabold leading-tight text-text">
+            Параметры следующего плана
+          </h2>
+          <p id="autopilot-plan-settings-description" className="mt-1 max-w-[68ch] text-pretty text-[13px] leading-relaxed text-text-3">
+            Эти параметры использует и ручная, и автоматическая сборка. Сборка запомнит текущие значения.
+          </p>
         </div>
+        <p className="shrink-0 text-[12px] font-semibold text-brand" aria-live="polite">
+          {dirty ? "Есть несохранённые изменения" : "Параметры сохранены"}
+        </p>
+      </div>
 
-        <div className="mt-5 max-w-sm">
+      <div className="mt-5 grid gap-5 lg:grid-cols-[minmax(12rem,0.75fr)_minmax(0,2.25fr)] lg:gap-7">
+        <div>
           <label htmlFor="autopilot-horizon" className="text-[13px] font-semibold text-text">
             Период
           </label>
@@ -767,12 +733,12 @@ function QuickSettingsDialog({
           </p>
         </div>
 
-        <fieldset disabled={disabled || saving} className="mt-6">
-          <legend className="text-[14px] font-bold text-text">Настроить посты</legend>
+        <fieldset disabled={disabled || saving}>
+          <legend className="text-[13px] font-semibold text-text">Настроить посты</legend>
           <p className="mt-1 text-[12px] leading-snug text-text-3">
             {quickSettingsSummary({ ...settings, newsPerWeek: Math.min(settings.newsPerWeek, postFrequency) })}
           </p>
-          <div className="mt-4 grid gap-x-6 gap-y-5 sm:grid-cols-2">
+          <div className="mt-4 grid gap-x-6 gap-y-5 md:grid-cols-2">
             <QuickRange
               id="autopilot-news"
               label="Свежие события"
@@ -787,7 +753,7 @@ function QuickSettingsDialog({
             <QuickRange
               id="autopilot-detail"
               label="Желаемый объём"
-              hint="Ориентир для текста, а не жёсткий лимит."
+              hint="Аврора доведёт текст до выбранного диапазона и не оборвёт мысль."
               min={1}
               max={3}
               value={settings.detail}
@@ -809,7 +775,7 @@ function QuickSettingsDialog({
             <QuickRange
               id="autopilot-emoji"
               label="Эмодзи"
-              hint="Эмодзи помогают чтению, но не заменяют смысл."
+              hint="Количество и набор будут меняться от поста к посту."
               min={0}
               max={2}
               value={settings.emoji}
@@ -819,24 +785,30 @@ function QuickSettingsDialog({
             />
           </div>
         </fieldset>
+      </div>
 
+      {saveError && (
         <p className="mt-4 min-h-5 text-[13px] leading-relaxed text-danger-text" role="status" aria-live="polite">
           {saveError}
         </p>
+      )}
 
-        <div className="mt-6 flex flex-col-reverse gap-2 border-t border-line pt-4 sm:flex-row sm:items-center sm:justify-between">
-          <Link
-            href={`/app/settings?section=autopilot${channelId ? `&channel=${channelId}` : ""}`}
-            className={buttonClassName({ variant: "ghost", size: "sm", className: "justify-center sm:justify-start" })}
-          >
-            Настройки канала
-          </Link>
-          <Button type="button" variant="brand" onClick={onSave} loading={saving} disabled={disabled}>
-            Сохранить параметры
-          </Button>
-        </div>
+      <div className="mt-5 flex flex-col-reverse gap-2 border-t border-line pt-4 sm:flex-row sm:items-center sm:justify-end">
+        <Button
+          type="button"
+          variant="outline"
+          onClick={onSave}
+          loading={saving}
+          disabled={disabled || !dirty}
+        >
+          Сохранить параметры
+        </Button>
+        <Button type="button" variant="brand" onClick={onBuild} disabled={disabled || saving}>
+          <Play className="h-[18px] w-[18px]" strokeWidth={2} aria-hidden />
+          {building ? "План собирается" : hasUsablePlan ? "Собрать новый план" : "Собрать план"}
+        </Button>
       </div>
-    </dialog>
+    </section>
   );
 }
 
@@ -1046,7 +1018,6 @@ export default function AutopilotPage() {
   const [autopilotToggleBusy, setAutopilotToggleBusy] = useState(false);
   const [expanded, setExpanded] = useState<number | null>(null); // какая карточка раскрыта целиком
   const [reviewedIndexes, setReviewedIndexes] = useState<Set<number>>(() => new Set());
-  const [quickSettingsOpen, setQuickSettingsOpen] = useState(false);
   const [planSettingsSaving, setPlanSettingsSaving] = useState(false);
   const [planSettingsError, setPlanSettingsError] = useState<string | null>(null);
   const [generationEngine, setGenerationEngine] = useState(DEFAULT_AUTOPILOT_ENGINE);
@@ -1383,36 +1354,6 @@ export default function AutopilotPage() {
     }
   };
 
-  const syncPlanSettingsControls = () => {
-    const saved = data?.settings;
-    if (!saved) return;
-    const savedWeeks = Number(saved.planning_weeks || saved.planning_months * 4);
-    setPlanningWeeks(
-      savedWeeks >= MIN_AUTOPILOT_PLANNING_WEEKS && savedWeeks <= MAX_AUTOPILOT_PLANNING_WEEKS
-        ? savedWeeks
-        : DEFAULT_AUTOPILOT_PLANNING_WEEKS,
-    );
-    setGenerationEngine(
-      AUTOPILOT_ENGINE_OPTIONS.some((option) => option.id === saved.generation_engine)
-        ? saved.generation_engine as typeof DEFAULT_AUTOPILOT_ENGINE
-        : DEFAULT_AUTOPILOT_ENGINE,
-    );
-    setQuickSettings(normalizeAutopilotQuickSettings(saved.quick_settings));
-  };
-
-  const openPlanSettings = () => {
-    syncPlanSettingsControls();
-    setPlanSettingsError(null);
-    setQuickSettingsOpen(true);
-  };
-
-  const closePlanSettings = () => {
-    if (planSettingsSaving) return;
-    syncPlanSettingsControls();
-    setPlanSettingsError(null);
-    setQuickSettingsOpen(false);
-  };
-
   const savePlanSettings = async () => {
     if (planSettingsSaving || busy || building || !chId) return;
     setPlanSettingsSaving(true);
@@ -1452,7 +1393,6 @@ export default function AutopilotPage() {
       setData((current) => current ? { ...current, settings: savedSettings } : current);
       setQuickSettings(savedSettings.quick_settings);
       setPlanningWeeks(savedSettings.planning_weeks);
-      setQuickSettingsOpen(false);
       s.toast({
         kind: "success",
         title: "Параметры сохранены",
@@ -1974,6 +1914,9 @@ export default function AutopilotPage() {
   const query = typeof window === "undefined" ? null : new URLSearchParams(window.location.search);
   const returnItemId = query?.get("post") ? `real-${query.get("post")}` : query?.has("item") && Number(query.get("plan")) === plan?.id ? `plan-${plan.id}-${query.get("item")}` : null;
   const planningSummary = `До ${planEndLabel} · ${plannedCount} ${plural(plannedCount, "публикация", "публикации", "публикаций")} · первая попытка — ${plannedDuration}`;
+  const savedPlanningWeeks = Number(st.planning_weeks || st.planning_months * 4);
+  const planSettingsDirty = planningWeeks !== savedPlanningWeeks ||
+    JSON.stringify(quickSettings) !== JSON.stringify(normalizeAutopilotQuickSettings(st.quick_settings));
   const openEditor = async (item: AutopilotCalendarItem) => {
     if (busy || !item.editable) return;
     setBusy(true);
@@ -2022,32 +1965,6 @@ export default function AutopilotPage() {
     <AppShell
       title="Автопилот"
       subtitle="Аврора создаёт контент, публикует и анализирует результаты."
-      action={
-        <div className="flex flex-wrap items-center gap-2">
-          <Button
-            type="button"
-            variant="outline"
-            size="md"
-            onClick={openPlanSettings}
-            disabled={busy || building || planSettingsSaving}
-            aria-haspopup="dialog"
-          >
-            <Settings2 className="h-[18px] w-[18px]" strokeWidth={2} aria-hidden />
-            Параметры плана
-          </Button>
-          <Button
-            type="button"
-            variant="brand"
-            size="md"
-            onClick={generate}
-            loading={busy}
-            disabled={busy || autopilotToggleBusy || planSettingsSaving || building}
-          >
-            <Play className="h-[18px] w-[18px]" strokeWidth={2} aria-hidden />
-            {building ? "План собирается" : hasUsablePlan ? "Собрать новый план" : "Собрать план"}
-          </Button>
-        </div>
-      }
     >
       {picker}
       {growthNotice && (
@@ -2065,7 +1982,30 @@ export default function AutopilotPage() {
         busy={autopilotToggleBusy}
         blocked={busy || planSettingsSaving}
         onToggle={() => void toggleAutopilot()}
-      />
+      >
+        <PlanSettingsPanel
+          settings={quickSettings}
+          postFrequency={st.post_frequency}
+          planningWeeks={planningWeeks}
+          planningSummary={planningSummary}
+          disabled={busy || building || autopilotToggleBusy}
+          saving={planSettingsSaving}
+          dirty={planSettingsDirty}
+          saveError={planSettingsError}
+          building={building}
+          hasUsablePlan={hasUsablePlan}
+          onChange={(settings) => {
+            setPlanSettingsError(null);
+            setQuickSettings(settings);
+          }}
+          onPlanningWeeksChange={(weeks) => {
+            setPlanSettingsError(null);
+            setPlanningWeeks(weeks);
+          }}
+          onSave={() => void savePlanSettings()}
+          onBuild={() => void generate()}
+        />
+      </AutopilotHero>
 
       <div className="mt-5 grid gap-3 md:grid-cols-3">
         <OverviewMetricCard
@@ -2111,22 +2051,6 @@ export default function AutopilotPage() {
         />
       </div>
 
-      <QuickSettingsDialog
-        open={quickSettingsOpen}
-        settings={quickSettings}
-        postFrequency={st.post_frequency}
-        planningWeeks={planningWeeks}
-        planningSummary={planningSummary}
-        disabled={busy || building}
-        saving={planSettingsSaving}
-        saveError={planSettingsError}
-        channelId={chId}
-        onChange={setQuickSettings}
-        onPlanningWeeksChange={setPlanningWeeks}
-        onSave={() => void savePlanSettings()}
-        onClose={closePlanSettings}
-      />
-
       <ConfirmDialog
         open={Boolean(approvalConfirmation)}
         title={approvalConfirmation?.title ?? "Добавить посты в календарь?"}
@@ -2168,29 +2092,6 @@ export default function AutopilotPage() {
         <p className="mt-2 text-[13px] text-danger" role="status">
           Прогресс временно не обновляется. Аврора повторит проверку автоматически.
         </p>
-      )}
-
-      {!hasUsablePlan && !buildAttempt && (
-        <Card className="mt-5 py-4">
-          <EmptyState
-            icon={<Rocket className="h-6 w-6" strokeWidth={1.75} aria-hidden />}
-            title="Собери первый контент-план"
-            body="Аврора найдёт темы, подготовит посты и покажет их здесь перед добавлением в календарь."
-            action={
-              <Button
-                type="button"
-                variant="primary"
-                data-aurora-feature="plan"
-                data-aurora-action="planned"
-                onClick={generate}
-                loading={busy}
-              >
-                <Play className="h-[18px] w-[18px]" strokeWidth={2} aria-hidden />
-                Собрать план
-              </Button>
-            }
-          />
-        </Card>
       )}
 
       {attentionItems.length > 0 && (

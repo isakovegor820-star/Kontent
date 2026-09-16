@@ -16,7 +16,8 @@ export interface AutopilotPresentationVariant {
   name: string;
   structure: string;
   hook: string;
-  emojiMode: "none" | "one";
+  emojiMode: "none" | "one" | "multiple";
+  emojiCount: number;
   hashtagsMode: "none" | "one_or_two";
 }
 
@@ -50,7 +51,14 @@ export function findAutopilotNearDuplicate(
   candidate: { topic?: unknown; draft?: unknown },
   existing: Array<{ topic?: unknown; draft?: unknown }>,
   threshold?: number,
-): { index: number; score: number; topicScore: number; textScore: number } | null;
+): {
+  index: number;
+  score: number;
+  topicScore: number;
+  textScore: number;
+  openingScore: number;
+  endingScore: number;
+} | null;
 export function autopilotPresentationVariant(index: number, quality?: Record<string, unknown>): AutopilotPresentationVariant;
 export function presentationVariantPrompt(variant: AutopilotPresentationVariant): string;
 export function applyAutopilotPresentation(
