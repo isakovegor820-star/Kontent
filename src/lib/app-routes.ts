@@ -44,7 +44,7 @@ export const APP_ROUTES = {
   },
   rss: {
     href: "/app/rss",
-    label: "Юридические инфоповоды",
+    label: "Инфоповоды",
     mobileLabel: "Инфоповоды",
     activeAliases: [],
   },

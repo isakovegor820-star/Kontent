@@ -1,7 +1,14 @@
 import { withProjectRoute } from "@/lib/project-route";
 import { NextRequest, NextResponse } from "next/server";
 
-import { getOpportunityMapContext, isContentIntelligenceError, listOpportunitySnapshots, refreshOpportunitySnapshots } from "@/lib/content-intelligence";
+import {
+  getOpportunityMapContext,
+  isContentIntelligenceError,
+  listOpportunitySnapshots,
+  refreshOpportunitySnapshots,
+  type OpportunityListState,
+  type OpportunityListSurface,
+} from "@/lib/content-intelligence";
 import { ProjectAccessError } from "@/lib/project-permissions";
 import { hasTrustedMutationOrigin } from "@/lib/request-origin";
 import { getSessionUser } from "@/lib/session";
@@ -11,14 +18,27 @@ const channelId = (req: NextRequest) => {
   const value = Number(req.nextUrl.searchParams.get("channel"));
   return Number.isSafeInteger(value) && value > 0 ? value : null;
 };
+const listState = (req: NextRequest): OpportunityListState => {
+  const value = req.nextUrl.searchParams.get("view");
+  return value === "saved" || value === "used" || value === "hidden" ? value : "active";
+};
+const listSurface = (req: NextRequest): OpportunityListSurface => (
+  req.nextUrl.searchParams.get("surface") === "market" ? "market" : "all"
+);
 
 async function respond(req: NextRequest, refresh: boolean) {
   const user = await getSessionUser(req);
   if (!user) return NextResponse.json({ error: "unauthorized" }, { status: 401 });
   try {
+    const input = {
+      actorUserId: user.id,
+      channelId: channelId(req),
+      state: listState(req),
+      surface: listSurface(req),
+    } as const;
     const opportunities = refresh
-      ? await refreshOpportunitySnapshots({ actorUserId: user.id, channelId: channelId(req) })
-      : await listOpportunitySnapshots({ actorUserId: user.id, channelId: channelId(req) });
+      ? await refreshOpportunitySnapshots(input)
+      : await listOpportunitySnapshots(input);
     const context = await getOpportunityMapContext({ actorUserId: user.id, channelId: channelId(req) });
     return NextResponse.json({ opportunities, context }, { headers: { "Cache-Control": "no-store" } });
   } catch (error) {

@@ -43,18 +43,21 @@ describe("Autopilot build UI contract", () => {
     expect(source).toContain("Собрать план снова");
     expect(source).not.toContain("Собрать заново");
     expect(source).toContain("const hasUsablePlan = Boolean(plan && visible.length > 0)");
-    expect(source).toContain("{!hasUsablePlan && !buildAttempt && (");
+    expect(source).not.toContain("Собери первый контент-план");
   });
 
-  it("keeps quick settings behind a compact accessible dialog", () => {
+  it("keeps Autopilot status, plan controls and build action in one inline control center", () => {
     expect(source).toContain("Настроить посты");
-    expect(source).toContain('aria-haspopup="dialog"');
-    expect(source).toContain("dialog.showModal()");
+    expect(source).toContain("<PlanSettingsPanel");
+    expect(source).toContain("<AutopilotHero");
     expect(source).toContain("Параметры следующего плана");
     expect(source).toContain('type="range"');
     expect(source).toContain("Сохранить параметры");
+    expect(source).toContain("Количество и набор будут меняться от поста к посту");
     expect(source).toContain("quick_settings: quickSettings");
     expect(source.match(/id="autopilot-horizon"/gu)).toHaveLength(1);
+    expect(source).not.toContain("dialog.showModal()");
+    expect(source).not.toContain('aria-haspopup="dialog"');
     expect(source).not.toContain("Почему такой план");
   });
 
@@ -87,7 +90,7 @@ describe("Autopilot build UI contract", () => {
     expect(source).toContain("Включить автопилот");
     expect(source).toContain("Собрать новый план");
     expect(source).not.toContain("Запустить автопилот");
-    expect(source).toContain("onClick={generate}");
+    expect(source).toContain("onBuild={() => void generate()}");
     expect(source).toContain("onToggle={() => void toggleAutopilot()}");
     expect(source).toContain("const shouldStartFirstPlan = enabled && !data.activePlan && !data.plan && !data.buildAttempt");
     expect(source).toContain("if (shouldStartFirstPlan)");
