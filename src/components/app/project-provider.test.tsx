@@ -41,6 +41,12 @@ async function ready() {
   await waitFor(() => expect(screen.getByTestId("current").textContent).toBe("Проект 1"));
 }
 describe("project switching recovery", () => {
+  it("describes the initial reconciliation as progress, not as a failure", () => {
+    deferredRead = new Promise((resolve) => { releaseRead = resolve; });
+    render(<ProjectProvider><Probe /></ProjectProvider>);
+    expect(screen.getByText("Проверяем текущий проект…")).toBeTruthy();
+    expect(screen.queryByText("Обновить проект")).toBeNull();
+  });
   it("updates the header and broadcasts the confirmed context", async () => {
     await ready();
     const listener = vi.fn(); window.addEventListener("aurora:project-changed", listener);

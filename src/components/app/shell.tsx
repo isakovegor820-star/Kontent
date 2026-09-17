@@ -659,7 +659,7 @@ export function AppShell({
               onClick={() => setMenuOpen(true)}
               aria-label="Открыть меню"
               aria-expanded={menuOpen}
-              aria-controls="app-drawer"
+              aria-controls={menuOpen ? "app-drawer" : undefined}
             >
               <Menu className="h-5 w-5" strokeWidth={1.75} aria-hidden />
             </Button>

@@ -261,6 +261,7 @@ export function ProjectTeamSection({ showProjectSummary = true }: { showProjectS
   const [createdInvite, setCreatedInvite] = useState<{ id: number; url: string; email: string } | null>(null);
   const inviteUrl = createdInvite?.url ?? "";
   const [copied, setCopied] = useState(false);
+  const ownerCount = members.filter((member) => member.role === "owner").length;
 
   const timezoneOptions = useMemo(() => {
     return Array.from(new Set([projectTimezone, ...TIMEZONES])).filter(Boolean);
@@ -357,6 +358,7 @@ export function ProjectTeamSection({ showProjectSummary = true }: { showProjectS
 
   const changeRole = async (member: ProjectMember, role: ClientProjectRole) => {
     if (!current || !owner || role === member.role || savingKey) return;
+    if (member.role === "owner" && ownerCount === 1 && role !== "owner") return;
     setSavingKey(`member-role-${member.userId}`);
     setFeedback(null);
     try {
@@ -620,7 +622,9 @@ export function ProjectTeamSection({ showProjectSummary = true }: { showProjectS
                   {members.map((member) => {
                     const label = member.name || member.email || `Участник ${member.userId}`;
                     const roleId = `project-member-role-${member.userId}`;
+                    const soleOwnerHelpId = `project-member-owner-help-${member.userId}`;
                     const busy = savingKey?.includes(`-${member.userId}`) === true;
+                    const soleOwner = member.role === "owner" && ownerCount === 1;
                     return (
                       <li key={member.userId} className="py-4 first:pt-0 last:pb-0">
                         <div className="flex min-w-0 flex-col gap-3 sm:flex-row sm:items-center">
@@ -635,9 +639,11 @@ export function ProjectTeamSection({ showProjectSummary = true }: { showProjectS
                               <select
                                 id={roleId}
                                 value={member.role}
-                                disabled={Boolean(savingKey)}
+                                disabled={Boolean(savingKey) || soleOwner}
                                 aria-label={`Роль участника ${label}`}
                                 aria-busy={busy || undefined}
+                                aria-describedby={soleOwner ? soleOwnerHelpId : undefined}
+                                title={soleOwner ? "Сначала назначьте второго владельца проекта" : undefined}
                                 className={cn(SELECT_CLASS, "min-[400px]:w-auto")}
                                 onChange={(event) => setPendingRole({ member, role: event.currentTarget.value as ClientProjectRole })}
                               >
@@ -649,8 +655,10 @@ export function ProjectTeamSection({ showProjectSummary = true }: { showProjectS
                                 type="button"
                                 variant="danger"
                                 size="sm"
-                                disabled={Boolean(savingKey)}
+                                disabled={Boolean(savingKey) || soleOwner}
                                 aria-label={`Удалить участника ${label}`}
+                                aria-describedby={soleOwner ? soleOwnerHelpId : undefined}
+                                title={soleOwner ? "Сначала назначьте второго владельца проекта" : undefined}
                                 onClick={() => setConfirmation({ kind: "member", member })}
                               >
                                 <Trash2 className="h-4 w-4" aria-hidden />
@@ -661,6 +669,11 @@ export function ProjectTeamSection({ showProjectSummary = true }: { showProjectS
                             <Badge tone="neutral">{ROLE_LABEL[member.role]}</Badge>
                           )}
                         </div>
+                        {owner && soleOwner ? (
+                          <p id={soleOwnerHelpId} className="mt-2 text-[12px] leading-relaxed text-text-3">
+                            Это единственный владелец. Чтобы изменить его роль или удалить из проекта, сначала назначьте второго владельца.
+                          </p>
+                        ) : null}
                       </li>
                     );
                   })}

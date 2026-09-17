@@ -1,6 +1,7 @@
 import { ProjectRequest } from "@/test/project-request";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { ProjectAccessError } from "@/lib/project-permissions";
+import { DraftValidationError } from "@/lib/server-drafts";
 
 const mocks = vi.hoisted(() => ({
   getSessionUser: vi.fn(),
@@ -93,6 +94,18 @@ describe("POST /api/drafts", () => {
     expect(response.status).toBe(200);
     await expect(response.json()).resolves.toMatchObject({ ok: true, created: false, draft: { id: 41 } });
     expect(mocks.createDraftForUser).toHaveBeenCalledWith(5, expect.objectContaining({ channelIds: [11] }));
+  });
+
+  it("returns a conflict instead of 500 when a client key belongs to another project", async () => {
+    mocks.createDraftForUser.mockRejectedValue(new DraftValidationError("client_key_project_conflict"));
+    const response = await POST(new ProjectRequest(1, "http://localhost/api/drafts", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(body),
+    }));
+
+    expect(response.status).toBe(409);
+    await expect(response.json()).resolves.toEqual({ ok: false, error: "client_key_project_conflict" });
   });
 
   it("accepts Library reference context in the JSON body without query-carried content", async () => {

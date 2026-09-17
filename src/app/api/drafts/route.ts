@@ -53,7 +53,10 @@ async function handlePOST(req: NextRequest) {
       return NextResponse.json({ ok: false, error: "bad_request" }, { status: 400 });
     }
     if (error instanceof DraftValidationError) {
-      return NextResponse.json({ ok: false, error: error.code }, { status: 422 });
+      return NextResponse.json(
+        { ok: false, error: error.code },
+        { status: error.code === "client_key_project_conflict" ? 409 : 422 },
+      );
     }
     if (error instanceof ProjectAccessError) {
       return NextResponse.json({ ok: false, error: "access_denied" }, { status: 403 });

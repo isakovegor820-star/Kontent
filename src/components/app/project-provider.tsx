@@ -162,14 +162,19 @@ export function ProjectProvider({ children }: { children: React.ReactNode }) {
     projects, current, ready, error, switching, refresh, selectProject, createProject,
   }), [projects, current, ready, error, switching, refresh, selectProject, createProject]);
   const blocked = userId != null && (!ready || switching || unresolved);
+  const checking = !ready && !switching && !error;
   return <ProjectContext.Provider value={value}>
     <div className="contents" inert={blocked || undefined} aria-busy={blocked || undefined} key={current?.id ?? "initial"}>
       {children}
     </div>
     {blocked ? <div role="status" aria-live="polite" className="fixed inset-0 z-[100] flex items-center justify-center bg-black/40 p-6">
       <div className="max-w-md rounded-2xl bg-[var(--bg)] p-6 text-[var(--text)] shadow-xl">
-        <p>{switching ? "Переключаем проект…" : "Не удалось проверить текущий проект. Обновите его, чтобы продолжить работу."}</p>
-        {!switching ? <button type="button" className="mt-4 rounded-lg border px-4 py-2" onClick={() => void refresh()}>Обновить проект</button> : null}
+        <p>{switching
+          ? "Переключаем проект…"
+          : checking
+            ? "Проверяем текущий проект…"
+            : "Не удалось проверить текущий проект. Обновите его, чтобы продолжить работу."}</p>
+        {error && !switching ? <button type="button" className="mt-4 rounded-lg border px-4 py-2" onClick={() => void refresh()}>Обновить проект</button> : null}
       </div>
     </div> : null}
   </ProjectContext.Provider>;

@@ -352,6 +352,22 @@
   perspective: 85rem;
 }
 
+.productSceneLabel {
+  position: absolute;
+  z-index: 5;
+  inset-block-start: 0.6rem;
+  inset-inline-end: 0.6rem;
+  padding: 0.4rem 0.65rem;
+  border: 1px solid rgb(37 99 255 / 0.18);
+  border-radius: 999px;
+  color: #344054;
+  background: rgb(255 255 255 / 0.94);
+  box-shadow: 0 8px 20px -14px rgb(24 61 151 / 0.5);
+  font-size: 0.72rem;
+  font-weight: 760;
+  letter-spacing: 0.01em;
+}
+
 .productScene::after {
   content: "";
   position: absolute;
@@ -910,7 +926,7 @@
   gap: 2rem;
   overflow-x: auto;
   scrollbar-width: none;
-  color: #8795ad;
+  color: #667085;
   font-size: clamp(0.85rem, 1.5vw, 1.1rem);
   font-weight: 800;
   letter-spacing: -0.02em;
@@ -1891,7 +1907,7 @@
 }
 
 .instagramIcon { background: linear-gradient(135deg, #7c3aed, #ec4899, #f59e0b); }
-.vkIcon { background: #2787f5; }
+.vkIcon { background: #1769c2; }
 .telegramIcon { background: #229ed9; }
 .youtubeIcon { background: #ef233c; }
 .tiktokIcon { background: #101828; text-shadow: -1px 0 #22d3ee, 1px 0 #fb3e75; }
@@ -2934,7 +2950,7 @@
 }
 
 .footerBrand small {
-  color: #8795aa;
+  color: #667085;
   font-size: 0.8125rem;
 }
 

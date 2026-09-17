@@ -29,6 +29,7 @@ const navIcons = [LayoutDashboard, CalendarDays, FileText, MessageCircle, BarCha
 export function HeroProductScene() {
   return (
     <div className={styles.productScene} aria-hidden="true">
+      <span className={styles.productSceneLabel}>Демонстрационный пример</span>
       <span className={styles.sceneAmbientOne} />
       <span className={styles.sceneAmbientTwo} />
 

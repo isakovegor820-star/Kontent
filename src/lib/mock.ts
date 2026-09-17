@@ -576,6 +576,37 @@ export const seedSettings = (): Settings => ({
   tone: "Дружелюбный, на «ты», с личными историями и без пафоса",
 });
 
+/**
+ * Neutral client fallback for a real workspace. Demo fixtures deliberately live in
+ * `seedState`; production initialization must not make a new legal project look as
+ * if it already contains a coffee business, connected channels or generated posts.
+ */
+export const emptySettings = (): Settings => ({
+  mode: "solo",
+  autopilotConfirm: true,
+  quietHours: { from: "23:00", to: "08:00", enabled: false },
+  botLinked: false,
+  weeklyReport: false,
+  aiDailyLimit: 30,
+  aiUsedToday: 0,
+  niche: "",
+  tone: "",
+});
+
+export function emptyState(): AppState {
+  return {
+    user: null,
+    onboarded: false,
+    channels: [],
+    posts: [],
+    competitors: [],
+    trends: [],
+    autopilot: [],
+    settings: emptySettings(),
+    waitlist: [],
+  };
+}
+
 /* ------------------------------------------------------- ПОЛНЫЙ SEED */
 
 export function seedState(): AppState {
