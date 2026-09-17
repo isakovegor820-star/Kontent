@@ -88,6 +88,21 @@ describe("autopilot planning config", () => {
     expect(autopilotTextSimilarity(copied[0].draft, copied[0].draft)).toBe(1);
   });
 
+  it("rejects a copied hook or stock ending even when the post bodies differ", () => {
+    const previous = [{
+      topic: "Как вести переговоры",
+      draft: "Начнём с главного\n\nСоберите факты и позиции сторон.\n\nСохраните этот пост, чтобы не потерять.",
+    }];
+    expect(findAutopilotNearDuplicate({
+      topic: "Как проверить договор",
+      draft: "Начнём с главного\n\nВыпишите сроки, риски и ответственных.\n\nПроверьте сверку перед подписанием.",
+    }, previous)?.openingScore).toBe(1);
+    expect(findAutopilotNearDuplicate({
+      topic: "Как проверить договор",
+      draft: "Договор начинается не с подписи\n\nВыпишите сроки, риски и ответственных.\n\nСохраните этот пост, чтобы не потерять.",
+    }, previous)?.endingScore).toBe(1);
+  });
+
   it("varies presentation and only adds decorations allowed by the quality profile", () => {
     const quality = {
       emojiPolicy: "restrained",
@@ -108,12 +123,27 @@ describe("autopilot planning config", () => {
     expect(result).toMatch(/\p{Extended_Pictographic}/u);
     expect(result).toContain("#право");
 
+    const active = Array.from({ length: 3 }, (_, index) => {
+      const activeVariant = autopilotPresentationVariant(index, {
+        emojiPolicy: "active",
+        maxEmojis: 3,
+        allowedEmoji: "⚖️ 📌 💡 ✅",
+      });
+      return applyAutopilotPresentation("Хук\n\nОсновная мысль.", activeVariant, {
+        emojiPolicy: "active",
+        maxEmojis: 3,
+        allowedEmoji: "⚖️ 📌 💡 ✅",
+      }, {}, index);
+    });
+    expect(active.map((value) => value.match(/\p{Extended_Pictographic}/gu)?.length)).toEqual([1, 2, 3]);
+    expect(new Set(active.map((value) => value.match(/\p{Extended_Pictographic}/u)?.[0])).size).toBe(3);
+
     const strict = autopilotPresentationVariant(4, {
       emojiPolicy: "none",
       maxEmojis: 0,
       hashtagsPolicy: "none",
       maxHashtags: 0,
     });
-    expect(applyAutopilotPresentation("Текст", strict, {}, {}, 4)).toBe("Текст");
+    expect(applyAutopilotPresentation("🔥 Текст", strict, {}, {}, 4)).toBe("Текст");
   });
 });

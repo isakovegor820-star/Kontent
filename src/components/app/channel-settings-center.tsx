@@ -678,21 +678,21 @@ export function ChannelSettingsCenter({ view = "content" }: { view?: ChannelSett
                     .map((item) => <Badge key={item} tone="neutral">{item}</Badge>)}
                 </div>
               </div>
-              <div className="flex shrink-0 flex-wrap gap-2">
-                <Button
-                  variant="outline"
-                  size="sm"
-                  disabled={saving}
-                  onClick={() => {
-                    editorRef.current?.scrollIntoView({ behavior: "instant", block: "start" });
-                    if (view === "autopilot") document.getElementById("channel-autopilot-enabled")?.focus({ preventScroll: true });
-                  }}
-                >
-                  <Settings2 className="h-4 w-4" aria-hidden />
-                  К параметрам
-                </Button>
-
-              </div>
+              {view !== "autopilot" && (
+                <div className="flex shrink-0 flex-wrap gap-2">
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    disabled={saving}
+                    onClick={() => {
+                      editorRef.current?.scrollIntoView({ behavior: "instant", block: "start" });
+                    }}
+                  >
+                    <Settings2 className="h-4 w-4" aria-hidden />
+                    К параметрам
+                  </Button>
+                </div>
+              )}
             </div>
 
           </Card>

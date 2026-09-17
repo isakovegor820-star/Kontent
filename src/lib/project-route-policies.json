@@ -815,6 +815,11 @@
     "policy": "project"
   },
   {
+    "path": "/api/opportunities/[id]/studio",
+    "method": "GET",
+    "policy": "project"
+  },
+  {
     "path": "/api/opportunities",
     "method": "GET",
     "policy": "project"

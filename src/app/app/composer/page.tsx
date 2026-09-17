@@ -105,6 +105,7 @@ import {
 } from "@/lib/ai-client-idempotency";
 import { aiFailureRecoveryRu, type AiFailureInfo } from "@/lib/ai-client-recovery";
 import { getAiUsageMetrics } from "@/lib/ai-usage-sync";
+import { postSettingsForSourceLanguage } from "@/lib/content-language";
 import { createPostFromSource, SourcePostCreationError } from "@/lib/source-post-client";
 import {
   composerHydrationIdentity,
@@ -1230,6 +1231,12 @@ export default function ComposerPage() {
 
       const subject = topic.trim() || text.trim();
       const source = cmd === "rewrite" || cmd === "shorten" ? text : subject;
+      // Every assistant command transforms or extends the visible post. Its language
+      // therefore wins over a stale topic or previously saved publication setting.
+      const assistantPostSettings = postSettingsForSourceLanguage(
+        postSettings,
+        text.trim() || source,
+      );
       const contextChannelId = networks.includes("tg")
         ? channelId
         : networks.includes("vk")
@@ -1310,7 +1317,7 @@ export default function ComposerPage() {
           channelId: contextChannelId,
           inputDraftId: draftId,
           inputDraftVersion: draftVersion,
-          postSettings,
+          postSettings: assistantPostSettings,
         });
         const aiRequest = stableAiClientRequest(aiRequestRef.current, requestBody);
         aiRequestRef.current = aiRequest;
@@ -3099,7 +3106,7 @@ function ComposerActionBar() {
             </div>
           </div>
         ) : c.activePublication ? (
-          <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+          <div className="flex flex-col gap-3 lg:grid lg:grid-cols-[minmax(9rem,1fr)_auto] lg:items-center">
             <div className="min-w-0 text-[13px]" aria-live="polite">
               <p className="font-semibold text-text">
                 {!hasContent
@@ -3118,7 +3125,7 @@ function ComposerActionBar() {
                   : `${fmtDateTime(c.activePublication.scheduledAt, c.activePublication.timezone)} · ${c.draftSaveState === "saved" ? "изменения сохранены" : "сохраняем изменения"}`}
               </p>
             </div>
-            <div className="flex flex-col gap-2 sm:flex-row sm:flex-wrap lg:justify-end">
+            <div className="flex flex-col gap-2 sm:flex-row sm:flex-wrap lg:flex-nowrap lg:justify-end">
               {activeSettled ? (
                 <Button
                   variant="brand"
@@ -3136,7 +3143,7 @@ function ComposerActionBar() {
                   <Button
                     variant="brand"
                     size="sm"
-                    className="w-full sm:w-auto"
+                    className="w-full shrink-0 sm:w-auto"
                     disabled={publicationUnavailable}
                     loading={c.publicationMode === "calendar"}
                     data-aurora-feature="draft"
@@ -3147,6 +3154,19 @@ function ComposerActionBar() {
                     {c.activePublication.status === "cancelled"
                       ? "Запланировать снова"
                       : "Обновить публикацию"}
+                  </Button>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="w-full shrink-0 sm:w-auto"
+                    disabled={unavailable}
+                    loading={c.publicationMode === "now"}
+                    data-aurora-feature="draft"
+                    data-aurora-action="published"
+                    onClick={c.publishNow}
+                  >
+                    {c.publicationMode !== "now" && <Send className="h-4 w-4" aria-hidden />}
+                    Опубликовать сейчас
                   </Button>
                   {c.activePublication.status !== "cancelled" && (
                     <Button
@@ -3166,7 +3186,7 @@ function ComposerActionBar() {
             </div>
           </div>
         ) : (
-          <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+          <div className="flex flex-col gap-3 lg:grid lg:grid-cols-[minmax(9rem,1fr)_auto] lg:items-center">
             <div className="min-w-0 text-[13px]" aria-live="polite">
               <p className="font-semibold text-text">
                 {!hasContent
@@ -3187,11 +3207,11 @@ function ComposerActionBar() {
                       : "Изменения сохраняются автоматически"}
               </p>
             </div>
-            <div className="flex flex-col gap-2 sm:flex-row sm:flex-wrap lg:justify-end">
+            <div className="flex flex-col gap-2 sm:flex-row sm:flex-wrap lg:flex-nowrap lg:justify-end">
               <Button
                 variant="brand"
                 size="sm"
-                className="w-full sm:w-auto"
+                className="w-full shrink-0 sm:w-auto"
                 disabled={publicationUnavailable}
                 loading={c.publicationMode === "calendar"}
                 data-aurora-feature="draft"
@@ -3244,7 +3264,7 @@ function ComposerActionBar() {
                   )}
                 </div>
               </details>
-              <div className="hidden flex-wrap gap-2 sm:flex">
+              <div className="hidden flex-wrap gap-2 sm:flex lg:flex-nowrap">
                 <Button
                   variant="outline"
                   size="sm"

@@ -84,7 +84,7 @@ describe("shared direct/background AI completion service", () => {
   it.each([
     ["navy-gpt-5-4", "gpt-5.6-terra", "none"],
     ["navy-minimax-m3", "deepseek-v4-flash", "none"],
-    ["navy-deepseek-pro", "glm-5.3", undefined],
+    ["navy-deepseek-pro", "gpt-5.6-sol", "none"],
   ])("bases reasoning policy for %s on its actual %s model", async (engine, model, reasoningEffort) => {
     const fetchImpl = vi.fn(async () => Response.json({
       choices: [{ message: { content: "DONE" }, finish_reason: "stop" }],

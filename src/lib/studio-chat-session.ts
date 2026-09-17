@@ -59,6 +59,10 @@ export type StudioChatGeneration = {
   referenceIntent?: "create" | "discuss";
   channelId?: number | null;
   postSettings?: PostSettings;
+  /** Stable draft identity and source relation survive a reload before editor handoff. */
+  resultClientKey?: string;
+  growthMoveId?: number;
+  opportunityId?: number;
 };
 
 export type StudioChatSession = {
@@ -330,6 +334,15 @@ function safeGeneration(value: unknown): StudioChatGeneration | null {
         ? Number(value.channelId)
         : undefined,
     postSettings: isRecord(value.postSettings) ? normalizePostSettings(value.postSettings) : undefined,
+    resultClientKey: typeof value.resultClientKey === "string" && /^[A-Za-z0-9:_-]{8,128}$/u.test(value.resultClientKey)
+      ? value.resultClientKey
+      : undefined,
+    growthMoveId: Number.isSafeInteger(value.growthMoveId) && Number(value.growthMoveId) > 0
+      ? Number(value.growthMoveId)
+      : undefined,
+    opportunityId: Number.isSafeInteger(value.opportunityId) && Number(value.opportunityId) > 0
+      ? Number(value.opportunityId)
+      : undefined,
   };
 }
 

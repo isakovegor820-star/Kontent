@@ -47,12 +47,12 @@ export interface Engine {
 const ENGINE_CONFIGS: Engine[] = [
   {
     id: "navy-deepseek-pro",
-    label: "GLM-5.3",
+    label: "GPT-5.6 Sol",
     vendor: "NavyAI",
     note: "Глубокая проработка сложных и длинных материалов.",
     needs: "NAVYAI_API_KEY",
     baseUrl: "https://api.navy/v1",
-    model: "glm-5.3",
+    model: "gpt-5.6-sol",
     protocol: "openai",
     keyEnv: "NAVYAI_API_KEY",
     ruFriendly: false,

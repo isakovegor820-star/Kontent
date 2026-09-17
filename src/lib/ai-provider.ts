@@ -257,10 +257,16 @@ export function buildSystemPrompt(p: GenerateParams): string {
     /(?:провел[аи]?|состоял[а-я]*|завершил[а-я]*).{0,100}(?:конференц|мероприят|форум|встреч)/iu.test(p.task)
     || /(?:конференц|мероприят|форум|встреч).{0,100}(?:прошл[а-я]*|состоял[а-я]*|провел[а-я]*|завершил[а-я]*)/iu.test(p.task)
   );
+  const outputLanguageRule = p.postSettings?.language === "en"
+    ? "OUTPUT LANGUAGE: ENGLISH ONLY. Start with the first visible word in English and keep every heading, scene, CTA and sentence in English. Do not draft in Russian and translate later."
+    : p.postSettings?.language === "ru"
+      ? "ЯЗЫК РЕЗУЛЬТАТА: ТОЛЬКО РУССКИЙ. Начни с первого видимого слова по-русски и сохраняй русский язык во всех заголовках, сценах, CTA и фразах."
+      : null;
   const lines = [
     p.draft
       ? "Ты — выпускающий редактор публикаций для социальных платформ. Получаешь черновик другого автора, безжалостно убираешь слабые места и возвращаешь только готовый материал выбранного формата."
       : "Ты — сильный автор платформенно-нативного контента. Пишешь естественно и превращаешь сырую тему в готовый материал именно для выбранной площадки и формата.",
+    ...(outputLanguageRule ? ["", outputLanguageRule] : []),
     "",
     "Приоритет инструкций:",
     "1. Подтверждённые факты и запреты на выдуманную конкретику.",
@@ -523,6 +529,12 @@ export function serializeUntrustedPromptData(value: unknown, max = 4_000): strin
 
 function userPrompt(p: GenerateParams): string {
   const ctx = p.context ? `\n\nОпирайся на данные разведки: ${p.context}` : "";
+  const languagePrefix = p.postSettings?.language === "en"
+    ? "Write the complete result in English only, beginning with the first visible word. Do not write a Russian draft first."
+    : p.postSettings?.language === "ru"
+      ? "Напиши весь результат только по-русски, начиная с первого видимого слова."
+      : "";
+  const withLanguage = (prompt: string) => languagePrefix ? `${languagePrefix}\n\n${prompt}` : prompt;
   if (p.draft) {
     const prompt = [
       "Проведи финальную редактуру черновика по исходной задаче. Перепиши всё, что звучит шаблонно или не похоже на автора канала. Не добавляй новых фактов.",
@@ -543,34 +555,34 @@ function userPrompt(p: GenerateParams): string {
       serializeUntrustedPromptData(p.draft, 12_000),
       "</draft>",
     );
-    return prompt.join("\n");
+    return withLanguage(prompt.join("\n"));
   }
   const hasAssistantContext = (p.conversation ?? []).some((turn) => turn.role === "assistant");
   switch (p.kind) {
     case "write":
-      return `Напиши пост на тему: ${p.task}.${ctx}`;
+      return withLanguage(`Напиши пост на тему: ${p.task}.${ctx}`);
     case "rewrite":
-      return hasAssistantContext
+      return withLanguage(hasAssistantContext
         ? `Переработай последний материал из диалога по указанию пользователя: ${p.task}`
-        : `Перепиши этот пост живее и естественнее, смысл сохрани:\n\n${p.task}`;
+        : `Перепиши этот пост живее и естественнее, смысл сохрани:\n\n${p.task}`);
     case "shorten":
-      return hasAssistantContext
+      return withLanguage(hasAssistantContext
         ? `Сократи последний материал из диалога по указанию пользователя: ${p.task}`
-        : `Сократи этот пост до 2–3 предложений, оставь только суть:\n\n${p.task}`;
+        : `Сократи этот пост до 2–3 предложений, оставь только суть:\n\n${p.task}`);
     case "plan":
-      return `Составь план публикаций на неделю: 5 постов, для каждого — день, время и короткая тема.${ctx}`;
+      return withLanguage(`Составь план публикаций на неделю: 5 постов, для каждого — день, время и короткая тема.${ctx}`);
     case "script":
-      return `Придумай сценарий короткого видео на тему: ${p.task}. Структура: хук, 2–3 сцены, финал с вопросом зрителю.${ctx}`;
+      return withLanguage(`Придумай сценарий короткого видео на тему: ${p.task}. Структура: хук, 2–3 сцены, финал с вопросом зрителю.${ctx}`);
     case "poll":
-      return `Придумай опрос для канала на тему: ${p.task}. Формат: вопрос + 4 варианта ответа (короткие, до 30 символов каждый). Добавь подводку в 1–2 предложения перед опросом.${ctx}`;
+      return withLanguage(`Придумай опрос для канала на тему: ${p.task}. Формат: вопрос + 4 варианта ответа (короткие, до 30 символов каждый). Добавь подводку в 1–2 предложения перед опросом.${ctx}`);
     case "longread":
-      return p.postSettings
+      return withLanguage(p.postSettings
         ? `Напиши развёрнутую публикацию на тему: ${p.task}. Соблюдай выбранную площадку, объём, структуру и CTA.${ctx}`
-        : `Напиши лонгрид (1500–2000 знаков) на тему: ${p.task}. Структура: цепляющее начало, 3–4 подзаголовка, конкретные примеры, вывод с CTA.${ctx}`;
+        : `Напиши лонгрид (1500–2000 знаков) на тему: ${p.task}. Структура: цепляющее начало, 3–4 подзаголовка, конкретные примеры, вывод с CTA.${ctx}`);
     case "reply":
-      return p.task;
+      return withLanguage(p.task);
     default:
-      return p.task;
+      return withLanguage(p.task);
   }
 }
 
@@ -921,7 +933,7 @@ async function* streamOpenAi(
   // Engine ids are durable Aurora product slots, so model-specific request behavior must
   // follow the actual provider model rather than the historical slot name.
   const deepseek = runtime.model.startsWith("deepseek-");
-  const noReasoning = deepseek || runtime.model === "gpt-5.6-terra";
+  const noReasoning = deepseek || runtime.model === "gpt-5.6-terra" || runtime.model === "gpt-5.6-sol";
   const attempts = allowEmptyRetry && runtime.id.startsWith("navy-") ? 2 : 1;
   const requestSignal = withTimeout(signal, requestTimeoutMs);
   let inputTokens = 0;

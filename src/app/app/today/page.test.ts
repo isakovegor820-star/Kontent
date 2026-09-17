@@ -100,6 +100,8 @@ describe("Today page resilience and interface contract", () => {
     expect(source).toContain("Реакции за 7 дней");
     expect(source).toContain("Вовлечённость");
     expect(source).toContain("function PulseArtwork");
+    expect(source).toContain('className="grid h-full min-h-28 place-items-center');
+    expect(source).toContain('className="grid items-stretch gap-7');
     expect(source).toContain('aria-label="Дополнительные действия"');
     expect(source).toContain("MoreHorizontal");
   });

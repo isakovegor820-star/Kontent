@@ -23,12 +23,12 @@ import {
   ShieldCheck,
   Menu,
   Map,
+  Newspaper,
   Pencil,
   Radar,
   Globe2,
   SearchCode,
   Rocket,
-  Scale,
   ScanSearch,
   Settings,
   Sparkles,
@@ -57,10 +57,6 @@ import {
   isAppRouteActive,
   type AppNavRouteId,
 } from "@/lib/app-routes";
-import {
-  LEGAL_OPPORTUNITY_UNREAD_EVENT,
-  safeLegalOpportunityUnreadCount,
-} from "@/lib/legal-opportunity-unread";
 import { useStore } from "@/lib/store";
 import type { User } from "@/lib/types";
 import { cn, fmtNum, plural } from "@/lib/utils";
@@ -74,7 +70,7 @@ const NAV_ICONS: Record<AppNavRouteId, LucideIcon> & Partial<Record<keyof typeof
   studio: Sparkles,
   autopilot: Rocket,
   library: Bookmark,
-  rss: Scale,
+  rss: Newspaper,
   recon: ScanSearch,
   opportunities: Map,
   radar: Radar,
@@ -108,43 +104,47 @@ function isActive(pathname: string, item: NavItem) {
   return isAppRouteActive(pathname, item.routeId);
 }
 
-function useLegalOpportunityUnreadCount(userId: number | null) {
+function safeOpportunityCount(value: unknown): number {
+  const count = Number(value);
+  return Number.isSafeInteger(count) && count > 0 ? Math.min(count, 999) : 0;
+}
+
+function useOpportunityUnreadCount(userId: number | null, channelId: number | null) {
   const fetch = useProjectFetch();
   const [count, setCount] = useState(0);
 
   const refresh = useCallback(async () => {
+    if (userId == null || channelId == null) {
+      setCount(0);
+      return;
+    }
     try {
-      const response = await fetch("/api/rss/items?summary=unread", { cache: "no-store" });
+      const response = await fetch(`/api/opportunities?channel=${channelId}&surface=market&view=active`, { cache: "no-store" });
       if (!response.ok) return;
-      const body = await response.json() as { unreadCount?: unknown };
-      setCount(safeLegalOpportunityUnreadCount(body.unreadCount));
+      const body = await response.json() as { opportunities?: unknown };
+      setCount(safeOpportunityCount(Array.isArray(body.opportunities) ? body.opportunities.length : 0));
     } catch {
       // Сбой фонового badge не должен перекрывать навигацию или старое корректное число.
     }
-  }, [fetch]);
+  }, [channelId, fetch, userId]);
 
   useEffect(() => {
-    if (userId == null) return;
+    if (userId == null || channelId == null) return;
 
     const startupTimer = window.setTimeout(() => void refresh(), 0);
     const interval = window.setInterval(() => void refresh(), 60_000);
-    const handleUnread = (event: Event) => {
-      const detail = (event as CustomEvent<{ count?: unknown }>).detail;
-      setCount(safeLegalOpportunityUnreadCount(detail?.count));
-    };
     const handleProjectChange = () => {
+      // The store clears and reloads channels under the new project fence. Do not
+      // issue a request with the previous project's channel during that transition.
       setCount(0);
-      void refresh();
     };
-    window.addEventListener(LEGAL_OPPORTUNITY_UNREAD_EVENT, handleUnread);
     window.addEventListener("aurora:project-changed", handleProjectChange);
     return () => {
       window.clearTimeout(startupTimer);
       window.clearInterval(interval);
-      window.removeEventListener(LEGAL_OPPORTUNITY_UNREAD_EVENT, handleUnread);
       window.removeEventListener("aurora:project-changed", handleProjectChange);
     };
-  }, [refresh, userId]);
+  }, [channelId, refresh, userId]);
 
   return count;
 }
@@ -454,12 +454,16 @@ export function AppShell({
   stickyHeaderOnMobile?: boolean;
   workspace?: boolean;
 }) {
-  const { ready, authReady, authError, user, signOut, refreshAuth } = useStore();
+  const { ready, authReady, authError, user, signOut, refreshAuth, realChannels, realReady } = useStore();
   const router = useRouter();
   const pathname = usePathname();
   const [menuOpen, setMenuOpen] = useState(false);
-  const opportunityUnreadCount = useLegalOpportunityUnreadCount(
+  const opportunityChannelId = realReady
+    ? realChannels.find((channel) => channel.is_active && (channel.status == null || channel.status === "active"))?.id ?? null
+    : null;
+  const opportunityUnreadCount = useOpportunityUnreadCount(
     ready && authReady && user ? user.id : null,
+    opportunityChannelId,
   );
 
   const burgerRef = useRef<HTMLButtonElement>(null);

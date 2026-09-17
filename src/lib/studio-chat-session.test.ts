@@ -30,6 +30,9 @@ const session: StudioChatSession = {
     referenceDraftVersion: 3,
     referenceIntent: "create",
     channelId: 42,
+    resultClientKey: "draft_result_studio_opportunity_88_r2",
+    growthMoveId: 44,
+    opportunityId: 88,
   }]],
 };
 
@@ -130,6 +133,9 @@ describe("studio chat session", () => {
       referenceDraftId: 71,
       referenceDraftVersion: 3,
       referenceIntent: "create",
+      resultClientKey: "draft_result_studio_opportunity_88_r2",
+      growthMoveId: 44,
+      opportunityId: 88,
     });
   });
 
