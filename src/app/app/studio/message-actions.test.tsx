@@ -6,7 +6,7 @@ import StudioPage from "./page";
 import { AI_USAGE_FINALIZATION_RECOVERY_RU } from "@/lib/ai-client-recovery";
 import { serializeStudioChatSession } from "@/lib/studio-chat-session";
 import { setProjectTransport } from "@/lib/project-transport";
-import { projectJson } from "@/test/project-response";
+import { ProjectResponse, projectJson } from "@/test/project-response";
 
 const mocks = vi.hoisted(() => ({
   search: new URLSearchParams("mode=chat"),
@@ -26,6 +26,7 @@ vi.mock("@/components/studio/post-settings-menu", () => ({ PostSettingsMenu: () 
 
 beforeEach(() => {
   vi.clearAllMocks();
+  mocks.search = new URLSearchParams("mode=chat");
   setProjectTransport(7, true, 7);
   for (const key of ["localStorage", "sessionStorage"]) {
     vi.stubGlobal(key, { getItem: vi.fn(() => null), setItem: vi.fn(), removeItem: vi.fn() });
@@ -36,6 +37,60 @@ beforeEach(() => {
 afterEach(() => { cleanup(); setProjectTransport(null); vi.unstubAllGlobals(); });
 
 describe("Studio message actions", () => {
+  it("saves an infopovod draft before marking it used and opening Composer", async () => {
+    mocks.search = new URLSearchParams("growthMove=31&opportunity=73&channel=42&intent=create");
+    const generatedText = "Готовый пост по проверенному инфоповоду.";
+    let resolveDraft!: (response: Response) => void;
+    const draftResponse = new Promise<Response>((resolve) => { resolveDraft = resolve; });
+    const stream = new ProjectResponse(7, [
+      { type: "phase", phase: "writing", requestId: "request-73" },
+      { type: "replace", text: generatedText, pipeline: "editorial", requestId: "request-73" },
+      { type: "validation", status: "passed", requiresReview: false, provenance: {}, blockerCodes: [], requestId: "request-73" },
+      { type: "done", pipeline: "editorial", generationResultId: 501, requestId: "request-73" },
+    ].map((event) => JSON.stringify(event)).join("\n") + "\n", {
+      headers: { "content-type": "application/x-ndjson" },
+    });
+    const fetch = vi.fn(async (url: string, init?: RequestInit) => {
+      if (url === "/api/studio/session" && init?.method === "PUT") return projectJson(7, { revision: 2 });
+      if (url === "/api/studio/session") return projectJson(7, { session: null, revision: 1 });
+      if (url === "/api/settings") return Response.json({ postSettings: { qualityMode: "fast" } });
+      if (url === "/api/ai/engines") return Response.json({ engines: [], current: null });
+      if (url === "/api/opportunities/73/studio") return projectJson(7, {
+        context: {
+          opportunityId: 73,
+          opportunityRevision: 2,
+          growthMoveId: 31,
+          channelId: 42,
+          prompt: "Создай пост по этому инфоповоду",
+          requestKey: "studio_opportunity_73_revision_2",
+          resultClientKey: "draft_result_opportunity_73_revision_2",
+        },
+      });
+      if (url === "/api/ai/generate") return stream;
+      if (url === "/api/ai/generate/ack") return projectJson(7, { ok: true, generationResultId: 501 }, {
+        headers: { "x-ai-acknowledged": "true" },
+      });
+      if (url === "/api/drafts") return draftResponse;
+      if (url === "/api/opportunities/73/state") return projectJson(7, { state: "used" });
+      throw new Error(`Unexpected request ${url} ${init?.method}`);
+    });
+    vi.stubGlobal("fetch", fetch);
+
+    render(<StudioPage />);
+
+    await waitFor(() => expect(fetch.mock.calls.some(([url]) => url === "/api/drafts")).toBe(true));
+    expect(fetch.mock.calls.some(([url]) => url === "/api/opportunities/73/state")).toBe(false);
+    expect(mocks.routerPush).not.toHaveBeenCalled();
+
+    resolveDraft(projectJson(7, { draft: { id: 91 }, created: true }));
+
+    await waitFor(() => expect(mocks.routerPush).toHaveBeenCalledWith("/app/composer?draft=91&from=studio"));
+    const urls = fetch.mock.calls.map(([url]) => url);
+    expect(urls.indexOf("/api/drafts")).toBeLessThan(urls.indexOf("/api/opportunities/73/state"));
+    expect(JSON.parse(String(fetch.mock.calls.find(([url]) => url === "/api/opportunities/73/state")?.[1]?.body)))
+      .toEqual({ state: "used" });
+  });
+
   it("hides the technical persistence warning without removing recovery actions", async () => {
     const source = "Черновик поста, который модель уже успела сгенерировать.";
     const session = JSON.parse(serializeStudioChatSession(7, {
@@ -66,6 +121,8 @@ describe("Studio message actions", () => {
     await screen.findByText(source);
     expect(screen.queryByText(AI_USAGE_FINALIZATION_RECOVERY_RU)).toBeNull();
     expect(screen.queryByRole("alert")).toBeNull();
+    expect([...document.querySelectorAll(".sr-only")]
+      .some((element) => element.textContent?.includes("Нужно повторить запрос"))).toBe(true);
     expect(screen.getByRole("button", { name: "Повторить запрос" })).toBeTruthy();
     expect(screen.getByRole("button", { name: "Скопировать черновик" })).toBeTruthy();
   });
@@ -142,6 +199,8 @@ describe("Studio message actions", () => {
     for (const label of ["В пост", "Скопировать", "Ещё вариант", "Улучшить", "Короче"]) {
       expect(screen.getByRole("button", { name: label })).toBeTruthy();
     }
+    expect([...document.querySelectorAll(".sr-only")]
+      .some((element) => element.textContent?.includes("Текст готов, нужно завершить сохранение"))).toBe(true);
     expect(screen.queryByRole("button", { name: "Повторить запрос" })).toBeNull();
 
     fireEvent.click(screen.getByRole("button", { name: "В пост" }));

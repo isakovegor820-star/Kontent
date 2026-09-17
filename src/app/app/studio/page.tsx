@@ -293,6 +293,12 @@ function MessageRow({
 
   const ready = !msg.streaming && msg.text.trim().length > 0;
   const visibleErrorMessage = visibleStudioAiErrorRu(msg.errorMessage);
+  let assistantStatus = "Ответ завершён";
+  if (msg.streaming) assistantStatus = "Создаёт текст";
+  else if (visibleErrorMessage) assistantStatus = "Не удалось завершить ответ";
+  else if (msg.retryable && msg.reviewable) assistantStatus = "Текст готов, нужно завершить сохранение";
+  else if (msg.retryable) assistantStatus = "Нужно повторить запрос";
+  else if (msg.reviewable) assistantStatus = "Текст готов";
 
   // ИИ — обычный читаемый текст без ещё одной карточки вокруг карточки.
   return (
@@ -302,11 +308,18 @@ function MessageRow({
           <span
             className={cn(
               "h-1.5 w-1.5 rounded-full",
-              msg.streaming ? "bg-brand" : "bg-success-text",
+              msg.streaming
+                ? "bg-brand"
+                : visibleErrorMessage
+                  ? "bg-danger"
+                  : msg.retryable
+                    ? "bg-fire"
+                    : "bg-success-text",
             )}
             aria-hidden
           />
           Аврора
+          <span className="sr-only"> — {assistantStatus}</span>
         </p>
         {msg.text.trim() && (
           <p className="max-w-[72ch] text-[15px] leading-[1.7] whitespace-pre-wrap text-text">
@@ -332,6 +345,7 @@ function MessageRow({
 
         {msg.statusMessage && (
           <p
+            role="status"
             className="mt-3 max-w-[72ch] rounded-sm border border-line bg-surface-inset px-3 py-2 text-[12px] leading-relaxed text-text-2"
           >
             {msg.statusMessage}
@@ -1564,6 +1578,33 @@ function StudioPageInner() {
           clientKey,
           growthMoveId: generation?.growthMoveId ?? growthMoveIdRef.current,
         });
+        if (generation?.opportunityId) {
+          window.history.replaceState(
+            window.history.state,
+            "",
+            `/app/studio?mode=chat&channel=${destinationChannelId}`,
+          );
+          try {
+            const stateResponse = await fetch(`/api/opportunities/${generation.opportunityId}/state`, {
+              method: "POST",
+              headers: { "content-type": "application/json" },
+              body: JSON.stringify({ state: "used" }),
+            });
+            if (!stateResponse.ok) throw new Error("opportunity_state_failed");
+          } catch {
+            s.toast({
+              kind: "info",
+              title: "Пост создан, но инфоповод остался в ленте",
+              body: "Черновик сохранён. Статус инфоповода можно обновить вручную в ленте.",
+            });
+          }
+        } else if (generation?.growthMoveId) {
+          window.history.replaceState(
+            window.history.state,
+            "",
+            `/app/studio?mode=chat&channel=${destinationChannelId}`,
+          );
+        }
         if ((generation?.growthMoveId ?? growthMoveIdRef.current) != null) {
           growthMoveIdRef.current = null;
         }
@@ -1924,6 +1965,9 @@ function StudioPageInner() {
             setMsg({
               text: completion.text,
               errorMessage: AI_TERMINAL_ACK_RECOVERY_RU,
+              statusMessage: gen.autoOpenComposer
+                ? "Текст готов, но автоматически открыть редактор не удалось. Нажми «В пост», чтобы завершить сохранение."
+                : "Текст готов. Нажми «В пост», чтобы завершить сохранение.",
               progressLabel: undefined,
               requestId: ackRequestId ?? terminalRequestId,
               streaming: false,
@@ -1964,35 +2008,6 @@ function StudioPageInner() {
             replayed,
             generationResultId: acknowledgedGenerationResultId,
           });
-          if (completion.reviewable && gen.opportunityId) {
-            try {
-              const stateResponse = await fetch(`/api/opportunities/${gen.opportunityId}/state`, {
-                method: "POST",
-                headers: { "content-type": "application/json" },
-                body: JSON.stringify({ state: "used" }),
-                signal: controller.signal,
-              });
-              if (!stateResponse.ok) throw new Error("opportunity_state_failed");
-              window.history.replaceState(
-                window.history.state,
-                "",
-                `/app/studio?mode=chat&channel=${generationChannelId}`,
-              );
-            } catch (error) {
-              if ((error as Error)?.name === "AbortError") throw error;
-              s.toast({
-                kind: "info",
-                title: "Пост готов, но инфоповод остался в ленте",
-                body: "Текст сохранён в чате. Статус можно обновить повторной генерацией или вручную в ленте.",
-              });
-            }
-          } else if (completion.reviewable && gen.growthMoveId) {
-            window.history.replaceState(
-              window.history.state,
-              "",
-              `/app/studio?mode=chat&channel=${generationChannelId}`,
-            );
-          }
           // Любой подтверждённый terminal-result доступен как черновик. Блокирующая
           // проверка запрещает тихую автопубликацию, но не отбирает текст у человека.
           if (gen.autoOpenComposer && completion.reviewable) {
@@ -2223,6 +2238,7 @@ function StudioPageInner() {
       history: [],
       skipBrief: true,
       requestKey: pending.requestKey,
+      autoOpenComposer: true,
       resultClientKey: pending.resultClientKey,
       channelId: pending.channelId,
       growthMoveId: pending.moveId,
