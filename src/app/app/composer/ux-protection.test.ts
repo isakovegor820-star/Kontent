@@ -49,6 +49,7 @@ describe("composer UX protection contract", () => {
     expect(source).toContain('className="hidden h-[var(--composer-action-bar-clearance,18rem)] lg:block"');
     expect(source).toContain('window.matchMedia("(min-width: 1024px)")');
     expect(source).toContain("Другие действия");
+    expect(source).toContain('className="hidden gap-2 border-t border-line p-2 group-open:grid"');
     expect(source).toContain('className="hidden flex-wrap gap-2 sm:flex"');
     expect(source).toContain("new ResizeObserver(updateClearance)");
     expect(source).toContain("scroll-mb-72");

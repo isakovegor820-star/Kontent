@@ -30,7 +30,7 @@ import type {
   Trend,
   User,
 } from "./types";
-import { seedState } from "./mock";
+import { emptyState } from "./mock";
 import {
   parseAiUsageResponse,
   type AiUsageStatus,
@@ -175,7 +175,7 @@ function mapUser(su: ServerUser): User {
 export function StoreProvider({ children }: { children: React.ReactNode }) {
   const fetch = useProjectFetch();
   const pathname = usePathname();
-  const [state, setState] = useState<AppState>(() => seedState());
+  const [state, setState] = useState<AppState>(() => emptyState());
   const [ready, setReady] = useState(false);
   const [authReady, setAuthReady] = useState(false);
   const [authError, setAuthError] = useState(false);
@@ -220,7 +220,7 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
     setWorkspaceKey(null);
     setReady(false);
     setState({
-      ...seedState(),
+      ...emptyState(),
       onboarded: currentUser?.onboarded ?? false,
       user: currentUser,
     });
@@ -254,7 +254,7 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
           };
         }
         return {
-          ...seedState(),
+          ...emptyState(),
           onboarded: nextUser?.onboarded ?? false,
           user: nextUser,
         };
@@ -473,7 +473,7 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
       setState((current) => {
         if (current.user?.id !== expectedUserId) return current;
         return {
-          ...(loaded ?? seedState()),
+          ...(loaded ?? emptyState()),
           onboarded: current.user.onboarded,
           user: current.user,
         };
@@ -484,7 +484,7 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
       workspaceRef.current = null;
       setWorkspaceKey(null);
       setState((current) => ({
-        ...seedState(),
+        ...emptyState(),
         onboarded: current.user?.onboarded ?? false,
         user: current.user,
       }));
@@ -577,7 +577,7 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
   const signOut = useCallback(() => {
     beginWorkspaceTransition();
     activeUserRef.current = null;
-    setState({ ...seedState(), user: null, onboarded: false });
+    setState({ ...emptyState(), user: null, onboarded: false });
     setReady(true);
     fetch("/api/auth/logout", { method: "POST" }).catch(() => {});
   }, [beginWorkspaceTransition, fetch]);
@@ -897,7 +897,7 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
     }
     const user = activeUserRef.current;
     setState({
-      ...seedState(),
+      ...emptyState(),
       onboarded: user?.onboarded ?? false,
       user,
     });

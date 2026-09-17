@@ -2974,7 +2974,9 @@ function ComposerActionBar() {
     };
   }, [visible]);
   if (!visible) return null;
+  const hasContent = c.text.trim().length > 0;
   const unavailable = !c.hydrated || c.draftSaveState === "saving" || c.typing || c.saving;
+  const publicationUnavailable = unavailable || !hasContent;
   return (
     <div
       ref={barRef}
@@ -3100,7 +3102,9 @@ function ComposerActionBar() {
           <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
             <div className="min-w-0 text-[13px]" aria-live="polite">
               <p className="font-semibold text-text">
-                {activeSettled
+                {!hasContent
+                  ? "Черновик не заполнен"
+                  : activeSettled
                   ? "Публикация уже завершена"
                   : c.activePublication.status === "cancelled"
                     ? "Публикация отменена"
@@ -3133,7 +3137,7 @@ function ComposerActionBar() {
                     variant="brand"
                     size="sm"
                     className="w-full sm:w-auto"
-                    disabled={unavailable}
+                    disabled={publicationUnavailable}
                     loading={c.publicationMode === "calendar"}
                     data-aurora-feature="draft"
                     data-aurora-action="published"
@@ -3165,10 +3169,16 @@ function ComposerActionBar() {
           <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
             <div className="min-w-0 text-[13px]" aria-live="polite">
               <p className="font-semibold text-text">
-                {approved ? "Готово к публикации" : "Нужно согласовать пост"}
+                {!hasContent
+                  ? "Черновик не заполнен"
+                  : approved
+                    ? personal ? "Готово к решению владельца" : "Готово к публикации"
+                    : "Нужно согласовать пост"}
               </p>
               <p className="truncate text-text-3">
-                {c.draftSaveState === "offline"
+                {!hasContent
+                  ? "Добавьте текст — после этого станут доступны действия с публикацией."
+                  : c.draftSaveState === "offline"
                   ? "Нет сети — изменения защищены локальной копией"
                   : c.draftSaveState === "saving"
                     ? "Сохраняем изменения…"
@@ -3182,7 +3192,7 @@ function ComposerActionBar() {
                 variant="brand"
                 size="sm"
                 className="w-full sm:w-auto"
-                disabled={unavailable}
+                disabled={publicationUnavailable}
                 loading={c.publicationMode === "calendar"}
                 data-aurora-feature="draft"
                 data-aurora-action="published"
@@ -3191,15 +3201,15 @@ function ComposerActionBar() {
                 {c.publicationMode !== "calendar" && <CalendarClock className="h-4 w-4" aria-hidden />}
                 Добавить в календарь
               </Button>
-              <details className="rounded-sm border border-line bg-surface-inset sm:hidden">
+              <details className="group rounded-sm border border-line bg-surface-inset sm:hidden">
                 <summary className="flex min-h-11 cursor-pointer items-center justify-center px-3 text-[13px] font-semibold text-text focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand">
                   Другие действия
                 </summary>
-                <div className="grid gap-2 border-t border-line p-2">
+                <div className="hidden gap-2 border-t border-line p-2 group-open:grid">
                   <Button
                     variant="outline"
                     size="sm"
-                    disabled={unavailable}
+                    disabled={publicationUnavailable}
                     loading={c.publicationMode === "now"}
                     data-aurora-feature="draft"
                     data-aurora-action="published"
@@ -3211,7 +3221,7 @@ function ComposerActionBar() {
                   <Button
                     variant="outline"
                     size="sm"
-                    disabled={unavailable}
+                    disabled={publicationUnavailable}
                     loading={c.publicationMode === "queue"}
                     data-aurora-feature="draft"
                     data-aurora-action="published"
@@ -3238,7 +3248,7 @@ function ComposerActionBar() {
                 <Button
                   variant="outline"
                   size="sm"
-                  disabled={unavailable}
+                  disabled={publicationUnavailable}
                   loading={c.publicationMode === "now"}
                   data-aurora-feature="draft"
                   data-aurora-action="published"
@@ -3250,7 +3260,7 @@ function ComposerActionBar() {
                 <Button
                   variant="outline"
                   size="sm"
-                  disabled={unavailable}
+                  disabled={publicationUnavailable}
                   loading={c.publicationMode === "queue"}
                   data-aurora-feature="draft"
                   data-aurora-action="published"
@@ -3706,7 +3716,7 @@ function ComposerInner() {
   };
 
   const onKeyDown = (e: React.KeyboardEvent<HTMLDivElement>) => {
-    if ((c.canPublish || (c.isAutopilotDraft && c.canEditContent)) && (e.metaKey || e.ctrlKey) && e.key === "Enter") {
+    if (c.text.trim() && (c.canPublish || (c.isAutopilotDraft && c.canEditContent)) && (e.metaKey || e.ctrlKey) && e.key === "Enter") {
       e.preventDefault();
       c.schedule();
     }

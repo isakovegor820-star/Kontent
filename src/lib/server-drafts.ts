@@ -1170,7 +1170,7 @@ export async function createDraftForUser(
   const tx = await pool.connect();
   try {
     await tx.query("begin");
-    const membership = await requireSelectedProjectPermission(tx, userId, "content.create");
+    const membership = await requireSelectedProjectPermission(tx, userId, "content.create", { lock: true });
     const projectId = membership.projectId;
     let trusted = input;
     let purpose: ServerDraft["purpose"] = input.origin === "manual"
@@ -1253,11 +1253,15 @@ export async function createDraftForUser(
         projectId,
       });
     } else {
-      const existing = await tx.query<{ id: number | string }>(
-        `select id from drafts where project_id = $1 and user_id = $2 and client_key = $3`,
-        [projectId, userId, input.clientKey],
+      const existing = await tx.query<{ id: number | string; project_id: number | string }>(
+        `select id, project_id from drafts where user_id = $1 and client_key = $2`,
+        [userId, input.clientKey],
       );
-      draftId = existing.rows[0] ? Number(existing.rows[0].id) : null;
+      const replay = existing.rows[0];
+      if (replay && Number(replay.project_id) !== projectId) {
+        throw new DraftValidationError("client_key_project_conflict");
+      }
+      draftId = replay ? Number(replay.id) : null;
     }
 
     if (draftId == null) throw new Error("idempotent draft lookup failed");
@@ -1308,7 +1312,7 @@ export async function recoverDraftForUser(
   const tx = await pool.connect();
   try {
     await tx.query("begin");
-    const membership = await requireSelectedProjectPermission(tx, userId, "content.create");
+    const membership = await requireSelectedProjectPermission(tx, userId, "content.create", { lock: true });
     const projectId = membership.projectId;
     const auditKey = draftRecoveryAuditKey(sourceDraftId, input.clientKey);
 
@@ -1443,7 +1447,7 @@ export async function updateDraftForUser(
   const tx = await pool.connect();
   try {
     await tx.query("begin");
-    const membership = await requireSelectedProjectPermission(tx, userId, "content.edit");
+    const membership = await requireSelectedProjectPermission(tx, userId, "content.edit", { lock: true });
     const projectId = membership.projectId;
     const selected = await tx.query<DraftRow>(
       `${DRAFT_SELECT} where d.id = $1 and d.project_id = $2 for update of d`,
@@ -1606,7 +1610,7 @@ export async function rescheduleDraftForUser(
   const tx = await pool.connect();
   try {
     await tx.query("begin");
-    const membership = await requireSelectedProjectPermission(tx, userId, "content.edit");
+    const membership = await requireSelectedProjectPermission(tx, userId, "content.edit", { lock: true });
     const projectId = membership.projectId;
     const selected = await tx.query<DraftRow>(
       `${DRAFT_SELECT} where d.id = $1 and d.project_id = $2 for update of d`,
@@ -1678,7 +1682,7 @@ export async function attestDraftReviewForUser(
   const tx = await pool.connect();
   try {
     await tx.query("begin");
-    const membership = await requireSelectedProjectPermission(tx, userId, "content.edit");
+    const membership = await requireSelectedProjectPermission(tx, userId, "content.edit", { lock: true });
     const projectId = membership.projectId;
     const selected = await tx.query<DraftRow>(
       `${DRAFT_SELECT}
@@ -1759,7 +1763,7 @@ export async function deleteDraftForUser(
   const tx = await pool.connect();
   try {
     await tx.query("begin");
-    const membership = await requireSelectedProjectPermission(tx, userId, "content.edit");
+    const membership = await requireSelectedProjectPermission(tx, userId, "content.edit", { lock: true });
     const projectId = membership.projectId;
     // A calendar draft can already be durable lineage for onboarding, a monthly plan,
     // generated media, legal content or a publication review. Physical DELETE then fails

@@ -295,7 +295,11 @@ export function ReferenceLanding() {
               </a>
             </div>
 
-            <div className={styles.dashboard} aria-label="Демонстрация структуры проверки материала">
+            <div
+              className={styles.dashboard}
+              role="group"
+              aria-label="Демонстрация структуры проверки материала"
+            >
               <p className={styles.dashboardEyebrow}>Пример проверки материала</p>
               <div className={styles.metricGrid}>
                 <article><span>Источник</span><strong>Указан</strong><small>ссылка сохранена</small></article>

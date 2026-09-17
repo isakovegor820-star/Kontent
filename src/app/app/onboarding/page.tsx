@@ -747,7 +747,7 @@ function StepConnect({ onBack, onNext }: { onBack: () => void; onNext: () => voi
       </StepFooter>
       {!hasTelegram && (
         <p className="mt-3 text-center text-[13px] text-text-3">
-          Чтобы проверить канал и сохранить первый материал, подключи Telegram.
+          Чтобы проверить канал и перейти дальше, подключи Telegram.
         </p>
       )}
     </>

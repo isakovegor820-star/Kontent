@@ -4,6 +4,7 @@ import {
   ProjectAccessError,
   PROJECT_ROLES,
   requireProjectPermission,
+  roleAllows,
   type ProjectRole,
 } from "./project-permissions";
 
@@ -216,6 +217,7 @@ export async function selectProjectForUser(
 async function lockMemberAndOwners(
   client: PoolClient,
   projectId: number,
+  actorUserId: number,
   memberUserId: number,
 ): Promise<{
   target: { role: ProjectRole; version: number; status: string };
@@ -233,11 +235,18 @@ async function lockMemberAndOwners(
     `select user_id, role, version, status
        from project_members
       where project_id = $1
-        and (user_id = $2 or (role = 'owner' and status = 'active'))
+        and (user_id = any($2::bigint[]) or (role = 'owner' and status = 'active'))
       order by user_id
       for update`,
-    [projectId, memberUserId],
+    [projectId, [actorUserId, memberUserId]],
   );
+  const actorRow = lockedMembers.rows.find((row) => Number(row.user_id) === actorUserId);
+  if (!actorRow || actorRow.status !== "active" || !isProjectRole(actorRow.role)) {
+    throw new ProjectAccessError("membership_required");
+  }
+  if (!roleAllows(actorRow.role, "members.manage")) {
+    throw new ProjectAccessError("permission_denied");
+  }
   const targetRow = lockedMembers.rows.find((row) => Number(row.user_id) === memberUserId);
   if (!targetRow || !isProjectRole(targetRow.role) || targetRow.status !== "active") {
     throw new ProjectMembershipMutationError("member_not_found");
@@ -262,7 +271,7 @@ export async function changeProjectMemberRole(input: {
   if (!isProjectRole(input.role)) throw new ProjectAccessError("permission_denied");
   return withTransaction(input.pool, async (client) => {
     await requireProjectPermission(client, input.actorUserId, input.projectId, "members.manage");
-    const locked = await lockMemberAndOwners(client, input.projectId, input.memberUserId);
+    const locked = await lockMemberAndOwners(client, input.projectId, input.actorUserId, input.memberUserId);
     if (locked.target.version !== input.expectedVersion) {
       throw new ProjectMembershipMutationError("version_conflict");
     }
@@ -307,7 +316,7 @@ export async function revokeProjectMember(input: {
 }): Promise<{ version: number }> {
   return withTransaction(input.pool, async (client) => {
     await requireProjectPermission(client, input.actorUserId, input.projectId, "members.manage");
-    const locked = await lockMemberAndOwners(client, input.projectId, input.memberUserId);
+    const locked = await lockMemberAndOwners(client, input.projectId, input.actorUserId, input.memberUserId);
     if (locked.target.version !== input.expectedVersion) {
       throw new ProjectMembershipMutationError("version_conflict");
     }

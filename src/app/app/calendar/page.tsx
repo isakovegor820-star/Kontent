@@ -1356,14 +1356,14 @@ function WeekSummary({ posts }: { posts: DatedPost[] }) {
         {items.map((item) => {
           const Icon = item.icon;
           return (
-            <div key={item.label} className="flex min-w-0 items-start gap-3">
-              <span className={cn("mt-0.5 flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-surface-inset", item.tone)}>
-                <Icon className="h-[18px] w-[18px]" strokeWidth={2} aria-hidden />
-              </span>
-              <div className="flex min-w-0 flex-col">
-                <dt className="order-2 mt-1.5 text-[13px] leading-snug text-text-3">{item.label}</dt>
-                <dd className="nums order-1 text-xl font-extrabold leading-none text-text tabular-nums">{item.value}</dd>
-              </div>
+            <div key={item.label} className="grid min-w-0 grid-cols-[2.25rem_1fr] grid-rows-[auto_auto] gap-x-3">
+              <dt className="col-start-2 row-start-2 mt-1.5 text-[13px] leading-snug text-text-3">{item.label}</dt>
+              <dd className="contents">
+                <span className={cn("col-start-1 row-span-2 row-start-1 mt-0.5 flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-surface-inset", item.tone)} aria-hidden="true">
+                  <Icon className="h-[18px] w-[18px]" strokeWidth={2} />
+                </span>
+                <span className="nums col-start-2 row-start-1 text-xl font-extrabold leading-none text-text tabular-nums">{item.value}</span>
+              </dd>
             </div>
           );
         })}

@@ -82,7 +82,7 @@ export async function getActiveProjectMembership(
   db: Queryable,
   userId: number,
   projectId: number,
-  options: { lock?: boolean } = {},
+  options: { lock?: boolean; lockProject?: boolean } = {},
 ): Promise<ActiveProjectMembership | null> {
   if (!positiveId(userId) || !positiveId(projectId)) {
     throw new ProjectAccessError("invalid_project_selector");
@@ -100,7 +100,7 @@ export async function getActiveProjectMembership(
         and member.user_id = $2
         and member.status = 'active'
         and project.is_archived = false
-      limit 1${options.lock ? " for share of member, project" : ""}`,
+      limit 1${options.lock ? options.lockProject === false ? " for share of member" : " for share of member, project" : ""}`,
     [projectId, userId],
   );
   const row = result.rows[0];
@@ -119,7 +119,7 @@ export async function requireProjectPermission(
   userId: number,
   projectId: number,
   permission: ProjectPermission,
-  options: { lock?: boolean } = {},
+  options: { lock?: boolean; lockProject?: boolean } = {},
 ): Promise<ActiveProjectMembership> {
   if (!requestProjectMatches(projectId)) throw new ProjectAccessError("project_context_mismatch");
   // Use lock only on the transaction client performing the protected operation. SHARE
@@ -146,11 +146,12 @@ export async function requireSelectedProjectPermission(
   db: Queryable,
   userId: number,
   permission: ProjectPermission,
+  options: { lock?: boolean; lockProject?: boolean } = {},
 ): Promise<ActiveProjectMembership> {
   const context = getProjectRequestContext();
   if (context) {
     if (!context.projectId) throw new ProjectAccessError("invalid_project_selector");
-    return requireProjectPermission(db, userId, context.projectId, permission);
+    return requireProjectPermission(db, userId, context.projectId, permission, options);
   }
   if (!positiveId(userId)) throw new ProjectAccessError("invalid_project_selector");
   const result = await db.query<{
@@ -169,7 +170,7 @@ export async function requireSelectedProjectPermission(
          on project.id = member.project_id
         and project.is_archived = false
       where preference.user_id = $1
-      limit 1`,
+      limit 1${options.lock ? options.lockProject === false ? " for share of member" : " for share of member, project" : ""}`,
     [userId],
   );
   const row = result.rows[0];
