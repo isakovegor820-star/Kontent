@@ -3186,7 +3186,7 @@ function ComposerActionBar() {
             </div>
           </div>
         ) : (
-          <div className="flex flex-col gap-3 lg:grid lg:grid-cols-[minmax(9rem,1fr)_auto] lg:items-center">
+          <div className="flex flex-col gap-3" data-composer-action-layout="ready">
             <div className="min-w-0 text-[13px]" aria-live="polite">
               <p className="font-semibold text-text">
                 {!hasContent
@@ -3207,11 +3207,11 @@ function ComposerActionBar() {
                       : "Изменения сохраняются автоматически"}
               </p>
             </div>
-            <div className="flex flex-col gap-2 sm:flex-row sm:flex-wrap lg:flex-nowrap lg:justify-end">
+            <div className="grid w-full min-w-0 gap-2 sm:grid-cols-2 lg:flex lg:flex-nowrap lg:justify-end">
               <Button
                 variant="brand"
                 size="sm"
-                className="w-full shrink-0 sm:w-auto"
+                className="w-full shrink-0 lg:w-auto"
                 disabled={publicationUnavailable}
                 loading={c.publicationMode === "calendar"}
                 data-aurora-feature="draft"
@@ -3264,7 +3264,7 @@ function ComposerActionBar() {
                   )}
                 </div>
               </details>
-              <div className="hidden flex-wrap gap-2 sm:flex lg:flex-nowrap">
+              <div className="hidden sm:contents lg:flex lg:flex-nowrap lg:gap-2">
                 <Button
                   variant="outline"
                   size="sm"

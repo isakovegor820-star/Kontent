@@ -56,7 +56,8 @@ describe("composer UX protection contract", () => {
     expect(source).toContain('window.matchMedia("(min-width: 1024px)")');
     expect(source).toContain("Другие действия");
     expect(source).toContain('className="hidden gap-2 border-t border-line p-2 group-open:grid"');
-    expect(source).toContain('className="hidden flex-wrap gap-2 sm:flex lg:flex-nowrap"');
+    expect(source).toContain('className="hidden sm:contents lg:flex lg:flex-nowrap lg:gap-2"');
+    expect(source).toContain("sm:grid-cols-2");
     expect(source).toContain("lg:grid-cols-[minmax(9rem,1fr)_auto]");
     expect(source).toContain("lg:flex-nowrap lg:justify-end");
     expect(source.match(/onClick=\{c\.publishNow\}/gu)?.length).toBeGreaterThanOrEqual(3);
@@ -155,10 +156,14 @@ describe("composer UX protection contract", () => {
       source.indexOf("function ComposerActionBar"),
       source.indexOf("/* ---------------------------------------------------------------- РЕДАКТОР */"),
     );
+    const readyActions = actionBar.slice(actionBar.indexOf('data-composer-action-layout="ready"'));
 
     expect(actionBar).toContain("c.canEditContent && c.editingId");
     expect(actionBar).toContain('variant="danger"');
     expect(actionBar).toContain("c.setConfirmDelete(true)");
+    expect(readyActions).toContain('className="grid w-full min-w-0 gap-2 sm:grid-cols-2 lg:flex lg:flex-nowrap lg:justify-end"');
+    expect(readyActions).toContain('className="hidden sm:contents lg:flex lg:flex-nowrap lg:gap-2"');
+    expect(readyActions).not.toContain("lg:grid-cols-[minmax(9rem,1fr)_auto]");
     expect(source).toContain("Удалить из календаря");
     expect(source).toContain("<ConfirmDialog");
     expect(source).toContain('title="Удалить черновик из календаря?"');
