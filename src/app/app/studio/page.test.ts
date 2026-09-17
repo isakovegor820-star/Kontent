@@ -22,13 +22,15 @@ describe("Studio responsive recovery controls", () => {
     );
   });
 
-  it("auto-generates an owned infopovod in chat and marks it used only after a reviewable result", () => {
+  it("auto-generates an owned infopovod, saves a draft, and opens it in Composer", () => {
     expect(pageSource).toContain("`/api/opportunities/${opportunityId}/studio`");
     expect(pageSource).toContain("setPendingGrowthMoveGeneration({");
     expect(pageSource).toContain('history: []');
+    expect(pageSource).toContain("autoOpenComposer: true,\n      resultClientKey: pending.resultClientKey,\n      channelId: pending.channelId,\n      growthMoveId: pending.moveId");
     expect(pageSource).toContain('body: JSON.stringify({ state: "used" })');
-    expect(pageSource).toContain("completion.reviewable && gen.opportunityId");
-    expect(pageSource).not.toContain("autoOpenComposer: true,\n      resultClientKey: pending.resultClientKey,\n      channelId: pending.channelId,\n      growthMoveId: pending.moveId");
+    expect(pageSource.indexOf("const result = await createServerDraft({")).toBeLessThan(
+      pageSource.indexOf('body: JSON.stringify({ state: "used" })'),
+    );
   });
 
   it("keeps fallback diagnostics internal without a caption or toast", () => {
