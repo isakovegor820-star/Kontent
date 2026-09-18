@@ -387,28 +387,21 @@ function AutopilotHero({
     <Card
       as="section"
       aria-labelledby="autopilot-hero-title"
-      className="overflow-hidden bg-info-soft p-0 ring-1 ring-brand/10"
+      className="overflow-hidden p-0"
     >
-      <div className="relative overflow-hidden">
-        <div className="relative z-10 flex min-h-[14.75rem] max-w-[48rem] flex-col items-start justify-center p-5 sm:p-7 lg:p-8">
+      <div className="p-5 sm:p-7 lg:p-8">
+        <div className="flex flex-wrap items-center justify-between gap-3">
           <Badge tone={enabled ? "success" : "neutral"} className="gap-1.5 px-3 py-1.5">
             {status}
             <span className={cn("h-1.5 w-1.5 rounded-full", enabled ? "bg-success" : "bg-text-3")} aria-hidden />
           </Badge>
-          <h2 id="autopilot-hero-title" className="mt-5 text-balance text-[22px] font-extrabold leading-tight tracking-tight text-text sm:text-[25px]">
-            {title}
-          </h2>
-          <p className="mt-2 max-w-[60ch] text-pretty text-[14px] leading-relaxed text-text-2">
-            {description}
-          </p>
           <Button
             type="button"
-            variant="outline"
-            size="md"
+            variant="ghost"
+            size="sm"
             onClick={onToggle}
             loading={busy}
             disabled={busy || blocked}
-            className="mt-6 bg-surface/85"
           >
             {enabled ? (
               <Pause className="h-[18px] w-[18px]" strokeWidth={2} aria-hidden />
@@ -418,17 +411,12 @@ function AutopilotHero({
             {enabled ? "Приостановить" : "Включить автопилот"}
           </Button>
         </div>
-
-      <div className="pointer-events-none absolute inset-y-0 right-0 hidden w-[42%] overflow-hidden sm:block" aria-hidden>
-        <div className="absolute top-2 right-3 h-52 w-52 rounded-full bg-brand/10 blur-2xl" />
-        <div className="absolute top-9 right-[18%] grid h-32 w-32 rotate-12 place-items-center rounded-full bg-surface/70 shadow-card ring-1 ring-white/50 backdrop-blur-md lg:h-36 lg:w-36">
-          <Rocket className="h-20 w-20 -translate-y-1 text-brand drop-shadow-[0_14px_18px_color-mix(in_oklch,var(--brand-1)_24%,transparent)] lg:h-24 lg:w-24" strokeWidth={1.55} />
-        </div>
-        <div className="absolute right-[-4rem] bottom-[-5rem] h-40 w-[30rem] rounded-[50%] bg-surface shadow-soft" />
-        <div className="absolute right-[18rem] bottom-[-3rem] h-28 w-28 rounded-full bg-surface" />
-        <div className="absolute right-[10rem] bottom-[-2rem] h-36 w-36 rounded-full bg-surface" />
-        <div className="absolute right-[2rem] bottom-[-3rem] h-32 w-32 rounded-full bg-surface" />
-      </div>
+        <h2 id="autopilot-hero-title" className="mt-5 text-balance text-[22px] font-extrabold leading-tight tracking-tight text-text sm:text-[25px]">
+          {title}
+        </h2>
+        <p className="mt-3 max-w-[60ch] text-pretty text-[14px] leading-relaxed text-text-2">
+          {description}
+        </p>
       </div>
       {children}
     </Card>
@@ -654,6 +642,50 @@ function quickSettingsSummary(settings: AutopilotQuickSettings) {
   return `${settings.newsPerWeek} ${plural(settings.newsPerWeek, "новость", "новости", "новостей")} в неделю · ${detail} · ${energy} · ${emoji}`;
 }
 
+function QuickChoice({
+  id,
+  label,
+  hint,
+  value,
+  options,
+  disabled,
+  onChange,
+}: {
+  id: string;
+  label: string;
+  hint: string;
+  value: number;
+  options: readonly { value: number; label: string }[];
+  disabled: boolean;
+  onChange: (value: number) => void;
+}) {
+  return (
+    <fieldset disabled={disabled} aria-describedby={`${id}-hint`} className="min-w-0">
+      <legend className="text-[13px] font-semibold text-text">{label}</legend>
+      <div className="mt-3 flex flex-wrap gap-2">
+        {options.map((option) => (
+          <button
+            key={option.value}
+            type="button"
+            aria-pressed={value === option.value}
+            disabled={disabled}
+            onClick={() => onChange(option.value)}
+            className={cn(
+              "min-h-11 flex-1 rounded-sm border px-3 py-2 text-[13px] font-semibold transition-colors motion-reduce:transition-none disabled:cursor-not-allowed disabled:opacity-60",
+              value === option.value
+                ? "border-brand/50 bg-info-soft text-brand"
+                : "border-line bg-surface text-text-2 enabled:hover:border-line-strong enabled:hover:bg-surface-inset",
+            )}
+          >
+            {option.label}
+          </button>
+        ))}
+      </div>
+      <p id={`${id}-hint`} className="mt-2.5 text-[12px] leading-relaxed text-text-3">{hint}</p>
+    </fieldset>
+  );
+}
+
 function PlanSettingsPanel({
   settings,
   postFrequency,
@@ -685,60 +717,85 @@ function PlanSettingsPanel({
   onSave: () => void;
   onBuild: () => void;
 }) {
+  const [expanded, setExpanded] = useState(false);
+  const settingsTrigger = useRef<HTMLButtonElement>(null);
+  const plannedCount = plannedPostCountForWeeks(postFrequency, planningWeeks);
+  const closeSettings = () => {
+    setExpanded(false);
+    settingsTrigger.current?.focus();
+  };
+
   return (
     <section
       aria-labelledby="autopilot-plan-settings-title"
-      aria-describedby="autopilot-plan-settings-description"
+      aria-describedby="autopilot-plan-settings-summary"
       aria-busy={disabled || saving || undefined}
-      className="border-t border-line bg-surface p-4 sm:p-6"
+      onKeyDown={(event) => {
+        if (event.key === "Escape" && expanded && !event.defaultPrevented) {
+          event.preventDefault();
+          closeSettings();
+        }
+      }}
+      className="border-t border-line bg-surface p-5 sm:p-7 lg:p-8"
     >
-      <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between sm:gap-6">
+      <div className="flex flex-wrap items-start justify-between gap-4 sm:gap-6">
         <div className="min-w-0">
           <h2 id="autopilot-plan-settings-title" className="text-balance text-[18px] font-extrabold leading-tight text-text">
             Параметры следующего плана
           </h2>
-          <p id="autopilot-plan-settings-description" className="mt-1 max-w-[68ch] text-pretty text-[13px] leading-relaxed text-text-3">
+          <p className="mt-2 text-[14px] text-text-2">
+            {planningWeeks} {plural(planningWeeks, "неделя", "недели", "недель")} · {plannedCount} {plural(plannedCount, "публикация", "публикации", "публикаций")}
+          </p>
+        </div>
+        <Button
+          ref={settingsTrigger}
+          type="button"
+          variant="secondary"
+          size="sm"
+          aria-expanded={expanded}
+          aria-controls="autopilot-plan-settings-fields"
+          onClick={() => setExpanded((current) => !current)}
+        >
+          <Settings2 className="h-4 w-4" strokeWidth={2} aria-hidden />
+          {expanded ? "Свернуть настройки" : "Настройки"}
+          <ChevronDown className={cn("h-4 w-4 transition-transform motion-reduce:transition-none", expanded && "rotate-180")} strokeWidth={2} aria-hidden />
+        </Button>
+      </div>
+      <p id="autopilot-plan-settings-summary" className="mt-3 max-w-[85ch] text-pretty text-[13px] leading-relaxed text-text-3">
+        {quickSettingsSummary({ ...settings, newsPerWeek: Math.min(settings.newsPerWeek, postFrequency) })}
+      </p>
+
+      <div id="autopilot-plan-settings-fields" hidden={!expanded}>
+        <div className="mt-7 border-t border-line pt-7">
+          <p className="max-w-[68ch] text-[13px] leading-relaxed text-text-3">
             Эти параметры использует и ручная, и автоматическая сборка. Сборка запомнит текущие значения.
           </p>
-        </div>
-        <p className="shrink-0 text-[12px] font-semibold text-brand" aria-live="polite">
-          {dirty ? "Есть несохранённые изменения" : "Параметры сохранены"}
-        </p>
-      </div>
-
-      <div className="mt-5 grid gap-5 lg:grid-cols-[minmax(12rem,0.75fr)_minmax(0,2.25fr)] lg:gap-7">
-        <div>
-          <label htmlFor="autopilot-horizon" className="text-[13px] font-semibold text-text">
-            Период
-          </label>
-          <select
-            id="autopilot-horizon"
-            value={planningWeeks}
-            onChange={(event) => onPlanningWeeksChange(Number(event.target.value))}
-            disabled={disabled || saving}
-            aria-describedby="autopilot-horizon-summary"
-            className="mt-2 h-11 w-full rounded-md border border-line bg-surface px-3 text-base font-semibold text-text outline-none transition-colors focus-visible:border-brand focus-visible:ring-2 focus-visible:ring-brand/20 disabled:cursor-not-allowed disabled:opacity-60 sm:text-[14px]"
-          >
-            {Array.from(
-              { length: MAX_AUTOPILOT_PLANNING_WEEKS - MIN_AUTOPILOT_PLANNING_WEEKS + 1 },
-              (_, index) => index + MIN_AUTOPILOT_PLANNING_WEEKS,
-            ).map((weeks) => (
-              <option key={weeks} value={weeks}>
-                {weeks} {plural(weeks, "неделя", "недели", "недель")}
-              </option>
-            ))}
-          </select>
-          <p id="autopilot-horizon-summary" className="mt-1.5 text-[12px] leading-snug text-text-3" aria-live="polite">
-            {planningSummary}
-          </p>
-        </div>
-
-        <fieldset disabled={disabled || saving}>
-          <legend className="text-[13px] font-semibold text-text">Настроить посты</legend>
-          <p className="mt-1 text-[12px] leading-snug text-text-3">
-            {quickSettingsSummary({ ...settings, newsPerWeek: Math.min(settings.newsPerWeek, postFrequency) })}
-          </p>
-          <div className="mt-4 grid gap-x-6 gap-y-5 md:grid-cols-2">
+          <div className="mt-6 grid gap-7 md:grid-cols-2 lg:gap-10">
+            <div>
+              <label htmlFor="autopilot-horizon" className="text-[13px] font-semibold text-text">
+                Период
+              </label>
+              <select
+                id="autopilot-horizon"
+                value={planningWeeks}
+                onChange={(event) => onPlanningWeeksChange(Number(event.target.value))}
+                disabled={disabled || saving}
+                aria-describedby="autopilot-horizon-summary"
+                className="mt-3 h-11 w-full rounded-md border border-line bg-surface px-3 text-base font-semibold text-text outline-none transition-colors focus-visible:border-brand focus-visible:ring-2 focus-visible:ring-brand/20 disabled:cursor-not-allowed disabled:opacity-60 sm:text-[14px]"
+              >
+                {Array.from(
+                  { length: MAX_AUTOPILOT_PLANNING_WEEKS - MIN_AUTOPILOT_PLANNING_WEEKS + 1 },
+                  (_, index) => index + MIN_AUTOPILOT_PLANNING_WEEKS,
+                ).map((weeks) => (
+                  <option key={weeks} value={weeks}>
+                    {weeks} {plural(weeks, "неделя", "недели", "недель")}
+                  </option>
+                ))}
+              </select>
+              <p id="autopilot-horizon-summary" className="mt-2.5 text-[12px] leading-relaxed text-text-3" aria-live="polite">
+                {planningSummary}
+              </p>
+            </div>
             <QuickRange
               id="autopilot-news"
               label="Свежие события"
@@ -750,36 +807,36 @@ function PlanSettingsPanel({
               disabled={disabled || saving}
               onChange={(newsPerWeek) => onChange({ ...settings, newsPerWeek })}
             />
-            <QuickRange
+          </div>
+        </div>
+
+        <fieldset disabled={disabled || saving} className="mt-8 min-w-0">
+          <legend className="text-[14px] font-semibold text-text">Настроить посты</legend>
+          <div className="mt-5 grid grid-cols-[repeat(auto-fit,minmax(min(100%,23rem),1fr))] gap-7 lg:gap-10">
+            <QuickChoice
               id="autopilot-detail"
               label="Желаемый объём"
               hint="Аврора доведёт текст до выбранного диапазона и не оборвёт мысль."
-              min={1}
-              max={3}
               value={settings.detail}
-              valueLabel={settings.detail === 1 ? "коротко" : settings.detail === 3 ? "подробно" : "оптимально"}
+              options={[{ value: 1, label: "Коротко" }, { value: 2, label: "Оптимально" }, { value: 3, label: "Подробно" }]}
               disabled={disabled || saving}
               onChange={(detail) => onChange({ ...settings, detail })}
             />
-            <QuickRange
+            <QuickChoice
               id="autopilot-energy"
               label="Подача"
               hint="Без канцелярита, редакторских комментариев и кликбейта."
-              min={1}
-              max={3}
               value={settings.energy}
-              valueLabel={settings.energy === 1 ? "спокойно" : settings.energy === 3 ? "живо" : "разговорно"}
+              options={[{ value: 1, label: "Спокойно" }, { value: 2, label: "Разговорно" }, { value: 3, label: "Живо" }]}
               disabled={disabled || saving}
               onChange={(energy) => onChange({ ...settings, energy })}
             />
-            <QuickRange
+            <QuickChoice
               id="autopilot-emoji"
               label="Эмодзи"
               hint="Количество и набор будут меняться от поста к посту."
-              min={0}
-              max={2}
               value={settings.emoji}
-              valueLabel={settings.emoji === 0 ? "без эмодзи" : settings.emoji === 2 ? "заметно" : "умеренно"}
+              options={[{ value: 0, label: "Без эмодзи" }, { value: 1, label: "Умеренно" }, { value: 2, label: "Заметно" }]}
               disabled={disabled || saving}
               onChange={(emoji) => onChange({ ...settings, emoji })}
             />
@@ -788,25 +845,37 @@ function PlanSettingsPanel({
       </div>
 
       {saveError && (
-        <p className="mt-4 min-h-5 text-[13px] leading-relaxed text-danger-text" role="status" aria-live="polite">
+        <p className="mt-5 text-[13px] leading-relaxed text-danger-text" role="alert">
           {saveError}
         </p>
       )}
 
-      <div className="mt-5 flex flex-col-reverse gap-2 border-t border-line pt-4 sm:flex-row sm:items-center sm:justify-end">
-        <Button
-          type="button"
-          variant="outline"
-          onClick={onSave}
-          loading={saving}
-          disabled={disabled || !dirty}
-        >
-          Сохранить параметры
-        </Button>
-        <Button type="button" variant="brand" onClick={onBuild} disabled={disabled || saving}>
-          <Play className="h-[18px] w-[18px]" strokeWidth={2} aria-hidden />
-          {building ? "План собирается" : hasUsablePlan ? "Собрать новый план" : "Собрать план"}
-        </Button>
+      <div className="mt-7 flex flex-wrap items-center justify-between gap-4 border-t border-line pt-5">
+        <p className="text-[12px] text-text-3" role="status">
+          {saving ? "Сохраняем параметры…" : dirty ? "Есть несохранённые изменения" : "Параметры сохранены"}
+        </p>
+        <div className="flex w-full flex-col gap-2 sm:w-auto sm:flex-row sm:flex-wrap sm:items-center">
+          {expanded && (
+            <Button type="button" variant="ghost" onClick={closeSettings}>
+              Свернуть
+            </Button>
+          )}
+          {(expanded || dirty || saving) && (
+            <Button
+              type="button"
+              variant="secondary"
+              onClick={onSave}
+              loading={saving}
+              disabled={disabled || !dirty}
+            >
+              Сохранить параметры
+            </Button>
+          )}
+          <Button type="button" variant="primary" onClick={onBuild} disabled={disabled || saving}>
+            <Play className="h-[18px] w-[18px]" strokeWidth={2} aria-hidden />
+            {building ? "План собирается" : hasUsablePlan ? "Собрать новый план" : "Собрать план"}
+          </Button>
+        </div>
       </div>
     </section>
   );
