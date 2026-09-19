@@ -6,6 +6,7 @@ import { useCalendarData } from "./use-calendar-data";
 let failing = false;
 let delayed: ((response: Response) => void) | null = null;
 let shouldDelay = false;
+let delayedResource = "posts";
 function reply(input: RequestInfo | URL, init?: RequestInit) {
   const url=new URL(String(input),"http://localhost");
   const project=Number(new Headers(init?.headers).get("x-aurora-project-id"));
@@ -15,12 +16,27 @@ function reply(input: RequestInfo | URL, init?: RequestInit) {
   if(failing && second) return new Response(null,{status:503});
   return new Response(JSON.stringify({[resource]:range?[{id:(project*100)+(second?1:2),text:url.searchParams.get("from")}]:[],hasMore:range&&!second,nextCursor:range&&!second?"next":null}),{headers:{"x-aurora-project-id":String(project)}});
 }
-beforeEach(()=>{ failing=false; delayed=null; shouldDelay=false; setProjectTransport(7,true,1); vi.stubGlobal("fetch",vi.fn((input,init)=>{
-  if(shouldDelay && String(input).includes("/api/posts") && String(input).includes("cursor=")) return new Promise<Response>(resolve=>{delayed=resolve;});
+beforeEach(()=>{ failing=false; delayed=null; shouldDelay=false; delayedResource="posts"; setProjectTransport(7,true,1); vi.stubGlobal("fetch",vi.fn((input,init)=>{
+  if(shouldDelay && String(input).includes(`/api/${delayedResource}`) && String(input).includes("cursor=")) return new Promise<Response>(resolve=>{delayed=resolve;});
   return Promise.resolve(reply(input,init));
 })); });
 afterEach(()=>{cleanup();vi.unstubAllGlobals();});
 describe("calendar complete-view state",()=>{
+  it("keeps the saved draft date and version when an older range read finishes",async()=>{
+    const {result}=renderHook(()=>useCalendarData(7,"UTC","2030-01-01","2030-02-01",0));
+    await waitFor(()=>expect(result.current.ready).toBe(true));
+    shouldDelay=true;delayedResource="drafts";let pending!:Promise<void>;
+    act(()=>{pending=result.current.refresh();});
+    await waitFor(()=>expect(delayed).not.toBeNull());
+    const release=delayed!;
+    const draft=result.current.drafts.find(draft=>draft.id===702)!;
+    act(()=>result.current.updateDraft({...draft,scheduled_at:"2030-01-15T10:00:00Z",version:2}));
+    await act(async()=>{release(new Response(JSON.stringify({drafts:[],hasMore:false,nextCursor:null}),{headers:{"x-aurora-project-id":"7"}}));await pending;});
+    expect(result.current.drafts.find(draft=>draft.id===702)).toMatchObject({scheduled_at:"2030-01-15T10:00:00Z",version:2});
+    // Returning the same draft must use the new server version, without a reload.
+    act(()=>result.current.updateDraft({...draft,scheduled_at:"2030-01-01T10:00:00Z",version:3}));
+    expect(result.current.drafts.find(draft=>draft.id===702)).toMatchObject({scheduled_at:"2030-01-01T10:00:00Z",version:3});
+  });
   it("does not let an earlier range request undo an acknowledged move",async()=>{
     const {result}=renderHook(()=>useCalendarData(7,"UTC","2030-01-01","2030-02-01",0));
     await waitFor(()=>expect(result.current.ready).toBe(true));

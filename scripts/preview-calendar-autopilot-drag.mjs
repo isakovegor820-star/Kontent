@@ -50,5 +50,5 @@ const server=http.createServer(async(req,res)=>{
  }
  res.writeHead(200,{"content-type":"text/html"});res.end('<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><link rel="stylesheet" href="/style.css"><div id="root"></div><aside id="qa-status" role="status" style="position:fixed;bottom:0;background:white;border:2px solid blue;padding:12px;z-index:100">Изолированная проверка календаря</aside><script type="module" src="/bundle.js"></script>');
 });
-await new Promise(done=>server.listen(3317,"127.0.0.1",done));await evidence();
-console.log("Calendar fixture: http://127.0.0.1:3317/#calendar-real-12001");
+await new Promise(done=>server.listen(Number(process.env.CALENDAR_PREVIEW_PORT ?? 3317),"127.0.0.1",done));await evidence();
+console.log(`Calendar fixture: http://127.0.0.1:${server.address().port}/#calendar-real-12001`);
