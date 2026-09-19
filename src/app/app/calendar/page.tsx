@@ -10,6 +10,7 @@ import {
   useCallback,
   useEffect,
   useId,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -476,10 +477,18 @@ function PostCard({
   }, []);
 
   const pointerDragRef = useRef<ReturnType<typeof createCalendarLongPressDrag> | null>(null);
+  const dragCallbacksRef = useRef({ canMove, post, onPointerDragStart, onPointerDragMove, onPointerDragEnd, onPointerDragCancel });
+
+  useLayoutEffect(() => {
+    dragCallbacksRef.current = { canMove, post, onPointerDragStart, onPointerDragMove, onPointerDragEnd, onPointerDragCancel };
+  }, [canMove, post, onPointerDragStart, onPointerDragMove, onPointerDragEnd, onPointerDragCancel]);
 
   useEffect(() => {
+    // A refresh or toast changes props while the pointer is held. Keep the gesture
+    // alive and read the latest committed card and callbacks when it moves/drops.
     const pointerDrag = createCalendarLongPressDrag({
       onActivate: (point) => {
+        const { canMove, post, onPointerDragStart } = dragCallbacksRef.current;
         const rect = dragRectRef.current;
         if (!canMove || !rect || onPointerDragStart?.(post, { point, rect }) !== true) {
           return false;
@@ -487,14 +496,19 @@ function PostCard({
         if (activePointerTypeRef.current !== "mouse") lockTouchScroll();
         return true;
       },
-      onMove: (point) => onPointerDragMove?.(post, point),
+      onMove: (point) => {
+        const { post, onPointerDragMove } = dragCallbacksRef.current;
+        onPointerDragMove?.(post, point);
+      },
       onDrop: (point) => {
+        const { post, onPointerDragEnd } = dragCallbacksRef.current;
         unlockTouchScroll();
         onPointerDragEnd?.(post, point);
       },
       onCancel: () => {
+        suppressOpenUntilRef.current = Date.now() + 700;
         unlockTouchScroll();
-        onPointerDragCancel?.();
+        dragCallbacksRef.current.onPointerDragCancel?.();
       },
     }, { mouseActivation: "threshold" });
     pointerDragRef.current = pointerDrag;
@@ -504,21 +518,12 @@ function PostCard({
       if (pointerDragRef.current === pointerDrag) pointerDragRef.current = null;
       unlockTouchScroll();
     };
-  }, [
-    canMove,
-    lockTouchScroll,
-    onPointerDragCancel,
-    onPointerDragEnd,
-    onPointerDragMove,
-    onPointerDragStart,
-    post,
-    unlockTouchScroll,
-  ]);
+  }, [lockTouchScroll, unlockTouchScroll]);
 
   useEffect(() => {
     const pointerDrag = pointerDragRef.current;
-    if (!dragging && pointerDrag?.isActive()) pointerDrag.cancel();
-  }, [dragging]);
+    if ((!dragging || !canMove || moving) && pointerDrag?.isActive()) pointerDrag.cancel();
+  }, [canMove, dragging, moving]);
 
   const pointerPoint = (event: ReactPointerEvent<HTMLElement>): CalendarDragPoint => ({
     clientX: event.clientX,
@@ -1977,10 +1982,30 @@ export default function CalendarPage() {
             });
             if (!result.ok) {
               publicationFailure(result.error);
-              await s.refreshReal();
+              await refreshDrafts();
               return false;
             }
-            await s.refreshReal();
+            if (projectTransportSnapshot() !== requestScope) return false;
+            if (result.scheduledAt && result.scheduleRevision != null && result.operationStatus) {
+              // The calendar owns its range data. Refreshing the shared store merely
+              // starts another read; acknowledge every destination before unlocking drag.
+              for (const related of realCalendarPosts) {
+                if (related.publicationOperationId !== post.publicationOperationId) continue;
+                updatePost({
+                  id: realId(related.id),
+                  scheduled_at: result.scheduledAt,
+                  schedule_revision: result.scheduleRevision,
+                  operation_schedule_revision: result.scheduleRevision,
+                  publication_operation_status: result.operationStatus,
+                  scheduled_timezone: moved.timezone,
+                  scheduled_offset: moved.offset,
+                  scheduled_disambiguation: moved.disambiguation,
+                });
+              }
+            } else {
+              await refreshDrafts();
+            }
+            void s.refreshReal().catch(() => undefined);
             return true;
           }
           if (post.origin === "autopilot" && post.postScheduleRevision != null) {
@@ -2055,7 +2080,7 @@ export default function CalendarPage() {
       setDraggedPostId(null);
       setDragOverDay(null);
     }
-  }, [updateDraft, updatePost, fetch, canManageCalendarMove, calendarTimezone, serverDrafts, s, rescheduleServerDraft, reschedulePublication, publicationFailure, refreshDrafts]);
+  }, [updateDraft, updatePost, fetch, canManageCalendarMove, calendarTimezone, serverDrafts, realCalendarPosts, s, rescheduleServerDraft, reschedulePublication, publicationFailure, refreshDrafts]);
 
   const canDropPostOn = useCallback((post: DatedPost, day: Date) => {
     const timezone = calendarTimezone;

@@ -48,6 +48,9 @@ export function useCalendarData(projectId: number | undefined, timezone: string,
   }, [refresh, revision]);
   const visible = data?.key === key ? data : null;
   const updateDraft = useCallback((draft: ServerDraft) => {
+    // A range read started before this save must not restore the previous date/version.
+    if (active.current?.key !== key) return;
+    active.current.controller.abort();
     setData(previous => previous?.key === key ? { ...previous, drafts: previous.drafts.map(item => item.id === draft.id ? draft : item) } : previous);
   }, [key]);
   const updatePost = useCallback((post: Pick<RealPost, "id"> & Partial<RealPost>) => {
