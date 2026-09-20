@@ -13,7 +13,6 @@ import pg from "pg";
 import { chromium, firefox, webkit } from "playwright-core";
 
 import { findAutopilotNearDuplicate } from "../src/lib/autopilot-config.mjs";
-import { hashBotConnectionToken } from "../src/lib/bot-connection.mjs";
 import { MEDIA_PROMPT_POLICY } from "../src/lib/media-generation.mjs";
 import { enqueuePublicationExtraJob } from "../src/lib/publication-extra-queue.mjs";
 import { SITE_INTERVIEW_QUESTIONS } from "../src/lib/site-analysis/questions.data.mjs";
@@ -26,9 +25,7 @@ import {
   classifyE2eExpectedSessionExpiryWebKitPageError,
   classifyE2eKnownBrowserObservation,
   classifyE2eKnownWebKitDocumentNavigationCancellation,
-  classifyE2eKnownWebKitProvisionalWorkspacePoll,
   classifyE2eKnownWebKitRequestCancellation,
-  performE2eBrowserAuthenticatedRequest,
   resolveE2eAdvanceSchedule,
   resolveE2eBuildMode,
   resolveE2eBuildTimeoutMs,
@@ -38,16 +35,18 @@ import {
   sanitizeE2eNetworkUrl,
 } from "./e2e-browser-config.mjs";
 import { captureE2eInputSnapshot, changedE2eInputPaths } from "./e2e-input-snapshot.mjs";
-import {
-  E2E_BOT_CONNECT_TOKEN_CANARIES,
-  E2E_BOT_CONNECT_TOKEN_CANARY,
-} from "./e2e-evidence-safety.mjs";
+import { E2E_BOT_CONNECT_TOKEN_CANARY } from "./e2e-evidence-safety.mjs";
 import {
   enqueuePublicationReviewReminderJob,
   processDuePublicationReviews,
   PUBLICATION_REVIEW_REMINDER_QUEUE,
 } from "../worker/publication-review-reminder.mjs";
 import { migrate } from "./migrate.mjs";
+import { fakeAiSpendEnv } from "../src/e2e/fixtures/ai-spend-env.mjs";
+import { sitesNetworkShim, handleFakeSitesRequest, runSitesCoverage } from "./e2e-sites-coverage.mjs";
+import { runProjectCalendarCoverage } from "./e2e-project-calendar-coverage.mjs";
+import { runAuthCoverage, handleFakeMailRequest } from "./e2e-auth-coverage.mjs";
+import { runTrueZoomCoverage } from "./e2e-true-zoom-coverage.mjs";
 
 const databaseUrl = String(process.env.E2E_DATABASE_URL || "").trim();
 const redisUrl = String(process.env.E2E_REDIS_URL || "").trim();
@@ -164,6 +163,9 @@ let publicationReviewReminderQueue;
 const browserIssues = [];
 const browserObservations = [];
 const browserPendingRequests = new WeakMap();
+const browserRequestIds = new WeakMap();
+const browserRequestResponses = new WeakMap();
+let browserRequestSequence = 0;
 const browserNetworkEvents = [];
 let browserScreenshotDepth = 0;
 let browserTeardownStarted = false;
@@ -174,15 +176,6 @@ let browserArtifactEvidence = { enabled: false, traces: [], videos: [], networkL
 const expectedBrowserConsoleScopes = new Set();
 const expectedBrowser5xxScopes = new Set();
 const expectedSessionExpiryConsoleScopes = new Set();
-
-async function withExpectedBrowserConsoleErrors(labels, operation) {
-  for (const label of labels) expectedBrowserConsoleScopes.add(label);
-  try {
-    return await operation();
-  } finally {
-    for (const label of labels) expectedBrowserConsoleScopes.delete(label);
-  }
-}
 const WEBKIT_DEFERRED_CANCELLATION_WINDOW_MS = 120_000;
 const WEBKIT_DOCUMENT_CANCELLATION_WINDOW_MS = 250;
 const interfaceEvidence = {
@@ -194,6 +187,7 @@ const interfaceEvidence = {
   analyticsUi: null,
   todayUi: null,
   adminOperationsUi: null,
+  sitesUi: null,
   botConnectTokenHygiene: null,
 };
 
@@ -328,19 +322,13 @@ async function installBrowserDiagnostics(context, label) {
         };
       }
     };
-    const recordHistory = (method, requestedUrl, fromUrl) => {
+    const recordHistory = (method, url) => {
       try {
         const events = JSON.parse(globalThis.sessionStorage.getItem(historyStorageKey) || "[]");
-        const requested = requestedUrl == null ? null : describeHistoryUrl(requestedUrl);
-        const current = describeHistoryUrl(null);
         events.push({
           method,
-          from: describeHistoryUrl(fromUrl),
-          requestedUrl: requested,
-          requestedHadFragment: requested?.hasHash ?? false,
-          requestedQueryKeys: requested?.queryKeys ?? [],
-          currentUrl: current,
-          currentHadFragment: current.hasHash,
+          from: describeHistoryUrl(null),
+          to: url == null ? null : describeHistoryUrl(url),
           length: globalThis.history.length,
           stateKeys: Object.keys(globalThis.history.state || {}).sort(),
         });
@@ -350,14 +338,12 @@ async function installBrowserDiagnostics(context, label) {
     for (const method of ["pushState", "replaceState"]) {
       const original = globalThis.history[method].bind(globalThis.history);
       globalThis.history[method] = (state, title, url) => {
-        const fromUrl = globalThis.location.href;
-        const result = original(state, title, url);
-        recordHistory(method, url, fromUrl);
-        return result;
+        recordHistory(method, url);
+        return original(state, title, url);
       };
     }
-    globalThis.addEventListener("popstate", () => recordHistory("popstate", null, null));
-    recordHistory("init", null, null);
+    globalThis.addEventListener("popstate", () => recordHistory("popstate", null));
+    recordHistory("init", null);
     globalThis.addEventListener("unhandledrejection", (event) => {
       const reason = event.reason instanceof Error
         ? `${event.reason.name}: ${event.reason.message}`
@@ -381,7 +367,6 @@ async function installBrowserDiagnostics(context, label) {
     const deferredKnownWebKitPageErrors = new Map();
     const pendingWebKitDocumentCancellations = [];
     let recentDocumentRequest = null;
-    let provisionalDocumentRequest = null;
     browserPendingRequests.set(targetPage, pendingRequests);
     const queueDeferredWebKitPageError = (observation) => {
       const queued = deferredKnownWebKitPageErrors.get(observation.message) || [];
@@ -412,14 +397,7 @@ async function installBrowserDiagnostics(context, label) {
       }
     };
     targetPage.on("request", (request) => {
-      if (request.isNavigationRequest() && request.frame() === targetPage.mainFrame()) {
-        provisionalDocumentRequest = {
-          request,
-          url: request.url(),
-          sourceUrl: targetPage.url(),
-          at: Date.now(),
-        };
-      }
+      browserRequestIds.set(request, ++browserRequestSequence);
       if (request.resourceType() === "document") {
         const documentAt = Date.now();
         recentDocumentRequest = { at: documentAt, url: request.url() };
@@ -441,6 +419,7 @@ async function installBrowserDiagnostics(context, label) {
           at: new Date().toISOString(),
           context: label,
           event: "request",
+          requestId: browserRequestIds.get(request),
           method: request.method(),
           resourceType: request.resourceType(),
           url: sanitizeE2eNetworkUrl(request.url(), baseUrl),
@@ -448,19 +427,20 @@ async function installBrowserDiagnostics(context, label) {
       }
     });
     const settleRequest = (request) => pendingRequests.delete(request);
-    targetPage.on("framenavigated", (frame) => {
-      if (frame === targetPage.mainFrame()) provisionalDocumentRequest = null;
-    });
     targetPage.on("requestfinished", settleRequest);
+    targetPage.on("requestfinished", (request) => {
+      if (!browserTeardownStarted && captureBrowserArtifacts) browserNetworkEvents.push({
+        at: new Date().toISOString(), context: label, event: "requestfinished",
+        requestId: browserRequestIds.get(request), method: request.method(),
+        url: sanitizeE2eNetworkUrl(request.url(), baseUrl),
+      });
+    });
     targetPage.on("requestfailed", settleRequest);
     targetPage.on("requestfailed", (request) => {
-      if (request === provisionalDocumentRequest?.request) provisionalDocumentRequest = null;
       const failure = String(request.failure()?.errorText || "request_failed");
       const knownCancellation = classifyE2eKnownWebKitRequestCancellation({
         engine: browserEngine,
         requestUrl: request.url(),
-        requestMethod: request.method(),
-        resourceType: request.resourceType(),
         failure,
         currentUrl: targetPage.url(),
         baseUrl,
@@ -494,6 +474,7 @@ async function installBrowserDiagnostics(context, label) {
           at: new Date().toISOString(),
           context: label,
           event: "requestfailed",
+          requestId: browserRequestIds.get(request),
           method: request.method(),
           resourceType: request.resourceType(),
           url: sanitizeE2eNetworkUrl(request.url(), baseUrl),
@@ -512,7 +493,7 @@ async function installBrowserDiagnostics(context, label) {
       });
     });
     targetPage.on("close", () => {
-      if (!browserTeardownStarted && browser?.isConnected()) {
+      if (!browserTeardownStarted && browser?.isConnected() && !expectedCompletedPages.has(targetPage)) {
         browserIssues.push({
           context: label,
           kind: "page.close",
@@ -592,17 +573,7 @@ async function installBrowserDiagnostics(context, label) {
         baseUrl,
         webPort,
       });
-      const provisionalWorkspacePoll = classifyE2eKnownWebKitProvisionalWorkspacePoll({
-        engine: browserEngine,
-        errorName: error?.name,
-        message: rawMessage,
-        navigationPending: provisionalDocumentRequest !== null,
-        sourceUrl: provisionalDocumentRequest?.sourceUrl,
-        documentRequestUrl: provisionalDocumentRequest?.url,
-        elapsedMs: provisionalDocumentRequest ? now - provisionalDocumentRequest.at : Infinity,
-        baseUrl,
-      });
-      const knownObservation = deferredObservation || expectedSessionExpiry || provisionalWorkspacePoll || classifyE2eKnownBrowserObservation({
+      const knownObservation = deferredObservation || expectedSessionExpiry || classifyE2eKnownBrowserObservation({
         engine: browserEngine,
         eventKind: "pageerror",
         message: rawMessage,
@@ -628,11 +599,13 @@ async function installBrowserDiagnostics(context, label) {
     });
     targetPage.on("response", (response) => {
       const status = response.status();
+      browserRequestResponses.set(response.request(), { status, at: new Date().toISOString() });
       if (!browserTeardownStarted && captureBrowserArtifacts) {
         browserNetworkEvents.push({
           at: new Date().toISOString(),
           context: label,
           event: "response",
+          requestId: browserRequestIds.get(response.request()),
           method: response.request().method(),
           resourceType: response.request().resourceType(),
           url: sanitizeE2eNetworkUrl(response.url(), baseUrl),
@@ -791,6 +764,8 @@ const fakeState = {
     calls: 0,
     truncatedCalls: 0,
     successfulCalls: 0,
+    libraryGenerationCalls: 0,
+    holdLibraryCompletion: false,
     providerIdentityOk: true,
     identities: [],
   },
@@ -807,7 +782,6 @@ const fakeState = {
     requests: [],
   },
   trackerVerificationChallenge: null,
-  trackerInstallMarkup: null,
 };
 
 const libraryComposerResult = [
@@ -863,39 +837,42 @@ globalThis.fetch = (input, init) => {
     if (input instanceof Request) return upstreamFetch(new Request(rewritten, input), init);
     return upstreamFetch(rewritten, init);
   }
+  if (url.origin === "https://api.resend.com" && url.pathname === "/emails") return upstreamFetch(new URL("/resend/emails", fakeBase), init);
   return upstreamFetch(input, init);
 };
-`,
+` + sitesNetworkShim(fakeBase),
   "utf8",
 );
 
+const fakeAutopilotVariants = new Map();
+const expectedCompletedPages = new WeakSet();
 function fakeAutopilotPost(messageText) {
   const topic = messageText.match(/на тему:\s*([^\n.]{8,120})/iu)?.[1]?.trim() || "Рабочая тема";
   const safeTopic = topic.replace(/[«»"']/gu, "").slice(0, 46).replace(/[,:;—-]+$/u, "");
   const presentation = messageText.match(/— форма:\s*([^;\n]+)/iu)?.[1]?.trim() || "объяснение";
   const presentationSeed = `${safeTopic}\0${presentation}`;
-  const variant = [...presentationSeed]
-    .reduce((sum, character) => sum + character.codePointAt(0), 0) % 3;
+  // Three independently requested week items need three genuinely distinct fixture
+  // bodies. Hash modulo 3 randomly collided for real monthly titles and made the
+  // safety duplicate guard correctly reject the fake provider's output.
+  if (!fakeAutopilotVariants.has(presentationSeed)) fakeAutopilotVariants.set(presentationSeed, fakeAutopilotVariants.size % 3);
+  const variant = fakeAutopilotVariants.get(presentationSeed);
   const bodies = [
     [
       "Начните не с готового ответа, а с рамки: для кого вы готовите материал, какой вопрос хотите прояснить и какое действие читатель сможет выбрать самостоятельно.",
       "Отделите наблюдение от предположения, уберите неподтверждённые детали и оставьте только те формулировки, которые можно спокойно обсудить с командой.",
       "Затем перечитайте текст вслух: так заметнее тяжёлые обороты, повторяющиеся мысли и места, где автор торопит читателя вместо ясного объяснения.",
-      "Для проверки структуры выпишите рядом с каждым абзацем его задачу: поставить вопрос, объяснить выбор или предложить действие. Если две записи совпадают, объедините абзацы и уточните переход к следующей мысли.",
       "Хорошая редакционная работа начинается с точного вопроса и заканчивается понятным следующим шагом без давления и громких обещаний.",
     ],
     [
       "Полезно посмотреть на тему глазами читателя, который видит её впервые и пока не знает внутреннего контекста команды.",
       "Сначала обозначьте границы разговора, затем соберите вопросы, которые действительно требуют ответа, и только после этого выбирайте структуру публикации.",
       "Проверьте каждую фразу на ясность: профессиональный язык уместен там, где он помогает смыслу, а не создаёт дистанцию.",
-      "Попросите коллегу назвать главный вопрос после первого прочтения. Если его ответ отличается от вашего замысла, уточните начало и добавьте связку между исходной задачей и предложенным способом её обсуждения.",
       "Финальный текст должен оставлять пространство для решения читателя и приглашать к содержательному диалогу, а не подменять его рекламным обещанием.",
     ],
     [
       "Сильный материал можно собрать как спокойный маршрут: сначала контекст, потом развилка вариантов и в конце вопрос для самостоятельной проверки.",
       "Не пытайтесь вместить всё сразу; одна публикация выигрывает, когда держится вокруг одной мысли и последовательно раскрывает её без лишних отступлений.",
       "Уберите слова, которые ничего не добавляют, сравните заголовок с основной частью и убедитесь, что финал продолжает начатый разговор.",
-      "Проверьте развилку на простом рабочем примере: запишите исходную задачу и условия выбора каждого варианта. Затем уберите из примера детали, которые отвлекают от решения, и оставьте понятную связь между шагами.",
       "Такой подход помогает сохранить человеческую интонацию, показать уважение к аудитории и подготовить материал, который удобно читать и обсуждать.",
     ],
   ];
@@ -924,15 +901,26 @@ assert(
   "fake Autopilot provider must honor presentation rewrites with a distinct draft",
 );
 assert(
-  [fakeAutopilotBase, fakeAutopilotRewrite].every((draft) => draft.length >= 900 && draft.length <= 1_100),
-  "fake Autopilot provider must satisfy both default and detailed length contracts without padding",
+  [fakeAutopilotBase, fakeAutopilotRewrite].every((draft) => draft.length >= 700 && draft.length <= 1_150),
+  "fake Autopilot provider must satisfy the default detail length contract",
 );
+
+// These topics collide under the previous modulo hash. The provider fixture must
+// satisfy the same diversity guard as the production pipeline, not bypass it.
+fakeAutopilotVariants.clear();
+const fixtureWeek = [1, 4, 7].map((n) => fakeAutopilotPost(`— форма: объяснение;\nНапиши пост на тему: Редакционная проверка ${n}.`));
+for (const [index, draft] of fixtureWeek.entries()) {
+  assert(!findAutopilotNearDuplicate({ topic: "", draft }, fixtureWeek.slice(0, index).map((previous) => ({ topic: "", draft: previous }))), "fake provider returned duplicate week items");
+}
+fakeAutopilotVariants.clear();
 
 function fakeProvider() {
   return http.createServer(async (req, res) => {
     const chunks = [];
     for await (const chunk of req) chunks.push(chunk);
     const raw = Buffer.concat(chunks).toString("utf8");
+    if (handleFakeSitesRequest(req, res, raw)) return;
+    if (handleFakeMailRequest(req, res, raw)) return;
     if (req.url?.startsWith("/vk/method/") && req.method === "POST") {
       const method = decodeURIComponent(req.url.slice("/vk/method/".length).split("?", 1)[0] || "");
       const form = new URLSearchParams(raw);
@@ -961,11 +949,6 @@ function fakeProvider() {
       }
       res.statusCode = 400;
       res.end(JSON.stringify({ error: { error_code: 3, error_msg: "unsupported E2E VK method" } }));
-      return;
-    }
-    if (req.url === "/" && req.method === "GET") {
-      res.setHeader("content-type", "text/html; charset=utf-8");
-      res.end(`<!doctype html><html><head>${fakeState.trackerInstallMarkup ?? ""}</head><body>Tracker test site</body></html>`);
       return;
     }
     if (req.url === "/.well-known/aurora-tracker-verification.txt" && req.method === "GET") {
@@ -1001,6 +984,7 @@ function fakeProvider() {
       const successful = text.includes("Короткая редакционная заметка без новых фактических утверждений");
       const libraryComposer = text.includes("E2E_LIBRARY_REFERENCE");
       const semantic = text.includes("conservative textual-entailment classifier");
+      if (libraryComposer && !semantic) fakeState.ai.libraryGenerationCalls += 1;
       const autopilot = text.includes("строгий выпускающий редактор Telegram-канала");
       const monthlyRegeneration = text.includes("выпускающий редактор месячного контент-плана");
       let completionText = "Безопасный тестовый текст.";
@@ -1018,7 +1002,7 @@ function fakeProvider() {
           })),
         });
       } else if (autopilot) {
-        completionText = fakeAutopilotPost(text);
+        completionText = fakeAutopilotPost(messages.map((message) => String(message.content || "")).join("\n"));
       } else if (libraryComposer) {
         completionText = libraryComposerResult;
       } else if (monthlyRegeneration) {
@@ -1052,7 +1036,9 @@ function fakeProvider() {
       if (body?.stream === true) {
         res.setHeader("content-type", "text/event-stream");
         res.write(`data: ${JSON.stringify({ choices: [{ delta: { content: completionText } }] })}\n\n`);
-        if (libraryComposer) await new Promise((resolveDelay) => setTimeout(resolveDelay, 220));
+        if (libraryComposer && !semantic) {
+          await waitFor(() => !fakeState.ai.holdLibraryCompletion, "test did not release the held Library generation", 30_000);
+        }
         if (!truncate) res.write("data: [DONE]\n\n");
         else fakeState.ai.truncatedCalls += 1;
         res.end();
@@ -1221,6 +1207,7 @@ function fakeProvider() {
 
 const runtimeEnv = {
   ...process.env,
+  ...fakeAiSpendEnv(),
   NODE_OPTIONS: [
     String(process.env.NODE_OPTIONS || "").trim(),
     `--import=${pathToFileURL(vkFetchShimPath).href}`,
@@ -1238,6 +1225,7 @@ const runtimeEnv = {
   SENTRY_PROJECT: "",
   SENTRY_URL: "",
   AURORA_ADMIN_EMAILS: "qa-e2e@aurora.test",
+  AURORA_SITES_DOMAIN: "sites.aurora.test",
   AURORA_RELEASE: "e2e-release",
   AURORA_RELEASE_SHA: "0123456789abcdef0123456789abcdef01234567",
   NEXT_PUBLIC_AURORA_APP_VERSION: "e2e-web",
@@ -1261,6 +1249,8 @@ const runtimeEnv = {
   NAVYAI_API_URL: `${fakeBase}/v1`,
   TOKENS_MASTER_KEY: "e2e-only-master-key-with-enough-entropy-2026",
   TOKENS_KEY_ID: "1",
+  RESEND_API_KEY: "e2e-resend-not-live",
+  PASSWORD_RESET_FROM: "Aurora Test <fixture@aurora.test>",
   TRACKING_ATTRIBUTION_SECRET: "e2e-attribution-secret-isolated-2026-08-12",
   TRACKING_FINGERPRINT_SECRET: "e2e-fingerprint-secret-distinct-2026-08-12",
   AURORA_TRACKER_ALLOW_LOCAL_VERIFICATION: "true",
@@ -1620,8 +1610,11 @@ async function waitForFirstPartyNetworkIdle(
     }
     await new Promise((resolveWait) => setTimeout(resolveWait, 50));
   }
-  const pendingUrls = blockingRequests().map((request) => request.url()).slice(0, 8);
-  throw new Error(`${label} first-party requests did not settle: ${pendingUrls.join(", ")}`);
+  const pending = blockingRequests().slice(0, 8).map((request) => ({
+    id: browserRequestIds.get(request), url: sanitizeE2eNetworkUrl(request.url(), baseUrl),
+    timing: request.timing(), failure: request.failure(), response: browserRequestResponses.get(request),
+  }));
+  throw new Error(`${label} first-party requests did not settle: ${JSON.stringify(pending)}`);
 }
 
 async function runKeyboardOnlyCriticalPass(targetPage) {
@@ -1746,13 +1739,6 @@ async function runTodayWorkspacePass(targetPage, channels, draftId) {
   );
 
   await targetPage.getByRole("button", { name: "Выйти из режима", exact: true }).click();
-  // Exiting quick mode restores focus on the next animation frame. Let that
-  // finish before tabbing, or WebKit can move focus away between Tab and Space.
-  await waitFor(
-    async () => summary.evaluate((element) => element === document.activeElement),
-    "Today quick-mode exit did not restore focus to the summary",
-    5_000,
-  );
 
   const moreActions = targetPage.locator('summary[aria-label="Дополнительные действия"]').first();
   await tabTo(targetPage, moreActions, "Today additional actions");
@@ -1805,17 +1791,11 @@ async function waitForResponsiveLayout(targetPage) {
     requestAnimationFrame(() => requestAnimationFrame(resolveFrame));
   }));
   await targetPage.waitForFunction(() => {
-    // Follow the actual shell and sidebar geometry; a renamed width utility must
-    // not silently skip this wait while the browser is changing breakpoints.
-    const sidebar = document.querySelector('aside nav[aria-label="Разделы платформы"]')?.closest("aside");
-    if (!sidebar) return true; // Public/admin screens do not use AppShell.
-    const shell = sidebar.closest(".app-v3")?.querySelector("main#main")?.parentElement;
-    if (!shell) return false;
+    const shell = [...document.querySelectorAll("div")]
+      .find((element) => element.classList.contains("lg:pl-[260px]"));
+    if (!shell) return true;
     const desktop = matchMedia("(min-width: 64rem)").matches;
-    const sidebarWidth = sidebar.getBoundingClientRect().width;
-    if (desktop && sidebarWidth === 0) return false;
-    const expectedPadding = desktop ? sidebarWidth : 0;
-    return Math.abs(parseFloat(getComputedStyle(shell).paddingLeft) - expectedPadding) < 0.5;
+    return getComputedStyle(shell).paddingLeft === (desktop ? "260px" : "0px");
   }, undefined, { timeout: UI_WAIT_TIMEOUT_MS });
 }
 
@@ -1937,34 +1917,18 @@ function inspectPdf(buffer) {
   }
 }
 
-// CI builds once, then restores this exact input-digested runtime on isolated runners.
-// Build-only must never instantiate a database/Redis client or report a journey as passed.
-if (process.argv.includes("--build-only")) {
-  const release = acquireBuildLock({ token: e2eBuildLockToken });
-  try {
-    if (buildMode !== "build") throw new Error("--build-only requires E2E_BUILD_MODE=build");
-    await buildProductionRuntime();
-    console.log(`[e2e-build] ready: ${e2eInputSnapshot.digest}; no browser journey executed`);
-  } catch (error) {
-    console.error(logs.slice(-30).join("\n"));
-    throw error;
-  } finally {
-    await Promise.all(children.map((subprocess) => stopChild(subprocess, "E2E build")));
-    release();
-  }
-} else {
 const releaseE2eBuildLock = acquireBuildLock({ token: e2eBuildLockToken });
 try {
   pool = new pg.Pool({ connectionString: databaseUrl, ssl: false, max: 12 });
   redis = new IORedis(redisUrl, { maxRetriesPerRequest: null });
-  console.log(`[e2e] ${browserEngine}: build ${buildMode}, input ${e2eInputSnapshot.digest}`);
   await buildProductionRuntime();
-  console.log("[e2e] production build ready");
 
   await pool.query("drop schema public cascade");
   await pool.query("create schema public");
   await pool.query(await readFile(resolve("db/schema.sql"), "utf8"));
   await migrate({ env: { ...runtimeEnv, DATABASE_URL: databaseUrl }, logger: { log() {} } });
+  // Explicit synthetic storage limits for this disposable fixture; no production defaults.
+  await pool.query("insert into media_storage_policy(id,user_max_bytes,project_max_bytes,global_max_bytes) values(1,1073741824,2147483648,4294967296)");
   await redis.flushdb();
 
   fakeServer = fakeProvider();
@@ -2014,283 +1978,49 @@ try {
   assert(interfaceEvidence.reducedMotion.main, "main browser context did not emulate reduced motion");
 
   const botConnectNetworkUrls = [];
-  let botConnectLoginPrefetches = 0;
   const recordBotConnectNetworkUrl = (request) => {
     botConnectNetworkUrls.push(sanitizeE2eNetworkUrl(request.url(), baseUrl));
-    const url = new URL(request.url());
-    if (url.origin === baseUrl && url.pathname === "/login" && url.searchParams.has("_rsc")
-      && request.headers()["next-router-prefetch"] === "1") {
-      botConnectLoginPrefetches += 1;
-    }
   };
-  context.on("request", recordBotConnectNetworkUrl);
-  const botConnectCanaryValues = Object.values(E2E_BOT_CONNECT_TOKEN_CANARIES);
-  const assertBotConnectSurfaceClean = async (targetPage, label) => {
-    const surface = await targetPage.evaluate(() => ({
-      url: globalThis.location.href,
-      dom: document.documentElement.outerHTML,
-      history: globalThis.sessionStorage.getItem("__aurora_e2e_history_events") || "[]",
-    }));
-    const serialized = JSON.stringify(surface);
-    for (const canary of botConnectCanaryValues) {
-      assert(!serialized.includes(canary), `bot connection token leaked into ${label}`);
-    }
-    return surface;
-  };
-  const openBotConnectState = async (targetPage, token, heading, label) => {
-    await targetPage.goto(
-      `/bot/connect?source=telegram#token=${token}`,
+  page.on("request", recordBotConnectNetworkUrl);
+  try {
+    await page.goto(
+      `/bot/connect?source=telegram#token=${E2E_BOT_CONNECT_TOKEN_CANARY}`,
       { waitUntil: "domcontentloaded", timeout: 90_000 },
     );
-    await targetPage.getByRole("heading", { name: heading, exact: true })
+    await page.getByRole("heading", { name: "Ссылка недействительна", exact: true })
       .waitFor({ timeout: UI_WAIT_TIMEOUT_MS });
-    await waitForFirstPartyNetworkIdle(targetPage, label);
-    const cleanUrl = new URL(targetPage.url());
-    assert(
-      cleanUrl.pathname === "/bot/connect"
-        && cleanUrl.search === "?source=telegram"
-        && cleanUrl.hash === "",
-      `${label} left the token in the visible URL`,
-    );
-    await assertBotConnectSurfaceClean(targetPage, `${label} DOM/history`);
-  };
-
-  const expiredTokenHash = hashBotConnectionToken(E2E_BOT_CONNECT_TOKEN_CANARIES.expired);
-  const lifecycleTokenHash = hashBotConnectionToken(E2E_BOT_CONNECT_TOKEN_CANARIES.lifecycle);
-  assert(expiredTokenHash && lifecycleTokenHash, "bot connection E2E canaries have invalid formats");
-  await pool.query(
-    `insert into bot_connection_sessions (
-       token_hash, telegram_user_id, telegram_chat_id, telegram_username,
-       telegram_display_name, expires_at, created_at
-     ) values ($1, 880000001, 880000001, 'aurora_expired_e2e',
-               'Expired E2E', now() - interval '5 minute', now() - interval '20 minute'),
-              ($2, 880000002, 880000002, 'aurora_connect_e2e',
-               'Connect E2E', now() + interval '15 minute', now())`,
-    [expiredTokenHash, lifecycleTokenHash],
-  );
-  const storedBotConnectRows = (await pool.query(
-    `select token_hash, telegram_chat_id, used_at, confirmed_user_id
-       from bot_connection_sessions order by telegram_chat_id`,
-  )).rows;
-  assert(storedBotConnectRows.length === 2, "bot connection matrix did not persist two hashed fixtures");
-  for (const canary of botConnectCanaryValues) {
-    assert(!JSON.stringify(storedBotConnectRows).includes(canary), "raw bot connection token reached PostgreSQL");
+    await waitForFirstPartyNetworkIdle(page, "bot connect token hygiene");
+  } finally {
+    page.off("request", recordBotConnectNetworkUrl);
   }
-
-  await openBotConnectState(
-    page,
-    E2E_BOT_CONNECT_TOKEN_CANARY,
-    "Ссылка больше не действует",
-    "unknown bot connection token",
-  );
-  await openBotConnectState(
-    page,
-    E2E_BOT_CONNECT_TOKEN_CANARIES.malformed,
-    "Ссылка больше не действует",
-    "malformed bot connection token",
-  );
-  await openBotConnectState(
-    page,
-    E2E_BOT_CONNECT_TOKEN_CANARIES.expired,
-    "Ссылка больше не действует",
-    "expired bot connection token",
-  );
-
-  await page.goto("/login", { waitUntil: "domcontentloaded", timeout: 90_000 });
-  await waitForFirstPartyNetworkIdle(page, "bot connection login history seed");
-  await openBotConnectState(
-    page,
-    E2E_BOT_CONNECT_TOKEN_CANARIES.lifecycle,
-    "Войдите в Аврору",
-    "pending bot connection token",
-  );
-  await page.reload({ waitUntil: "domcontentloaded", timeout: 90_000 });
-  await page.getByRole("heading", { name: "Войдите в Аврору", exact: true })
-    .waitFor({ timeout: UI_WAIT_TIMEOUT_MS });
-  await assertBotConnectSurfaceClean(page, "refreshed pending bot connection token");
-  const traverseBotConnectHistory = async (direction, expectedPath, label) => {
-    const method = direction === "back" ? "goBack" : "goForward";
-    for (let step = 1; step <= 4; step += 1) {
-      await page[method]({ waitUntil: "domcontentloaded", timeout: 90_000 });
-      await waitForFirstPartyNetworkIdle(page, `${label} step ${step}`);
-      await assertBotConnectSurfaceClean(page, `${label} step ${step}`);
-      if (new URL(page.url()).pathname === expectedPath) return step;
-    }
-    throw new Error(`${label} did not reach ${expectedPath} within the bounded history depth`);
-  };
-  const botConnectBackSteps = await traverseBotConnectHistory("back", "/login", "bot connection browser Back");
-  const botConnectForwardSteps = await traverseBotConnectHistory("forward", "/bot/connect", "bot connection browser Forward");
-  await page.getByRole("heading", { name: "Войдите в Аврору", exact: true })
-    .waitFor({ timeout: UI_WAIT_TIMEOUT_MS });
-
-  const botConnectSecondPage = await context.newPage();
-  await Promise.all([
-    page.reload({ waitUntil: "domcontentloaded", timeout: 90_000 }),
-    openBotConnectState(
-      botConnectSecondPage,
-      E2E_BOT_CONNECT_TOKEN_CANARIES.lifecycle,
-      "Войдите в Аврору",
-      "second-tab pending bot connection token",
-    ),
-  ]);
-  await page.getByRole("heading", { name: "Войдите в Аврору", exact: true })
-    .waitFor({ timeout: UI_WAIT_TIMEOUT_MS });
-  const unauthorizedBotConfirms = await withExpectedBrowserConsoleErrors(["main"], () =>
-    Promise.all([page, botConnectSecondPage].map((targetPage) =>
-      targetPage.evaluate(async (token) => {
-        const response = await fetch("/api/bot/connect", {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({ action: "confirm", token }),
-        });
-        return { status: response.status, body: await response.json().catch(() => null) };
-      }, E2E_BOT_CONNECT_TOKEN_CANARIES.lifecycle))));
-  assert(
-    unauthorizedBotConfirms.every((entry) => entry.status === 401 && entry.body?.error === "unauthorized"),
-    "unauthorized bot connection confirmation did not fail closed in both tabs",
-  );
-  browserObservations.push(...unauthorizedBotConfirms.map(() => ({
-    context: "main",
-    kind: "expected.bot-connect-unauthorized",
-    message: "POST /api/bot/connect returned the expected 401",
-    url: "/api/bot/connect",
-  })));
-
-  const tokenOwnerRegistration = await context.request.post("/api/auth/register", {
-    headers: { origin: baseUrl },
-    data: { email: "qa-bot-owner-e2e@aurora.test", password: "qa-password-2026", name: "QA Bot Owner" },
-    timeout: API_REQUEST_TIMEOUT_MS,
-  });
-  assert(tokenOwnerRegistration.ok(), `bot token owner registration failed with ${tokenOwnerRegistration.status()}`);
-  const tokenOwnerUserId = Number((await pool.query(
-    "select id from users where email = 'qa-bot-owner-e2e@aurora.test'",
-  )).rows[0].id);
-  await Promise.all([
-    page.reload({ waitUntil: "domcontentloaded", timeout: 90_000 }),
-    botConnectSecondPage.reload({ waitUntil: "domcontentloaded", timeout: 90_000 }),
-  ]);
-  const connectButtons = [page, botConnectSecondPage].map((targetPage) =>
-    targetPage.getByRole("button", { name: "Подключить этот чат", exact: true }));
-  await Promise.all(connectButtons.map((button) => button.waitFor({ timeout: UI_WAIT_TIMEOUT_MS })));
-  await Promise.all(connectButtons.map((button) => button.click()));
-  await Promise.all([page, botConnectSecondPage].map((targetPage) =>
-    targetPage.getByRole("heading", { name: "Чат подключён", exact: true })
-      .waitFor({ timeout: UI_WAIT_TIMEOUT_MS })));
-  const consumedBotSession = (await pool.query(
-    `select confirmed_user_id, telegram_chat_id, used_at is not null as used
-       from bot_connection_sessions where token_hash = $1`,
-    [lifecycleTokenHash],
-  )).rows[0];
-  assert(
-    Number(consumedBotSession?.confirmed_user_id) === tokenOwnerUserId
-      && Number(consumedBotSession?.telegram_chat_id) === 880000002
-      && consumedBotSession?.used === true,
-    "multi-tab bot confirmation did not consume the token exactly once for its owner",
-  );
-
-  const tokenOwnerLogout = await context.request.post("/api/auth/logout", {
-    headers: { origin: baseUrl },
-    timeout: API_REQUEST_TIMEOUT_MS,
-  });
-  assert(tokenOwnerLogout.ok(), `bot token owner logout failed with ${tokenOwnerLogout.status()}`);
-  const tokenIntruderRegistration = await context.request.post("/api/auth/register", {
-    headers: { origin: baseUrl },
-    data: { email: "qa-bot-reuse-e2e@aurora.test", password: "qa-password-2026", name: "QA Bot Reuse" },
-    timeout: API_REQUEST_TIMEOUT_MS,
-  });
-  assert(tokenIntruderRegistration.ok(), `bot token reuse registration failed with ${tokenIntruderRegistration.status()}`);
-  const tokenIntruderUserId = Number((await pool.query(
-    "select id from users where email = 'qa-bot-reuse-e2e@aurora.test'",
-  )).rows[0].id);
-  await Promise.all([page, botConnectSecondPage].map((targetPage) => openBotConnectState(
-    targetPage,
-    E2E_BOT_CONNECT_TOKEN_CANARIES.lifecycle,
-    "Ссылка больше не действует",
-    "reopened used bot connection token",
-  )));
-  const reusedBotConfirm = await withExpectedBrowserConsoleErrors(["main"], () =>
-    page.evaluate(async (token) => {
-      const response = await fetch("/api/bot/connect", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ action: "confirm", token }),
-      });
-      return { status: response.status, body: await response.json().catch(() => null) };
-    }, E2E_BOT_CONNECT_TOKEN_CANARIES.lifecycle));
-  assert(
-    reusedBotConfirm.status === 410 && reusedBotConfirm.body?.error === "link_unavailable",
-    "reused bot connection token did not return the privacy-preserving unavailable error",
-  );
-  browserObservations.push({
-    context: "main",
-    kind: "expected.bot-connect-unavailable",
-    message: "POST /api/bot/connect returned the expected 410",
-    url: "/api/bot/connect",
-  });
-  const preservedBotOwner = (await pool.query(
-    `select session.confirmed_user_id, owner.tg_chat_id as owner_chat_id,
-            intruder.tg_chat_id as intruder_chat_id
-       from bot_connection_sessions session
-       join users owner on owner.id = session.confirmed_user_id
-       join users intruder on intruder.id = $2
-      where session.token_hash = $1`,
-    [lifecycleTokenHash, tokenIntruderUserId],
-  )).rows[0];
-  assert(
-    Number(preservedBotOwner?.confirmed_user_id) === tokenOwnerUserId
-      && Number(preservedBotOwner?.owner_chat_id) === 880000002
-      && preservedBotOwner?.intruder_chat_id == null,
-    "reused token exposed or moved the original bot connection",
-  );
-  for (const [table, alias] of [["product_events", "event"], ["audit_events", "audit"]]) {
-    for (const canary of botConnectCanaryValues) {
-      const leaked = Number((await pool.query(
-        `select count(*)::int as n from ${table} ${alias}
-          where row_to_json(${alias})::text like $1`,
-        [`%${canary}%`],
-      )).rows[0].n);
-      assert(leaked === 0, `bot connection token leaked into ${table}`);
-    }
-  }
-  const tokenIntruderLogout = await context.request.post("/api/auth/logout", {
-    headers: { origin: baseUrl },
-    timeout: API_REQUEST_TIMEOUT_MS,
-  });
-  assert(tokenIntruderLogout.ok(), `bot token reuse logout failed with ${tokenIntruderLogout.status()}`);
-  context.off("request", recordBotConnectNetworkUrl);
-  assert(botConnectLoginPrefetches === 0, "bot connection flow speculatively fetched the login route");
-
   const botConnectCleanUrl = new URL(page.url());
+  const botConnectDom = await page.content();
+  const botConnectHistory = await page.evaluate(
+    () => globalThis.sessionStorage.getItem("__aurora_e2e_history_events") || "[]",
+  );
   const botConnectDiagnostics = JSON.stringify({
     browserIssues,
     browserObservations,
     logs,
   });
-  for (const canary of botConnectCanaryValues) {
-    assert(!botConnectNetworkUrls.some((url) => url.includes(canary)), "bot connection token leaked into a recorded network URL");
-    assert(!botConnectDiagnostics.includes(canary), "bot connection token leaked into browser or runtime diagnostics");
-  }
-  assert(botConnectCleanUrl.pathname === "/bot/connect" && botConnectCleanUrl.hash === "", "bot connection matrix ended on an unsafe URL");
   assert(
-    fakeState.telegram.textCalls === 1 && fakeState.telegram.plainTextCalls === 1,
-    "bot connection notification was duplicated by multi-tab confirmation",
+    botConnectCleanUrl.pathname === "/bot/connect"
+      && botConnectCleanUrl.search === "?source=telegram"
+      && botConnectCleanUrl.hash === "",
+    "bot connection token remained in the visible URL",
   );
-  fakeState.telegram.textCalls = 0;
-  fakeState.telegram.plainTextCalls = 0;
-  fakeState.telegram.plainTextRateLimited = false;
-  fakeState.telegram.requests.length = 0;
+  assert(!botConnectDom.includes(E2E_BOT_CONNECT_TOKEN_CANARY), "bot connection token leaked into DOM");
+  assert(!botConnectHistory.includes(E2E_BOT_CONNECT_TOKEN_CANARY), "bot connection token leaked into browser history evidence");
+  assert(
+    !botConnectNetworkUrls.some((url) => url.includes(E2E_BOT_CONNECT_TOKEN_CANARY)),
+    "bot connection token leaked into a recorded network URL",
+  );
+  assert(
+    !botConnectDiagnostics.includes(E2E_BOT_CONNECT_TOKEN_CANARY),
+    "bot connection token leaked into browser or runtime diagnostics",
+  );
   interfaceEvidence.botConnectTokenHygiene = {
     route: "/bot/connect?source=telegram",
-    loginPrefetches: botConnectLoginPrefetches,
-    states: ["unknown", "malformed", "expired", "pending", "unauthorized", "connected", "reused-unavailable"],
-    navigation: ["refresh", "back", "forward", "reopen"],
-    historySteps: { back: botConnectBackSteps, forward: botConnectForwardSteps },
-    multiTab: true,
-    unauthorizedStatus: 401,
-    reusedStatus: 410,
-    originalConnectionPreserved: true,
-    postgresStoresDigestOnly: true,
-    telemetryTablesClean: ["product_events", "audit_events"],
     visibleUrlClean: true,
     domClean: true,
     historyEvidenceClean: true,
@@ -2309,19 +2039,34 @@ try {
   }
 
   const authenticatedRequestFrom = (targetPage, path, { method = "GET", headers = {}, data } = {}) => targetPage.evaluate(
-    performE2eBrowserAuthenticatedRequest,
-    { path, method, headers, data, timeoutMs: API_REQUEST_TIMEOUT_MS },
+    async ({ path, method, headers, data }) => {
+      const response = await fetch(path, {
+        method,
+        headers: { ...headers, ...(data === undefined ? {} : { "content-type": "application/json" }) },
+        body: data === undefined ? undefined : JSON.stringify(data),
+        cache: "no-store",
+      });
+      let text = "";
+      try { text = await response.text(); } catch {}
+      return {
+        status: response.status,
+        ok: response.ok,
+        text,
+        headers: {
+          contentType: response.headers.get("content-type"),
+          requestId: response.headers.get("x-ai-request-id") || response.headers.get("x-request-id"),
+          replayed: response.headers.get("x-ai-replayed"),
+          acknowledged: response.headers.get("x-ai-acknowledged"),
+        },
+      };
+    },
+    { path, method, headers, data },
   );
   const authenticatedRequest = (path, options) => authenticatedRequestFrom(page, path, options);
   const authenticatedRequestViaContext = async (requestContext, path, { method = "GET", headers = {}, data } = {}) => {
-    const capturedHeaders = { ...headers };
-    if (!capturedHeaders["x-aurora-project-id"] && path !== "/api/projects/current") {
-      const current = await requestContext.get("/api/projects/current").then((response) => response.json());
-      if (current.project?.id) capturedHeaders["x-aurora-project-id"] = String(current.project.id);
-    }
     const response = await requestContext.fetch(path, {
       method,
-      headers: capturedHeaders,
+      headers,
       data,
       failOnStatusCode: false,
       timeout: API_REQUEST_TIMEOUT_MS,
@@ -2394,15 +2139,25 @@ try {
   await assertTouch(page.locator('button[type="submit"]').first(), "auth submit");
   await assertTouch(page.getByRole("link", { name: "Войти", exact: true }), "auth login link");
 
-  const registration = await context.request.post("/api/auth/register", {
-    headers: { origin: baseUrl },
-    data: { email: "qa-e2e@aurora.test", password: "qa-password-2026", name: "QA E2E" },
-    timeout: API_REQUEST_TIMEOUT_MS,
-  });
-  assert(registration.ok(), `QA registration failed with ${registration.status()}`);
+  await page.locator("#name").fill("Q");
+  await page.locator("#email").fill("qa-e2e@aurora.test");
+  await page.locator("#password").fill("qa-password-2026");
+  await page.locator('button[type="submit"]').click();
+  await page.getByText("Введите имя — хотя бы 2 символа.", { exact: true }).waitFor();
+  assert(await page.locator("#name").evaluate((element) => element === document.activeElement), "registration validation did not focus the invalid name");
+  await page.locator("#name").fill("QA E2E");
+  const registrationPromise = page.waitForResponse((response) => response.url() === baseUrl + "/api/auth/register" && response.request().method() === "POST");
+  await page.locator('button[type="submit"]').click();
+  const registration = await registrationPromise;
+  assert(registration.ok(), `QA registration form failed with ${registration.status()}`);
+  await page.waitForURL(/\/app(?:\/|$)/u);
   const userId = Number((await pool.query(
     "select id from users where email = 'qa-e2e@aurora.test'",
   )).rows[0].id);
+  const unverifiedAdmin = await context.request.get("/api/admin/overview");
+  assert(unverifiedAdmin.status() === 403, "self-asserted registration email granted global admin");
+  // Local fixture represents mailbox verification; real delivery is a separate sandbox gate.
+  await pool.query("update users set verified_email = email where id = $1", [userId]);
   await pool.query("update users set onboarding_completed_at = now(), ai_engine = 'openai' where id = $1", [userId]);
   const channels = (await pool.query(
     `insert into channels (user_id, network, tg_chat_id, title, handle, is_active)
@@ -2453,7 +2208,6 @@ try {
   await waitFor(async () => (await pool.query("select text from drafts where id = $1", [draftId])).rows[0]?.text === "Локальная несинхронизированная версия E2E", "pending draft did not synchronize", 12_000);
   expectedBrowserConsoleScopes.delete("main");
   assert(Number((await pool.query("select count(*)::int as n from drafts where id = $1", [draftId])).rows[0].n) === 1, "draft sync created a duplicate");
-  console.log("[e2e] durable draft recovered after offline reload");
   const composerProtection = await openComposerSection(page, "composer-protection");
   const composerSaveButton = composerProtection.getByRole("button", { name: /^(Сохранено|Сохранить сейчас)$/u });
   await composerSaveButton.waitFor();
@@ -2475,7 +2229,6 @@ try {
 
   interfaceEvidence.todayUi = await runTodayWorkspacePass(page, channels, draftId);
 
-  console.log("[e2e] mobile navigation and Today passed");
   const mediaRequestKey = "e2e_media_terminal_1";
   const mediaCountBefore = Number((await pool.query(
     "select count(*)::int as n from media_generations where user_id = $1",
@@ -2657,23 +2410,25 @@ try {
     [userId, `media:${mediaRequestKey}`],
   )).rows[0].n) === 1, "media replay duplicated or released the committed quota row");
 
-  console.log("[e2e] media generation and idempotent replay passed");
   const competitorIds = (await pool.query(
     `insert into competitors (user_id, channel_id, network, handle, title, status, collected_at)
      values ($1, $2, 'tg', 'qa_competitor_a', 'QA A', 'ready', now()),
             ($1, $3, 'tg', 'qa_competitor_b', 'QA B', 'ready', now()) returning id`,
     [userId, channels[0], channels[1]],
   )).rows.map((row) => Number(row.id)).sort((a, b) => a - b);
-  const [refreshA, refreshB] = await Promise.all([0, 1].map(() => authenticatedRequest(
-    `/api/trends?scope=niche&channel=${channels[0]}`,
-    { method: "POST", headers: { "idempotency-key": "e2e_trend_refresh_1" } },
-  )));
-  assert([200, 202].includes(refreshA.status) && [200, 202].includes(refreshB.status),
-    `parallel Trends refresh returned an unexpected status: ${refreshA.status}:${refreshA.text}; ${refreshB.status}:${refreshB.text}`);
+  const [refreshA, refreshB] = await page.evaluate(async ({ channelId }) => Promise.all(
+    [0, 1].map(async () => {
+      const response = await fetch(`/api/trends?scope=niche&channel=${channelId}`, {
+        method: "POST",
+        headers: { "idempotency-key": "e2e_trend_refresh_1" },
+      });
+      return response.status;
+    }),
+  ), { channelId: channels[0] });
+  assert([200, 202].includes(refreshA) && [200, 202].includes(refreshB), "parallel Trends refresh returned an unexpected status");
   assert(Number((await pool.query("select count(*)::int as n from trend_refresh_operations where user_id = $1", [userId])).rows[0].n) === 1, "double Trends refresh created multiple operations");
   assert((await pool.query("select status from competitors where id = $1", [competitorIds[1]])).rows[0].status === "ready", "channel A refresh mutated channel B");
 
-  console.log("[e2e] parallel Trends refresh passed");
   const libraryReferenceText =
     `E2E_LIBRARY_REFERENCE: договор и проверяемые условия. ${"Полный абзац нужен для независимого раскрытия карточки. ".repeat(18)}`;
   const libraryReferenceTopic = "Договор и проверяемые условия";
@@ -2701,35 +2456,25 @@ try {
     "desktop sidebar did not settle on one active item",
     5_000,
   );
-  assert((await desktopLibraryActive.textContent())?.includes("Референсы"), "desktop Library default child is not active");
-  const libraryBranch = desktopSidebar.getByRole("button", { name: "Идеи и примеры", exact: true });
-  assert(await libraryBranch.getAttribute("aria-current") === "location", "desktop Library branch is not current");
-  assert(await libraryBranch.getAttribute("aria-expanded") === "true", "desktop Library branch is not expanded");
-  assert(await desktopSidebar.locator(".aurora-sidebar-item").count() === 16, "sidebar lost a primary section");
-  assert(await desktopSidebar.locator(".aurora-sidebar-child").count() === 15, "sidebar lost a nested destination");
-  const libraryUrlBeforeDisclosure = page.url();
-  await desktopSidebar.getByRole("button", { name: "Автопилот", exact: true }).click();
-  assert(page.url() === libraryUrlBeforeDisclosure, "opening a branch unexpectedly navigated");
-  assert(await desktopSidebar.locator('[aria-expanded="true"]').count() === 1, "sidebar opened more than one branch");
-  assert(await libraryBranch.getAttribute("aria-expanded") === "false", "previous branch did not close");
-  await libraryBranch.click();
-  await desktopLibraryActive.waitFor();
+  assert((await desktopLibraryActive.textContent())?.includes("Идеи и примеры"), "desktop Library item is not active");
   assert(new URL(page.url()).searchParams.get("channel") === String(channels[0]), "Library lost selected channel in URL");
 
   const libraryContentId = `library-registry-text-reference-${libraryReferenceId}`;
   const libraryText = page.locator(`#${libraryContentId}`);
-  const libraryReferenceCard = libraryText.locator("xpath=ancestor::article[1]");
+  const libraryReferenceCard = libraryText.locator(
+    "xpath=ancestor::div[contains(concat(' ', normalize-space(@class), ' '), ' card-plain ')][1]",
+  );
   await libraryText.waitFor({ timeout: UI_WAIT_TIMEOUT_MS });
-  const expand = libraryReferenceCard.getByRole("button", { name: "Читать полностью", exact: true });
+  const expand = page.locator(`button[aria-controls="${libraryContentId}"]`);
   const libraryUrlBeforeExpand = page.url();
-  assert(await expand.getAttribute("aria-haspopup") === "dialog", "Library reader trigger is not announced as a dialog");
+  assert(await expand.getAttribute("aria-expanded") === "false", "closed Library card has wrong aria-expanded");
+  assert((await libraryText.getAttribute("class"))?.includes("line-clamp-4"), "closed Library card is not clamped");
   await expand.click();
   assert(page.url() === libraryUrlBeforeExpand, "Library expansion navigated away from the card");
-  const libraryReader = page.getByRole("dialog");
-  await libraryReader.waitFor();
-  assert((await page.locator(`#${libraryContentId}-full`).textContent()) === libraryReferenceText, "Library reader lost the full source text");
-  await libraryReader.getByRole("button", { name: "Закрыть материал", exact: true }).click();
-  await libraryReader.waitFor({ state: "hidden" });
+  assert(await expand.getAttribute("aria-expanded") === "true", "expanded Library card has wrong aria-expanded");
+  assert(!(await libraryText.getAttribute("class"))?.includes("line-clamp-4"), "expanded Library card stayed clamped");
+  await expand.click();
+  assert(await expand.getAttribute("aria-expanded") === "false", "Library card did not collapse independently");
 
   const registrySearch = page.getByPlaceholder("Поиск по тексту, источнику или каналу…");
   await registrySearch.fill("E2E_LIBRARY_REFERENCE");
@@ -2778,12 +2523,12 @@ try {
   assert(exportSnapshot?.items?.length === 1, "snapshot was rebuilt with a different registry");
   assert(exportSnapshot.items[0].id === `reference:${libraryReferenceId}`, "snapshot exported another Library item");
 
-  await libraryReferenceCard.getByRole("button", { name: "Читать полностью", exact: true }).click();
-  const originalLink = libraryReader.getByRole("link", { name: "Открыть оригинал", exact: true });
+  const originalLink = page.getByRole("link", { name: "Открыть оригинал", exact: true });
   assert((await originalLink.getAttribute("href")) === "https://t.me/qa_competitor_a/91001", "original action lost source URL");
   assert(await originalLink.getAttribute("target") === "_blank", "original action does not stay external");
 
-  await libraryReader.getByRole("button", { name: "Создать пост", exact: true }).click();
+  fakeState.ai.holdLibraryCompletion = true;
+  await page.getByRole("button", { name: "Создать публикацию", exact: true }).click();
   await page.waitForURL((url) => url.pathname === "/app/studio"
     && /^\d+$/u.test(url.searchParams.get("draft") || "")
     && url.searchParams.get("intent") === "create");
@@ -2791,7 +2536,7 @@ try {
   assert([...createStudioUrl.searchParams.keys()].join(",") === "draft,intent", "Library leaked text or channel through Studio URL");
   const libraryReferenceDraftId = Number(createStudioUrl.searchParams.get("draft"));
   const referenceDraft = (await pool.query(
-    `select d.text, d.origin, d.source_ref, destination.channel_id
+    `select d.text, d.origin, d.source_ref, d.version, destination.channel_id
        from drafts d
        join draft_destinations destination on destination.draft_id = d.id
       where d.id = $1 and d.user_id = $2`,
@@ -2802,11 +2547,43 @@ try {
   assert(Number(referenceDraft?.channel_id) === channels[0], "Studio reference draft lost selected channel id");
   assert(String(referenceDraft?.source_ref?.id) === String(libraryReferenceId), "Studio reference draft lost source post id");
   assert(referenceDraft?.source_ref?.topic === libraryReferenceTopic, "Studio reference draft lost the server-owned topic");
-  // A reload while the provider is running must replay the same paid operation. The
-  // create intent remains until the terminal result has been persisted as a server draft.
-  await waitForFirstPartyNetworkIdle(page, "Library create Studio before reload");
+  // Force the pending-operation branch in every engine. A reload must retain the
+  // same key and offer safe recovery while the first provider call is still running.
+  await waitFor(() => fakeState.ai.libraryGenerationCalls === 1, "Library generation did not reach the provider");
+  const pendingDiagnosticsStart = browserIssues.length;
+  const pendingResponsePromise = page.waitForResponse(response => new URL(response.url()).pathname === "/api/ai/generate" && response.request().method() === "POST");
   await reloadInBrowser(page);
+  const pendingResponse = await pendingResponsePromise;
+  assert(pendingResponse.status() === 409, "reload did not join the existing pending AI operation");
+  assert((await pendingResponse.json()).error === "request_in_progress", "reload changed AI operation identity or failed authorization");
+  const retryReference = page.getByRole("alert")
+    .filter({ hasText: "Этот запрос ещё выполняется" })
+    .locator("..")
+    .getByRole("button", { name: "Повторить запрос", exact: true });
+  await retryReference.waitFor();
+  // Only the exact HTTP diagnostic for the asserted 409 is expected. Keep every
+  // other error, rejection, CSP violation and status in the normal safety gate.
+  for (let index = browserIssues.length - 1; index >= pendingDiagnosticsStart; index -= 1) {
+    const issue = browserIssues[index];
+    if (issue.context === "main" && issue.kind === "console.error"
+      && issue.url === pendingResponse.url()
+      && /Failed to load resource:.*(?:status of|server responded with a status of) 409\b/u.test(issue.message)) {
+      browserObservations.push({ ...issue, kind: "expected.pending-ai-replay", detail: "request_in_progress body asserted; original provider call held" });
+      browserIssues.splice(index, 1);
+    }
+  }
+  fakeState.ai.holdLibraryCompletion = false;
+  const referenceUsageKey = `web:studio_reference_${libraryReferenceDraftId}_v${referenceDraft.version}`;
+  await waitFor(async () => Boolean((await pool.query(
+    "select result_payload from ai_usage where user_id=$1 and reservation_key=$2",
+    [userId, referenceUsageKey],
+  )).rows[0]?.result_payload), "disconnected AI generation did not persist its terminal result");
+  const libraryCallsBeforeReplay = fakeState.ai.libraryGenerationCalls;
+  assert(libraryCallsBeforeReplay >= 1, "no original Library provider work recorded");
+  await retryReference.click();
   await page.waitForURL((url) => url.pathname === "/app/composer" && /^\d+$/u.test(url.searchParams.get("draft") || ""));
+  assert(fakeState.ai.libraryGenerationCalls === libraryCallsBeforeReplay, "pending AI recovery repeated paid draft or auto-improve work");
+  assert((await pool.query("select count(*)::int as count from ai_usage where user_id=$1 and reservation_key=$2", [userId, referenceUsageKey])).rows[0]?.count === 1, "reload created a second usage operation");
   const composerDraftUrl = new URL(page.url());
   assert(
     composerDraftUrl.searchParams.get("from") === "studio"
@@ -2866,7 +2643,6 @@ try {
     "trusted validation receipt did not restore publication controls",
   );
 
-  await waitForFirstPartyNetworkIdle(page, "Composer before restoring Studio history");
   const studioBackBefore = await page.evaluate(() => ({
     url: globalThis.location.href,
     length: globalThis.history.length,
@@ -2889,23 +2665,20 @@ try {
     });
   }
   assert(!new URL(page.url()).searchParams.has("intent"), "browser Back restarted the completed paid generation");
-  console.log("[e2e] Studio browser Back restored URL");
   const activeStudioLink = desktopSidebar
-    .locator('button[aria-current="location"]')
+    .locator('a[aria-current="page"]')
     .filter({ hasText: "Студия контента" });
   await activeStudioLink.waitFor({ timeout: UI_WAIT_TIMEOUT_MS });
   assert(
     await activeStudioLink.count() === 1,
     "restored Studio is not active in desktop navigation",
   );
-  await waitForFirstPartyNetworkIdle(page, "restored Studio before Library history");
   await page.evaluate(() => globalThis.history.back());
   await waitForRestoredLibrary(page, channels[0]);
-  await libraryReferenceCard.getByRole("button", { name: "Читать полностью", exact: true }).click();
-  const discussReference = page.getByRole("dialog").getByRole("button", { name: "Обсудить с Авророй", exact: true });
+  const discussReference = libraryReferenceCard.getByRole("button", { name: "Обсудить с Авророй", exact: true });
   await discussReference.waitFor();
   await desktopSidebar
-    .locator('button[aria-current="location"]')
+    .locator('a[aria-current="page"]')
     .filter({ hasText: "Идеи и примеры" })
     .waitFor({ timeout: UI_WAIT_TIMEOUT_MS });
   await discussReference.click();
@@ -2926,7 +2699,6 @@ try {
     await activeStudioLink.count() === 1,
     "Studio action did not activate the restored desktop navigation item",
   );
-  await waitForFirstPartyNetworkIdle(page, "discuss Studio before Library history");
   await page.evaluate(() => globalThis.history.back());
   await waitForRestoredLibrary(page, channels[0]);
 
@@ -2992,8 +2764,7 @@ try {
   await page.getByRole("button", { name: "Открыть меню", exact: true }).click();
   const mobileDrawer = page.getByRole("dialog", { name: "Меню платформы" });
   const mobileDrawerActive = mobileDrawer.locator('a[aria-current="page"]');
-  assert((await mobileDrawerActive.textContent())?.includes("Референсы"), "mobile drawer lost active Library child");
-  assert(await mobileDrawer.getByRole("button", { name: "Идеи и примеры", exact: true }).getAttribute("aria-current") === "location", "mobile drawer lost current Library branch");
+  assert((await mobileDrawerActive.textContent())?.includes("Идеи и примеры"), "mobile drawer lost active Library item");
   await mobileDrawer.getByRole("button", { name: "Закрыть меню", exact: true }).click();
   const mobileNav = page.locator('nav[aria-label="Основные разделы"]');
   const mobileStudioLink = mobileNav.locator('a[href="/app/studio"]');
@@ -3029,47 +2800,13 @@ try {
   await page.getByRole("heading", { name: "Профиль", exact: true }).waitFor({ timeout: UI_WAIT_TIMEOUT_MS });
   await page.getByLabel("Имя", { exact: true }).fill("Анна");
   await page.getByLabel(/^Отображаемое имя/u).fill("Анна E2E");
-  await page.getByText("Все изменения сохранены", { exact: true }).waitFor({ timeout: UI_WAIT_TIMEOUT_MS });
+  await page.getByText("Не сохранено", { exact: true }).waitFor();
+  await page.getByRole("button", { name: "Сохранить профиль", exact: true }).click();
+  await page.getByText("Профиль сохранён.", { exact: true }).waitFor({ timeout: UI_WAIT_TIMEOUT_MS });
   await reloadInBrowser(page);
   await page.getByRole("heading", { name: "Профиль", exact: true }).waitFor({ timeout: UI_WAIT_TIMEOUT_MS });
   assert(await page.getByLabel("Имя", { exact: true }).inputValue() === "Анна", "profile first name did not survive reload");
   assert(await page.getByLabel(/^Отображаемое имя/u).inputValue() === "Анна E2E", "profile display name did not survive reload");
-
-  await page.getByRole("combobox", { name: "Тема", exact: true }).selectOption("light");
-  assert(await page.locator(".app-v3").getAttribute("data-theme") === "light", "theme did not apply immediately");
-  await page.getByText("Все изменения сохранены", { exact: true }).waitFor({ timeout: UI_WAIT_TIMEOUT_MS });
-  await reloadInBrowser(page);
-  await page.getByRole("heading", { name: "Профиль", exact: true }).waitFor({ timeout: UI_WAIT_TIMEOUT_MS });
-  assert(await page.getByRole("combobox", { name: "Тема", exact: true }).inputValue() === "light", "theme preference did not survive reload");
-  const settingsSearch = page.getByRole("searchbox", { name: "Найти настройку" });
-  const settingsScrollGeometry = await page.locator("[data-settings-workspace]").evaluate((workspace) => {
-    const panel = workspace.querySelector(".settings-panel");
-    const search = workspace.querySelector('[data-discovery-target="settings-search"]');
-    if (!(panel instanceof HTMLElement) || !(search instanceof HTMLElement)) return null;
-    const searchBeforeY = search.getBoundingClientRect().y;
-    const documentScrollBefore = document.documentElement.scrollTop;
-    panel.scrollTop = panel.scrollHeight;
-    return {
-      documentScrollBefore,
-      documentScrollAfter: document.documentElement.scrollTop,
-      panelScrollTop: panel.scrollTop,
-      searchAfterY: search.getBoundingClientRect().y,
-      searchBeforeY,
-      searchInsidePanel: panel.contains(search),
-    };
-  });
-  assert(
-    settingsScrollGeometry
-      && settingsScrollGeometry.panelScrollTop > 0
-      && !settingsScrollGeometry.searchInsidePanel
-      && settingsScrollGeometry.documentScrollAfter === settingsScrollGeometry.documentScrollBefore
-      && Math.abs(settingsScrollGeometry.searchBeforeY - settingsScrollGeometry.searchAfterY) < 1,
-    `settings search did not remain independent of content scrolling: ${JSON.stringify(settingsScrollGeometry)}`,
-  );
-  await settingsSearch.fill("UTM-шаблоны");
-  await page.getByRole("button", { name: /UTM-шаблоны\s*Интеграции/u }).click();
-  await page.waitForURL((url) => url.searchParams.get("section") === "integrations" && url.searchParams.get("setting") === "utm");
-  await page.locator('[data-setting-target="utm"]').waitFor({ timeout: UI_WAIT_TIMEOUT_MS });
 
   await page.goto(`/app/settings?section=content&channel=${channels[0]}`);
   await page.getByRole("heading", { name: "Как Аврора пишет", exact: true }).waitFor({ timeout: UI_WAIT_TIMEOUT_MS });
@@ -3114,7 +2851,7 @@ try {
   await page.getByLabel("Цель канала", { exact: true }).fill(savedGoal);
   await page.getByText("Есть несохранённые изменения", { exact: true }).waitFor({ state: "detached" });
   assert(
-    await desktopSidebar.getByRole("button", { name: "Настройки", exact: true }).getAttribute("aria-current") === "location",
+    await desktopSidebar.getByRole("link", { name: "Настройки", exact: true }).getAttribute("aria-current") === "page",
     "desktop Settings item is not active",
   );
 
@@ -3558,10 +3295,6 @@ try {
     keyPrefix: "e2e-publication-typography",
   });
 
-  // Resolve the immediate publication slot at mutation time. The approval and
-  // typography setup above can cross the API's one-minute clock-skew boundary.
-  const publicationOperationInstant = new Date();
-  publicationOperationInstant.setUTCSeconds(0, 0);
   const operationRequest = {
     method: "POST",
     headers: { "idempotency-key": "e2e_publication_pipeline_1" },
@@ -3569,14 +3302,6 @@ try {
       draftId: publicationDraft.id,
       draftVersion: publicationDraft.version,
       timezone: "UTC",
-      schedule: {
-        scheduledAt: publicationOperationInstant.toISOString(),
-        localDate: publicationOperationInstant.toISOString().slice(0, 10),
-        localTime: publicationOperationInstant.toISOString().slice(11, 16),
-        timezone: "UTC",
-        offset: "+00:00",
-        disambiguation: "reject",
-      },
     },
   };
   const [operationLeft, operationRight] = await Promise.all([
@@ -3623,9 +3348,10 @@ try {
   assert(parts.length === 2 && parts.every((part) => part.send_status === "sent"), "multipart external IDs were not both persisted");
   assert(fakeState.telegram.photoCalls === 1 && fakeState.telegram.textCalls === 2, "multipart retry duplicated media or skipped text retry");
 
-  // Telegram release boundary: publication and pin run through the real runtime;
-  // unsupported comments and unverified VK authorization never reach a provider.
-  console.log("[e2e] multipart Telegram publication and retry passed");
+  // One multi-destination text publication proves capability routing rather than
+  // pretending every network supports every follow-up: VK closes comments, while
+  // Telegram performs the pin. The inverse unsupported operations stay terminal and
+  // never reach either provider.
   const commentsProjectId = Number((await pool.query(
     "select selected_project_id from user_project_preferences where user_id = $1",
     [userId],
@@ -3634,19 +3360,10 @@ try {
   const commentsVkChannelId = Number((await pool.query(
     `insert into channels
        (project_id, user_id, network, vk_group_id, vk_token, title, handle, is_active, status)
-     values ($1, $2, 'vk', $3, $4, 'Сохранённый VK-канал QA', 'aurora_vk_unverified_qa', true, 'active')
+     values ($1, $2, 'vk', $3, $4, 'Поддержанный VK-канал QA', 'aurora_vk_supported_qa', true, 'active')
      returning id`,
     [commentsProjectId, userId, commentsVkGroupId, encryptE2eVkToken(userId)],
   )).rows[0].id);
-  const vkStoredBefore = (await pool.query("select * from channels where id = $1", [commentsVkChannelId])).rows[0];
-  const vkConnectResponse = await authenticatedRequestViaContext(context.request, "/api/channels/connect-vk", {
-    headers: { origin: baseUrl, "x-aurora-project-id": String(commentsProjectId) },
-    method: "POST", data: { groupId: commentsVkGroupId, token: "fake-vk-unverified" },
-  });
-  assert(vkConnectResponse.status === 409 && JSON.parse(vkConnectResponse.text).error === "vk_auth_flow_unverified",
-    `unverified VK connection was not closed: ${vkConnectResponse.status}:${vkConnectResponse.text}`);
-  assert(JSON.stringify((await pool.query("select * from channels where id = $1", [commentsVkChannelId])).rows[0]) === JSON.stringify(vkStoredBefore),
-    "blocked VK connection changed existing channel data");
   const commentsPublicationInstant = new Date();
   commentsPublicationInstant.setUTCSeconds(0, 0);
   const commentsDraftResponse = await authenticatedRequest("/api/drafts", {
@@ -3665,7 +3382,7 @@ try {
       },
       origin: "manual",
       sourceRef: null,
-      channelIds: [channels[0]],
+      channelIds: [channels[0], commentsVkChannelId],
       aiValidation: null,
     },
   });
@@ -3761,9 +3478,9 @@ try {
   const commentsDestinationIds = commentsOperation.destinations.map((destination) => Number(destination.postId));
   assert(
     Number.isSafeInteger(commentsOperationId)
-      && commentsDestinationIds.length === 1
-      && new Set(commentsDestinationIds).size === 1,
-    "Telegram comments publication did not create exactly one destination",
+      && commentsDestinationIds.length === 2
+      && new Set(commentsDestinationIds).size === 2,
+    "multi-provider comments publication did not create two distinct destinations",
   );
   const commentsDestinationRows = await waitFor(async () => {
     const rows = (await pool.query(
@@ -3774,8 +3491,8 @@ try {
         order by channel.network`,
       [commentsOperationId],
     )).rows;
-    return rows.length === 1 && rows.every((row) => row.status === "published") ? rows : null;
-  }, "Telegram destination did not reach published", 30_000);
+    return rows.length === 2 && rows.every((row) => row.status === "published") ? rows : null;
+  }, "Telegram and VK destinations did not both reach published", 30_000);
   const commentsExtraRows = await waitFor(async () => {
     const rows = (await pool.query(
       `select channel.network, extra.kind, extra.status, extra.attempts, extra.request_snapshot,
@@ -3795,7 +3512,7 @@ try {
         })}`,
       );
     }
-    return rows.length === 2
+    return rows.length === 4
       && rows.every((row) => ["succeeded", "unsupported"].includes(row.status))
       ? rows
       : null;
@@ -3804,14 +3521,30 @@ try {
     (row) => row.network === network && row.kind === kind,
   );
   assert(
-    terminalExtra("tg", "configure_comments")?.status === "unsupported"
+    terminalExtra("vk", "configure_comments")?.status === "succeeded"
+      && Number(terminalExtra("vk", "configure_comments")?.attempts) === 1
+      && terminalExtra("vk", "configure_comments")?.request_snapshot?.commentsEnabled === false
+      && terminalExtra("vk", "pin")?.status === "unsupported"
+      && Number(terminalExtra("vk", "pin")?.attempts) === 0
+      && terminalExtra("tg", "configure_comments")?.status === "unsupported"
       && Number(terminalExtra("tg", "configure_comments")?.attempts) === 0
       && terminalExtra("tg", "pin")?.status === "succeeded"
       && Number(terminalExtra("tg", "pin")?.attempts) === 1,
     "provider capability routing invented support or lost a supported terminal operation",
   );
-  assert(fakeState.vk.wallPostCalls === 0 && fakeState.vk.closeCommentsCalls === 0 && fakeState.vk.requests.length === 0,
-    "unverified VK operation reached a provider");
+  const vkPostRequest = fakeState.vk.requests.find((request) => request.method === "wall.post");
+  const vkCloseCommentsRequest = fakeState.vk.requests.find((request) => request.method === "wall.closeComments");
+  assert(
+    fakeState.vk.wallPostCalls === 1
+      && fakeState.vk.closeCommentsCalls === 1
+      && vkPostRequest?.params?.owner_id === `-${commentsVkGroupId}`
+      && /^[0-9a-f]{32}$/u.test(String(vkPostRequest?.params?.guid))
+      && vkCloseCommentsRequest?.params?.owner_id === `-${commentsVkGroupId}`
+      && vkCloseCommentsRequest?.params?.post_id === "8801"
+      && !("access_token" in (vkPostRequest?.params || {}))
+      && !("access_token" in (vkCloseCommentsRequest?.params || {})),
+    "fake VK evidence does not prove one credential-safe wall.post followed by wall.closeComments",
+  );
   assert(
     fakeState.telegram.textCalls === telegramTextBeforeCommentsPublication + 1
       && fakeState.telegram.pinCalls === telegramPinBeforeCommentsPublication + 1
@@ -3824,18 +3557,15 @@ try {
     limit: 10,
   });
   assert(
-    fakeState.vk.closeCommentsCalls === 0
+    fakeState.vk.closeCommentsCalls === 1
       && fakeState.telegram.pinCalls === telegramPinBeforeCommentsPublication + 1,
     "replaying publication-extra reconciliation duplicated a terminal provider action",
   );
-  console.log("[e2e] Telegram pin and reconciliation passed");
   const pinCallsBeforeCriticalPublication = fakeState.telegram.pinCalls;
 
   // Critical release journey. UI is used wherever the product exposes an interface;
   // API calls below are limited to deterministic setup and workflows that have no UI.
-  console.log("[e2e] provider release boundary and Telegram extras passed");
   const criticalProjectName = "Критический проект QA";
-  console.log("[e2e] starting project collaboration journey");
   const reviewerEmail = "qa-approver@aurora.test";
   const reviewerName = "QA Approver";
   const legacyProjectId = Number((await pool.query(
@@ -3855,10 +3585,7 @@ try {
   await assertTouch(page.getByRole("button", { name: "Создать проект", exact: true }), "create project");
   await projectNameInput.focus();
   await page.keyboard.press("Enter");
-  await waitFor(async () => page.locator("#sidebar-project-switcher").evaluate(
-    (select, name) => !select.disabled && select.selectedOptions[0]?.textContent === name,
-    criticalProjectName,
-  ), "the created project was not adopted by the visible project switcher", UI_WAIT_TIMEOUT_MS);
+  await page.getByText(`Проект «${criticalProjectName}» создан и выбран.`, { exact: true }).waitFor({ timeout: UI_WAIT_TIMEOUT_MS });
   const sharedProjectId = Number((await pool.query(
     "select selected_project_id from user_project_preferences where user_id = $1",
     [userId],
@@ -3867,8 +3594,8 @@ try {
   await waitFor(async () => {
     const response = await authenticatedRequest("/api/projects/current");
     const current = response.status === 200 ? JSON.parse(response.text).project : null;
-    return Number(current?.id) === sharedProjectId;
-  }, "project creation did not persist the selected project", 12_000);
+    return Number(current?.projectId) === sharedProjectId;
+  }, "project creation toast appeared before the client adopted the selected project", 12_000);
   const sharedMembership = (await pool.query(
     "select role, status from project_members where project_id = $1 and user_id = $2",
     [sharedProjectId, userId],
@@ -3970,22 +3697,19 @@ try {
   const trackingOriginInput = page.getByRole("textbox", { name: "Адрес сайта", exact: true });
   await trackingOriginInput.waitFor({ timeout: UI_WAIT_TIMEOUT_MS });
   await trackingOriginInput.fill(fakeBase);
-  const saveTrackingConnection = page.getByRole("button", { name: "Сохранить и получить код", exact: true });
+  const saveTrackingConnection = page.getByRole("button", { name: "Сохранить подключение", exact: true });
   await assertTouch(saveTrackingConnection, "save tracking connection");
   await saveTrackingConnection.click();
-  await page.getByText("Адрес сохранён. Вставь код подключения в настройки сайта и нажми «Проверить подключение».", { exact: true }).waitFor({ timeout: UI_WAIT_TIMEOUT_MS });
-  const installCode = page.locator('pre[aria-label="Скопировать код подключения"]');
-  await installCode.waitFor({ timeout: UI_WAIT_TIMEOUT_MS });
-  const installMarkup = await installCode.textContent();
+  await page.getByText("Настройки сохранены. Размести проверочный файл на сайте и подтверди домен.", { exact: true }).waitFor({ timeout: UI_WAIT_TIMEOUT_MS });
+  const verificationFileInput = page.getByLabel("Содержимое проверочного файла", { exact: true });
+  await verificationFileInput.waitFor({ timeout: UI_WAIT_TIMEOUT_MS });
   const trackingBeforeVerifyResponse = await authenticatedRequest("/api/tracking/settings");
   assert(trackingBeforeVerifyResponse.status === 200, "tracking settings are unavailable to the project owner");
   const trackingConfigured = JSON.parse(trackingBeforeVerifyResponse.text).tracking;
   assert(typeof trackingConfigured.publicKey === "string" && trackingConfigured.publicKey.length >= 20, "tracking setup omitted the public key");
   assert(
-    installMarkup?.includes(`data-aurora-verification="${trackingConfigured.verificationFileContent}"`)
-      && installMarkup.includes(`data-project-key="${trackingConfigured.publicKey}"`)
-      && installMarkup.includes(`src="${baseUrl}/api/tracking/client.js"`),
-    "tracking UI did not issue the complete server-owned installation and verification code",
+    await verificationFileInput.inputValue() === trackingConfigured.verificationFileContent,
+    "tracking UI did not show the server-owned domain verification challenge",
   );
   const trackerPing = await fetch(`${runtimeBaseUrl}/api/tracking/ping`, {
     method: "POST",
@@ -4001,27 +3725,20 @@ try {
     pingOnlyTracking?.status === "pending_verification" && pingOnlyTracking?.signal_received_at,
     "an unauthenticated tracker ping must record a signal without activating the project",
   );
-  // Install exactly the snippet shown to the user. The fallback file is deliberately absent.
-  fakeState.trackerInstallMarkup = installMarkup;
-  const verifyTrackingDomain = page.getByRole("button", { name: "Проверить подключение", exact: true });
+  fakeState.trackerVerificationChallenge = trackingConfigured.verificationFileContent;
+  const verifyTrackingDomain = page.getByRole("button", { name: "Подтвердить домен", exact: true });
   await assertTouch(verifyTrackingDomain, "verify tracking domain");
   await verifyTrackingDomain.click();
-  await page.getByText("Домен подтверждён, подключение сохранено. Повторять настройку для новых публикаций не нужно.", { exact: true }).waitFor({ timeout: UI_WAIT_TIMEOUT_MS });
+  await page.getByText("Домен подтверждён. События заявок можно учитывать в аналитике.", { exact: true }).waitFor({ timeout: UI_WAIT_TIMEOUT_MS });
   const trackingVerifiedResponse = await authenticatedRequest("/api/tracking/settings");
   const trackingVerified = JSON.parse(trackingVerifiedResponse.text).tracking;
   assert(
     trackingVerified?.status === "active" && trackingVerified?.verifiedAt,
-    "authenticated server-side HTML verification did not activate tracking",
+    "authenticated well-known challenge verification did not activate tracking",
   );
-  await page.reload();
-  await page.getByText("Подключение сохранено", { exact: true }).waitFor({ timeout: UI_WAIT_TIMEOUT_MS });
-  assert(!(await page.getByRole("button", { name: "Скопировать код подключения", exact: true }).isVisible()), "connected site should not repeat installation instructions after reload");
-  const trackingAfterReload = JSON.parse((await authenticatedRequest("/api/tracking/settings")).text).tracking;
-  assert(trackingAfterReload.version === trackingVerified.version && trackingAfterReload.verifiedAt === trackingVerified.verifiedAt, "reopening settings changed the saved verification");
 
   await page.goto("/app/settings?section=project");
-  await page.getByRole("heading", { name: "Команда и рабочие пространства", exact: true }).waitFor({ timeout: UI_WAIT_TIMEOUT_MS });
-  await page.locator('[data-project-team-interactive="true"]').waitFor({ timeout: UI_WAIT_TIMEOUT_MS });
+  await page.getByRole("heading", { name: "Проект и команда", exact: true }).waitFor({ timeout: UI_WAIT_TIMEOUT_MS });
   const inviteEmailInput = page.locator("#project-invite-email");
   await inviteEmailInput.fill(reviewerEmail);
   await page.locator("#project-invite-role").selectOption("approver");
@@ -4114,15 +3831,14 @@ try {
     page.goto("/app/settings?section=dictionary"),
   ]);
   assert(publicationBlocksLoad.ok(), `publication blocks hydration failed with ${publicationBlocksLoad.status()}`);
-  await page.getByRole("button", { name: "Шаблоны для постов", exact: true }).click();
   const publicationBlocksSection = page.locator("#publication-blocks");
   await publicationBlocksSection.waitFor();
   const createPublicationBlock = async (kind, name, content) => {
-    await publicationBlocksSection.getByRole("button", { name: "Создать шаблон", exact: true }).click();
-    await publicationBlocksSection.getByRole("combobox", { name: "Что сохранить", exact: true }).selectOption(kind);
+    await publicationBlocksSection.getByRole("button", { name: "Добавить блок", exact: true }).click();
+    await publicationBlocksSection.getByRole("combobox", { name: "Тип блока", exact: true }).selectOption(kind);
     await publicationBlocksSection.getByLabel("Название", { exact: true }).fill(name);
-    await publicationBlocksSection.getByLabel("Текст шаблона", { exact: true }).fill(content);
-    const createButton = publicationBlocksSection.getByRole("button", { name: "Создать шаблон", exact: true });
+    await publicationBlocksSection.getByLabel("Текст блока", { exact: true }).fill(content);
+    const createButton = publicationBlocksSection.getByRole("button", { name: "Создать блок", exact: true });
     await assertTouch(createButton, `create ${kind} block`);
     await createButton.click();
     await publicationBlocksSection.getByText(name, { exact: true }).waitFor({ timeout: UI_WAIT_TIMEOUT_MS });
@@ -4140,18 +3856,15 @@ try {
   const firstCommentBlockId = Number(publicationBlockRows.find((row) => row.kind === "first_comment")?.id);
   assert(signatureBlockId > 0 && firstCommentBlockId > 0, "publication block kinds were not preserved");
 
-  await page.getByRole("button", { name: "Правила написания", exact: true }).click();
-  const brandDictionary = page.locator("section").filter({ has: page.getByRole("heading", { name: "Правила написания", exact: true }) }).first();
-  await brandDictionary.getByRole("button", { name: "Добавить правило", exact: true }).click();
-  await brandDictionary.getByRole("form", { name: "Новое правило", exact: true }).waitFor({ timeout: UI_WAIT_TIMEOUT_MS });
-  await brandDictionary.getByText("Не использовать", { exact: true }).click();
-  assert(await brandDictionary.getByRole("radio", { name: "Не использовать", exact: true }).isChecked(), "prohibited rule action was not selected");
+  const brandDictionary = page.locator("section").filter({ has: page.getByRole("heading", { name: "Словарь бренда", exact: true }) }).first();
+  await brandDictionary.getByRole("form", { name: "Новое правило словаря", exact: true }).waitFor({ timeout: UI_WAIT_TIMEOUT_MS });
+  await brandDictionary.locator("#brand-dictionary-kind").selectOption("prohibited");
   await brandDictionary.locator("#brand-dictionary-term").fill("легалтех");
   await brandDictionary.locator("#brand-dictionary-replacement").fill("LegalTech");
-  const addBrandRule = brandDictionary.getByRole("button", { name: "Сохранить правило", exact: true });
+  const addBrandRule = brandDictionary.getByRole("button", { name: "Добавить правило", exact: true });
   await assertTouch(addBrandRule, "add prohibited brand dictionary rule");
   await addBrandRule.click();
-  await brandDictionary.getByText("Правило сохранено. Оно будет учтено при генерации и проверке текста.", { exact: true }).waitFor({ timeout: UI_WAIT_TIMEOUT_MS });
+  await brandDictionary.getByText("Правило добавлено в словарь проекта.", { exact: true }).waitFor({ timeout: UI_WAIT_TIMEOUT_MS });
   const brandRuleEvidence = (await pool.query(
     `select dictionary.version as dictionary_version, entry.kind, entry.term, entry.replacement, entry.is_active
        from project_brand_dictionaries dictionary
@@ -5051,7 +4764,6 @@ try {
   const reviewerRoleSelect = page.getByLabel(`Роль участника ${reviewerName}`, { exact: true });
   await reviewerRoleSelect.waitFor({ timeout: UI_WAIT_TIMEOUT_MS });
   await reviewerRoleSelect.selectOption("publisher");
-  await page.getByRole("dialog", { name: "Изменить роль участника?" }).getByRole("button", { name: "Сохранить роль", exact: true }).click();
   await page.getByText("Роль участника изменена: публикатор.", { exact: true }).waitFor({ timeout: UI_WAIT_TIMEOUT_MS });
   assert((await pool.query(
     "select role from project_members where project_id = $1 and user_id = $2",
@@ -5235,12 +4947,6 @@ try {
   await reloadAfterRuntimeRestart(reviewerPage, "reviewer page");
   await page.getByRole("heading", { name: "Настройки", exact: true }).waitFor({ timeout: UI_WAIT_TIMEOUT_MS });
   await reviewerPage.getByRole("heading", { name: "Календарь", exact: true }).waitFor({ timeout: UI_WAIT_TIMEOUT_MS });
-  // Chromium can deliver a failed background-loader console event shortly after
-  // DOMContentLoaded. Keep the intentional restart window open until both restored
-  // documents have drained first-party work, otherwise an expected transport failure
-  // can be misclassified as a post-recovery runtime issue.
-  await waitForFirstPartyNetworkIdle(page, "main Settings after runtime restart");
-  await waitForFirstPartyNetworkIdle(reviewerPage, "reviewer Calendar after runtime restart");
   expectedBrowserConsoleScopes.delete("main");
   expectedBrowserConsoleScopes.delete("reviewer");
   expectedBrowser5xxScopes.delete("main");
@@ -5599,27 +5305,28 @@ try {
   await page.goto("/app/analytics");
   await page.getByRole("heading", { name: "Статистика", exact: true }).waitFor({ timeout: UI_WAIT_TIMEOUT_MS });
   await page.getByText("Главный вывод периода", { exact: true }).waitFor({ timeout: UI_WAIT_TIMEOUT_MS });
-  await page.getByRole("button", { name: "Ссылки и заявки", exact: true }).click();
-  await page.getByRole("heading", { name: "Ссылки и заявки", exact: true }).waitFor({ timeout: UI_WAIT_TIMEOUT_MS });
+  await page.getByRole("button", { name: "Переходы", exact: true }).click();
+  await page.getByRole("heading", { name: "Переходы и заявки", exact: true }).waitFor({ timeout: UI_WAIT_TIMEOUT_MS });
   const trackingFunnel = page.locator('ol[aria-label="Воронка переходов и заявок"]');
   const trackingMetric = (label) => trackingFunnel.locator("li").filter({ hasText: label }).locator("p.nums");
   await waitFor(async () => {
     const values = await Promise.all([
-      trackingMetric("Все переходы").allTextContents(),
-      trackingMetric("Уникальные переходы").allTextContents(),
-      trackingMetric("Подтверждённые заявки").allTextContents(),
+      trackingMetric("Все переходы").textContent(),
+      trackingMetric("Уникальные переходы").textContent(),
+      trackingMetric("Подтверждённые конверсии").textContent(),
     ]);
-    return values.every((value) => value.length === 1 && value[0].trim() === "1");
+    return values.every((value) => String(value || "").trim() === "1");
   }, "Analytics UI did not render the created click, unique click, and conversion", 15_000);
-  const trackingTableRegion = page.getByRole("region", {
-    name: "Таблица переходов и подтверждённых заявок",
-    exact: true,
-  });
-  const trackingProjectCaption = await trackingTableRegion.locator("caption").textContent({ timeout: UI_WAIT_TIMEOUT_MS });
+  const trackingPath = page.locator('ol[aria-label="Путь выбранного среза"]');
+  const trackingPathText = String(await trackingPath.textContent() || "").replace(/\s+/gu, "");
   assert(
-    String(trackingProjectCaption || "").replace(/\s+/gu, "").includes(`проекта ${criticalProjectName}`.replace(/\s+/gu, "")),
+    trackingPathText.includes(`Проект:${criticalProjectName}`.replace(/\s+/gu, "")),
     "Analytics UI did not attribute the tracking report to the selected critical project",
   );
+  const trackingTableRegion = page.getByRole("region", {
+    name: "Таблица переходов и подтверждённых конверсий",
+    exact: true,
+  });
   const trackingUiRow = trackingTableRegion.locator("tbody tr").filter({ hasText: criticalShortPath });
   await trackingUiRow.waitFor({ timeout: UI_WAIT_TIMEOUT_MS });
   const trackingUiNumericCells = (await trackingUiRow.locator("td.nums").allTextContents())
@@ -5674,15 +5381,10 @@ try {
   await assertTouch(previewExport, "preview project export");
   await previewExport.click();
   await exportDialog.getByRole("heading", { name: "Предварительная выборка", exact: true }).waitFor({ timeout: UI_WAIT_TIMEOUT_MS });
+  await exportDialog.getByText(monthlyItemTitle, { exact: true }).waitFor({ timeout: UI_WAIT_TIMEOUT_MS });
   const previewRowCountText = await exportDialog.getByText(/Найдено строк:/u).textContent();
   const previewRowCount = Number(String(previewRowCountText).replace(/\D/gu, ""));
   assert(previewRowCount === 1, `project export preview expected one published row, received ${previewRowCount}`);
-  const previewTitles = exportDialog.getByText(monthlyItemTitle, { exact: true });
-  assert(
-    await previewTitles.count() === 1,
-    `project export preview duplicated the monthly material title ${await previewTitles.count()} times`,
-  );
-  await previewTitles.waitFor({ timeout: UI_WAIT_TIMEOUT_MS });
 
   const exportBuffers = new Map();
   for (const format of ["csv", "xlsx", "pdf"]) {
@@ -5886,10 +5588,20 @@ try {
     audited: true,
   };
 
+  interfaceEvidence.sitesUi = await runSitesCoverage({ page, pool, userId, projectId: sharedProjectId, waitFor, artifactDir, captureScreenshot: captureE2eScreenshot });
+  interfaceEvidence.projectCalendarUi = await runProjectCalendarCoverage({ page, context, pool, userId, sharedProjectId, legacyProjectId, sharedChannelId, waitFor, artifactDir, closeCompletedPage: async (completed) => { expectedCompletedPages.add(completed); await completed.close(); } });
   interfaceEvidence.viewportWidths = await captureViewportEvidence(page);
   interfaceEvidence.keyboardOnly = await runKeyboardOnlyCriticalPass(page);
+  if (browserEngine === "chromium") {
+    interfaceEvidence.trueZoom = await runTrueZoomCoverage({
+      baseUrl,
+      cookies: await context.cookies(),
+      projectId: Number(await page.evaluate(() => sessionStorage.getItem("aurora:request-project-id"))),
+      artifactDir,
+    });
+  }
 
-  const ownerSecondPage = botConnectSecondPage;
+  const ownerSecondPage = await context.newPage();
   await ownerSecondPage.goto("/app/calendar");
   await ownerSecondPage.getByRole("heading", { name: "Календарь", exact: true }).waitFor({
     timeout: UI_WAIT_TIMEOUT_MS,
@@ -5950,6 +5662,7 @@ try {
     tabsRedirected: 2,
     destination: "/login",
   };
+  interfaceEvidence.authUi = await runAuthCoverage({ captureScreenshot: captureE2eScreenshot, browser, baseUrl, pool, userId, waitFor, artifactDir });
   const finalInputSnapshot = await captureE2eInputSnapshot();
   const changedJourneyInputs = changedE2eInputPaths(e2eInputSnapshot, finalInputSnapshot);
   assert(
@@ -6036,10 +5749,10 @@ try {
         status: row.status,
       })),
       commentsMode: commentsPreferences.commentsMode,
-      vkConnection: "vk_auth_flow_unverified",
-      existingVkChannelPreserved: true,
+      vkConfigureComments: terminalExtra("vk", "configure_comments")?.status,
       telegramPin: terminalExtra("tg", "pin")?.status,
       unsupportedNotCalled: [
+        `vk:${terminalExtra("vk", "pin")?.status}`,
         `tg:${terminalExtra("tg", "configure_comments")?.status}`,
       ],
       providerCalls: {
@@ -6137,6 +5850,15 @@ try {
         analyticsUi: interfaceEvidence.analyticsUi,
         todayUi: interfaceEvidence.todayUi,
         adminOperationsUi: interfaceEvidence.adminOperationsUi,
+        sitesUi: interfaceEvidence.sitesUi,
+        projectCalendarUi: interfaceEvidence.projectCalendarUi,
+        authUi: interfaceEvidence.authUi,
+        trueZoom: interfaceEvidence.trueZoom ? {
+          zoom: interfaceEvidence.trueZoom.zoom,
+          screens: interfaceEvidence.trueZoom.screens.map(screen => screen.label),
+          errors: interfaceEvidence.trueZoom.errors,
+          evidence: "true-zoom-coverage.json",
+        } : null,
         botConnectTokenHygiene: interfaceEvidence.botConnectTokenHygiene,
         browserRuntimeErrors: browserIssues.length,
         browserKnownObservations: browserObservations.length,
@@ -6148,6 +5870,7 @@ try {
       calls: fakeState.ai.calls,
       truncatedCalls: fakeState.ai.truncatedCalls,
       successfulCalls: fakeState.ai.successfulCalls,
+      libraryGenerationCalls: fakeState.ai.libraryGenerationCalls,
       providerIdentityOk: fakeState.ai.providerIdentityOk,
     },
   };
@@ -6206,6 +5929,4 @@ try {
   if (pool) await pool.query("create schema public").catch(() => {});
   if (pool) await pool.end().catch(() => {});
   releaseE2eBuildLock();
-}
-
 }

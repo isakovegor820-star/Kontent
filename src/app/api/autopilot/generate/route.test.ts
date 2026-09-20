@@ -85,6 +85,8 @@ describe("POST /api/autopilot/generate", () => {
     });
     mocks.resolveAiEngineRuntime.mockReturnValue({ supported: true, configured: true });
     mocks.getWorkersCount.mockResolvedValue(1);
+    // Покрытие календаря по умолчанию пусто: нет запланированных постов — нет и диалога.
+    mocks.poolQuery.mockImplementation(async () => ({ rows: [{ count: 0, until: null }], rowCount: 1 }));
     mocks.clientQuery.mockImplementation(async (sql: string) => {
       if (sql.includes("status = 'building'") && sql.includes("select id")) return { rows: [] };
       if (sql.includes("insert into autopilot_plan")) return { rows: [{ id: "91" }] };
@@ -125,7 +127,8 @@ describe("POST /api/autopilot/generate", () => {
     );
     expect(mocks.clientQuery).toHaveBeenCalledWith(
       expect.stringContaining("insert into autopilot_plan"),
-      [88, 4, 22, "navy-gpt-5-4", 7, 49, 69, 2, 7, null, expect.any(String)],
+      [88, 4, 22, "navy-gpt-5-4", 7, 49, 69, 2, 7, null, expect.any(String),
+        "continue", null],
     );
     expect(mocks.poolQuery).toHaveBeenCalledWith(
       expect.stringContaining("news_sources = $3::jsonb"),
@@ -228,7 +231,12 @@ describe("POST /api/autopilot/generate", () => {
   });
 
   it("accepts only an approved monthly plan from the selected project and forces one week", async () => {
-    mocks.poolQuery.mockResolvedValueOnce({ rows: [{ id: 73, posts_per_week: 6 }], rowCount: 1 });
+    mocks.poolQuery.mockImplementation(async (sql: string) => {
+      if (sql.includes("from monthly_campaign_plans")) {
+        return { rows: [{ id: 73, posts_per_week: 6 }], rowCount: 1 };
+      }
+      return { rows: [{ count: 0, until: null }], rowCount: 1 };
+    });
 
     const response = await POST(request({
       channelId: 22,
@@ -243,7 +251,73 @@ describe("POST /api/autopilot/generate", () => {
     );
     expect(mocks.clientQuery).toHaveBeenCalledWith(
       expect.stringContaining("monthly_campaign_plan_id"),
-      [88, 4, 22, "navy-deepseek-pro", 6, 6, 6, 1, 1, 73, expect.any(String)],
+      [88, 4, 22, "navy-deepseek-pro", 6, 6, 6, 1, 1, 73, expect.any(String),
+        "continue", null],
+    );
+  });
+
+  it("asks the user to choose when approved posts already fill the calendar", async () => {
+    mocks.poolQuery.mockImplementation(async (sql: string) => {
+      if (sql.includes("publication_origin = 'autopilot'")) {
+        return {
+          rows: [{ count: 5, until: "2026-09-27T16:00:00.000Z" }],
+          rowCount: 1,
+        };
+      }
+      return { rows: [], rowCount: 0 };
+    });
+
+    const response = await POST(request({ channelId: 22 }));
+
+    expect(response.status).toBe(409);
+    await expect(response.json()).resolves.toMatchObject({
+      ok: false,
+      error: "schedule_exists",
+      coverage: { count: 5, until: "2026-09-27T16:00:00.000Z" },
+    });
+    expect(mocks.clientQuery).not.toHaveBeenCalled();
+    expect(mocks.add).not.toHaveBeenCalled();
+  });
+
+  it("builds after existing coverage when the user chose to continue", async () => {
+    mocks.poolQuery.mockImplementation(async (sql: string) => {
+      if (sql.includes("publication_origin = 'autopilot'")) {
+        return {
+          rows: [{ count: 5, until: "2026-09-27T16:00:00.000Z" }],
+          rowCount: 1,
+        };
+      }
+      return { rows: [], rowCount: 0 };
+    });
+
+    const response = await POST(request({ channelId: 22, scheduleMode: "continue" }));
+
+    expect(response.status).toBe(200);
+    expect(mocks.clientQuery).toHaveBeenCalledWith(
+      expect.stringContaining("insert into autopilot_plan"),
+      [88, 4, 22, "navy-deepseek-pro", 7, 28, 40, 1, 4, null, expect.any(String),
+        "continue", new Date("2026-09-27T16:00:00.000Z")],
+    );
+  });
+
+  it("records replace mode when the user chose to cancel scheduled posts", async () => {
+    mocks.poolQuery.mockImplementation(async (sql: string) => {
+      if (sql.includes("publication_origin = 'autopilot'")) {
+        return {
+          rows: [{ count: 5, until: "2026-09-27T16:00:00.000Z" }],
+          rowCount: 1,
+        };
+      }
+      return { rows: [], rowCount: 0 };
+    });
+
+    const response = await POST(request({ channelId: 22, scheduleMode: "replace" }));
+
+    expect(response.status).toBe(200);
+    expect(mocks.clientQuery).toHaveBeenCalledWith(
+      expect.stringContaining("insert into autopilot_plan"),
+      [88, 4, 22, "navy-deepseek-pro", 7, 28, 40, 1, 4, null, expect.any(String),
+        "replace", new Date("2026-09-27T16:00:00.000Z")],
     );
   });
 

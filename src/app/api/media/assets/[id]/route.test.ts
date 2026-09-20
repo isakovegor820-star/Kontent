@@ -1,5 +1,5 @@
-import { ProjectRequest } from "@/test/project-request";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { NextRequest } from "next/server";
 
 const mocks = vi.hoisted(() => ({
   getSessionUser: vi.fn(),
@@ -18,7 +18,7 @@ import { GET } from "./route";
 
 function request(id = "41") {
   return GET(
-    new ProjectRequest(23, `http://localhost/api/media/assets/${id}`),
+    new NextRequest(`http://localhost/api/media/assets/${id}?projectId=23`),
     { params: Promise.resolve({ id }) },
   );
 }
@@ -34,7 +34,6 @@ describe("GET /api/media/assets/:id", () => {
     const png = Buffer.from([0x89, 0x50, 0x4e, 0x47]);
     mocks.query.mockResolvedValue({
       rows: [{
-        project_id: 23,
         storage_backend: "postgres",
         object_key: null,
         bytes: png.length,
@@ -57,7 +56,6 @@ describe("GET /api/media/assets/:id", () => {
   it("refuses an unsafe stored MIME type and returns a correlation id", async () => {
     mocks.query.mockResolvedValue({
       rows: [{
-        project_id: 23,
         storage_backend: "postgres",
         object_key: null,
         bytes: 8,

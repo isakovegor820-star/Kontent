@@ -81,7 +81,7 @@ describe("Telegram initiated connection tokens", () => {
     ["expired", { expires_at: "2026-08-18T11:59:59.000Z", used_at: null, revoked_at: null }],
     ["confirmed", { expires_at: FUTURE, used_at: "2026-08-18T11:55:00.000Z", revoked_at: null }],
     ["revoked", { expires_at: FUTURE, used_at: null, revoked_at: "2026-08-18T11:55:00.000Z" }],
-  ])("reports a %s token and verifies the current link for confirmed tokens", async (state, tokenState) => {
+  ])("reports a %s token without inspecting account linkage", async (state, tokenState) => {
     const token = "d".repeat(43);
     const query = vi.fn().mockResolvedValueOnce({ rows: [{
       telegram_user_id: "123",
@@ -90,11 +90,11 @@ describe("Telegram initiated connection tokens", () => {
       telegram_display_name: "Анна",
       confirmed_user_id: state === "confirmed" ? "7" : null,
       ...tokenState,
-    }] }).mockResolvedValue({ rows: [{ id: "7" }] });
+    }] });
 
     await expect(inspectBotConnectionSession({ query }, { token, userId: 7, nowMs: NOW }))
       .resolves.toMatchObject({ state });
-    expect(query).toHaveBeenCalledTimes(state === "confirmed" ? 2 : 1);
+    expect(query).toHaveBeenCalledOnce();
   });
 
   it("rejects reuse by another account while preserving the original confirmation", async () => {
@@ -203,7 +203,7 @@ describe("legacy Telegram connection links", () => {
       "commit",
     ]));
     expect(queries.find((entry) => entry.sql.includes("insert into bot_links")).params)
-      .toEqual([link.code, 7, 15]);
+      .toEqual([link.code, 7, 15, null]);
     expect(queries.at(-1).sql).toBe("commit");
     expect(client.release).toHaveBeenCalledOnce();
   });
@@ -233,7 +233,7 @@ describe("legacy Telegram connection links", () => {
       query: vi.fn(async (sql) => {
         const text = String(sql);
         queries.push(text);
-        if (text.includes("select user_id from bot_links")) return { rows: [{ user_id: "7" }] };
+        if (text.includes("select user_id, channel_project_id from bot_links")) return { rows: [{ user_id: "7" }] };
         if (text.includes("from users app_user")) {
           return { rows: [{ id: "7", tg_chat_id: null, enabled: false }] };
         }
@@ -252,24 +252,18 @@ describe("legacy Telegram connection links", () => {
     expect(queries.some((sql) => sql.includes("update bot_links set used_at"))).toBe(false);
   });
 
-  it.each([
-    [null, false, "connected"],
-    ["123", false, "connected"],
-    ["999", false, "move_required"],
-    [null, true, "move_required"],
-    ["999", true, "move_required"],
-  ])("preserves existing connections (account chat=%s, other owner=%s)", async (previousChat, otherOwner, state) => {
+  it("moves the chat and consumes the link in the same transaction", async () => {
     const code = "c".repeat(32);
     const queries = [];
     const client = {
       query: vi.fn(async (sql, params) => {
         const text = String(sql);
         queries.push({ sql: text, params });
-        if (text.includes("select user_id from bot_links")) return { rows: [{ user_id: "7" }] };
+        if (text.includes("select user_id, channel_project_id from bot_links")) return { rows: [{ user_id: "7" }] };
         if (text.includes("from users app_user")) {
-          return { rows: [{ id: "7", tg_chat_id: previousChat, enabled: true }] };
+          return { rows: [{ id: "7", tg_chat_id: "999", enabled: true }] };
         }
-        if (text.includes("select id from users")) return { rows: otherOwner ? [{ id: "8" }] : [] };
+        if (text.includes("select id from users")) return { rows: [{ id: "8" }] };
         return { rows: [], rowCount: text.startsWith("update") ? 1 : 0 };
       }),
       release: vi.fn(),
@@ -280,18 +274,12 @@ describe("legacy Telegram connection links", () => {
       telegramChatId: 123,
     });
 
-    if (state === "move_required") {
-      expect(result).toEqual({ state });
-      expect(queries.some((entry) => entry.sql.includes("set tg_chat_id = case"))).toBe(false);
-      expect(queries.some((entry) => entry.sql.includes("update bot_links set used_at"))).toBe(false);
-      expect(queries.at(-1).sql).toBe("rollback");
-      return;
-    }
     expect(result).toEqual({
       state: "connected",
       userId: 7,
       telegramChatId: 123,
-      moved: false,
+      moved: true,
+      projectId: null,
     });
     const accountUpdate = queries.find((entry) => entry.sql.includes("set tg_chat_id = case"));
     const linkUpdate = queries.find((entry) => entry.sql.includes("update bot_links set used_at"));

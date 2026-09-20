@@ -1,4 +1,4 @@
-import { projectFetch as fetch } from "./project-transport";
+import { projectFetch as fetch } from "@/lib/project-fetch";
 export type TypographyRunResponse = {
   id: number;
   sourceText: string;

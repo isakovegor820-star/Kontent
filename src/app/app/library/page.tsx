@@ -2,6 +2,8 @@
 import { useProjectFetch, useProjectCall } from "@/lib/use-project-transport";
 
 
+import { projectFetch as fetch } from "@/lib/project-fetch";
+
 // Библиотека — память конкретного канала, а не общий склад аккаунта.
 // 1. «Референсы» — залетевшие посты конкурентов с наблюдаемым разбором механики.
 // 2. «Коллекция» — свои удачные тексты, заметки и внутренние метки.

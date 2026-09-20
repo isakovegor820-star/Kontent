@@ -40,6 +40,6 @@ describe("project-scoped publication lease", () => {
 
     expect(String(query.mock.calls[0][0])).toContain("project_id = $4");
     expect(String(query.mock.calls[0][0])).toContain("rf.auto_publish_enabled = false");
-    expect(query.mock.calls[0][1]).toEqual([81, 2, "lease-token", 23]);
+    expect(query.mock.calls[0][1]).toEqual([81, 2, "lease-token", 23, null]);
   });
 });

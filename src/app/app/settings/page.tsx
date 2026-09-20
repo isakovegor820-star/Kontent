@@ -1,9 +1,9 @@
 "use client";
-import { projectUrl } from "@/lib/project-transport";
-import { useProjectFetch, useProjectCall, useProjectStorageKey } from "@/lib/use-project-transport";
 
+import { projectFetch as fetch } from "@/lib/project-fetch";
+import { projectNativeUrl } from "@/lib/project-native-url";
+import { useOAuthReturnProject } from "@/components/app/use-oauth-return-project";
 
-import { searchSettings, SETTINGS_SEARCH_ENTRIES, type SettingsSectionId } from "@/lib/settings-search";
 /**
  * А12 — НАСТРОЙКИ (Приложение А).
  *
@@ -45,19 +45,19 @@ import {
 import type { LucideIcon } from "lucide-react";
 import { AppShell } from "@/components/app/shell";
 import { AccountProfileSettings } from "@/components/app/account-profile-settings";
-import { WritingSettingsSection } from "@/components/app/writing-settings-section";
+import { BrandDictionarySection } from "@/components/app/brand-dictionary-section";
 import { ChannelSettingsCenter } from "@/components/app/channel-settings-center";
 import { LegalSourcesSection } from "@/components/app/legal-sources-section";
 import { NotificationSecuritySettings } from "@/components/app/notification-security-settings";
 import { ProjectTeamSection } from "@/components/app/project-team-section";
+import { PublicationBlocksSection } from "@/components/app/publication-blocks-section";
 import {
   ChannelCopySection,
   ProjectBasicsSection,
   SettingsPreviewPanel,
 } from "@/components/app/settings-sections";
 import { TrackingSettingsSection } from "@/components/app/tracking-settings-section";
-import { Button, buttonClassName } from "@/components/ui/button";
-import { ConfirmDialog } from "@/components/ui/confirm-dialog";
+import { Button } from "@/components/ui/button";
 import {
   Badge,
   Card,
@@ -78,7 +78,7 @@ import type { Network } from "@/lib/types";
 import { NETWORK_LABEL, cn, fmtNum, plural } from "@/lib/utils";
 import {
   parseBotLinkStatusResponse,
-  requestTelegramChannelConnection as unscopedRequestTelegramChannelConnection,
+  requestTelegramChannelConnection,
   requireBotUnlinkSuccess,
   telegramChannelConnectionSnapshot,
 } from "@/lib/bot-link-client";
@@ -87,7 +87,6 @@ import {
   hasComposerPayloadSupport,
   type OAuthProviderCapability,
 } from "@/lib/oauth-capabilities";
-import { VK_AUTH_FLOW_UNVERIFIED } from "@/lib/provider-capabilities.mjs";
 import type { TenChatIntegrationReadiness } from "@/lib/tenchat-integration.mjs";
 
 const EASE = [0.22, 1, 0.36, 1] as const;
@@ -164,9 +163,6 @@ function Section({
 /* ------------------------------------------------------- 1. СЕТИ (ТЗ 5.2) */
 
 function ChannelsSection({ index }: { index: number }) {
-  const connectionStorageKey = useProjectStorageKey("aurora:telegram-channel-connection");
-  const requestTelegramChannelConnection = useProjectCall(unscopedRequestTelegramChannelConnection);
-  const fetch = useProjectFetch();
   const s = useStore();
   const { refreshReal, toast } = s;
   const [disconnecting, setDisconnecting] = useState<number | null>(null);
@@ -191,7 +187,7 @@ function ChannelsSection({ index }: { index: number }) {
     if (connectionChecking.current) return;
     if (Date.now() >= connectionDeadline.current) {
       stopConnectionPolling();
-      window.sessionStorage.removeItem(connectionStorageKey);
+      window.sessionStorage.removeItem("aurora:telegram-channel-connection");
       setConnectionPhase("error");
       setConnectionMessage("Telegram не подтвердил канал. Проверь, что выбрал именно канал и оставил право «Публикация сообщений», затем повтори.");
       return;
@@ -210,7 +206,7 @@ function ChannelsSection({ index }: { index: number }) {
       if (nextSnapshot === connectionBaseline.current || !connected) return;
 
       stopConnectionPolling();
-      window.sessionStorage.removeItem(connectionStorageKey);
+      window.sessionStorage.removeItem("aurora:telegram-channel-connection");
       await refreshReal();
       const label = connected.title || (connected.handle ? `@${connected.handle}` : "Telegram-канал");
       setConnectionPhase("connected");
@@ -226,7 +222,7 @@ function ChannelsSection({ index }: { index: number }) {
     } finally {
       connectionChecking.current = false;
     }
-  }, [connectionStorageKey, fetch, refreshReal, stopConnectionPolling, toast]);
+  }, [refreshReal, stopConnectionPolling, toast]);
 
   const startConnectionPolling = useCallback((baseline: string, deadline: number) => {
     stopConnectionPolling();
@@ -240,7 +236,7 @@ function ChannelsSection({ index }: { index: number }) {
 
   useEffect(() => {
     let resumeTimer: number | null = null;
-    const pending = window.sessionStorage.getItem(connectionStorageKey);
+    const pending = window.sessionStorage.getItem("aurora:telegram-channel-connection");
     if (pending) {
       try {
         const value = JSON.parse(pending) as { baseline?: unknown; deadline?: unknown };
@@ -248,10 +244,10 @@ function ChannelsSection({ index }: { index: number }) {
         if (typeof value.baseline === "string" && Number.isFinite(deadline) && deadline > Date.now()) {
           resumeTimer = window.setTimeout(() => startConnectionPolling(value.baseline as string, deadline), 0);
         } else {
-          window.sessionStorage.removeItem(connectionStorageKey);
+          window.sessionStorage.removeItem("aurora:telegram-channel-connection");
         }
       } catch {
-        window.sessionStorage.removeItem(connectionStorageKey);
+        window.sessionStorage.removeItem("aurora:telegram-channel-connection");
       }
     }
     const checkWhenVisible = () => {
@@ -267,12 +263,12 @@ function ChannelsSection({ index }: { index: number }) {
       document.removeEventListener("visibilitychange", checkWhenVisible);
       stopConnectionPolling();
     };
-  }, [connectionStorageKey, checkTelegramConnection, startConnectionPolling, stopConnectionPolling]);
+  }, [checkTelegramConnection, startConnectionPolling, stopConnectionPolling]);
 
   const connectTelegram = async () => {
     if (connectionPhase === "opening") return;
     stopConnectionPolling();
-    window.sessionStorage.removeItem(connectionStorageKey);
+    window.sessionStorage.removeItem("aurora:telegram-channel-connection");
     setConnectionPhase("opening");
     setConnectionMessage("");
     // Open synchronously while this still is a trusted click. Async window.open calls are
@@ -283,7 +279,7 @@ function ChannelsSection({ index }: { index: number }) {
       const baseline = telegramChannelConnectionSnapshot(s.realChannels);
       const deadline = Date.now() + 90_000;
       window.sessionStorage.setItem(
-        connectionStorageKey,
+        "aurora:telegram-channel-connection",
         JSON.stringify({ baseline, deadline }),
       );
       startConnectionPolling(baseline, deadline);
@@ -344,13 +340,13 @@ function ChannelsSection({ index }: { index: number }) {
       index={index}
       title={EXPERIMENTAL_ROUTES_ENABLED ? "Подключённые сети" : "Подключённые Telegram-каналы"}
       description={EXPERIMENTAL_ROUTES_ENABLED
-        ? "Telegram публикует с сервера. Для остальных сетей здесь указан текущий статус поддержки."
+        ? "Telegram и VK публикуют с сервера. Для остальных сетей здесь явно указан текущий статус поддержки."
         : "Telegram публикует с сервера, даже когда ваш компьютер выключен."}
     >
       <div className="mb-5 rounded-md border border-brand/20 bg-info-soft p-4">
         <p className="text-[15px] font-bold text-text">Подключение без перехода в мастер</p>
         <p className="mt-1.5 text-[13px] leading-relaxed text-text-2">
-          Аврора откроет Telegram. Выбери канал, затем подтверди проект в сообщении бота — он проверит право публикации. Эта страница останется открытой и сама покажет результат.
+          Аврора откроет Telegram, попросит выбрать канал и проверит право публикации. Эта страница останется открытой и сама покажет результат.
         </p>
         <Button
           type="button"
@@ -403,7 +399,7 @@ function ChannelsSection({ index }: { index: number }) {
           icon={<Link2 className="h-6 w-6" strokeWidth={1.75} />}
           title="Ни одной сети"
           body={EXPERIMENTAL_ROUTES_ENABLED
-            ? "Подключи Telegram — без канала посты некуда отправлять."
+            ? "Подключи Telegram или VK — без этого посты некуда отправлять."
             : "Подключи Telegram — без канала посты некуда отправлять."}
           action={
             <Button variant="outline" onClick={addMore}>
@@ -443,13 +439,13 @@ function ChannelsSection({ index }: { index: number }) {
                       <Check className="h-3.5 w-3.5" strokeWidth={3} aria-hidden />
                       Активен
                     </Badge>
-                  ) : publishSupported && ch.reconnect_required ? (
+                  ) : ch.reconnect_required ? (
                     <Badge tone="fire">Нужно переподключить</Badge>
                   ) : (
                     <Badge tone="neutral">Публикация недоступна</Badge>
                   )}
                 </div>
-                {publishSupported && ch.reconnect_required && (
+                {ch.reconnect_required && (
                   <div className="mt-3 flex flex-wrap items-center justify-between gap-2">
                     <p role="status" className="text-[13px] leading-relaxed text-danger-text">
                       Аврора остановила новые публикации после ошибки доступа. История сохранена.
@@ -459,9 +455,9 @@ function ChannelsSection({ index }: { index: number }) {
                     </Button>
                   </div>
                 )}
-                {!publishSupported && (
+                {!publishSupported && !ch.reconnect_required && (
                   <p className="mt-2 text-[13px] leading-relaxed text-text-3">
-                    {ch.network === "vk" ? VK_AUTH_FLOW_UNVERIFIED : "Подключение сохранено, но выбрать эту сеть в Композиторе пока нельзя."}
+                    Подключение сохранено, но выбрать эту сеть в Композиторе пока нельзя.
                   </p>
                 )}
                 <div className="mt-3 flex justify-end">
@@ -495,7 +491,7 @@ function ChannelsSection({ index }: { index: number }) {
         <>
           <Divider className="my-6" />
 
-          {/* VK connection stays unavailable until its authorization is verified. */}
+          {/* Настоящее подключение VK-сообщества (аналог TG bot-link): ключ доступа сообщества. */}
           <VkConnect />
 
           {/* TenChat остаётся частью общей системы каналов, но не притворяется live-интеграцией. */}
@@ -517,14 +513,113 @@ function ChannelsSection({ index }: { index: number }) {
 
 /* ----------------------------------------- 1б. ПОДКЛЮЧЕНИЕ VK-СООБЩЕСТВА */
 
+/**
+ * Настоящее подключение VK (аналог TG bot-link). Админ сообщества создаёт в VK ключ
+ * доступа с правом «Стена» (Управление → Работа с API) и вставляет его сюда. Сервер
+ * проверяет ключ на живом API, шифрует (AES-GCM) и сохраняет сообщество как канал.
+ */
+function vkConnectError(code?: string): string {
+  switch (code) {
+    case "invalid_token":
+      return "Ключ не подошёл. Проверь, что создал ключ сообщества (не личный) и включил право «Стена».";
+    case "taken":
+      return "Это сообщество уже подключено к другому аккаунту Авроры.";
+    case "empty":
+      return "Вставь ключ доступа сообщества.";
+    case "server":
+      return "Сервер не смог зашифровать ключ. Напиши в поддержку.";
+    case "unauthorized":
+      return "Сессия истекла — зайди заново.";
+    case "forbidden":
+      return "Нет прав на управление подключениями этого проекта. Выбери доступный проект или обратись к его владельцу.";
+    default:
+      return "Не получилось подключить. Попробуй ещё раз.";
+  }
+}
+
 function VkConnect() {
+  const s = useStore();
+  const [token, setToken] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const vkChannels = s.realChannels.filter((c) => c.network === "vk" && c.is_active);
+
+  const connect = async (e: React.FormEvent<HTMLFormElement>) => {
+    e.preventDefault();
+    if (busy) return;
+    setError(null);
+    setBusy(true);
+    const res = await s.connectVkChannel(token.trim());
+    setBusy(false);
+    if (res.ok) {
+      s.toast({
+        kind: "success",
+        title: `Сообщество «${res.title ?? "VK"}» подключено`,
+        body: "Теперь сюда можно постить с сервера.",
+      });
+      setToken("");
+    } else {
+      setError(vkConnectError(res.error));
+    }
+  };
+
   return (
     <div className="rounded-md bg-surface-inset p-4">
       <p className="flex items-center gap-2 text-[15px] font-semibold text-text">
-        <VkIcon className="h-5 w-5 text-brand" /> VK-сообщество
-        <Badge tone="neutral">Публикация недоступна</Badge>
+        <VkIcon className="h-5 w-5 text-brand" />
+        VK-сообщество
       </p>
-      <p className="mt-1.5 text-[14px] leading-relaxed text-text-2">{VK_AUTH_FLOW_UNVERIFIED}</p>
+      <p className="mt-1.5 text-[14px] leading-relaxed text-text-2">
+        Публикация в VK работает так же, как в Telegram: сервер постит сам. В сообществе зайди в{" "}
+        <b className="font-semibold text-text">Управление → Работа с API</b> → «Создать ключ» и
+        включи право <b className="font-semibold text-text">«Стена»</b>, затем вставь ключ сюда.
+      </p>
+
+      {vkChannels.length > 0 && (
+        <ul className="mt-3 space-y-2">
+          {vkChannels.map((ch) => (
+            <li
+              key={ch.id}
+              className="flex items-center gap-2.5 rounded-sm border border-line bg-surface px-3 py-2"
+            >
+              <VkIcon className="h-4 w-4 shrink-0 text-brand" />
+              <span className="min-w-0 flex-1 truncate text-[14px] font-semibold text-text">
+                {ch.title ?? ch.handle ?? "Сообщество"}
+              </span>
+              <Badge tone="success">
+                <Check className="h-3.5 w-3.5" strokeWidth={3} aria-hidden />
+                Подключено
+              </Badge>
+            </li>
+          ))}
+        </ul>
+      )}
+
+      <form onSubmit={connect} className="mt-3 flex flex-col gap-2 sm:flex-row">
+        <Input
+          value={token}
+          disabled={busy}
+          type="password"
+          autoComplete="off"
+          placeholder="Ключ доступа сообщества"
+          aria-label="Ключ доступа VK-сообщества"
+          aria-invalid={error ? true : undefined}
+          onChange={(e) => {
+            setToken(e.target.value);
+            if (error) setError(null);
+          }}
+        />
+        <Button type="submit" variant="outline" data-aurora-feature="configuration" data-aurora-action="connected" loading={busy} className="shrink-0">
+          <VkIcon className="h-4 w-4" aria-hidden />
+          Подключить VK
+        </Button>
+      </form>
+      {error && (
+        <p role="alert" className="mt-2 text-[13px] leading-relaxed font-medium text-danger-text">
+          {error}
+        </p>
+      )}
     </div>
   );
 }
@@ -532,7 +627,6 @@ function VkConnect() {
 /* ---------------------------------------- 1в. TENCHAT: OFFICIAL-ACCESS BOUNDARY */
 
 function TenChatIntegration() {
-  const fetch = useProjectFetch();
   const [readiness, setReadiness] = useState<TenChatIntegrationReadiness | null>(null);
   const [statusError, setStatusError] = useState(false);
 
@@ -551,7 +645,7 @@ function TenChatIntegration() {
         if (!controller.signal.aborted) setStatusError(true);
       });
     return () => controller.abort();
-  }, [fetch]);
+  }, []);
 
   return (
     <section
@@ -689,7 +783,6 @@ const OAUTH_NETWORKS: {
 ];
 
 function OAuthNetworks() {
-  const fetch = useProjectFetch();
   const s = useStore();
   const [capabilities, setCapabilities] = useState<
     Partial<Record<Network, OAuthProviderCapability>> | null
@@ -715,7 +808,7 @@ function OAuthNetworks() {
         if (!controller.signal.aborted) setProviderError(true);
       });
     return () => controller.abort();
-  }, [fetch]);
+  }, []);
 
   return (
     <div className="mt-4 rounded-md bg-surface-inset p-4">
@@ -773,7 +866,7 @@ function OAuthNetworks() {
               ) : (
                 // Полная навигация (не SPA): уходим на экран согласия провайдера и обратно.
                 <a
-                  href={projectUrl(`/api/channels/oauth/start?network=${id}`)}
+                  href={projectNativeUrl(`/api/channels/oauth/start?network=${id}`)}
                   className={cn(
                     "inline-flex shrink-0 items-center rounded-sm border border-line-strong",
                     "px-3 py-1.5 text-[13px] font-semibold text-text transition-colors hover:bg-surface-2",
@@ -799,29 +892,23 @@ function OAuthNetworks() {
  * Без этого уведомления уходили в один общий чат владельца, а не автору канала.
  */
 function BotLink() {
-  const fetch = useProjectFetch();
   const s = useStore();
   const [phase, setPhase] = useState<"loading" | "ready" | "error">("loading");
   const [linked, setLinked] = useState(false);
-  const [connectionKey, setConnectionKey] = useState<string | null>(null);
-  const [unlinkTarget, setUnlinkTarget] = useState<string | null>(null);
   const [bot, setBot] = useState<string | null>(null);
   const [botStatus, setBotStatus] = useState<"up" | "down" | "not_configured" | "conflict">("not_configured");
   const [busy, setBusy] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
   const pollTimers = useRef<number[]>([]);
   const requestSeq = useRef(0);
-  const botActionPending = useRef(false);
 
   const load = useCallback(async () => {
-    if (botActionPending.current) return;
     const seq = ++requestSeq.current;
     try {
       const response = await fetch("/api/bot/link", { cache: "no-store" });
       const status = await parseBotLinkStatusResponse(response);
       if (seq !== requestSeq.current) return;
       setLinked(status.linked);
-      setConnectionKey(status.connectionKey ?? null);
       setBot(status.bot);
       setBotStatus(status.botStatus);
       setActionError(null);
@@ -830,20 +917,12 @@ function BotLink() {
       if (seq !== requestSeq.current) return;
       setPhase("error");
     }
-  }, [fetch]);
+  }, []);
 
   useEffect(() => {
     // eslint-disable-next-line react-hooks/set-state-in-effect -- load updates state only after the request settles
     void load();
-    // Connecting may take longer than the initial polling window. Refresh when
-    // returning from Telegram, including an already-open settings tab.
-    const onFocus = () => { void load(); };
-    const onVisible = () => { if (document.visibilityState === "visible") void load(); };
-    window.addEventListener("focus", onFocus);
-    document.addEventListener("visibilitychange", onVisible);
     return () => {
-      window.removeEventListener("focus", onFocus);
-      document.removeEventListener("visibilitychange", onVisible);
       requestSeq.current += 1;
       for (const timer of pollTimers.current) window.clearTimeout(timer);
     };
@@ -857,7 +936,6 @@ function BotLink() {
 
   const connect = async () => {
     if (busy || botStatus !== "up") return;
-    botActionPending.current = true;
     requestSeq.current += 1;
     setActionError(null);
     setBusy(true);
@@ -868,7 +946,6 @@ function BotLink() {
         url?: string;
         error?: string;
         needs?: string;
-        linked?: boolean;
       } | null;
       if (d?.error === "bot_not_configured") {
         const message = `Нужно имя бота в ${d.needs ?? "TG_BOT_USERNAME"} — без него ссылку не собрать.`;
@@ -886,11 +963,6 @@ function BotLink() {
       }
 
       window.open(d.url, "_blank", "noopener");
-      if (d.linked) {
-        setLinked(true);
-        s.toast({ kind: "info", title: "Бот уже подключён", body: "Аккаунт и настройки сохранены. Можно продолжить работу в Telegram." });
-        return;
-      }
       s.toast({
         kind: "info",
         title: "Открыл Telegram",
@@ -906,27 +978,21 @@ function BotLink() {
       setActionError("Не удалось создать ссылку на бота. Статус подключения не изменён.");
       s.toast({ kind: "danger", title: "Не получилось", body: "Проверь соединение." });
     } finally {
-      botActionPending.current = false;
       setBusy(false);
     }
   };
 
   const disconnect = async () => {
-    if (busy || !unlinkTarget) return;
-    botActionPending.current = true;
+    if (busy) return;
     requestSeq.current += 1;
     for (const timer of pollTimers.current) window.clearTimeout(timer);
     pollTimers.current = [];
     setActionError(null);
     setBusy(true);
     try {
-      const response = await fetch("/api/bot/link", {
-        method: "DELETE", headers: { "content-type": "application/json" },
-        body: JSON.stringify({ confirm: true, connectionKey: unlinkTarget }),
-      });
+      const response = await fetch("/api/bot/link", { method: "DELETE" });
       await requireBotUnlinkSuccess(response);
       setLinked(false);
-      setConnectionKey(null);
       s.toast({
         kind: "info",
         title: "Бот отвязан",
@@ -937,8 +1003,6 @@ function BotLink() {
       setPhase("error");
       s.toast({ kind: "danger", title: "Статус бота неизвестен", body: message });
     } finally {
-      setUnlinkTarget(null);
-      botActionPending.current = false;
       setBusy(false);
     }
   };
@@ -968,7 +1032,6 @@ function BotLink() {
   const botAvailable = botStatus === "up";
 
   return linked ? (
-    <>
     <div
       role="status"
       aria-live="polite"
@@ -1005,31 +1068,16 @@ function BotLink() {
         </p>
       )}
       <div className="mt-3 flex flex-wrap gap-2">
-        {bot ? (
-          <a href={`https://t.me/${bot}`} target="_blank" rel="noopener noreferrer" className={buttonClassName({ size: "sm", variant: "outline" })}>
-            Открыть бота
-          </a>
-        ) : null}
         {!botAvailable ? (
           <Button size="sm" variant="outline" onClick={retryLoad} loading={busy}>
             Проверить снова
           </Button>
         ) : null}
-        <Button size="sm" variant="ghost" onClick={() => { if (connectionKey) setUnlinkTarget(connectionKey); else retryLoad(); }} loading={busy}>
+        <Button size="sm" variant="ghost" onClick={disconnect} loading={busy}>
           Отвязать чат
         </Button>
       </div>
     </div>
-    <ConfirmDialog
-      open={unlinkTarget !== null}
-      title="Отключить чат от Авроры?"
-      description="Команды и уведомления в этом Telegram-чате остановятся. Аккаунт, проекты, каналы и настройки сохранятся."
-      confirmLabel="Отключить чат"
-      busy={busy}
-      onCancel={() => setUnlinkTarget(null)}
-      onConfirm={() => { void disconnect(); }}
-    />
-    </>
   ) : (
     <div
       role="status"
@@ -1099,12 +1147,13 @@ function QuietSection({ index }: { index: number }) {
       icon={Moon}
       index={index}
       title="Тихие часы"
-      description="Пауза в ночных публикациях пока недоступна."
+      description="Ограничение ночных публикаций пока не включено на сервере."
     >
       <div className="flex items-start gap-3 rounded-sm bg-surface-inset p-4" role="status">
         <Clock className="mt-0.5 h-5 w-5 shrink-0 text-text-3" strokeWidth={1.75} aria-hidden />
         <p className="text-[14px] leading-relaxed text-text-2">
-          Сейчас каждый пост выходит строго в выбранное в календаре время. Пока выбирай дневное время для публикаций в календаре.
+          Сейчас каждый пост выходит строго в выбранное в календаре время. Настройка появится
+          здесь только вместе с серверным переносом расписания и проверкой воркера.
         </p>
       </div>
     </Section>
@@ -1201,7 +1250,7 @@ function AiSection({ index }: { index: number }) {
 
 function SettingsSkeleton() {
   return (
-    <div className="grid items-start gap-5 lg:grid-cols-[15.5rem_minmax(0,1fr)] lg:items-stretch" role="status" aria-busy="true">
+    <div className="grid items-start gap-5 lg:grid-cols-[15.5rem_minmax(0,1fr)]" role="status" aria-busy="true">
       <span className="sr-only">Открываем настройки</span>
       <div className="card-plain space-y-2 rounded-md p-3" aria-hidden>
         <div className="skeleton h-11 rounded-sm" />
@@ -1218,20 +1267,31 @@ function SettingsSkeleton() {
 
 /* ----------------------------------------------------------------- ЭКРАН */
 
+type SettingsSectionId =
+  | "profile"
+  | "project"
+  | "channels"
+  | "content"
+  | "autopilot"
+  | "dictionary"
+  | "integrations"
+  | "notifications";
+
 const SETTINGS_SECTIONS: Array<{
   id: SettingsSectionId;
   label: string;
   description: string;
+  keywords: string;
   icon: LucideIcon;
 }> = [
-  { id: "profile", label: "Профиль", description: "Аккаунт · личные предпочтения", icon: UserRound },
-  { id: "project", label: "Проект", description: "Команда, время и лимиты", icon: FolderKanban },
-  { id: "channels", label: "Каналы", description: "Подключения и копирование", icon: Radio },
-  { id: "content", label: "Контент и стиль", description: "Голос, структура и тест поста", icon: Palette },
-  { id: "autopilot", label: "Автопилот", description: "Планирование с подтверждением", icon: Rocket },
-  { id: "dictionary", label: "Правила текста", description: "Названия, запреты и шаблоны", icon: BookOpen },
-  { id: "integrations", label: "Интеграции", description: "Проект · UTM, сайт и бот", icon: Plug },
-  { id: "notifications", label: "Уведомления и безопасность", description: "Email, Telegram, пароль и выход", icon: Bell },
+  { id: "profile", label: "Профиль", description: "Фото, имя, контакты и внешний вид", keywords: "аккаунт аватар email телефон язык часовой пояс тема", icon: UserRound },
+  { id: "project", label: "Проект", description: "Название, время и лимиты", keywords: "личный проект генерации ии бюджет", icon: FolderKanban },
+  { id: "channels", label: "Каналы", description: "Подключения и копирование", keywords: "telegram vk сеть канал перенести настройки", icon: Radio },
+  { id: "content", label: "Контент и стиль", description: "Голос, структура и тест поста", keywords: "тон юмор длина формат автор аудитория ограничения проверить", icon: Palette },
+  { id: "autopilot", label: "Автопилот", description: "Планирование с подтверждением", keywords: "расписание частота режим план публикация", icon: Rocket },
+  { id: "dictionary", label: "Словарь бренда", description: "Термины и блоки публикаций", keywords: "правила слова канон замена подпись комментарий", icon: BookOpen },
+  { id: "integrations", label: "Интеграции", description: "Бот, аналитика и источники", keywords: "telegram бот пиксель utm метрика право oauth", icon: Plug },
+  { id: "notifications", label: "Уведомления и безопасность", description: "Email, Telegram, пароль и выход", keywords: "оповещения тихие часы сессия безопасность", icon: Bell },
 ];
 
 const SETTINGS_SECTION_IDS = new Set<SettingsSectionId>(SETTINGS_SECTIONS.map((item) => item.id));
@@ -1251,83 +1311,37 @@ function SettingsContent() {
   const { ready, toast, refreshReal } = s;
   const router = useRouter();
   const searchParams = useSearchParams();
+  const oauthReturnProject = useOAuthReturnProject(Boolean(searchParams.get("connected")), searchParams.get("oauthProjectId"));
   const activeSection = normalizeSection(searchParams.get("section"));
   const [query, setQuery] = useState("");
-  const panelRef = useRef<HTMLElement>(null);
-  const [focusRequest, setFocusRequest] = useState(0);
-  const [navigationMessage, setNavigationMessage] = useState("");
-  const [pendingNavigation, setPendingNavigation] = useState<{ section: SettingsSectionId; setting?: string } | null>(null);
-  const targetId = searchParams.get("setting");
 
-  useEffect(() => {
-    const panel = panelRef.current;
-    if (!panel || !ready) return;
-    const entry = SETTINGS_SEARCH_ENTRIES.find((item) => item.id === targetId && item.section === activeSection);
-    if (!entry) { panel.scrollTop = 0; return; }
-    let highlighted: HTMLElement | null = null;
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    const reveal = () => {
-      const target = panel.querySelector<HTMLElement>(entry.target);
-      if (!target) return false;
-      for (let parent = target.parentElement; parent && parent !== panel; parent = parent.parentElement) {
-        if (parent instanceof HTMLDetailsElement) parent.open = true;
-      }
-      if (!target.matches("input, select, textarea, button, a[href]")) target.tabIndex = -1;
-      target.focus({ preventScroll: true });
-      target.scrollIntoView({ block: "center", behavior: "instant" });
-      highlighted = target.closest<HTMLElement>("label") ?? target;
-      highlighted.dataset.settingsHighlight = "true";
-      timer = setTimeout(() => { if (highlighted) delete highlighted.dataset.settingsHighlight; }, 3500);
-      return true;
-    };
-    const observer = new MutationObserver(() => { if (reveal()) { observer.disconnect(); setNavigationMessage(""); } });
-    if (!reveal()) observer.observe(panel, { childList: true, subtree: true });
-    const deadline = setTimeout(() => {
-      if (!highlighted) setNavigationMessage("Раздел открыт. Настройка станет доступна после загрузки данных или подключения канала.");
-    }, 8000);
-    return () => { observer.disconnect(); clearTimeout(deadline); clearTimeout(timer); if (highlighted) delete highlighted.dataset.settingsHighlight; };
-  }, [activeSection, targetId, focusRequest, ready]);
-
-  const navigateToSection = (section: SettingsSectionId, setting?: string) => {
+  const selectSection = (section: SettingsSectionId) => {
+    if (section === activeSection) return;
+    if (document.querySelector('[data-settings-dirty="true"]') && !window.confirm("Перейти в другой раздел? Несохранённые изменения останутся только на этом экране и будут потеряны.")) return;
     const params = new URLSearchParams(searchParams.toString());
     params.set("section", section);
-    if (setting) params.set("setting", setting); else params.delete("setting");
-    setFocusRequest((value) => value + 1);
-    setNavigationMessage("");
     params.delete("connected");
     params.delete("oauth");
     params.delete("network");
+    params.delete("oauthProjectId");
     router.replace(`/app/settings?${params.toString()}`, { scroll: false });
   };
 
-  const selectSection = (section: SettingsSectionId, setting?: string) => {
-    if (section === activeSection && !setting) return;
-    if (section !== activeSection && document.querySelector('[data-settings-dirty="true"]')) {
-      setPendingNavigation({ section, setting });
-      return;
-    }
-    navigateToSection(section, setting);
-  };
-
-  const results = searchSettings(query);
-  const searching = Boolean(query.trim());
-
-  useEffect(() => {
-    const warn = (event: BeforeUnloadEvent) => {
-      if (document.querySelector('[data-settings-dirty="true"]')) event.preventDefault();
-    };
-    window.addEventListener("beforeunload", warn);
-    return () => window.removeEventListener("beforeunload", warn);
-  }, []);
+  const normalizedQuery = query.trim().toLocaleLowerCase("ru-RU");
+  const visibleSections = normalizedQuery
+    ? SETTINGS_SECTIONS.filter((item) => `${item.label} ${item.description} ${item.keywords}`.toLocaleLowerCase("ru-RU").includes(normalizedQuery))
+    : SETTINGS_SECTIONS;
 
   // Возврат из OAuth-редиректа: показываем итог подключения и чистим URL.
   useEffect(() => {
-    if (!ready) return;
+    if (!ready || oauthReturnProject === "pending") return;
     const connected = searchParams.get("connected");
     const oauthErr = searchParams.get("oauth");
     if (!connected && !oauthErr) return;
 
-    if (connected) {
+    if (connected && oauthReturnProject === "forbidden") {
+      toast({ kind: "danger", title: "Проект подключения недоступен", body: oauthMessage("forbidden", "") });
+    } else if (connected) {
       refreshReal();
       const publishSupported = hasComposerPayloadSupport(connected);
       toast({
@@ -1351,65 +1365,59 @@ function SettingsContent() {
     // URL без параметров, чтобы тост не всплыл повторно при обновлении страницы.
     // После очистки searchParams эффект перезапустится и молча выйдет (нет параметров).
     router.replace("/app/settings?section=integrations", { scroll: false });
-  }, [searchParams, ready, toast, refreshReal, router]);
+  }, [searchParams, ready, toast, refreshReal, router, oauthReturnProject]);
 
   return (
     <AppShell
       title="Настройки"
-      subtitle="Личные предпочтения, параметры проекта и каналов."
-      workspace
+      subtitle="Укажи, как Аврора должна писать, планировать и публиковать для каждого канала."
     >
       {!s.ready ? (
         <SettingsSkeleton />
       ) : (
-        <div className="grid h-full min-h-0 grid-rows-[auto_minmax(0,1fr)] gap-4 lg:grid-cols-[15.5rem_minmax(0,1fr)] lg:grid-rows-1" data-settings-workspace>
-          <aside className="flex min-h-0 flex-col rounded-md border border-line bg-surface p-3 shadow-soft" aria-label="Навигация настроек">
-            <label className="block shrink-0">
-              <span className="mb-2 block text-[13px] font-semibold text-text">Найти настройку</span>
-              <span className="relative block">
+        <div className="grid items-start gap-5 lg:grid-cols-[15.5rem_minmax(0,1fr)]">
+          <aside className="rounded-md border border-line bg-surface/86 p-3 shadow-soft backdrop-blur-xl lg:sticky lg:top-5">
+            <label className="relative block">
+              <span className="sr-only">Найти настройку</span>
               <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-text-3" aria-hidden />
-              <Input data-discovery-target="settings-search" value={query} onChange={(event) => setQuery(event.currentTarget.value)} className="pl-9" placeholder="Например: UTM или тема" type="search" />
-              </span>
+              <Input value={query} onChange={(event) => setQuery(event.currentTarget.value)} className="pl-9" placeholder="Найти настройку" />
             </label>
-            <p role="status" className="sr-only">{searching ? `Найдено настроек: ${results.length}` : ""}</p>
-            {searching ? (
-              <div className="mt-3 min-h-0 max-h-[28dvh] overflow-y-auto overscroll-contain lg:max-h-none">
-                <div className="mb-2 flex items-center justify-between gap-2"><p className="text-[12px] text-text-2">Найдено: {results.length}</p><Button variant="ghost" size="sm" onClick={() => setQuery("")}>Сбросить</Button></div>
-                <ul className="space-y-1" aria-label="Результаты поиска настроек">
-                  {results.map((item) => <li key={item.id}><button type="button" onClick={() => selectSection(item.section, item.id)} className="w-full rounded-sm border border-transparent p-3 text-left hover:border-line hover:bg-surface-inset"><span className="block text-[14px] font-semibold text-text">{item.label}</span><span className="mt-1 block text-[12px] text-text-2">{SETTINGS_SECTIONS.find((section) => section.id === item.section)?.label}</span></button></li>)}
-                </ul>
-                {results.length === 0 ? <p className="rounded-sm bg-surface-inset p-3 text-[13px] leading-relaxed text-text-2">По запросу «{query}» ничего не найдено. Попробуй название параметра или сбрось поиск.</p> : null}
-              </div>
-            ) : <>
-              <label className="mt-3 block lg:hidden"><span className="sr-only">Раздел настроек</span><select value={activeSection} onChange={(event) => selectSection(event.currentTarget.value as SettingsSectionId)} className="min-h-11 w-full rounded-xs border border-line bg-surface px-3 text-base text-text">{SETTINGS_SECTIONS.map((item) => <option key={item.id} value={item.id}>{item.label}</option>)}</select></label>
-              <nav className="mt-3 hidden min-h-0 space-y-1 overflow-y-auto overscroll-contain lg:block" aria-label="Разделы настроек Авроры">
-                {SETTINGS_SECTIONS.map((item) => {
-                  const Icon = item.icon;
-                  const active = item.id === activeSection;
-                  return <button key={item.id} type="button" aria-current={active ? "page" : undefined} onClick={() => selectSection(item.id)} className={cn("flex min-h-14 w-full items-start gap-3 rounded-sm border px-3 py-3 text-left transition-colors", active ? "border-brand/30 bg-info-soft text-info-text" : "border-transparent text-text-2 hover:border-line hover:bg-surface-inset hover:text-text")}>
-                    <Icon className="mt-0.5 h-5 w-5 shrink-0" aria-hidden />
-                    <span className="min-w-0"><span className="block text-[14px] font-semibold">{item.label}</span><span className="mt-1 block text-[12px] leading-relaxed text-text-2">{item.description}</span></span>
-                  </button>;
-                })}
-              </nav>
-            </>}
+            <nav className="mt-3 grid grid-cols-2 gap-1 lg:grid-cols-1" aria-label="Разделы настроек Авроры">
+              {visibleSections.map((item) => {
+                const Icon = item.icon;
+                const active = item.id === activeSection;
+                return (
+                  <button
+                    key={item.id}
+                    type="button"
+                    aria-current={active ? "page" : undefined}
+                    onClick={() => selectSection(item.id)}
+                    className={cn(
+                      "flex min-h-14 items-start gap-3 rounded-sm border px-3 py-3 text-left transition-colors",
+                      active ? "border-brand/30 bg-info-soft text-info-text" : "border-transparent text-text-2 hover:border-line hover:bg-surface-inset hover:text-text",
+                    )}
+                  >
+                    <span className={cn("mt-0.5 grid h-8 w-8 shrink-0 place-items-center rounded-xs", active ? "bg-surface text-brand" : "bg-surface-inset text-text-3")}><Icon className="h-4 w-4" aria-hidden /></span>
+                    <span className="min-w-0"><span className="block text-[13px] font-extrabold text-text">{item.label}</span><span className="mt-0.5 hidden text-[11px] leading-snug text-text-3 sm:block">{item.description}</span></span>
+                  </button>
+                );
+              })}
+              {visibleSections.length === 0 ? <p className="rounded-sm bg-surface-inset p-3 text-[12px] text-text-3">Ничего не найдено. Попробуй «юмор», «аватар» или «Telegram».</p> : null}
+            </nav>
           </aside>
 
-          <section ref={panelRef} tabIndex={0} id={`settings-${activeSection}-panel`} aria-label={SETTINGS_SECTIONS.find((item) => item.id === activeSection)?.label} className="settings-panel min-h-0 min-w-0 overflow-y-auto overscroll-contain rounded-md pb-6 [scrollbar-gutter:stable]">
-            {navigationMessage ? <p role="status" className="mb-3 text-[13px] text-text-2">{navigationMessage}</p> : null}
-            {activeSection === "content" || activeSection === "channels" ? <div className="mb-4 flex flex-wrap items-center gap-2 text-[13px]"><span className="text-text-2">Связанные настройки:</span><Button variant="ghost" size="sm" onClick={() => selectSection("integrations", "utm")}>UTM-шаблоны</Button><Button variant="ghost" size="sm" onClick={() => selectSection("dictionary", "blocks")}>Блоки публикаций</Button>{activeSection === "content" ? <Button variant="ghost" size="sm" onClick={() => selectSection("channels", "copy")}>Копирование настроек</Button> : null}</div> : null}
+          <main id={`settings-${activeSection}-panel`} aria-label={SETTINGS_SECTIONS.find((item) => item.id === activeSection)?.label}>
             {activeSection === "profile" ? <AccountProfileSettings /> : null}
-            {activeSection === "project" ? <div className="space-y-5"><ProjectBasicsSection /><div data-setting-target="team"><ProjectTeamSection showProjectSummary={false} /></div><div data-setting-target="limits"><AiSection index={1} /></div></div> : null}
-            {activeSection === "channels" ? <div className="space-y-5"><div data-setting-target="channels"><ChannelsSection index={0} /></div><ChannelCopySection /></div> : null}
+            {activeSection === "project" ? <div className="space-y-5"><ProjectBasicsSection /><ProjectTeamSection /><AiSection index={1} /></div> : null}
+            {activeSection === "channels" ? <div className="space-y-5"><ChannelsSection index={0} /><ChannelCopySection /></div> : null}
             {activeSection === "content" ? <><SettingsPreviewPanel /><ChannelSettingsCenter view="content" /></> : null}
-            {activeSection === "autopilot" ? <div data-setting-target="autopilot"><ChannelSettingsCenter view="autopilot" /></div> : null}
-            {activeSection === "dictionary" ? <WritingSettingsSection key={targetId === "blocks" ? "templates" : "rules"} initialView={targetId === "blocks" ? "templates" : "rules"} /> : null}
-            {activeSection === "integrations" ? <div className="space-y-5"><TrackingSettingsSection /><div data-setting-target="legal"><LegalSourcesSection /></div><div data-setting-target="bot"><BotSection index={2} /></div></div> : null}
-            {activeSection === "notifications" ? <div className="space-y-5"><NotificationSecuritySettings /><div data-setting-target="quiet"><QuietSection index={2} /></div></div> : null}
-          </section>
+            {activeSection === "autopilot" ? <ChannelSettingsCenter view="autopilot" /> : null}
+            {activeSection === "dictionary" ? <div className="space-y-5"><BrandDictionarySection /><PublicationBlocksSection /></div> : null}
+            {activeSection === "integrations" ? <div className="space-y-5"><TrackingSettingsSection /><LegalSourcesSection /><BotSection index={2} /></div> : null}
+            {activeSection === "notifications" ? <div className="space-y-5"><NotificationSecuritySettings /><QuietSection index={2} /></div> : null}
+          </main>
         </div>
       )}
-      <ConfirmDialog open={pendingNavigation != null} title="Перейти без сохранения?" description="В этом разделе есть несохранённые изменения. Вернись к форме, чтобы сохранить их, или продолжи переход." confirmLabel="Перейти без сохранения" onCancel={() => setPendingNavigation(null)} onConfirm={() => { if (pendingNavigation) navigateToSection(pendingNavigation.section, pendingNavigation.setting); setPendingNavigation(null); }} />
     </AppShell>
   );
 }
@@ -1420,8 +1428,7 @@ export default function SettingsPage() {
       fallback={
         <AppShell
           title="Настройки"
-          subtitle="Личные предпочтения, параметры проекта и каналов."
-      workspace
+          subtitle="Укажи, как Аврора должна писать, планировать и публиковать для каждого канала."
         >
           <SettingsSkeleton />
         </AppShell>

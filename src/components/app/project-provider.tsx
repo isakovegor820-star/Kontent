@@ -1,8 +1,24 @@
 "use client";
 
-import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
-import { parseClientProject, parseProjectsResponse, parseSelectedProjectResponse, type ClientProject } from "@/lib/project-client";
-import { pauseProjectTransport, setProjectTransport } from "@/lib/project-transport";
+import { projectFetch as fetch } from "@/lib/project-fetch";
+
+import {
+  createContext,
+  Fragment,
+  useCallback,
+  useContext,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
+
+import {
+  parseClientProject,
+  parseProjectsResponse,
+  type ClientProject,
+} from "@/lib/project-client";
+import { getClientProjectId, setClientProjectId } from "@/lib/project-fetch";
 import { useStore } from "@/lib/store";
 
 type ProjectContextValue = {
@@ -15,15 +31,14 @@ type ProjectContextValue = {
   selectProject: (projectId: number) => Promise<boolean>;
   createProject: (input: { name: string; timezone: string }) => Promise<{ ok: boolean; error?: string }>;
 };
+
 const ProjectContext = createContext<ProjectContextValue | null>(null);
+
 export function useProjects() {
   const value = useContext(ProjectContext);
   if (!value) throw new Error("useProjects должен вызываться внутри ProjectProvider");
   return value;
 }
-const contextRequest = (input: string, init?: RequestInit) => fetch(input, {
-  ...init, cache: "no-store", signal: AbortSignal.timeout(15_000),
-});
 
 export function ProjectProvider({ children }: { children: React.ReactNode }) {
   const { user, authReady, toast } = useStore();
@@ -31,151 +46,128 @@ export function ProjectProvider({ children }: { children: React.ReactNode }) {
   const [ready, setReady] = useState(false);
   const [error, setError] = useState(false);
   const [switching, setSwitching] = useState(false);
-  const [unresolved, setUnresolved] = useState(false);
   const requestSequence = useRef(0);
-  const mutationRunning = useRef(false);
-  const selectedId = useRef<number | null>(null);
-  const accountEpoch = useRef(0);
 
-  const applySelection = useCallback((list: ClientProject[], selected: ClientProject) => {
-    const byId = new Map(list.map((project) => [project.id, project]));
-    byId.set(selected.id, { ...byId.get(selected.id), ...selected,
-      createdAt: selected.createdAt || byId.get(selected.id)?.createdAt || "" });
-    setProjects([...byId.values()].map((project) => ({ ...project, selected: project.id === selected.id })));
-    const changed = selectedId.current !== selected.id;
-    selectedId.current = selected.id;
-    setProjectTransport(selected.id, true, user?.id ?? null);
-    setError(false);
-    setUnresolved(false);
-    setReady(true);
-    if (changed) window.dispatchEvent(new CustomEvent("aurora:project-changed", { detail: { projectId: selected.id } }));
-  }, [user?.id]);
-
-  const reconcile = useCallback(async (): Promise<ClientProject | null> => {
+  const refresh = useCallback(async () => {
     const sequence = ++requestSequence.current;
     try {
-      const [listResponse, currentResponse] = await Promise.all([
-        contextRequest("/api/projects"), contextRequest("/api/projects/current"),
-      ]);
-      const [listBody, currentBody] = await Promise.all([listResponse.json(), currentResponse.json()]);
-      const list = listResponse.ok ? parseProjectsResponse(listBody) : null;
-      const selected = currentResponse.ok ? parseSelectedProjectResponse(currentBody) : null;
-      if (!list || !selected) throw new Error("projects_unavailable");
-      if (sequence !== requestSequence.current) return null;
-      applySelection(list, selected);
-      return selected;
+      const response = await fetch("/api/projects", { cache: "no-store" });
+      const body = await response.json().catch(() => null);
+      const parsed = response.ok ? parseProjectsResponse(body) : null;
+      if (!parsed) throw new Error("projects_unavailable");
+      if (sequence !== requestSequence.current) return;
+      const selectedId = getClientProjectId();
+      const selected = parsed.find((project) => project.id === selectedId) ?? parsed.find((project) => project.selected);
+      // A revoked/archived selection is not replaced behind the user's current editor.
+      if (selectedId !== null && !parsed.some((project) => project.id === selectedId)) {
+        setProjects(parsed.map((project) => ({ ...project, selected: false })));
+        setError(true);
+        return;
+      }
+      if (selected) setClientProjectId(selected.id);
+      setProjects(parsed.map((project) => ({ ...project, selected: project.id === selected?.id })));
+      setError(false);
     } catch {
-      if (sequence !== requestSequence.current) return null;
-      pauseProjectTransport();
+      if (sequence !== requestSequence.current) return;
       setError(true);
-      setUnresolved(true);
-      return null;
     } finally {
       if (sequence === requestSequence.current) setReady(true);
     }
-  }, [applySelection]);
-  const refresh = useCallback(async () => { await reconcile(); }, [reconcile]);
+  }, []);
 
   const userId = user?.id ?? null;
   useEffect(() => {
-    setProjectTransport(null);
-    const epoch = ++accountEpoch.current;
-    requestSequence.current += 1;
     let cancelled = false;
     queueMicrotask(() => {
-      if (cancelled || epoch !== accountEpoch.current) return;
-      selectedId.current = null;
-      mutationRunning.current = false;
-      setProjects([]);
-      setSwitching(false);
-      setError(false);
-      setUnresolved(false);
-      setReady(authReady && userId == null);
-      if (authReady && userId != null) void reconcile();
+      if (cancelled) return;
+      requestSequence.current += 1;
+      if (!authReady || userId == null) {
+        if (authReady && userId == null) setClientProjectId(null);
+        setProjects([]);
+        setReady(authReady);
+        setError(false);
+        return;
+      }
+      setReady(false);
+      void refresh();
     });
-    return () => { cancelled = true; requestSequence.current += 1; };
-  }, [authReady, userId, reconcile]);
+    return () => {
+      cancelled = true;
+    };
+  }, [authReady, userId, refresh]);
 
   const selectProject = useCallback(async (projectId: number) => {
-    if (mutationRunning.current || unresolved || !projects.some((project) => project.id === projectId)) return false;
-    mutationRunning.current = true;
-    pauseProjectTransport();
-    requestSequence.current += 1;
-    const epoch = accountEpoch.current;
+    if (switching || !projects.some((project) => project.id === projectId)) return false;
     setSwitching(true);
-    setUnresolved(true);
     try {
-      const response = await contextRequest("/api/projects/current", {
-        method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ projectId }),
+      const response = await fetch("/api/projects/current", {
+        method: "PUT",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ projectId }),
       });
-      const selected = response.ok ? parseSelectedProjectResponse(await response.json()) : null;
-      if (!selected || selected.id !== projectId) throw new Error("project_switch_failed");
-      if (epoch !== accountEpoch.current) return false;
-      applySelection(projects, selected);
+      const body = await response.json().catch(() => null) as Record<string, unknown> | null;
+      const selected = response.ok && body && body.ok === true ? parseClientProject(body.project) : null;
+      if (!selected) throw new Error("project_switch_failed");
+      requestSequence.current += 1;
+      setClientProjectId(selected.id);
+      setProjects((current) => current.map((project) => ({
+        ...project,
+        selected: project.id === selected.id,
+      })));
+      setError(false);
+      window.dispatchEvent(new CustomEvent("aurora:project-changed", { detail: { projectId: selected.id } }));
       return true;
     } catch {
-      // The server may already have committed. Keep the old screen inert until the
-      // authoritative context is readable, even when the original response is lost.
-      if (epoch !== accountEpoch.current) return false;
-      return (await reconcile())?.id === projectId;
+      setError(true);
+      return false;
     } finally {
-      if (epoch === accountEpoch.current) { mutationRunning.current = false; setSwitching(false); }
+      setSwitching(false);
     }
-  }, [projects, unresolved, applySelection, reconcile]);
+  }, [projects, switching]);
 
   const createProject = useCallback(async (input: { name: string; timezone: string }) => {
-    if (mutationRunning.current || unresolved) return { ok: false, error: "project_context_unavailable" };
-    mutationRunning.current = true;
-    pauseProjectTransport();
-    requestSequence.current += 1;
-    const epoch = accountEpoch.current;
-    setSwitching(true);
-    setUnresolved(true);
     try {
-      const response = await contextRequest("/api/projects", {
+      const response = await fetch("/api/projects", {
         method: "POST",
-        headers: { "content-type": "application/json", "idempotency-key": crypto.randomUUID() },
+        headers: { "content-type": "application/json" },
         body: JSON.stringify(input),
       });
-      const body = await response.json() as { ok?: unknown; project?: unknown; error?: string };
-      const created = response.ok && body.ok === true ? parseClientProject(body.project) : null;
-      if (epoch !== accountEpoch.current) return { ok: false, error: "project_context_changed" };
-      if (!created) {
-        await reconcile();
-        return { ok: false, error: body.error ?? "server" };
-      }
-      // Creation replays can refer to a project which is no longer selected. Read the
-      // actual selection rather than forcing the returned project into the UI.
-      if (!await reconcile()) return { ok: false, error: "project_context_unavailable" };
-      toast({ kind: "success", title: `Проект «${created.name}» создан.` });
+      const body = await response.json().catch(() => null) as {
+        ok?: unknown;
+        project?: unknown;
+        error?: string;
+      } | null;
+      const created = response.ok && body?.ok === true ? parseClientProject(body.project) : null;
+      if (!created) return { ok: false, error: body?.error ?? "server" };
+      setClientProjectId(created.id);
+      await refresh();
+      setProjects((current) => {
+        const byId = new Map(current.map((project) => [project.id, project]));
+        byId.set(created.id, created);
+        return [...byId.values()].map((project) => ({
+          ...project,
+          selected: project.id === created.id,
+        }));
+      });
+      toast({ kind: "success", title: `Проект «${created.name}» создан и выбран.` });
+      window.dispatchEvent(new CustomEvent("aurora:project-changed", { detail: { projectId: created.id } }));
       return { ok: true };
     } catch {
-      if (epoch === accountEpoch.current) await reconcile();
       return { ok: false, error: "network" };
-    } finally {
-      if (epoch === accountEpoch.current) { mutationRunning.current = false; setSwitching(false); }
     }
-  }, [unresolved, reconcile, toast]);
+  }, [refresh, toast]);
 
   const current = projects.find((project) => project.selected) ?? null;
   const value = useMemo<ProjectContextValue>(() => ({
-    projects, current, ready, error, switching, refresh, selectProject, createProject,
+    projects,
+    current,
+    ready,
+    error,
+    switching,
+    refresh,
+    selectProject,
+    createProject,
   }), [projects, current, ready, error, switching, refresh, selectProject, createProject]);
-  const blocked = userId != null && (!ready || switching || unresolved);
-  const checking = !ready && !switching && !error;
-  return <ProjectContext.Provider value={value}>
-    <div className="contents" inert={blocked || undefined} aria-busy={blocked || undefined} key={current?.id ?? "initial"}>
-      {children}
-    </div>
-    {blocked ? <div role="status" aria-live="polite" className="fixed inset-0 z-[100] flex items-center justify-center bg-black/40 p-6">
-      <div className="max-w-md rounded-2xl bg-[var(--bg)] p-6 text-[var(--text)] shadow-xl">
-        <p>{switching
-          ? "Переключаем проект…"
-          : checking
-            ? "Проверяем текущий проект…"
-            : "Не удалось проверить текущий проект. Обновите его, чтобы продолжить работу."}</p>
-        {error && !switching ? <button type="button" className="mt-4 rounded-lg border px-4 py-2" onClick={() => void refresh()}>Обновить проект</button> : null}
-      </div>
-    </div> : null}
-  </ProjectContext.Provider>;
+
+  return <ProjectContext.Provider value={value}><Fragment key={current?.id ?? "unselected"}>{children}</Fragment></ProjectContext.Provider>;
 }

@@ -31,6 +31,10 @@ describe("stable release scope", () => {
       "site-analysis",
       "growth",
       "knowledge",
+      "vk",
+      "sites-and-wordpress",
+      "admin",
+      "legal-visuals-and-video",
     ]);
   });
 

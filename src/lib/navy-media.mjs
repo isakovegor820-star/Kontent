@@ -1,3 +1,4 @@
+import { beginAiSpendAttempt } from "./ai-spend-ledger.mjs";
 import { MEDIA_MODELS, mediaModelAccess } from "./media-generation.mjs";
 
 let cached = null;
@@ -115,6 +116,9 @@ export function createNavyMediaClient({
           { retryable: false },
         );
       }
+      const spend = await beginAiSpendAttempt({ provider:"navy-media",model:String(payload.model),inputTokens:0,outputTokens:0,units:Math.max(1,Number(payload.n) || 1) });
+      let accepted = false;
+      try {
       const data = await navyJson(fetchImpl, `${root}/images/generations`, {
         method: "POST",
         headers: {
@@ -126,7 +130,7 @@ export function createNavyMediaClient({
         signal,
       }, createTimeoutMs);
       const inlineUrl = outputUrl(data);
-      if (inlineUrl) return { state: "completed", outputUrl: inlineUrl, providerJobId: null };
+      if (inlineUrl) { accepted = true; return { state: "completed", outputUrl: inlineUrl, providerJobId: null }; }
       const providerJobId = String(data?.id || data?.job_id || "").trim();
       if (!providerJobId) {
         throw new NavyMediaError(
@@ -135,7 +139,9 @@ export function createNavyMediaClient({
           { retryable: false },
         );
       }
+      accepted = true;
       return { state: "pending", outputUrl: null, providerJobId };
+      } finally { await spend.finish({ outcome: accepted ? "succeeded" : "unknown" }); }
     },
 
     async poll({ providerJobId, requestId, signal }) {

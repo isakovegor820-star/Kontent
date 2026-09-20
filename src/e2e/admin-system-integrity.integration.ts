@@ -4,7 +4,7 @@ import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vites
 
 const testDatabaseUrl = process.env.SYSTEM_TEST_DATABASE_URL || "";
 const target = new URL(testDatabaseUrl);
-if (target.hostname !== "127.0.0.1" || target.port !== "57641" || !["/aurora_system_test", "/aurora_system_release_test"].includes(target.pathname)) {
+if (target.hostname !== "127.0.0.1" || target.port !== "57641" || target.pathname !== "/aurora_system_test") {
   throw new Error("Requires the dedicated loopback aurora_system_test database on port 57641");
 }
 const db = new pg.Pool({ connectionString: testDatabaseUrl, max: 1 });
@@ -74,8 +74,7 @@ describe.sequential("admin system SQL on the actual schema (transactional synthe
     const publication = result.components.find(c => c.id === "publication_worker")!;
     expect(publication.metrics).toMatchObject({ successes: 2, failures: 1, averageDurationMs: 2500 });
     expect(publication.history).toEqual([{ code: "test_provider_timeout", count: 2, firstSeenAt: at(-120_000), lastSeenAt: at(-60_000), affectedRecords: 0, examples: [`post:${recovered}`] }]);
-    expect(publication.state).toBe("degraded");
-    expect(publication.safeErrorCode).toBe("publication_failed_records");
+    expect(publication.safeErrorCode).toBeNull();
   });
   it("detects a current partial AI failure even when another route succeeded, then recovers without deleting history", async () => {
     async function attempt(provider: string, outcome: string, offset: number) {

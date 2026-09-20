@@ -144,7 +144,7 @@ async function withinDeadline(work, timeoutMs) {
   }
 }
 
-function requestOnce(url, target, { timeoutMs, maxBytes, headers, requestFn }) {
+function requestOnce(url, target, { timeoutMs, maxBytes, headers, requestFn, method = "GET", body = null }) {
   const transport = url.protocol === "https:" ? https : http;
   const hostname = normalizedIpv6(url.hostname);
   return new Promise((resolve, reject) => {
@@ -173,7 +173,7 @@ function requestOnce(url, target, { timeoutMs, maxBytes, headers, requestFn }) {
         hostname: target.address,
         family: target.family,
         port: url.port || undefined,
-        method: "GET",
+        method,
         path: `${url.pathname}${url.search}`,
         servername: isIP(hostname) ? undefined : hostname,
         agent: false,
@@ -230,7 +230,7 @@ function requestOnce(url, target, { timeoutMs, maxBytes, headers, requestFn }) {
     deadline.unref?.();
     req.setTimeout(timeoutMs, () => req.destroy(new SafeHttpError("timeout", "Сервер не ответил вовремя")));
     req.on("error", fail);
-    req.end();
+    req.end(body ?? undefined);
   });
 }
 
@@ -315,4 +315,26 @@ export async function fetchPublicBuffer(value, options = {}) {
     };
   }
   throw new SafeHttpError("too_many_redirects", "Слишком много перенаправлений");
+}
+
+/** Credentialed provider request: pinned DNS, a bounded body, and no redirects.
+ * Unlike crawler GETs this deliberately never follows a new destination with secrets.
+ */
+export async function requestPublicHttp(value, options = {}) {
+  const url = parsePublicHttpUrl(value);
+  if (options.httpsOnly !== false && url.protocol !== "https:") {
+    throw new SafeHttpError("bad_protocol", "Для передачи учётных данных требуется HTTPS");
+  }
+  const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+  const started = Date.now();
+  const target = await withinDeadline(resolvePublicTarget(url, options.lookupFn ?? dnsLookup), timeoutMs);
+  const result = await requestOnce(url, target, {
+    timeoutMs: Math.max(1, timeoutMs - (Date.now() - started)),
+    maxBytes: options.maxBytes ?? DEFAULT_MAX_BYTES,
+    headers: options.headers ?? {}, requestFn: options.requestFn,
+    method: options.method ?? "GET", body: options.body ?? null,
+  });
+  if (result.redirect) throw new SafeHttpError("redirect_forbidden", "Перенаправление credentialed запроса запрещено");
+  return { ok: result.ok, status: result.status, headers: result.headers,
+    text: async () => result.body.toString("utf8"), byteLength: result.body.byteLength };
 }

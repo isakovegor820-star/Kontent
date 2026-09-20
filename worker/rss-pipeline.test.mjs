@@ -16,6 +16,7 @@ function harness(feeds, xmlByUrl) {
     // явно только в регрессии первого запуска ниже.
     last_fetched_at: "2026-08-01T12:00:00.000Z",
     publish_existing: false,
+    project_id: 21,
     ...feed,
   }));
   let itemId = 100;
@@ -23,7 +24,7 @@ function harness(feeds, xmlByUrl) {
   const pool = {
     query: vi.fn(async (sql, params = []) => {
       queries.push({ sql, params });
-      if (sql.includes("from rss_feeds f")) return { rows: feeds };
+      if (sql.includes("from rss_feeds f")) return { rows: feeds, rowCount:feeds.length };
       if (sql.includes("insert into rss_items")) return { rowCount: 1, rows: [{ id: itemId++ }] };
       return { rowCount: 1, rows: [] };
     }),
@@ -59,8 +60,8 @@ describe("collectRssPipeline", () => {
     expect(h.enqueuePost).not.toHaveBeenCalled();
     expect(h.queries[0].sql).toContain("f.auto_publish_enabled");
     expect(h.queries).toContainEqual({
-      sql: "update rss_feeds set last_fetched_at = now() where id = $1",
-      params: [1],
+      sql: expect.stringContaining("set last_fetched_at = now()"),
+      params: [1,21],
     });
   });
 
@@ -99,8 +100,8 @@ describe("collectRssPipeline", () => {
       },
     ]);
     expect(h.queries).toContainEqual({
-      sql: "update rss_feeds set last_fetched_at = now() where id = $1",
-      params: [1],
+      sql: expect.stringContaining("set last_fetched_at = now()"),
+      params: [1,21],
     });
   });
 
@@ -127,7 +128,7 @@ describe("collectRssPipeline", () => {
     expect(h.queries.some((query) => query.sql.includes("skip_reason = 'baseline'"))).toBe(false);
   });
 
-  it("ручной запуск запрашивает feeds явного проекта и проверяет членство", async () => {
+  it("ручной запуск запрашивает только feeds конкретного пользователя", async () => {
     const feeds = [{
       id: 1,
       url: "https://example.com/a.xml",
@@ -141,14 +142,14 @@ describe("collectRssPipeline", () => {
       [feeds[0].url]: rss([{ title: "Новость", link: "https://example.com/1", summary: "Текст", guid: "1" }]),
     });
 
-    const result = await collectRssPipeline({ ...h, userId: 42, projectId: 17, now: () => 1_700_000_000_000 });
+    const result = await collectRssPipeline({ ...h, userId: 42, projectId:21, now: () => 1_700_000_000_000 });
 
-    expect(h.queries[0].sql).toContain("c.project_id = $1");
-    expect(h.queries[0].sql).toContain("member.user_id = $2");
+    expect(h.queries[0].sql).toContain("f.user_id = $1");
     expect(h.queries[0].sql).toContain(
-      "join channels c on c.id = f.channel_id",
+      "rss_member.project_id=c.project_id and rss_member.user_id=f.user_id",
     );
-    expect(h.queries[0].params).toEqual([17, 42]);
+    expect(h.queries[0].params).toEqual([42,21]);
+    expect(h.queries[0].sql).toContain("c.project_id=$2");
     expect(h.enqueuePost).toHaveBeenCalledOnce();
     expect(h.enqueuePost).toHaveBeenCalledWith(
       42,
@@ -174,12 +175,11 @@ describe("collectRssPipeline", () => {
       [feed.url]: rss([{ title: "Новость", link: "https://example.com/1", summary: "Текст", guid: "1" }]),
     });
 
-    await collectRssPipeline({ ...h, userId: 42, projectId: 17, channelId: 18 });
+    await collectRssPipeline({ ...h, userId: 42, projectId:21, channelId: 18 });
 
-    expect(h.queries[0].sql).toContain("c.project_id = $1");
-    expect(h.queries[0].sql).toContain("member.user_id = $2");
+    expect(h.queries[0].sql).toContain("f.user_id = $1");
     expect(h.queries[0].sql).toContain("f.channel_id = $3");
-    expect(h.queries[0].params).toEqual([17, 42, 18]);
+    expect(h.queries[0].params).toEqual([42,21,18]);
   });
 
   it("лимит считается отдельно для каждой ленты, а не глобально", async () => {

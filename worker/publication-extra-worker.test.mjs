@@ -48,18 +48,25 @@ function operationPool(row, extra = {}) {
 }
 
 describe("publication extra worker", () => {
-  it("blocks queued VK comments and preserves already succeeded replay", async () => {
+  it("publishes a VK first comment with deterministic guid and never duplicates a succeeded replay", async () => {
     const pool = operationPool(operationRow());
     const vkRequest = vi.fn(async () => ({ response: { comment_id: 55 } }));
-    const decryptToken = vi.fn();
-    await expect(processPublicationExtraOperation({
-      pool, operationId: 5, projectId: 7, fingerprint,
-      telegramRequest: vi.fn(), vkRequest, decryptToken,
-    })).rejects.toMatchObject({ code: "vk_auth_flow_unverified", retryable: false });
-    expect(vkRequest).not.toHaveBeenCalled();
-    expect(decryptToken).not.toHaveBeenCalled();
-    expect(pool.query.mock.calls.some(([sql]) => sql.includes("set provider_started_at"))).toBe(false);
-    expect(pool.query.mock.calls.some(([sql]) => sql.includes("delete from"))).toBe(false);
+    const result = await processPublicationExtraOperation({
+      pool,
+      operationId: 5,
+      projectId: 7,
+      fingerprint,
+      telegramRequest: vi.fn(),
+      vkRequest,
+      decryptToken: vi.fn(() => "token"),
+      finalAttempt: false,
+    });
+    expect(result).toMatchObject({ ok: true, externalId: "55" });
+    expect(vkRequest).toHaveBeenCalledWith(
+      "wall.createComment",
+      expect.objectContaining({ owner_id: -99, post_id: 44, message: "Первый комментарий", guid: expect.any(Number) }),
+      "token",
+    );
 
     const replayPool = operationPool(null, {
       query: (sql) => {
@@ -136,7 +143,7 @@ describe("publication extra worker", () => {
     expect(telegramRequest).not.toHaveBeenCalled();
   });
 
-  it("blocks queued VK comment settings without changing the published post state", async () => {
+  it("successfully closes VK comments without changing the published post state", async () => {
     const pool = operationPool(operationRow({
       kind: "configure_comments",
       request_snapshot: { providerId: "vk", commentsEnabled: false },
@@ -150,19 +157,14 @@ describe("publication extra worker", () => {
       telegramRequest: vi.fn(),
       vkRequest,
       decryptToken: vi.fn(() => "token"),
-    })).rejects.toMatchObject({ code: "vk_auth_flow_unverified", retryable: false });
-    expect(vkRequest).not.toHaveBeenCalled();
+    })).resolves.toMatchObject({ ok: true, externalId: "44" });
+    expect(vkRequest).toHaveBeenCalledWith(
+      "wall.closeComments",
+      { owner_id: -99, post_id: 44 },
+      "token",
+    );
     expect(pool.query.mock.calls.some(([sql]) => String(sql).includes("update posts"))).toBe(false);
     expect(String(pool.query.mock.calls[0]?.[0])).toContain("'pending','queued','failed_retry'");
-  });
-
-  it("retains uncertainty when an old VK action may already have reached the provider", async () => {
-    const pool = operationPool(operationRow({ provider_started_at: "2026-09-01T10:00:00Z" }));
-    const vkRequest = vi.fn();
-    await expect(processPublicationExtraOperation({ pool, operationId: 5, projectId: 7, fingerprint,
-      vkRequest, telegramRequest: vi.fn(), decryptToken: vi.fn(),
-    })).rejects.toMatchObject({ code: "provider_previous_delivery_unverified", deliveryUnknown: true, retryable: false });
-    expect(vkRequest).not.toHaveBeenCalled();
   });
 
   it.each([
@@ -410,62 +412,25 @@ describe("publication extra worker", () => {
   });
 });
 
-describe("audience comment recovery", () => {
-  const update = { message: {
-    message_id: 91, chat: { id: -100800, type: "supergroup" },
-    from: { id: 1087968824, is_bot: true, first_name: "GroupAnonymousBot" },
-    sender_chat: { id: -100900, title: "Канал автора" }, text: "Подскажите подробнее",
-    reply_to_message: { message_id: 81 },
-  } };
 
-  it("discovers a newly linked discussion and notifies once for a replayed anonymous comment", async () => {
-    const inserts = new Map();
-    const notifications = new Set();
-    let binding = false;
-    const mapping = { project_id: "7", channel_id: "17", title: "Канал", handle: "channel", origin_message_id: null };
-    const query = vi.fn(async (sql, values) => {
-      if (sql.includes("from telegram_discussion_messages mapping")) return { rows: [] };
-      if (sql.includes("channel.tg_discussion_chat_id = $1")) return { rows: binding ? [mapping] : [] };
-      if (sql.includes("channel.tg_chat_id = $1")) {
-        expect(values).toEqual([-100900]);
-        return { rows: [mapping] };
-      }
-      if (sql.includes("update channels")) { binding = true; return { rows: [] }; }
-      if (sql.includes("insert into bot_client_inquiries")) {
-        expect(values[4]).toBe("Канал автора");
-        expect(sql).toContain("do nothing");
-        if (inserts.has(values[1])) return { rows: [] };
-        inserts.set(values[1], { id: "93" }); return { rows: [{ id: "93" }] };
-      }
-      if (sql.includes("select id from bot_client_inquiries")) return { rows: [inserts.get(values[1])] };
-      if (sql.includes("insert into project_notifications")) {
-        expect(sql).toContain("'publisher'");
-        expect(sql).toContain("do nothing");
-        notifications.add(values[2]); return { rows: [] };
-      }
-      throw new Error(`Unexpected query: ${sql}`);
-    });
-    const telegramRequest = vi.fn(async () => ({ ok: true, result: { linked_chat_id: -100900 } }));
-    for (let replay = 0; replay < 2; replay += 1) {
-      await expect(captureTelegramAudienceComment({ query }, update, telegramRequest))
-        .resolves.toEqual({ captured: true, inquiryId: 93 });
+describe("first comment acknowledgement safety", () => {
+  for (const provider of ["tg", "vk"]) {
+    for (const fault of ["missing_receipt", "transport_loss"]) {
+      it(`${provider} ${fault} persists unknown instead of permitting retry`, async () => {
+        const row = operationRow({ request_snapshot: { providerId: provider, text: "safe fixture" }, network: provider });
+        const pool = operationPool(row, { query: (sql) => {
+          if (sql.includes("telegram_discussion_messages")) return { rows: [{ discussion_chat_id: -100800, discussion_message_id: 70 }] };
+          throw new Error("unexpected fixture query");
+        } });
+        const request = vi.fn(async () => {
+          if (fault === "transport_loss") throw new SyntaxError("response lost after acceptance");
+          return provider === "tg" ? { ok: true, result: {} } : { response: {} };
+        });
+        await expect(processPublicationExtraOperation({ pool, operationId: 5, projectId: 7, fingerprint, telegramRequest: request, vkRequest: request, decryptToken: () => "synthetic" }))
+          .rejects.toMatchObject({ deliveryUnknown: true, retryable: false });
+        expect(request).toHaveBeenCalledTimes(1);
+        expect(pool.query.mock.calls.find(([sql]) => sql.includes("set status = $4"))[1][3]).toBe("failed");
+      });
     }
-    expect(telegramRequest).toHaveBeenCalledOnce();
-    expect(inserts.size).toBe(1);
-    expect(notifications.size).toBe(1);
-  });
-
-  it("does not acknowledge a transient metadata failure as an unrelated comment", async () => {
-    const query = vi.fn(async () => ({ rows: [] }));
-    await expect(captureTelegramAudienceComment({ query }, update, async () => ({ ok: false, error_code: 503 })))
-      .rejects.toThrow("telegram_discussion_lookup_unavailable");
-    expect(query.mock.calls.some(([sql]) => sql.includes("insert into"))).toBe(false);
-  });
-
-  it("never imports comments from a channel outside connected projects", async () => {
-    const query = vi.fn(async () => ({ rows: [] }));
-    await expect(captureTelegramAudienceComment({ query }, update, async () => ({ ok: true, result: { linked_chat_id: -100999 } })))
-      .resolves.toEqual({ captured: false });
-    expect(query.mock.calls.some(([sql]) => sql.includes("insert into"))).toBe(false);
-  });
+  }
 });

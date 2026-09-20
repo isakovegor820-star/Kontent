@@ -4,7 +4,7 @@ import {
   ProjectAccessError,
   PROJECT_ROLES,
   requireProjectPermission,
-  roleAllows,
+  selectedRequestProjectId,
   type ProjectRole,
 } from "./project-permissions";
 
@@ -135,7 +135,7 @@ export function ensureDefaultPersonalProject(pool: TransactionPool, userId: numb
   return withTransaction(pool, (client) => ensureDefaultPersonalProjectInTransaction(client, userId));
 }
 
-async function readSelectedProject(client: Pick<PoolClient, "query">, userId: number): Promise<ProjectContext | null> {
+async function readSelectedProject(client: Pick<PoolClient, "query">, userId: number, expectedProjectId: number | null = null): Promise<ProjectContext | null> {
   const result = await client.query<{
     project_id: number | string;
     name: string;
@@ -149,15 +149,15 @@ async function readSelectedProject(client: Pick<PoolClient, "query">, userId: nu
             (project.personal_owner_user_id = $1) as personal
        from user_project_preferences preference
        join project_members member
-         on member.project_id = preference.selected_project_id
+         on member.project_id = coalesce($2::bigint, preference.selected_project_id)
         and member.user_id = preference.user_id
         and member.status = 'active'
        join projects project
-         on project.id = preference.selected_project_id
+         on project.id = member.project_id
         and project.is_archived = false
       where preference.user_id = $1
       limit 1`,
-    [userId],
+    [userId, expectedProjectId],
   );
   const row = result.rows[0];
   if (!row || !isProjectRole(row.role)) return null;
@@ -177,11 +177,13 @@ export async function getSelectedProjectContext(
   userId: number,
 ): Promise<ProjectContext> {
   if (!positiveId(userId)) throw new ProjectAccessError("invalid_project_selector");
+  const expectedProjectId = await selectedRequestProjectId();
   return withTransaction(pool, async (client) => {
-    const selected = await readSelectedProject(client, userId);
+    const selected = await readSelectedProject(client, userId, expectedProjectId);
     if (selected) return selected;
+    if (expectedProjectId !== null) throw new ProjectAccessError("membership_required");
     await ensureDefaultPersonalProjectInTransaction(client, userId);
-    const repaired = await readSelectedProject(client, userId);
+    const repaired = await readSelectedProject(client, userId, expectedProjectId);
     if (!repaired) throw new Error("project_context_missing");
     return repaired;
   });
@@ -200,7 +202,7 @@ export async function selectProjectForUser(
     throw new ProjectAccessError("invalid_project_selector");
   }
   return withTransaction(pool, async (client) => {
-    await requireProjectPermission(client, userId, projectId, "project.read");
+    await requireProjectPermission(client, userId, projectId, "project.read", { allowProjectSelection: true });
     await client.query(
       `insert into user_project_preferences (user_id, selected_project_id)
        values ($1, $2)
@@ -217,7 +219,6 @@ export async function selectProjectForUser(
 async function lockMemberAndOwners(
   client: PoolClient,
   projectId: number,
-  actorUserId: number,
   memberUserId: number,
 ): Promise<{
   target: { role: ProjectRole; version: number; status: string };
@@ -235,18 +236,11 @@ async function lockMemberAndOwners(
     `select user_id, role, version, status
        from project_members
       where project_id = $1
-        and (user_id = any($2::bigint[]) or (role = 'owner' and status = 'active'))
+        and (user_id = $2 or (role = 'owner' and status = 'active'))
       order by user_id
       for update`,
-    [projectId, [actorUserId, memberUserId]],
+    [projectId, memberUserId],
   );
-  const actorRow = lockedMembers.rows.find((row) => Number(row.user_id) === actorUserId);
-  if (!actorRow || actorRow.status !== "active" || !isProjectRole(actorRow.role)) {
-    throw new ProjectAccessError("membership_required");
-  }
-  if (!roleAllows(actorRow.role, "members.manage")) {
-    throw new ProjectAccessError("permission_denied");
-  }
   const targetRow = lockedMembers.rows.find((row) => Number(row.user_id) === memberUserId);
   if (!targetRow || !isProjectRole(targetRow.role) || targetRow.status !== "active") {
     throw new ProjectMembershipMutationError("member_not_found");
@@ -271,7 +265,7 @@ export async function changeProjectMemberRole(input: {
   if (!isProjectRole(input.role)) throw new ProjectAccessError("permission_denied");
   return withTransaction(input.pool, async (client) => {
     await requireProjectPermission(client, input.actorUserId, input.projectId, "members.manage");
-    const locked = await lockMemberAndOwners(client, input.projectId, input.actorUserId, input.memberUserId);
+    const locked = await lockMemberAndOwners(client, input.projectId, input.memberUserId);
     if (locked.target.version !== input.expectedVersion) {
       throw new ProjectMembershipMutationError("version_conflict");
     }
@@ -316,7 +310,7 @@ export async function revokeProjectMember(input: {
 }): Promise<{ version: number }> {
   return withTransaction(input.pool, async (client) => {
     await requireProjectPermission(client, input.actorUserId, input.projectId, "members.manage");
-    const locked = await lockMemberAndOwners(client, input.projectId, input.actorUserId, input.memberUserId);
+    const locked = await lockMemberAndOwners(client, input.projectId, input.memberUserId);
     if (locked.target.version !== input.expectedVersion) {
       throw new ProjectMembershipMutationError("version_conflict");
     }

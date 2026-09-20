@@ -454,11 +454,7 @@ describe("channelAiContextFor", () => {
   it("selects the profile field-by-field and ignores a junk legacy edit", async () => {
     const pool = {
       query: vi.fn(async (sql: string) => {
-        if (sql.includes("kind='channel'")) return { rows: [] };
-        if (sql.includes("select member.project_id, member.user_id")) {
-          return { rows: [{ project_id: "3", user_id: "7", role: "author", version: "1" }] };
-        }
-        if (sql.includes("from channels")) {
+        if (sql.includes("select id, title, handle, network, project_id") || sql.startsWith("select id from channels")) {
           return { rows: [{ id: "18", title: "Право и технологии", handle: "legaltech", network: "tg", project_id: "3" }] };
         }
         if (sql.includes("kind in ('profile_edit', 'profile')")) {

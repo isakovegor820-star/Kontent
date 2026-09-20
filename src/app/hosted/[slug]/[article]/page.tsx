@@ -2,7 +2,7 @@ import type { Metadata } from "next";
 import { notFound } from "next/navigation";
 
 import { getPool } from "@/lib/db";
-import { articleJsonLd, loadHostedArticle, loadHostedSite } from "@/lib/site-hosted/service";
+import { articleJsonLd, loadHostedArticle, loadHostedSite, serializeHostedJsonLd } from "@/lib/site-hosted/service";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -46,7 +46,7 @@ export default async function HostedArticlePage({ params }: Params) {
   if (!article) notFound();
   return (
     <main id="main">
-      <script type="application/ld+json" dangerouslySetInnerHTML={{ __html: JSON.stringify(articleJsonLd(site, article)) }} />
+      <script type="application/ld+json" dangerouslySetInnerHTML={{ __html: serializeHostedJsonLd(articleJsonLd(site, article)) }} />
       <nav className="text-[13px] text-text-3" aria-label="Навигация">
         <a href={`${site.origin}/`} className="hover:underline">{site.brandName} — материалы</a>
       </nav>

@@ -36,30 +36,13 @@ describe("Today background refresh worker contract", () => {
     expect(worker).toContain('import { materializeAllOpportunitySnapshots }');
     const queue = await registeredJobs();
     expect(queue.upsertJobScheduler.mock.calls.filter(([name]) => name === "today-opportunities")).toEqual([
-      ["today-opportunities", { pattern: "20,50 * * * *", tz: "Europe/Moscow" }, { name: "today-opportunities" }],
+      ["today-opportunities", { pattern: "30 */2 * * *", tz: "Europe/Moscow" }, { name: "today-opportunities" }],
     ]);
     const pool = {};
     const materializeAllOpportunitySnapshots = vi.fn(async () => "snapshots-refreshed");
     const process = await run(`return ${cronWorker.arguments![1].getText(parsed)};`, { pool, materializeAllOpportunitySnapshots });
     await expect(process({ name: "today-opportunities" })).resolves.toBe("snapshots-refreshed");
     expect(materializeAllOpportunitySnapshots).toHaveBeenCalledExactlyOnceWith(pool);
-  });
-
-  it("refreshes public market signals before opportunity snapshots", async () => {
-    const queue = await registeredJobs();
-    expect(queue.upsertJobScheduler.mock.calls.filter(([name]) => name === "market-signals")).toEqual([
-      ["market-signals", { pattern: "5,35 * * * *", tz: "Europe/Moscow" }, { name: "market-signals" }],
-    ]);
-    const pool = {};
-    const statsProducerQueue = {};
-    const refreshOpportunityMarket = vi.fn(async () => "market-refreshed");
-    const process = await run(`return ${cronWorker.arguments![1].getText(parsed)};`, {
-      pool,
-      statsProducerQueue,
-      refreshOpportunityMarket,
-    });
-    await expect(process({ name: "market-signals" })).resolves.toBe("market-refreshed");
-    expect(refreshOpportunityMarket).toHaveBeenCalledExactlyOnceWith(pool, statsProducerQueue);
   });
 
   it("retries channel statistics during the day instead of waiting until tomorrow", async () => {

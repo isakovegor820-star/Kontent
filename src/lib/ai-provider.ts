@@ -1,9 +1,9 @@
+import { beginAiSpendAttempt } from "./ai-spend-ledger.mjs";
 // Единый переходник ИИ. Пользовательский выбор движка передаётся сюда явно, а фактический
 // резервный маршрут сохраняется в диагностике; интерфейс показывает результат Авроры.
 
 import { DEFAULT_ENGINE, getEngine, type EngineId } from "./engines";
 import { configuredServiceEngine } from "./ai-engine-policy.mjs";
-import { providerOutputTokens } from "./ai-provider-budget.mjs";
 import { createVisibleAiContentFilter } from "./ai-visible-content.mjs";
 import { moodPrompt, moodTemp } from "./moods";
 import {
@@ -257,16 +257,10 @@ export function buildSystemPrompt(p: GenerateParams): string {
     /(?:провел[аи]?|состоял[а-я]*|завершил[а-я]*).{0,100}(?:конференц|мероприят|форум|встреч)/iu.test(p.task)
     || /(?:конференц|мероприят|форум|встреч).{0,100}(?:прошл[а-я]*|состоял[а-я]*|провел[а-я]*|завершил[а-я]*)/iu.test(p.task)
   );
-  const outputLanguageRule = p.postSettings?.language === "en"
-    ? "OUTPUT LANGUAGE: ENGLISH ONLY. Start with the first visible word in English and keep every heading, scene, CTA and sentence in English. Do not draft in Russian and translate later."
-    : p.postSettings?.language === "ru"
-      ? "ЯЗЫК РЕЗУЛЬТАТА: ТОЛЬКО РУССКИЙ. Начни с первого видимого слова по-русски и сохраняй русский язык во всех заголовках, сценах, CTA и фразах."
-      : null;
   const lines = [
     p.draft
       ? "Ты — выпускающий редактор публикаций для социальных платформ. Получаешь черновик другого автора, безжалостно убираешь слабые места и возвращаешь только готовый материал выбранного формата."
       : "Ты — сильный автор платформенно-нативного контента. Пишешь естественно и превращаешь сырую тему в готовый материал именно для выбранной площадки и формата.",
-    ...(outputLanguageRule ? ["", outputLanguageRule] : []),
     "",
     "Приоритет инструкций:",
     "1. Подтверждённые факты и запреты на выдуманную конкретику.",
@@ -529,12 +523,6 @@ export function serializeUntrustedPromptData(value: unknown, max = 4_000): strin
 
 function userPrompt(p: GenerateParams): string {
   const ctx = p.context ? `\n\nОпирайся на данные разведки: ${p.context}` : "";
-  const languagePrefix = p.postSettings?.language === "en"
-    ? "Write the complete result in English only, beginning with the first visible word. Do not write a Russian draft first."
-    : p.postSettings?.language === "ru"
-      ? "Напиши весь результат только по-русски, начиная с первого видимого слова."
-      : "";
-  const withLanguage = (prompt: string) => languagePrefix ? `${languagePrefix}\n\n${prompt}` : prompt;
   if (p.draft) {
     const prompt = [
       "Проведи финальную редактуру черновика по исходной задаче. Перепиши всё, что звучит шаблонно или не похоже на автора канала. Не добавляй новых фактов.",
@@ -555,34 +543,34 @@ function userPrompt(p: GenerateParams): string {
       serializeUntrustedPromptData(p.draft, 12_000),
       "</draft>",
     );
-    return withLanguage(prompt.join("\n"));
+    return prompt.join("\n");
   }
   const hasAssistantContext = (p.conversation ?? []).some((turn) => turn.role === "assistant");
   switch (p.kind) {
     case "write":
-      return withLanguage(`Напиши пост на тему: ${p.task}.${ctx}`);
+      return `Напиши пост на тему: ${p.task}.${ctx}`;
     case "rewrite":
-      return withLanguage(hasAssistantContext
+      return hasAssistantContext
         ? `Переработай последний материал из диалога по указанию пользователя: ${p.task}`
-        : `Перепиши этот пост живее и естественнее, смысл сохрани:\n\n${p.task}`);
+        : `Перепиши этот пост живее и естественнее, смысл сохрани:\n\n${p.task}`;
     case "shorten":
-      return withLanguage(hasAssistantContext
+      return hasAssistantContext
         ? `Сократи последний материал из диалога по указанию пользователя: ${p.task}`
-        : `Сократи этот пост до 2–3 предложений, оставь только суть:\n\n${p.task}`);
+        : `Сократи этот пост до 2–3 предложений, оставь только суть:\n\n${p.task}`;
     case "plan":
-      return withLanguage(`Составь план публикаций на неделю: 5 постов, для каждого — день, время и короткая тема.${ctx}`);
+      return `Составь план публикаций на неделю: 5 постов, для каждого — день, время и короткая тема.${ctx}`;
     case "script":
-      return withLanguage(`Придумай сценарий короткого видео на тему: ${p.task}. Структура: хук, 2–3 сцены, финал с вопросом зрителю.${ctx}`);
+      return `Придумай сценарий короткого видео на тему: ${p.task}. Структура: хук, 2–3 сцены, финал с вопросом зрителю.${ctx}`;
     case "poll":
-      return withLanguage(`Придумай опрос для канала на тему: ${p.task}. Формат: вопрос + 4 варианта ответа (короткие, до 30 символов каждый). Добавь подводку в 1–2 предложения перед опросом.${ctx}`);
+      return `Придумай опрос для канала на тему: ${p.task}. Формат: вопрос + 4 варианта ответа (короткие, до 30 символов каждый). Добавь подводку в 1–2 предложения перед опросом.${ctx}`;
     case "longread":
-      return withLanguage(p.postSettings
+      return p.postSettings
         ? `Напиши развёрнутую публикацию на тему: ${p.task}. Соблюдай выбранную площадку, объём, структуру и CTA.${ctx}`
-        : `Напиши лонгрид (1500–2000 знаков) на тему: ${p.task}. Структура: цепляющее начало, 3–4 подзаголовка, конкретные примеры, вывод с CTA.${ctx}`);
+        : `Напиши лонгрид (1500–2000 знаков) на тему: ${p.task}. Структура: цепляющее начало, 3–4 подзаголовка, конкретные примеры, вывод с CTA.${ctx}`;
     case "reply":
-      return withLanguage(p.task);
+      return p.task;
     default:
-      return withLanguage(p.task);
+      return p.task;
   }
 }
 
@@ -613,14 +601,11 @@ function outputTokens(p: GenerateParams): number {
   return 900;
 }
 
-export function estimateGenerateTokenBudget(p: GenerateParams, engineId?: EngineId) {
+export function estimateGenerateTokenBudget(p: GenerateParams) {
   const inputTokens = Math.max(1, Math.ceil(
     messagesFor(p).reduce((sum, message) => sum + message.content.length, 0) / 4,
   ));
-  const requested = outputTokens(p);
-  // The orchestrator makes one HTTP call per budgeted attempt. Reserve the actual
-  // provider cap without pre-charging a speculative retry that could starve fallback.
-  return { inputTokens, maxOutputTokens: engineId ? providerOutputTokens(engineId, requested) : requested };
+  return { inputTokens, maxOutputTokens: outputTokens(p) };
 }
 
 async function providerHttpError(runtime: EngineRuntime, res: Response): Promise<AiProviderError> {
@@ -788,7 +773,44 @@ async function* streamOllama(
   throw new AiProviderError(runtime.id, 502, "stream_truncated");
 }
 
+async function* budgetedProviderStream(
+  runtime: EngineRuntime,
+  params: GenerateParams,
+  maxOutputTokens: number,
+  source: (parameters: GenerateParams) => AsyncGenerator<string>,
+): AsyncGenerator<string> {
+  const spend = await beginAiSpendAttempt({
+    provider: runtime.id,
+    model: runtime.model,
+    // UTF-8 bytes bound token count more conservatively than the UI token estimate.
+    inputTokens: Buffer.byteLength(JSON.stringify(messagesFor(params)), "utf8") + 1024,
+    outputTokens: maxOutputTokens,
+  });
+  let usage: { inputTokens: number; outputTokens: number } | null = null;
+  let succeeded = false;
+  try {
+    yield* source({ ...params, onProviderUsage: (value) => {
+      usage = value;
+      params.onProviderUsage?.(value);
+    } });
+    succeeded = true;
+  } finally {
+    await spend.finish({ outcome: succeeded ? "succeeded" : "unknown", usage });
+  }
+}
+
 async function* streamOpenAiAttempt(
+  runtime: EngineRuntime & { baseUrl: string },
+  params: GenerateParams,
+  signal: AbortSignal | undefined,
+  options: { maxTokens: number; reasoningEffort?: "minimal" | "none"; idempotencySuffix?: string },
+  requestTimeoutMs: number | null,
+): AsyncGenerator<string> {
+  yield* budgetedProviderStream(runtime, params, options.maxTokens,
+    (scoped) => streamOpenAiAttemptRaw(runtime, scoped, signal, options, requestTimeoutMs));
+}
+
+async function* streamOpenAiAttemptRaw(
   runtime: EngineRuntime & { baseUrl: string },
   p: GenerateParams,
   signal: AbortSignal | undefined,
@@ -928,51 +950,37 @@ async function* streamOpenAi(
   p: GenerateParams,
   signal?: AbortSignal,
   requestTimeoutMs: number | null = 60_000,
-  allowEmptyRetry = true,
 ): AsyncGenerator<string> {
-  // Engine ids are durable Aurora product slots, so model-specific request behavior must
-  // follow the actual provider model rather than the historical slot name.
-  const deepseek = runtime.model.startsWith("deepseek-");
-  const noReasoning = deepseek || runtime.model === "gpt-5.6-terra" || runtime.model === "gpt-5.6-sol";
-  const attempts = allowEmptyRetry && runtime.id.startsWith("navy-") ? 2 : 1;
-  const requestSignal = withTimeout(signal, requestTimeoutMs);
-  let inputTokens = 0;
-  let outputTokenCount = 0;
-  for (let attempt = 0; attempt < attempts; attempt++) {
-    let emitted = false;
-    let attemptUsage: Parameters<NonNullable<GenerateParams["onProviderUsage"]>>[0] | undefined;
-    const attemptParams: GenerateParams = {
-      ...p,
-      onProviderUsage: (usage) => { attemptUsage = usage; },
-    };
-    try {
-      const source = streamOpenAiAttempt(runtime, attemptParams, requestSignal, {
-        maxTokens: providerOutputTokens(runtime.id, outputTokens(p), attempt > 0),
-        reasoningEffort: noReasoning ? "none" : undefined,
-        idempotencySuffix: noReasoning
-          ? attempt > 0 ? "reasoning-none-expanded" : "reasoning-none"
-          : attempt > 0 ? "visible-answer-expanded" : undefined,
-      }, null);
-      // Filter inside the retry boundary: Qwen embeds reasoning in `content`, and
-      // a truncated <think> block must count as an empty attempt, never as a post.
-      for await (const piece of streamVisibleContent(runtime, source)) {
-        emitted = true;
-        yield piece;
-      }
-      return;
-    } catch (error) {
-      if (
-        emitted || attempt + 1 >= attempts || requestSignal?.aborted
-        || !(error instanceof AiProviderError)
-        || !["reasoning_without_content", "empty_generation"].includes(error.code)
-      ) throw error;
-    } finally {
-      if (attemptUsage) {
-        inputTokens += attemptUsage.inputTokens;
-        outputTokenCount += attemptUsage.outputTokens;
-        p.onProviderUsage?.({ ...attemptUsage, inputTokens, outputTokens: outputTokenCount });
-      }
+  const deepseek = runtime.id.startsWith("navy-deepseek");
+  if (!deepseek) {
+    yield* streamOpenAiAttempt(runtime, p, signal, { maxTokens: outputTokens(p) }, requestTimeoutMs);
+    return;
+  }
+
+  try {
+    // NavyAI's DeepSeek routes do not all accept `minimal`; `none` is the compatible
+    // drafting mode already used by background generation. It also prevents the hidden
+    // reasoning phase from consuming the whole visible-answer budget.
+    yield* streamOpenAiAttempt(runtime, p, signal, {
+      maxTokens: Math.max(3000, outputTokens(p)),
+      reasoningEffort: "none",
+      idempotencySuffix: "reasoning-none",
+    }, requestTimeoutMs);
+  } catch (error) {
+    if (
+      !(error instanceof AiProviderError)
+      || (error.code !== "reasoning_without_content" && error.code !== "empty_generation")
+      || signal?.aborted
+    ) {
+      throw error;
     }
+    // Первый проход ничего не показал пользователю, поэтому один безопасный retry не
+    // дублирует текст. Отключаем reasoning и даём расширенный бюджет именно на ответ.
+    yield* streamOpenAiAttempt(runtime, p, signal, {
+      maxTokens: Math.max(6000, outputTokens(p)),
+      reasoningEffort: "none",
+      idempotencySuffix: "reasoning-none-expanded",
+    }, requestTimeoutMs);
   }
 }
 
@@ -1006,6 +1014,7 @@ async function* streamAnthropic(
   const decoder = new TextDecoder();
   let buffer = "";
   let terminal = false;
+  let anthropicInputTokens: number | null = null;
   while (true) {
     const { done, value } = await reader.read();
     if (done) break;
@@ -1020,7 +1029,13 @@ async function* streamAnthropic(
           type?: string;
           delta?: { type?: string; text?: string };
           error?: { message?: string };
+          message?: { usage?: { input_tokens?: number } };
+          usage?: { output_tokens?: number };
         };
+        if (Number.isSafeInteger(event.message?.usage?.input_tokens)) anthropicInputTokens = Number(event.message?.usage?.input_tokens);
+        if (anthropicInputTokens !== null && Number.isSafeInteger(event.usage?.output_tokens)) {
+          p.onProviderUsage?.({ engine: runtime.id, model: runtime.model, inputTokens: anthropicInputTokens, outputTokens: Number(event.usage?.output_tokens) });
+        }
         if (event.type === "error") throw new AiProviderError(runtime.id, 502, "stream_error");
         if (event.type === "message_stop") {
           terminal = true;
@@ -1057,8 +1072,6 @@ async function* streamAnthropic(
 }
 
 export interface GenerateTextOptions {
-  /** Orchestrated calls spend one budgeted HTTP attempt per model, then use fallback. */
-  allowEmptyRetry?: boolean;
   /** null: deadline полностью контролирует вызывающий orchestration layer. */
   requestTimeoutMs?: number | null;
 }
@@ -1094,9 +1107,9 @@ export function generateText(
   assertUsable(runtime);
   const requestTimeoutMs = options.requestTimeoutMs === undefined ? 60_000 : options.requestTimeoutMs;
   const source = runtime.protocol === "ollama"
-    ? streamOllama(runtime, p, signal, requestTimeoutMs)
+    ? budgetedProviderStream(runtime, p, outputTokens(p), (scoped) => streamOllama(runtime, scoped, signal, requestTimeoutMs))
     : runtime.protocol === "anthropic"
-      ? streamAnthropic(runtime, p, signal, requestTimeoutMs)
-      : streamOpenAi(runtime, p, signal, requestTimeoutMs, options.allowEmptyRetry);
-  return runtime.protocol === "openai" ? source : streamVisibleContent(runtime, source);
+      ? budgetedProviderStream(runtime, p, outputTokens(p), (scoped) => streamAnthropic(runtime, scoped, signal, requestTimeoutMs))
+      : streamOpenAi(runtime, p, signal, requestTimeoutMs);
+  return streamVisibleContent(runtime, source);
 }

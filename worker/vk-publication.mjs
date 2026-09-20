@@ -55,7 +55,7 @@ export async function publishVkWithRequest({ request, token, groupId, message, p
       providerOperationId,
     };
   }
-  if (response?.error) {
+  if (response?.error && Number.isSafeInteger(response.error.error_code) && response.error.error_code > 0) {
     const classified = classifyVkApiError(response.error);
     return {
       ok: false,

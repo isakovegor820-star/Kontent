@@ -18,7 +18,7 @@ function normalizedEmails(value: string | undefined): Set<string> {
   );
 }
 
-export function adminAccessConfigured(env: NodeJS.ProcessEnv = process.env): boolean {
+export function adminAccessConfigured(env: Readonly<Record<string, string | undefined>> = process.env): boolean {
   return positiveIds(env.AURORA_ADMIN_USER_IDS).size > 0
     || normalizedEmails(env.AURORA_ADMIN_EMAILS).size > 0;
 }
@@ -29,10 +29,10 @@ export function adminAccessConfigured(env: NodeJS.ProcessEnv = process.env): boo
  * cross-project operational data.
  */
 export function hasAuroraAdminAccess(
-  user: Pick<SessionUser, "id" | "email">,
-  env: NodeJS.ProcessEnv = process.env,
+  user: Pick<SessionUser, "id" | "email" | "email_verified">,
+  env: Readonly<Record<string, string | undefined>> = process.env,
 ): boolean {
   if (positiveIds(env.AURORA_ADMIN_USER_IDS).has(user.id)) return true;
   const email = String(user.email || "").trim().toLowerCase();
-  return Boolean(email && normalizedEmails(env.AURORA_ADMIN_EMAILS).has(email));
+  return Boolean(user.email_verified === true && email && normalizedEmails(env.AURORA_ADMIN_EMAILS).has(email));
 }

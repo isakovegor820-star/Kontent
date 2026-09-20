@@ -1,10 +1,9 @@
-import { knowledgeStyleSamples } from "./knowledge-style.mjs";
 // Учёт генераций ИИ и дневной лимит (ТЗ Д.8, ТЗ 12 — честный лимит с видимым счётчиком).
 // Лимит на пользователя в сутки. Для локального движка он щедрый, но механика та же,
 // что и для платного облака — сменим движок, не трогая продукт.
 
 import { getPool } from "./db";
-import { requireProjectPermission, requireSelectedProjectPermission } from "./project-permissions";
+import { aiChannelPermissionSql, aiProjectPermissionSql, aiUsagePermissionSql } from "./ai-project-access";
 import type { Pool, PoolClient } from "pg";
 import { createHash, randomUUID } from "node:crypto";
 import {
@@ -220,7 +219,8 @@ export async function lookupAiUsageRequest(
       `select id, status, request_fingerprint, result_payload,
               (status = 'reserved' and expires_at > now()) as fresh
          from ai_usage
-        where user_id = $1 and reservation_key = $2`,
+        where user_id = $1 and reservation_key = $2
+          and ${aiUsagePermissionSql("ai_usage")}`,
       [userId, key],
     )
   ).rows[0];
@@ -299,9 +299,11 @@ export async function acquireAiUsageRequest(
         status: AiUsageStatus;
         request_fingerprint: string | null;
         result_payload: unknown;
+        authorized: boolean;
         fresh: boolean;
       }>(
         `select id, status, request_fingerprint, result_payload,
+                (result_payload is null or ${aiUsagePermissionSql("ai_usage")}) as authorized,
                 (status = 'reserved' and expires_at > now()) as fresh
            from ai_usage
           where user_id = $1 and reservation_key = $2
@@ -310,7 +312,7 @@ export async function acquireAiUsageRequest(
       )
     ).rows[0];
     const existingId = existing ? Number(existing.id) : null;
-    if (existing?.request_fingerprint && existing.request_fingerprint !== options.fingerprint) {
+    if (existing?.authorized === false || (existing?.request_fingerprint && existing.request_fingerprint !== options.fingerprint)) {
       await client.query("commit");
       return {
         allowed: false,
@@ -581,6 +583,7 @@ export async function stageAiUsageResult(
                              else finalized_at
                            end
       where id = $1 and user_id = $2 and operation_id = $3::uuid and status = 'reserved'
+        and ${aiUsagePermissionSql("ai_usage")}
       returning status, result_payload`,
     [reservationId, userId, operationId, serialized, result.protocol],
   );
@@ -595,7 +598,8 @@ export async function stageAiUsageResult(
   const current = await pool.query<{ status: AiUsageStatus; result_payload: unknown }>(
     `select status, result_payload
        from ai_usage
-      where id = $1 and user_id = $2 and operation_id = $3::uuid`,
+      where id = $1 and user_id = $2 and operation_id = $3::uuid
+        and ${aiUsagePermissionSql("ai_usage")}`,
     [reservationId, userId, operationId],
   );
   return {
@@ -622,6 +626,7 @@ export async function acknowledgeAiUsageResult(
             finalized_at = now()
       where user_id = $1 and reservation_key = $2
         and status in ('reserved', 'expired') and result_payload is not null
+        and ${aiUsagePermissionSql("ai_usage")}
       returning status, result_payload`,
     [userId, key],
   );
@@ -636,7 +641,8 @@ export async function acknowledgeAiUsageResult(
   const current = await pool.query<{ status: AiUsageStatus; result_payload: unknown }>(
     `select status, result_payload
        from ai_usage
-      where user_id = $1 and reservation_key = $2`,
+      where user_id = $1 and reservation_key = $2
+          and ${aiUsagePermissionSql("ai_usage")}`,
     [userId, key],
   );
   return {
@@ -682,6 +688,7 @@ export async function commitAiUsageResult(
                                   end,
             finalized_at = now()
       where id = $1 and user_id = $2 and operation_id = $3::uuid and status = 'reserved'
+        and ${aiUsagePermissionSql("ai_usage")}
       returning status, result_payload`,
     [reservationId, userId, operationId, serialized, result.protocol],
   );
@@ -696,7 +703,8 @@ export async function commitAiUsageResult(
   const current = await pool.query<{ status: AiUsageStatus; result_payload: unknown }>(
     `select status, result_payload
        from ai_usage
-      where id = $1 and user_id = $2 and operation_id = $3::uuid`,
+      where id = $1 and user_id = $2 and operation_id = $3::uuid
+        and ${aiUsagePermissionSql("ai_usage")}`,
     [reservationId, userId, operationId],
   );
   return {
@@ -823,10 +831,7 @@ export async function styleSamplesFor(
   const safeLimit = Math.min(200, Math.max(1, Math.round(limit)));
   const r = await pool.query<{ text: string }>(
     `select text from posts
-      where project_id in (
-          select member.project_id from project_members member join projects project on project.id=member.project_id
-          where member.user_id=$1 and member.status='active' and project.is_archived=false
-        )
+      where ${aiChannelPermissionSql("posts.channel_id", "$1")}
         and channel_id = $2
         and status = 'published'
         and verification_state = 'verified'
@@ -863,33 +868,31 @@ export async function channelAiContextFor(
   styleLimit = 10,
   pool: Pick<Pool, "query"> = getPool(),
 ): Promise<ChannelAiContext | null> {
-  const selectedProjectId = wantedChannelId == null
-    ? (await requireSelectedProjectPermission(pool, userId, "project.read")).projectId
-    : null;
   const channel = wantedChannelId
     ? (
         await pool.query<{ id: string; title: string | null; handle: string | null; network: string; project_id: string }>(
           `select id, title, handle, network, project_id
              from channels
-            where id = $1 and is_active = true`,
-          [wantedChannelId],
+            where id = $1 and is_active = true and status = 'active'
+              and ${aiChannelPermissionSql("channels.id", "$2")}`,
+          [wantedChannelId, userId],
         )
       ).rows[0]
     : (
         await pool.query<{ id: string; title: string | null; handle: string | null; network: string; project_id: string }>(
           `select id, title, handle, network, project_id
              from channels
-            where project_id = $1 and is_active = true
+            where is_active = true and status = 'active'
+              and ${aiChannelPermissionSql("channels.id", "$1")}
+              and project_id = (select selected_project_id from user_project_preferences where user_id = $1)
             order by id
             limit 1`,
-          [selectedProjectId],
+          [userId],
         )
       ).rows[0];
 
   if (!channel) return null;
   const channelId = Number(channel.id);
-  const projectId = Number(channel.project_id);
-  await requireProjectPermission(pool, userId, projectId, "project.read");
   const profileRows = (
     await pool.query<{
       id: string;
@@ -900,10 +903,10 @@ export async function channelAiContextFor(
     }>(
       `select id, kind, raw_text, status, added_at
          from knowledge_sources
-        where channel_id = $1 and kind in ('profile_edit', 'profile')
+        where ${aiChannelPermissionSql("knowledge_sources.channel_id", "$1")} and channel_id = $2 and kind in ('profile_edit', 'profile')
         order by added_at desc
         limit 20`,
-      [channelId],
+      [userId, channelId],
     )
   ).rows;
   const brief = (
@@ -924,8 +927,8 @@ export async function channelAiContextFor(
       `select niche, audience, rubrics, formats, author_role, goal, cta, taboo,
               profile_answers, quality, ready, updated_at
          from content_brief
-        where project_id = $1 and channel_id = $2`,
-      [projectId, channelId],
+        where ${aiChannelPermissionSql("content_brief.channel_id", "$1")} and channel_id = $2`,
+      [userId, channelId],
     )
   ).rows[0];
   const candidates: ProfileCandidate[] = profileRows.map((row) => ({
@@ -986,9 +989,10 @@ export async function channelAiContextFor(
       `select kind, term, replacement, expansion, case_sensitive
          from project_brand_dictionary_entries
         where project_id = $1 and is_active = true
+          and ${aiProjectPermissionSql("project_brand_dictionary_entries.project_id", "$2")}
         order by id
         limit 200`,
-      [Number(channel.project_id)],
+      [Number(channel.project_id), userId],
     )
   ).rows;
   const dictionary = brandDictionaryPrompt(dictionaryRows.map((entry) => ({
@@ -1003,23 +1007,28 @@ export async function channelAiContextFor(
     await pool.query<{ raw_text: string }>(
       `select raw_text
          from knowledge_sources
-        where channel_id = $1 and kind in ('form', 'paste') and status = 'ready'
+        where ${aiChannelPermissionSql("knowledge_sources.channel_id", "$1")} and channel_id = $2 and kind in ('form', 'paste') and status = 'ready'
         order by added_at desc
         limit 4`,
-      [channelId],
+      [userId, channelId],
     )
   ).rows.map((row) => row.raw_text.trim()).filter(Boolean);
 
   const liveStyleSamples = await styleSamplesFor(userId, channelId, styleLimit, pool);
-  const importedStyleSamples = await knowledgeStyleSamples(pool, channelId);
-  const styleSamples = [...new Set([...quality.styleExamples, ...importedStyleSamples, ...liveStyleSamples])].slice(0, styleLimit);
+  const styleSamples = [...new Set([...quality.styleExamples, ...liveStyleSamples])].slice(0, styleLimit);
   const publishedCount = Number((
     await pool.query<{ count: string }>(
       `select count(*)::text as count from posts
-        where project_id = $1 and channel_id = $2 and status = 'published'`,
-      [projectId, channelId],
+        where ${aiChannelPermissionSql("posts.channel_id", "$1")} and channel_id = $2 and status = 'published'`,
+      [userId, channelId],
     )
   ).rows[0]?.count ?? 0);
+
+  const stillAllowed = await pool.query(
+    `select id from channels where id = $1 and ${aiChannelPermissionSql("channels.id", "$2")}`,
+    [channelId, userId],
+  );
+  if (!stillAllowed.rows.length) return null;
 
   return {
     id: channelId,

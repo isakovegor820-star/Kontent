@@ -1,4 +1,6 @@
-# Every candidate keeps the complete test coverage; independent jobs run concurrently.
+# CI: линт, сборка и тесты на каждый push в main и каждый pull request.
+# Секреты не нужны — для шага build даём заглушки, чтобы статический пререндер
+# не падал без реальных значений (пулы БД/Redis ленивые и при сборке не подключаются).
 name: CI
 
 on:
@@ -6,40 +8,9 @@ on:
     branches: [main]
   pull_request:
 
-permissions:
-  contents: read
-
-# Only obsolete PR runs are cancelled. Main candidates retain their exact-SHA evidence.
-concurrency:
-  group: ci-${{ github.event.pull_request.number || github.run_id }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
-
-env:
-  DATABASE_URL: "postgres://user:pass@localhost:5432/db"
-  REDIS_URL: "redis://127.0.0.1:6380"
-  TG_BOT_TOKEN: "0000000000:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
-  TG_BOT_USERNAME: "aurora_test_bot"
-  TG_CHAT_ID: "-1000000000000"
-  AI_API_KEY: "test-key"
-  AI_DAILY_LIMIT: "30"
-  MIGRATION_TEST_DATABASE_URL: "postgres://postgres:postgres@localhost:5432/aurora_migration_test"
-  E2E_DATABASE_URL: "postgres://postgres:postgres@localhost:5432/aurora_e2e_real"
-  E2E_REDIS_URL: "redis://127.0.0.1:6380/15"
-  MIGRATION_TEST_REDIS_URL: "redis://127.0.0.1:6380/14"
-  # Мастер-ключ шифрования токенов сообществ (VK). В CI — заглушка: тесты
-  # token-crypto выставляют своё значение, а на сборке шифрование не вызывается.
-  TOKENS_MASTER_KEY: "ci-test-master-key-not-for-prod"
-  TOKENS_KEY_ID: "1"
-  VK_APP_ID: "0"
-  VK_APP_SECRET: "test-vk-secret"
-  E2E_WEB_PORT: "43190"
-  E2E_NEXT_PORT: "43191"
-  E2E_FAKE_PORT: "43192"
-
 jobs:
-  checks:
+  build:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
 
     services:
       postgres:
@@ -64,6 +35,27 @@ jobs:
           --health-interval 5s
           --health-timeout 5s
           --health-retries 10
+
+    # Заглушки для сборки. Значения заведомо фейковые — на сборке живые сервисы
+    # не поднимаются (getPool/getRedis вызываются только внутри запросов).
+    env:
+      DATABASE_URL: "postgres://user:pass@localhost:5432/db"
+      REDIS_URL: "redis://127.0.0.1:6380"
+      TG_BOT_TOKEN: "0000000000:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+      TG_BOT_USERNAME: "aurora_test_bot"
+      TG_CHAT_ID: "-1000000000000"
+      AI_API_KEY: "test-key"
+      AI_DAILY_LIMIT: "30"
+      MIGRATION_TEST_DATABASE_URL: "postgres://postgres:postgres@localhost:5432/aurora_migration_test"
+      E2E_DATABASE_URL: "postgres://postgres:postgres@localhost:5432/aurora_e2e_real"
+      E2E_REDIS_URL: "redis://127.0.0.1:6380/15"
+      MIGRATION_TEST_REDIS_URL: "redis://127.0.0.1:6380/14"
+      # Мастер-ключ шифрования токенов сообществ (VK). В CI — заглушка: тесты
+      # token-crypto выставляют своё значение, а на сборке шифрование не вызывается.
+      TOKENS_MASTER_KEY: "ci-test-master-key-not-for-prod"
+      TOKENS_KEY_ID: "1"
+      VK_APP_ID: "0"
+      VK_APP_SECRET: "test-vk-secret"
 
     steps:
       - name: Checkout
@@ -97,9 +89,34 @@ jobs:
             aurora_ai_gate_test \
             aurora_audience_gate_test \
             aurora_password_gate_test \
-            aurora_bot_persistence_test \
             aurora_tracking_gate_test \
-            aurora_launch_test
+            aurora_s01_test \
+            aurora_s02_test \
+            aurora_s03_test \
+            aurora_d02_test \
+            aurora_d03_test \
+            aurora_calendar_gate_test \
+            aurora_sites_gate_test \
+            aurora_media_quota_test \
+            aurora_s02_restore_test \
+            aurora_restore_source_test \
+            aurora_media_lifecycle_test \
+            aurora_capacity_test \
+            aurora_oauth_context_test \
+            aurora_publication_authority_test \
+            aurora_adjacent_authority_test \
+            aurora_admin_alert_test \
+            aurora_destination_identity_test \
+            aurora_rss_project_test \
+            aurora_domain_review_test \
+            aurora_legacy_content_test \
+            aurora_sites_ai_auth_test \
+            aurora_admin_resource_test \
+            aurora_operations_test \
+            aurora_hosted_projection_test \
+            aurora_native_media_test \
+            aurora_sites_delivery_test \
+            aurora_admin_gate_test
           do
             createdb -h localhost -U postgres "$database"
           done
@@ -110,7 +127,7 @@ jobs:
         run: npm run lint
 
       - name: Typecheck
-        run: npx tsc --noEmit
+        run: npm run typecheck
 
       - name: Reject focused or skipped tests
         run: npm run test:focus
@@ -176,28 +193,165 @@ jobs:
         env:
           MIGRATION_TEST_DATABASE_URL: "postgres://postgres:postgres@localhost:5432/aurora_password_gate_test"
 
-      - name: Test bot account persistence and connection races
-        run: npm run test:bot-persistence:integration
-        env:
-          BOT_PERSISTENCE_TEST_DATABASE_URL: "postgres://postgres:postgres@localhost:5432/aurora_bot_persistence_test"
-
       - name: Test exact tracking attribution and conversion replay
         run: npm run test:tracking-lifecycle:integration
         env:
           MIGRATION_TEST_DATABASE_URL: "postgres://postgres:postgres@localhost:5432/aurora_tracking_gate_test"
 
-      - name: Test Studio and Sites recovery, accounting and analytics
-        run: npx vitest run --config vitest.integration.config.ts src/e2e/studio-sites-review.integration.ts --maxWorkers=1
+      - name: Registration identity and transaction races
+        run: env -u DATABASE_URL npm run test:registration:integration
         env:
-          STUDIO_SITES_TEST_POSTGRES_URL: "postgres://postgres:postgres@localhost:5432/postgres"
-          STUDIO_SITES_TEST_REDIS_URL: "redis://127.0.0.1:6380"
+          MIGRATION_TEST_DATABASE_URL: "postgres://postgres:postgres@localhost:5432/aurora_publication_gate_test"
 
-      - name: Test knowledge indexing recovery and project access
-        run: npx vitest run --config vitest.integration.config.ts src/e2e/knowledge-engine.integration.ts src/e2e/knowledge-access.integration.ts --maxWorkers=1
+      - name: Database pool acquisition deadline
+        run: env -u DATABASE_URL npm run test:database-pool-timeout:integration
         env:
-          DATABASE_URL: "postgres://postgres:postgres@127.0.0.1:5432/aurora_launch_test"
+          MIGRATION_TEST_DATABASE_URL: "postgres://postgres:postgres@localhost:5432/aurora_publication_gate_test"
 
-      - name: Production build
+      - name: Telegram actor ownership, replay and races
+        run: env -u DATABASE_URL npm run test:telegram-ownership:integration
+        env:
+          TELEGRAM_OWNERSHIP_TEST_DATABASE_URL: "postgres://postgres:postgres@localhost:5432/aurora_s01_test"
+
+      - name: AI author and revoked membership
+        run: env -u DATABASE_URL npm run test:ai-project-authorization:integration
+        env:
+          MIGRATION_TEST_DATABASE_URL: "postgres://postgres:postgres@localhost:5432/aurora_s03_test"
+
+      - name: Calendar completeness and stable pagination
+        run: env -u DATABASE_URL npm run test:calendar-pagination:integration
+        env:
+          MIGRATION_TEST_DATABASE_URL: "postgres://postgres:postgres@localhost:5432/aurora_calendar_gate_test"
+
+      - name: Explicit project across concurrent requests
+        run: env -u DATABASE_URL npm run test:project-request-context:integration
+        env:
+          PROJECT_CONTEXT_TEST_DATABASE_URL: "postgres://postgres:postgres@localhost:5432/aurora_d02_test"
+
+      - name: Actual paid AI attempts and cost caps
+        run: env -u DATABASE_URL npm run test:ai-spend:integration
+        env:
+          MIGRATION_TEST_DATABASE_URL: "postgres://postgres:postgres@localhost:5432/aurora_d03_test"
+
+      - name: Sites exact reviewed revision
+        run: env -u DATABASE_URL npm run test:sites-revision:integration
+        env:
+          MIGRATION_TEST_DATABASE_URL: "postgres://postgres:postgres@localhost:5432/aurora_sites_gate_test"
+
+      - name: Durable Telegram unknown and multipart delivery
+        run: env -u DATABASE_URL npm run test:telegram-delivery:integration
+        env:
+          MIGRATION_TEST_DATABASE_URL: "postgres://postgres:postgres@localhost:5432/aurora_s02_test"
+
+      - name: Atomic media byte quotas
+        run: env -u DATABASE_URL npm run test:media-quota:integration
+        env:
+          MIGRATION_TEST_DATABASE_URL: "postgres://postgres:postgres@localhost:5432/aurora_media_quota_test"
+
+      - name: Scrub final SDK telemetry envelopes with tracing on and off
+        run: npm run test:telemetry-envelope
+
+      - name: Media lifecycle and orphan cleanup
+        run: env -u DATABASE_URL npm run test:media-lifecycle:integration
+        env:
+          MIGRATION_TEST_DATABASE_URL: "postgres://postgres:postgres@localhost:5432/aurora_media_lifecycle_test"
+
+      - name: Calendar load and claim saturation
+        run: env -u DATABASE_URL npm run test:capacity:integration
+        env:
+          MIGRATION_TEST_DATABASE_URL: "postgres://postgres:postgres@localhost:5432/aurora_capacity_test"
+
+      - name: Admin operations on fresh migrated schema
+        run: env -u DATABASE_URL npm run test:admin-operations:integration
+        env:
+          MIGRATION_TEST_DATABASE_URL: "postgres://postgres:postgres@localhost:5432/aurora_admin_gate_test"
+
+      - name: Verified admin alert recipient identity
+        run: env -u DATABASE_URL npm run test:admin-alert-recipient:integration
+        env:
+          ADMIN_ALERT_TEST_DATABASE_URL: "postgres://postgres:postgres@localhost:5432/aurora_admin_gate_test"
+
+      - name: Restore rehearsal with outbound held and receipt quarantine
+        run: env -u DATABASE_URL npm run test:restored-publications:integration
+        env:
+          MIGRATION_TEST_DATABASE_URL: "postgres://postgres:postgres@localhost:5432/aurora_restore_source_test"
+          RESTORE_DATABASE_URL: "postgres://postgres:postgres@localhost:5432/aurora_s02_restore_test"
+          AURORA_OUTBOUND_DISABLED: "1"
+
+      - name: Sites destination receipts and parallel delivery
+        run: env -u DATABASE_URL npm run test:sites-delivery:integration
+        env:
+          MIGRATION_TEST_DATABASE_URL: "postgres://postgres:postgres@localhost:5432/aurora_sites_delivery_test"
+
+      - name: Native media and export project access after revoke
+        run: env -u DATABASE_URL npm run test:native-project-media:integration
+        env:
+          MIGRATION_TEST_DATABASE_URL: "postgres://postgres:postgres@localhost:5432/aurora_native_media_test"
+
+      - name: Hosted content follows its own exact confirmed revision
+        run: env -u DATABASE_URL npm run test:hosted-projection:integration
+        env:
+          MIGRATION_TEST_DATABASE_URL: "postgres://postgres:postgres@localhost:5432/aurora_hosted_projection_test"
+
+      - name: Content-free operational snapshot and incident transitions
+        run: env -u DATABASE_URL npm run test:runtime-operations:integration
+        env:
+          MIGRATION_TEST_DATABASE_URL: "postgres://postgres:postgres@localhost:5432/aurora_operations_test"
+
+      - name: OAuth project ownership and callback races
+        run: env -u DATABASE_URL npm run test:oauth-project-context:integration
+        env:
+          PROJECT_CONTEXT_TEST_DATABASE_URL: "postgres://postgres:postgres@localhost:5432/aurora_oauth_context_test"
+
+      - name: Current authority at every publication boundary
+        run: env -u DATABASE_URL npm run test:publication-authority:integration
+        env:
+          MIGRATION_TEST_DATABASE_URL: "postgres://postgres:postgres@localhost:5432/aurora_publication_authority_test"
+
+      - name: Sites and follow-up publication authority
+        run: env -u DATABASE_URL npm run test:publication-adjacent-authority:integration
+        env:
+          MIGRATION_TEST_DATABASE_URL: "postgres://postgres:postgres@localhost:5432/aurora_adjacent_authority_test"
+
+      - name: Durable per-recipient operational alert delivery
+        run: env -u DATABASE_URL npm run test:admin-alert-delivery:integration
+        env:
+          ADMIN_ALERT_TEST_DATABASE_URL: "postgres://postgres:postgres@localhost:5432/aurora_admin_alert_test"
+
+      - name: Destination identity stays bound to existing publication receipts
+        run: env -u DATABASE_URL npm run test:site-destination-identity:integration
+        env:
+          MIGRATION_TEST_DATABASE_URL: "postgres://postgres:postgres@localhost:5432/aurora_destination_identity_test"
+
+      - name: RSS explicit identity and worker revoke
+        run: env -u DATABASE_URL npm run test:rss-project-authorization:integration
+        env:
+          MIGRATION_TEST_DATABASE_URL: "postgres://postgres:postgres@localhost:5432/aurora_rss_project_test"
+
+      - name: Research domains current project and role
+        run: env -u DATABASE_URL npm run test:research-project-access:integration
+        env:
+          MIGRATION_TEST_DATABASE_URL: "postgres://postgres:postgres@localhost:5432/aurora_domain_review_test"
+
+      - name: Legacy content and profile scope after revoke
+        run: env -u DATABASE_URL npm run test:legacy-content-project:integration
+        env:
+          MIGRATION_TEST_DATABASE_URL: "postgres://postgres:postgres@localhost:5432/aurora_legacy_content_test"
+
+      - name: Sites AI current access for local and paid engines
+        run: env -u DATABASE_URL npm run test:sites-ai-current-access:integration
+        env:
+          MIGRATION_TEST_DATABASE_URL: "postgres://postgres:postgres@localhost:5432/aurora_sites_ai_auth_test"
+
+      - name: Admin resource routes exact session and access policy
+        run: env -u DATABASE_URL npm run test:admin-resource-auth:integration
+        env:
+          ADMIN_RESOURCE_TEST_DATABASE_URL: "postgres://postgres:postgres@localhost:5432/aurora_admin_resource_test"
+
+      - name: Production build 1
+        run: npm run build
+
+      - name: Production build 2
         run: npm run build
 
       - name: Check worker syntax
@@ -208,196 +362,30 @@ jobs:
       - name: Test
         run: npm test
 
-      - name: Test query-specific Trends datasets
-        run: node scripts/test-trends-dashboard.mjs --sql-only
-        env:
-          TRENDS_QA_ADMIN_URL: "postgres://postgres:postgres@localhost:5432/postgres"
-
       - name: Test critical journey contracts
         run: npm run test:contracts
 
+      - name: Install deterministic browsers
+        run: npx playwright-core install --with-deps chromium firefox webkit
 
-  e2e-build:
-    runs-on: ubuntu-latest
-    timeout-minutes: 12
-    steps:
-      - name: Checkout
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Browser body failure classification and project isolation
+        run: npm run test:project-fetch:browser
 
-      - name: Setup Node
-        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
-        with:
-          node-version: 24
-          cache: npm
+      - name: Test production Trends hydration
+        run: npm run test:trends-hydration:e2e
 
-      - name: Install dependencies
-        run: npm ci
-
-      - name: Build shared E2E runtime
-        run: npm run test:e2e:real -- --build-only
-
-      - name: Pack shared E2E runtime
-        run: tar --exclude='.next-e2e-real/cache' -czf e2e-runtime.tar.gz .next-e2e-real
-
-      - name: Upload shared E2E runtime
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: e2e-runtime-${{ github.sha }}
-          path: e2e-runtime.tar.gz
-          if-no-files-found: error
-          retention-days: 2
-          compression-level: 0
-          overwrite: true
-
-  e2e:
-    needs: e2e-build
-    runs-on: ubuntu-latest
-    timeout-minutes: 18
-    strategy:
-      fail-fast: false
-      matrix:
-        browser: [chromium, firefox, webkit]
-
-    services:
-      postgres:
-        image: pgvector/pgvector:pg17
-        env:
-          POSTGRES_USER: postgres
-          POSTGRES_PASSWORD: postgres
-          POSTGRES_DB: aurora_e2e_real
-        ports:
-          - 5432:5432
-        options: >-
-          --health-cmd "pg_isready -U postgres -d aurora_e2e_real"
-          --health-interval 5s
-          --health-timeout 5s
-          --health-retries 10
-      redis:
-        image: redis:7-alpine
-        ports:
-          - 6380:6379
-        options: >-
-          --health-cmd "redis-cli ping"
-          --health-interval 5s
-          --health-timeout 5s
-          --health-retries 10
-
-    steps:
-      - name: Checkout
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-
-      - name: Setup Node
-        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
-        with:
-          node-version: 24
-          cache: npm
-
-      - name: Install dependencies
-        run: npm ci
-
-      - name: Download shared E2E runtime
-        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
-        with:
-          name: e2e-runtime-${{ github.sha }}
-
-      - name: Unpack shared E2E runtime
-        run: tar -xzf e2e-runtime.tar.gz
-
-      - name: Install PDF and browser verification utilities
-        env:
-          E2E_BROWSER: ${{ matrix.browser }}
+      - name: Real critical E2E in three engines
         run: |
-          sudo apt-get update
-          sudo apt-get install --no-install-recommends --yes poppler-utils
-          npx playwright-core install --with-deps "$E2E_BROWSER"
-
-      - name: Calendar return drag regression
-        env:
-          E2E_BROWSER: ${{ matrix.browser }}
-        run: npm run test:calendar-return:browser
-
-      - name: Real critical E2E
-        env:
-          E2E_BROWSER: ${{ matrix.browser }}
-          E2E_BUILD_MODE: reuse
-        run: npm run test:e2e:real
+          E2E_BROWSER=chromium E2E_BUILD_MODE=build npm run test:e2e:real
+          for browser in firefox webkit
+          do
+            E2E_BROWSER="$browser" E2E_BUILD_MODE=reuse npm run test:e2e:real
+          done
 
       - name: Upload real-E2E failure artifacts
         if: failure()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: e2e-real-failure-${{ matrix.browser }}-${{ github.run_attempt }}
-          path: |
-            test-results/e2e-real
-            test-results/calendar-return
+          name: e2e-real-failure
+          path: test-results/e2e-real
           if-no-files-found: ignore
-
-  trends-hydration:
-    runs-on: ubuntu-latest
-    timeout-minutes: 12
-
-    services:
-      postgres:
-        image: pgvector/pgvector:pg17
-        env:
-          POSTGRES_USER: postgres
-          POSTGRES_PASSWORD: postgres
-          POSTGRES_DB: aurora_e2e_real
-        ports:
-          - 5432:5432
-        options: >-
-          --health-cmd "pg_isready -U postgres -d aurora_e2e_real"
-          --health-interval 5s
-          --health-timeout 5s
-          --health-retries 10
-      redis:
-        image: redis:7-alpine
-        ports:
-          - 6380:6379
-        options: >-
-          --health-cmd "redis-cli ping"
-          --health-interval 5s
-          --health-timeout 5s
-          --health-retries 10
-
-    steps:
-      - name: Checkout
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-
-      - name: Setup Node
-        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
-        with:
-          node-version: 24
-          cache: npm
-
-      - name: Install dependencies
-        run: npm ci
-
-      - name: Install Chromium
-        run: npx playwright-core install --with-deps chromium
-
-      - name: Test production Trends hydration
-        run: npm run test:trends-hydration:e2e
-
-  # Keep the existing required check name. Skipped/cancelled/failed dependencies
-  # must make this check fail, including a skipped browser matrix after a build failure.
-  build:
-    if: always()
-    needs: [checks, e2e-build, e2e, trends-hydration]
-    runs-on: ubuntu-latest
-    timeout-minutes: 2
-    steps:
-      - name: Verify all required CI jobs
-        env:
-          CI_RESULTS: ${{ toJSON(needs) }}
-        run: |
-          node --input-type=module <<'NODE'
-          const results = JSON.parse(process.env.CI_RESULTS);
-          const required = ['checks', 'e2e-build', 'e2e', 'trends-hydration'];
-          const failures = required.filter(name => results[name]?.result !== 'success');
-          if (failures.length) {
-            console.error('Required CI jobs did not succeed:', failures.map(name => `${name}:${results[name]?.result ?? 'missing'}`).join(', '));
-            process.exit(1);
-          }
-          console.log('All server, migration, build, hydration and three-browser checks passed.');
-          NODE

@@ -1,0 +1,371 @@
+ M .github/workflows/ci.yml
+ M db/schema.sql
+ M docs/admin-operations-center-runbook.md
+ M docs/stabilization/release-scope.md
+ M package.json
+ M scripts/migration-policy.mjs
+ M scripts/test-e2e-real.mjs
+ M scripts/test-migrations-integration.mjs
+ M scripts/test-publication-quarantine-integration.mjs
+ M src/app/admin/layout.tsx
+ M src/app/api/admin/users/route.ts
+ M src/app/api/ai/generate/route.test.ts
+ M src/app/api/ai/generate/route.ts
+ M src/app/api/auth/me/route.test.ts
+ M src/app/api/autopilot/brief/suggest/route.ts
+ M src/app/api/bot/link/route.test.ts
+ M src/app/api/bot/link/route.ts
+ M src/app/api/bot/miniapp/overview/route.ts
+ M src/app/api/channels/connect/route.test.ts
+ M src/app/api/channels/connect/route.ts
+ M src/app/api/channels/oauth/callback/route.test.ts
+ M src/app/api/channels/oauth/callback/route.ts
+ M src/app/api/channels/oauth/start/route.test.ts
+ M src/app/api/channels/oauth/start/route.ts
+ M src/app/api/competitors/[id]/route.test.ts
+ M src/app/api/competitors/[id]/route.ts
+ M src/app/api/competitors/add/route.test.ts
+ M src/app/api/competitors/add/route.ts
+ M src/app/api/competitors/route.ts
+ M src/app/api/competitors/suggestions/route.test.ts
+ M src/app/api/competitors/suggestions/route.ts
+ M src/app/api/ideas/[id]/route.ts
+ M src/app/api/ideas/route.ts
+ M src/app/api/knowledge/extract-profile/route.ts
+ M src/app/api/knowledge/route.ts
+ M src/app/api/legal-video-scripts/[id]/production-brief/route.test.ts
+ M src/app/api/legal-video-scripts/[id]/production-brief/route.ts
+ M src/app/api/library/exports/[id]/route.test.ts
+ M src/app/api/library/exports/[id]/route.ts
+ M src/app/api/library/exports/route.test.ts
+ M src/app/api/library/exports/route.ts
+ M src/app/api/library/posts/route.ts
+ M src/app/api/library/tags/route.ts
+ M src/app/api/media/assets/[id]/route.test.ts
+ M src/app/api/media/assets/[id]/route.ts
+ M src/app/api/media/assets/route.test.ts
+ M src/app/api/media/assets/route.ts
+ M src/app/api/media/generations/[id]/route.ts
+ M src/app/api/media/generations/route.ts
+ M src/app/api/posts/create/route.test.ts
+ M src/app/api/posts/route.test.ts
+ M src/app/api/posts/route.ts
+ M src/app/api/projects/current/route.test.ts
+ M src/app/api/projects/current/route.ts
+ M src/app/api/radar/alerts/route.ts
+ M src/app/api/radar/results/[id]/route.test.ts
+ M src/app/api/radar/results/[id]/route.ts
+ M src/app/api/radar/search/route.test.ts
+ M src/app/api/radar/search/route.ts
+ M src/app/api/readiness/route.test.ts
+ M src/app/api/rss/[id]/route.ts
+ M src/app/api/rss/auto-publish/route.ts
+ M src/app/api/rss/bootstrap/route.test.ts
+ M src/app/api/rss/bootstrap/route.ts
+ M src/app/api/rss/catalog/route.ts
+ M src/app/api/rss/items/[id]/state/route.ts
+ M src/app/api/rss/items/route.ts
+ M src/app/api/rss/read-all/route.ts
+ M src/app/api/rss/refresh/route.ts
+ M src/app/api/rss/route.ts
+ M src/app/api/settings/preview/route.ts
+ M src/app/api/settings/profile/route.test.ts
+ M src/app/api/settings/profile/route.ts
+ M src/app/api/site-analysis/[id]/export/route.test.ts
+ M src/app/api/site-analysis/[id]/export/route.ts
+ M src/app/api/sites/[id]/articles/[articleId]/route.ts
+ M src/app/api/sites/[id]/articles/route.ts
+ M src/app/api/sites/[id]/probe/route.ts
+ M src/app/api/sites/[id]/reports/[reportId]/export/route.ts
+ M src/app/api/sites/[id]/reports/route.ts
+ M src/app/api/sites/_shared.ts
+ M src/app/app/analytics/page.tsx
+ M src/app/app/autopilot/brief/page.tsx
+ M src/app/app/autopilot/page.tsx
+ M src/app/app/calendar/page.tsx
+ M src/app/app/competitors/[id]/page.tsx
+ M src/app/app/competitors/page.tsx
+ M src/app/app/composer/page.tsx
+ M src/app/app/growth/page.tsx
+ M src/app/app/knowledge/page.tsx
+ M src/app/app/library/page.tsx
+ M src/app/app/onboarding/page.tsx
+ M src/app/app/opportunities/page.tsx
+ M src/app/app/radar/radar-inner.tsx
+ M src/app/app/rss/page.tsx
+ M src/app/app/settings/page.tsx
+ M src/app/app/site-analysis/page.tsx
+ M src/app/app/sites/articles-panel.tsx
+ M src/app/app/sites/client.ts
+ M src/app/app/sites/page.tsx
+ M src/app/app/studio/page.tsx
+ M src/app/app/studio/visuals/page.test.ts
+ M src/app/app/studio/visuals/page.tsx
+ M src/app/app/today/page.tsx
+ M src/app/app/trends/page.tsx
+ M src/app/app/trends/trend-statistics.tsx
+ M src/app/hosted/[slug]/[article]/page.tsx
+ M src/app/hosted/[slug]/page.tsx
+ M src/app/invite/page.tsx
+ M src/components/admin/admin-audit-center.tsx
+ M src/components/admin/admin-aurora-analytics.tsx
+ M src/components/admin/admin-bot-center.tsx
+ M src/components/admin/admin-command-palette.test.tsx
+ M src/components/admin/admin-command-palette.tsx
+ M src/components/admin/admin-dashboard.tsx
+ M src/components/admin/admin-inbox.tsx
+ M src/components/admin/admin-operations-center.test.tsx
+ M src/components/admin/admin-projects-center.tsx
+ M src/components/admin/admin-publications-center.tsx
+ M src/components/admin/admin-system-center.tsx
+ M src/components/admin/admin-users-center.tsx
+ M src/components/app/account-profile-settings.tsx
+ M src/components/app/aurora-product-telemetry.tsx
+ M src/components/app/brand-dictionary-section.tsx
+ M src/components/app/channel-settings-center.tsx
+ M src/components/app/evidence-card.tsx
+ M src/components/app/legal-sources-section.tsx
+ M src/components/app/library-registry-view.tsx
+ M src/components/app/monthly-campaign-planner.tsx
+ M src/components/app/notification-security-settings.tsx
+ M src/components/app/profile-brief-section.tsx
+ M src/components/app/project-export-button.tsx
+ M src/components/app/project-provider.tsx
+ M src/components/app/project-switcher.test.ts
+ M src/components/app/project-switcher.tsx
+ M src/components/app/project-team-section.tsx
+ M src/components/app/publication-blocks-section.tsx
+ M src/components/app/publication-followup-section.tsx
+ M src/components/app/publication-settings-panel.tsx
+ M src/components/app/settings-sections.tsx
+ M src/components/app/shell.tsx
+ M src/components/app/tracking-analytics.tsx
+ M src/components/app/tracking-builder.tsx
+ M src/components/app/tracking-settings-section.tsx
+ M src/components/studio/audience-assistant-panel.tsx
+ M src/components/studio/media-generator.tsx
+ M src/components/ui/confirm-dialog.test.ts
+ M src/components/ui/confirm-dialog.tsx
+ M src/e2e/admin-operations-center.integration.ts
+ M src/e2e/ai-orchestration.integration.ts
+ M src/e2e/registration.integration.ts
+ M src/e2e/site-analysis-terminal.contract.test.ts
+ M src/lib/admin-access.test.ts
+ M src/lib/admin-access.ts
+ M src/lib/admin-account-actions.test.ts
+ M src/lib/admin-account-actions.ts
+ M src/lib/admin-alerts-scheduler.ts
+ M src/lib/admin-alerts.test.ts
+ M src/lib/admin-alerts.ts
+ M src/lib/admin-dashboard.ts
+ M src/lib/admin-publications.ts
+ M src/lib/admin-users.ts
+ M src/lib/ai-client-idempotency.ts
+ M src/lib/ai-completion-service.d.mts
+ M src/lib/ai-completion-service.mjs
+ M src/lib/ai-completion-service.test.mjs
+ M src/lib/ai-orchestrator.test.ts
+ M src/lib/ai-provider.test.ts
+ M src/lib/ai-provider.ts
+ M src/lib/ai-semantic-adapter.test.mjs
+ M src/lib/ai-usage.test.ts
+ M src/lib/ai-usage.ts
+ M src/lib/audience-delivery-contract.mjs
+ M src/lib/bot-connection.d.mts
+ M src/lib/bot-connection.mjs
+ M src/lib/bot-connection.test.mjs
+ M src/lib/bot-link-client.test.ts
+ M src/lib/bot-link-client.ts
+ M src/lib/brand-dictionary-client.ts
+ M src/lib/calendar-timezone.ts
+ M src/lib/competitors.ts
+ M src/lib/draft-client.ts
+ M src/lib/editorial-client.ts
+ M src/lib/email-change.ts
+ M src/lib/generation-artifacts.test.ts
+ M src/lib/generation-artifacts.ts
+ M src/lib/legal-video-script-service.ts
+ M src/lib/legal-visual-service.ts
+ M src/lib/library-server.ts
+ M src/lib/media-storage.d.mts
+ M src/lib/media-storage.mjs
+ M src/lib/navy-media.mjs
+ M src/lib/navy-media.test.mjs
+ M src/lib/password-reset.ts
+ M src/lib/project-context.ts
+ M src/lib/project-export-client.ts
+ M src/lib/project-notifications-client.ts
+ M src/lib/project-permissions.ts
+ M src/lib/project-team.ts
+ M src/lib/publication-lifecycle-client.ts
+ M src/lib/release-scope.test.ts
+ M src/lib/release-scope.ts
+ M src/lib/safe-http.mjs
+ M src/lib/schema-manifest.mjs
+ M src/lib/semantic-claims.d.mts
+ M src/lib/semantic-claims.mjs
+ M src/lib/semantic-entailment.ts
+ M src/lib/server-drafts.ts
+ M src/lib/session.ts
+ M src/lib/site-articles/service.d.mts
+ M src/lib/site-articles/service.mjs
+ M src/lib/site-destinations/index.d.mts
+ M src/lib/site-destinations/site-destinations.test.mjs
+ M src/lib/site-destinations/wordpress-adapter.mjs
+ M src/lib/site-hosted/service.ts
+ M src/lib/sites/articles-service.ts
+ M src/lib/sites/destinations-service.ts
+ M src/lib/sites/verification.test.ts
+ M src/lib/sites/verification.ts
+ M src/lib/store.tsx
+ M src/lib/telegram-channel-connect.d.mts
+ M src/lib/telegram-channel-connect.mjs
+ M src/lib/telegram-channel-connect.test.mjs
+ M src/lib/typography-client.ts
+ M worker.mjs
+ M worker/embeddings.mjs
+ M worker/publication-extra-worker.mjs
+ M worker/publication-extra-worker.test.mjs
+ M worker/publication-lease.d.mts
+ M worker/publication-lease.mjs
+ M worker/publication-lease.test.mjs
+ M worker/publication-review-reminder.mjs
+ M worker/publication-review-reminder.test.mjs
+ M worker/reconnaissance-schedule.mjs
+ M worker/rss-pipeline.mjs
+ M worker/rss-pipeline.test.mjs
+ M worker/site-ai-worker.mjs
+ M worker/site-ai-worker.test.mjs
+ M worker/site-analysis-interview.mjs
+ M worker/site-analysis-interview.test.mjs
+ M worker/site-analysis-worker.mjs
+ M worker/site-analysis-worker.test.mjs
+ M worker/site-articles-worker.mjs
+ M worker/site-articles-worker.test.mjs
+ M worker/site-scheduler.mjs
+ M worker/site-visibility-probe.mjs
+ M worker/telegram-carousel.mjs
+ M worker/telegram-multipart.mjs
+ M worker/vk-publication.mjs
+?? db/migrations/20261011_telegram_channel_ownership.sql
+?? db/migrations/20261012_ai_spend_ledger.sql
+?? db/migrations/20261013_telegram_update_delivery.sql
+?? db/migrations/20261014_media_storage_quota.sql
+?? db/migrations/20261015_admin_verified_email.sql
+?? db/migrations/20261016_calendar_snapshot_version.sql
+?? db/migrations/20261017_site_publication_authority.sql
+?? db/migrations/20261018_admin_alert_delivery.sql
+?? db/migrations/20261019_rss_project_identity.sql
+?? db/migrations/20261020_telegram_background_delivery.sql
+?? db/migrations/20261021_competitor_collection_authority.sql
+?? docs/admin-interface-2026-09-05/
+?? docs/operations/
+?? docs/production-delivery-recovery.md
+?? docs/system-audit-2026-09-05/
+?? scripts/audit-telegram-ownership.mjs
+?? scripts/cleanup-unused-media.mjs
+?? scripts/configure-media-storage-limits.mjs
+?? scripts/e2e-auth-coverage.mjs
+?? scripts/e2e-project-calendar-coverage.mjs
+?? scripts/e2e-sites-coverage.mjs
+?? scripts/e2e-true-zoom-coverage.mjs
+?? scripts/prepare-restored-publications.mjs
+?? scripts/report-ai-spend.mjs
+?? scripts/report-runtime-operations.mjs
+?? scripts/test-capacity-integration.mjs
+?? scripts/test-media-lifecycle-integration.mjs
+?? scripts/test-media-quota-integration.mjs
+?? scripts/test-project-fetch-browser.mjs
+?? scripts/test-publication-adjacent-authority-integration.mjs
+?? scripts/test-publication-authority-integration.mjs
+?? scripts/test-restored-publications-integration.mjs
+?? scripts/test-rollback-target-integration.mjs
+?? scripts/test-sites-delivery-integration.mjs
+?? scripts/test-telegram-delivery-integration.mjs
+?? src/app/admin/admin.css
+?? src/app/api/admin/ai-spend/
+?? src/app/api/admin/connections/
+?? src/app/api/sites/authorization-boundaries.test.ts
+?? src/app/app/sites/client.test.ts
+?? src/app/app/sites/page.test.tsx
+?? src/app/app/studio/studio-stream-lifecycle.test.ts
+?? src/app/invite/page.test.tsx
+?? src/components/admin/admin-account-controls.test.tsx
+?? src/components/admin/admin-interface-safety.test.tsx
+?? src/components/admin/admin-resource-centers.tsx
+?? src/components/admin/admin-ui.tsx
+?? src/components/app/use-oauth-return-project.test.tsx
+?? src/components/app/use-oauth-return-project.ts
+?? src/components/ui/use-modal-focus.ts
+?? src/e2e/admin-alert-delivery.integration.ts
+?? src/e2e/admin-alert-recipient.integration.ts
+?? src/e2e/admin-resource-auth.integration.ts
+?? src/e2e/ai-project-authorization.integration.ts
+?? src/e2e/ai-spend-failure-reproduction.integration.ts
+?? src/e2e/calendar-pagination.integration.ts
+?? src/e2e/fixtures/
+?? src/e2e/hosted-projection.integration.ts
+?? src/e2e/legacy-content-project.integration.ts
+?? src/e2e/native-project-media.integration.ts
+?? src/e2e/oauth-project-context.integration.ts
+?? src/e2e/project-request-context.integration.ts
+?? src/e2e/research-project-access.integration.ts
+?? src/e2e/rss-project-authorization.integration.ts
+?? src/e2e/runtime-operations.integration.ts
+?? src/e2e/site-destination-identity.integration.ts
+?? src/e2e/sites-ai-current-access.integration.ts
+?? src/e2e/sites-revision.integration.ts
+?? src/e2e/telegram-ownership.integration.ts
+?? src/lib/admin-alert-ledger.ts
+?? src/lib/admin-operations-data.ts
+?? src/lib/ai-project-access.ts
+?? src/lib/ai-spend-ledger.d.mts
+?? src/lib/ai-spend-ledger.mjs
+?? src/lib/ai-work-access.d.mts
+?? src/lib/ai-work-access.mjs
+?? src/lib/competitor-policy.mjs
+?? src/lib/media-object-lifecycle.test.mjs
+?? src/lib/media-object-proxy.test.mjs
+?? src/lib/media-retention.mjs
+?? src/lib/media-storage-quota.d.mts
+?? src/lib/media-storage-quota.mjs
+?? src/lib/native-project-request.ts
+?? src/lib/oauth-state.test.ts
+?? src/lib/oauth-state.ts
+?? src/lib/posts-client.test.ts
+?? src/lib/posts-client.ts
+?? src/lib/posts-pagination.ts
+?? src/lib/project-fetch.test.ts
+?? src/lib/project-fetch.ts
+?? src/lib/project-native-url.test.ts
+?? src/lib/project-native-url.ts
+?? src/lib/project-request-safety.test.ts
+?? src/lib/project-role-policy.d.mts
+?? src/lib/project-role-policy.mjs
+?? src/lib/request-project.ts
+?? src/lib/research-project-access.ts
+?? src/lib/rss-project-access.ts
+?? src/lib/selected-project-transaction.ts
+?? src/lib/semantic-publication-safety.test.mjs
+?? src/lib/site-destinations/wordpress-delivery-safety.test.mjs
+?? src/lib/site-destinations/wordpress-reconciliation-safety.test.mjs
+?? src/lib/site-destinations/wordpress-ssrf.test.mjs
+?? src/lib/site-hosted/hosted-xss.test.tsx
+?? src/lib/telegram-connect-provider.d.mts
+?? src/lib/telegram-connect-provider.mjs
+?? src/lib/telegram-connect-provider.test.mjs
+?? src/lib/telegram-response.d.mts
+?? src/lib/telegram-response.mjs
+?? worker/media-persistence-safety.test.mjs
+?? worker/oauth-publication-authority.test.mjs
+?? worker/outbound-guard.mjs
+?? worker/outbound-guard.test.mjs
+?? worker/research-project-scope.d.mts
+?? worker/research-project-scope.mjs
+?? worker/rss-access.mjs
+?? worker/rss-pipeline.d.mts
+?? worker/site-ai-access.mjs
+?? worker/site-analysis-access.mjs
+?? worker/telegram-background-delivery.mjs
+?? worker/telegram-delivery-safety.test.mjs
+?? worker/telegram-update-delivery.mjs

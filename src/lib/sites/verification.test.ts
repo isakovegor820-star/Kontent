@@ -5,6 +5,7 @@ import {
   htmlContainsVerificationMeta,
   isSiteVerificationToken,
   siteVerificationInstructions,
+  siteVerificationRedirectAllowed,
   txtRecordsContainToken,
   verifySiteOwnership,
 } from "./verification";
@@ -19,6 +20,17 @@ describe("site verification primitives", () => {
     expect(generated).not.toBe(generateSiteVerificationToken());
     expect(isSiteVerificationToken("short")).toBe(false);
     expect(isSiteVerificationToken("has space in it and is long enough to pass")).toBe(false);
+  });
+
+  it.each([
+    `<head><link title='<meta name="aurora-site-verification" content="${token}">'></head>`,
+    `<head><link title='<meta name="aurora-site-verification" content="${token}"></head>`,
+    `<body><head><meta name="aurora-site-verification" content="${token}"></head></body>`,
+    `<!-- <meta name="aurora-site-verification" content="${token}"> -->`,
+    `<html><body><meta name="aurora-site-verification" content="${token}"></body></html>`,
+    `<head><script type="application/json">{"example":"<meta name='aurora-site-verification' content='${token}'>"}</script></head>`,
+  ])("does not accept non-head/inert user content as domain ownership", (html) => {
+    expect(htmlContainsVerificationMeta(html, token)).toBe(false);
   });
 
   it("builds DNS and meta instructions from the token", () => {
@@ -36,7 +48,7 @@ describe("site verification primitives", () => {
 
   it("finds the meta tag regardless of attribute order and quoting", () => {
     expect(htmlContainsVerificationMeta(`<html><head><meta content='${token}' name=aurora-site-verification></head></html>`, token)).toBe(true);
-    expect(htmlContainsVerificationMeta(`<meta name="AURORA-SITE-VERIFICATION" content="${token}" />`, token)).toBe(true);
+    expect(htmlContainsVerificationMeta(`<head><meta name="AURORA-SITE-VERIFICATION" content="${token}" /></head>`, token)).toBe(true);
     expect(htmlContainsVerificationMeta(`<meta name="aurora-site-verification" content="${token}wrong">`, token)).toBe(false);
     expect(htmlContainsVerificationMeta(`<p>${token}</p>`, token)).toBe(false);
     expect(htmlContainsVerificationMeta(`<meta name="description" content="${token}">`, token)).toBe(false);
@@ -72,6 +84,12 @@ describe("verifySiteOwnership", () => {
       method: "meta_tag",
       reason: "meta_tag_unavailable",
     });
+  });
+
+  it("rejects cross-domain and HTTPS downgrade verification redirects", () => {
+    expect(siteVerificationRedirectAllowed(new URL("https://attacker.example/"), new URL(site.canonicalUrl))).toBe(false);
+    expect(siteVerificationRedirectAllowed(new URL("http://example.ru/"), new URL(site.canonicalUrl))).toBe(false);
+    expect(siteVerificationRedirectAllowed(new URL("https://example.ru/home"), new URL(site.canonicalUrl))).toBe(true);
   });
 
   it("refuses to check with an invalid stored token", async () => {

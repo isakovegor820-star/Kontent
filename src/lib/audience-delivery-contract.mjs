@@ -1,3 +1,5 @@
+import { classifyTelegramDelivery } from "./telegram-response.mjs";
+
 export const AUDIENCE_DELIVERY_LEASE_SECONDS = 120;
 
 export const AUDIENCE_DELIVERY_ERROR_CODES = Object.freeze({
@@ -138,11 +140,7 @@ export function audienceDeliveryLeaseExpired(providerStartedAt, nowMs = Date.now
  * An explicit ok:false is a provider rejection; every malformed success is ambiguous.
  */
 export function classifyAudienceTelegramResponse(response) {
-  if (response?.ok === false) return { kind: "rejected" };
-  if (response?.ok !== true) return { kind: "unknown" };
-  const externalMessageId = Number(response?.result?.message_id);
-  if (!Number.isSafeInteger(externalMessageId) || externalMessageId <= 0) {
-    return { kind: "unknown" };
-  }
-  return { kind: "delivered", externalMessageId };
+  const result = classifyTelegramDelivery(response);
+  if (result.kind === "accepted") return { kind: "delivered", externalMessageId: result.messageIds[0] };
+  return { kind: result.kind };
 }

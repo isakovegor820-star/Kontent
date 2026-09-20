@@ -1,4 +1,4 @@
-import { withProjectRoute } from "@/lib/project-route";
+import { requireProjectPermission } from "@/lib/project-permissions";
 import { NextRequest, NextResponse } from "next/server";
 
 import { renderSiteReportExport, SITE_REPORT_EXPORT_FORMATS } from "@/lib/site-report/export.mjs";
@@ -10,8 +10,8 @@ export const runtime = "nodejs";
 
 type Context = { params: Promise<{ id: string; reportId: string }> };
 
-async function handleGET(req: NextRequest, context: Context) {
-  const resolved = await resolveSiteRoute(req, "project.read", { label: "/api/sites/:id/reports/:reportId/export GET" });
+export async function GET(req: NextRequest, context: Context) {
+  const resolved = await resolveSiteRoute(req, "project.read", { native: true, label: "/api/sites/:id/reports/:reportId/export GET" });
   if (!resolved.ok) return resolved.response;
   const { requestId, pool } = resolved.context;
   const params = await context.params;
@@ -36,6 +36,7 @@ async function handleGET(req: NextRequest, context: Context) {
       summaryRu: row.summary_ru,
       interpretation: row.interpretation_status === "ready" ? row.interpretation ?? null : null,
     });
+    await requireProjectPermission(pool, resolved.context.userId, resolved.context.projectId, "project.read");
     const filename = `aurora-site-${found.site.confirmed_domain}-${row.kind}-${reportId}.${rendered.extension}`;
     return new NextResponse(new Uint8Array(rendered.bytes), {
       status: 200,
@@ -51,5 +52,3 @@ async function handleGET(req: NextRequest, context: Context) {
     return siteErrorResponse(error, "/api/sites/:id/reports/:reportId/export GET", requestId);
   }
 }
-
-export const GET = withProjectRoute(handleGET);

@@ -1,6 +1,8 @@
 import type { Pool, PoolClient } from "pg";
 
 import { hostedArticleUrl, hostedSectionOrigin } from "../site-destinations/index.mjs";
+import { articleContentHash } from "../site-articles/service.mjs";
+import { renderMarkdown } from "../site-articles/markdown.mjs";
 
 type Queryable = Pick<Pool, "query"> | Pick<PoolClient, "query">;
 
@@ -62,13 +64,11 @@ export async function loadHostedSite(db: Queryable, slug: string, env: Record<st
 type ArticleRow = {
   id: string | number;
   slug: string;
-  title: string;
-  meta_description: string | null;
-  body_html: string | null;
-  structured_data: Record<string, unknown> | null;
   article_type: string;
   published_at: Date | string | null;
   updated_at: Date | string | null;
+  revision_snapshot: Record<string, unknown>;
+  revision_hash: string;
 };
 
 function iso(value: Date | string | null | undefined): string | null {
@@ -77,14 +77,24 @@ function iso(value: Date | string | null | undefined): string | null {
   return Number.isNaN(date.getTime()) ? null : date.toISOString();
 }
 
-function toArticle(row: ArticleRow, site: HostedSite, env: Record<string, string | undefined>): HostedArticle {
+function toArticle(row: ArticleRow, site: HostedSite, env: Record<string, string | undefined>): HostedArticle | null {
+  const snapshot = row.revision_snapshot;
+  if (!snapshot || typeof snapshot !== "object" || Array.isArray(snapshot)
+    || typeof snapshot.title !== "string" || typeof snapshot.bodyMarkdown !== "string"
+    || (snapshot.metaDescription != null && typeof snapshot.metaDescription !== "string")
+    || articleContentHash(snapshot) !== row.revision_hash
+    || typeof row.slug !== "string"
+    || !/^[a-z0-9](?:[a-z0-9-]{0,118}[a-z0-9])?$/u.test(row.slug)) return null;
   return {
     id: Number(row.id),
     slug: row.slug,
-    title: row.title,
-    metaDescription: row.meta_description,
-    bodyHtml: row.body_html || "",
-    structuredData: row.structured_data,
+    title: snapshot.title,
+    metaDescription: typeof snapshot.metaDescription === "string" ? snapshot.metaDescription : null,
+    // The snapshot is authoritative. Never expose mutable body_html/current text;
+    // use the same HTML-escaping renderer as the original approved revision.
+    bodyHtml: renderMarkdown(snapshot.bodyMarkdown),
+    structuredData: snapshot.structuredData && typeof snapshot.structuredData === "object" && !Array.isArray(snapshot.structuredData)
+      ? snapshot.structuredData as Record<string, unknown> : null,
     articleType: row.article_type,
     publishedAt: iso(row.published_at),
     updatedAt: iso(row.updated_at),
@@ -92,23 +102,45 @@ function toArticle(row: ArticleRow, site: HostedSite, env: Record<string, string
   };
 }
 
-const ARTICLE_FIELDS = `id, slug, title, meta_description, body_html, structured_data, article_type, published_at, updated_at`;
+// Publication state belongs to a destination. WordPress's pending/unknown/success
+// cannot hide or resurrect a hosted page. Later unconfirmed updates keep serving
+// the last confirmed hosted revision; confirmed hosted unpublish hides it.
+const HOSTED_ARTICLES = `with hosted_articles as (
+  select article.id, article.article_type,
+         coalesce(nullif(delivered.provider_ref->>'slug', ''), delivered.provider_operation_id) as slug,
+         revision.snapshot as revision_snapshot, revision.content_hash as revision_hash,
+         delivered.completed_at as updated_at,
+         (select min(first_delivery.completed_at) from site_article_publications first_delivery
+           where first_delivery.article_id=article.id and first_delivery.destination_id=delivered.destination_id
+             and first_delivery.status='published' and first_delivery.outcome='success'
+             and first_delivery.reconcile_state='confirmed' and first_delivery.action in ('publish','update')) as published_at
+    from site_articles article
+    join sites site on site.id=article.site_id and site.status='active' and site.verification_state='verified'
+    join lateral (
+      select publication.* from site_article_publications publication
+      join site_destinations destination on destination.id=publication.destination_id
+        and destination.site_id=article.site_id and destination.kind='site_hosted' and destination.status='active'
+      where publication.article_id=article.id and publication.status='published'
+        and publication.outcome='success' and publication.reconcile_state='confirmed'
+      order by publication.completed_at desc nulls last, publication.id desc limit 1
+    ) delivered on delivered.action in ('publish','update')
+    join site_article_revisions revision on revision.article_id=article.id and revision.version=delivered.article_version
+   where article.site_id=$1
+)`;
 
 export async function listHostedArticles(db: Queryable, site: HostedSite, limit = 100, env: Record<string, string | undefined> = process.env): Promise<HostedArticle[]> {
   const result = await db.query<ArticleRow>(
-    `select ${ARTICLE_FIELDS} from site_articles
-      where site_id = $1 and status = 'published'
-      order by published_at desc nulls last, id desc
-      limit $2`,
-    [site.id, Math.min(500, Math.max(1, limit))],
+    `${HOSTED_ARTICLES} select * from hosted_articles
+      order by published_at desc nulls last, id desc limit $2`,
+    [site.id, Number.isFinite(limit) ? Math.min(500, Math.max(1, Math.trunc(limit))) : 100],
   );
-  return result.rows.map((row) => toArticle(row, site, env));
+  return result.rows.flatMap((row) => { const article = toArticle(row, site, env); return article ? [article] : []; });
 }
 
 export async function loadHostedArticle(db: Queryable, site: HostedSite, articleSlug: string, env: Record<string, string | undefined> = process.env): Promise<HostedArticle | null> {
   if (!/^[a-z0-9](?:[a-z0-9-]{0,118}[a-z0-9])?$/u.test(articleSlug)) return null;
   const result = await db.query<ArticleRow>(
-    `select ${ARTICLE_FIELDS} from site_articles where site_id = $1 and slug = $2 and status = 'published'`,
+    `${HOSTED_ARTICLES} select * from hosted_articles where slug=$2`,
     [site.id, articleSlug],
   );
   return result.rows[0] ? toArticle(result.rows[0], site, env) : null;
@@ -156,4 +188,9 @@ export function sectionJsonLd(site: HostedSite): Record<string, unknown> {
     url: site.origin,
     publisher: { "@type": "Organization", name: site.brandName, url: site.canonicalUrl },
   };
+}
+
+/** JSON embedded in an HTML script must not contain a literal script terminator. */
+export function serializeHostedJsonLd(value: Record<string, unknown>): string {
+  return JSON.stringify(value).replace(/</gu, "\\u003c");
 }

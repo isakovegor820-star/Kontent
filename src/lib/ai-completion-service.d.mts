@@ -22,6 +22,7 @@ export function completeAiText(
   },
   options?: {
     env?: Record<string, string | undefined>;
+    spendScope?: import("./ai-spend-ledger.mjs").AiSpendScope;
     signal?: AbortSignal;
     timeoutMs?: number;
     localTimeoutMs?: number;

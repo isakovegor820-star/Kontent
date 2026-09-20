@@ -1,3 +1,5 @@
+import { AiWorkAccessError } from "../src/lib/ai-work-access.mjs";
+import { requireSiteAiAccess, withSiteAiAccess, siteAiScope } from "./site-ai-access.mjs";
 import { createHash, randomUUID } from "node:crypto";
 
 import { normalizeSiteLimits } from "../src/lib/site-crawler.mjs";
@@ -39,10 +41,12 @@ export async function refreshStaleSiteProfiles(pool, { siteAnalysisQueue, now = 
   );
   let started = 0;
   for (const site of stale.rows) {
+    const scope = { siteId: Number(site.id), projectId: Number(site.project_id), userId: Number(site.user_id) };
     const limits = normalizeSiteLimits({});
     const requestId = randomUUID();
     const key = `site:${site.id}:auto:${now.toISOString().slice(0, 10)}`;
-    const inserted = await pool.query(
+    let inserted;
+    try { inserted = await withSiteAiAccess(pool, scope, (client) => client.query(
       `insert into site_analysis_jobs
          (project_id, user_id, request_id, idempotency_key, request_fingerprint, target_url,
           confirmed_domain, consented_at, limits, site_id)
@@ -52,7 +56,7 @@ export async function refreshStaleSiteProfiles(pool, { siteAnalysisQueue, now = 
       [site.project_id, site.user_id, requestId, key,
         siteAnalysisFingerprint({ targetUrl: site.canonical_url, confirmedDomain: site.confirmed_domain, limits }),
         site.canonical_url, site.confirmed_domain, JSON.stringify(limits), site.id],
-    );
+    )); } catch (error) { if (error instanceof AiWorkAccessError) continue; throw error; }
     const row = inserted.rows[0];
     if (!row || !siteAnalysisQueue) continue;
     try {
@@ -81,12 +85,12 @@ export async function refreshStaleSiteProfiles(pool, { siteAnalysisQueue, now = 
 
 export async function planArticlesForAllSites(pool, { siteArticlesQueue }) {
   const sites = await pool.query(
-    `select id from sites where status = 'active' and latest_profile_id is not null order by id limit 200`,
+    `select id, user_id from sites where status = 'active' and latest_profile_id is not null order by id limit 200`,
   );
   let planned = 0;
   for (const site of sites.rows) {
     try {
-      const result = await planSiteArticles(pool, { siteId: Number(site.id) }, { queue: siteArticlesQueue });
+      const result = await planSiteArticles(pool, { siteId: Number(site.id), requestedByUserId: Number(site.user_id) }, { queue: siteArticlesQueue });
       planned += result.planned || 0;
     } catch (error) {
       console.error("[site-daily] планирование материалов не удалось", { siteId: site.id, code: error?.code || error?.name });
@@ -97,7 +101,7 @@ export async function planArticlesForAllSites(pool, { siteArticlesQueue }) {
 
 export async function runDueVisibilityProbes(pool, { now = new Date() } = {}, dependencies = {}) {
   const due = await pool.query(
-    `select s.id from sites s
+    `select s.id, s.user_id from sites s
       where s.status = 'active' and s.verification_state = 'verified' and s.latest_profile_id is not null
         and not exists (select 1 from site_visibility_probes p where p.site_id = s.id
                          and p.checked_at > $1::timestamptz - make_interval(days => $2))
@@ -107,7 +111,7 @@ export async function runDueVisibilityProbes(pool, { now = new Date() } = {}, de
   const results = [];
   for (const site of due.rows) {
     try {
-      results.push(await runSiteVisibilityProbe(pool, { siteId: Number(site.id), now }, dependencies));
+      results.push(await runSiteVisibilityProbe(pool, { siteId: Number(site.id), requestedByUserId: Number(site.user_id), now }, dependencies));
     } catch (error) {
       results.push({ ok: false, siteId: Number(site.id), reason: error?.code || error?.name || "probe_failed" });
     }
@@ -194,18 +198,21 @@ function profileFromRow(row) {
  * Ежемесячный отчёт по каждому активному сайту с профилем. Markdown отчёта сразу попадает
  * в базу знаний сайта (kind = site_report), чтобы следующий отчёт видел прошлые рекомендации.
  */
-export async function runSiteMonthlyReports(pool, { now = new Date(), period = null, siteId = null, kind = "monthly", siteArticlesQueue = null } = {}) {
+export async function runSiteMonthlyReports(pool, { now = new Date(), period = null, siteId = null, requestedByUserId = null, kind = "monthly", siteArticlesQueue = null } = {}) {
   const window = period || previousMonthPeriod(now);
-  const sites = await pool.query(
-    `select s.id, s.user_id, s.confirmed_domain, s.canonical_url, s.verification_state,
-            p.profile_version, p.page_count, p.publication_count, p.topics, p.gaps, p.technical, p.linkable_pages, p.summary,
-            p.created_at as profile_created_at, p.id as profile_id
-       from sites s join site_profiles p on p.id = s.latest_profile_id
-      where s.status = 'active' and ($1::bigint is null or s.id = $1) order by s.id limit 500`,
-    [siteId],
-  );
+  if (kind === "on_demand" && !Number(requestedByUserId)) throw new AiWorkAccessError("ai_work_scope_required");
+  const sites = await pool.query(`select id, user_id from sites where status='active' and ($1::bigint is null or id=$1) order by id limit 500`, [siteId]);
   let created = 0;
-  for (const row of sites.rows) {
+  for (const identity of sites.rows) {
+    const scope = await siteAiScope(pool, identity.id, requestedByUserId ?? identity.user_id);
+    let row;
+    try { row = await withSiteAiAccess(pool, scope, async (client) => (await client.query(
+      `select s.id, s.user_id, s.confirmed_domain, s.canonical_url, s.verification_state,
+              p.profile_version, p.page_count, p.publication_count, p.topics, p.gaps, p.technical, p.linkable_pages, p.summary,
+              p.created_at as profile_created_at, p.id as profile_id
+         from sites s join site_profiles p on p.id=s.latest_profile_id and p.site_id=s.id where s.id=$1`, [identity.id])).rows[0]);
+    } catch (error) { if (kind === "monthly" && error instanceof AiWorkAccessError) continue; throw error; }
+    if (!row) continue;
     if (kind === "monthly") {
       const existing = await pool.query(
         `select id from site_reports where site_id = $1 and kind = 'monthly' and period_start = $2::timestamptz limit 1`,
@@ -213,8 +220,8 @@ export async function runSiteMonthlyReports(pool, { now = new Date(), period = n
       );
       if (existing.rows[0]) continue;
     }
-    const [publications, byTypeRows, previous, probe] = await Promise.all([
-      pool.query(
+    const [publications, byTypeRows, previous, probe] = await withSiteAiAccess(pool, scope, async (pool) => [
+      await pool.query(
         `select
            count(*) filter (where status = 'published' and published_at >= $2::timestamptz and published_at < $3::timestamptz)::int as published,
            count(*) filter (where status = 'rejected' and status_reason = 'semantic_duplicate' and updated_at >= $2::timestamptz and updated_at < $3::timestamptz)::int as rejected,
@@ -223,17 +230,17 @@ export async function runSiteMonthlyReports(pool, { now = new Date(), period = n
          from site_articles where site_id = $1`,
         [row.id, window.start, window.end],
       ),
-      pool.query(
+      await pool.query(
         `select article_type, count(*)::int as n from site_articles
           where site_id = $1 and status = 'published' and published_at >= $2::timestamptz and published_at < $3::timestamptz
           group by article_type`,
         [row.id, window.start, window.end],
       ),
-      pool.query(
+      await pool.query(
         `select id, payload from site_reports where site_id = $1 and status = 'ready' order by created_at desc, id desc limit 1`,
         [row.id],
       ),
-      latestProbeSummary(pool, Number(row.id)),
+      await latestProbeSummary(pool, Number(row.id)),
     ]);
     const stats = publications.rows[0] || {};
     const byType = Object.fromEntries(byTypeRows.rows.map((item) => [item.article_type, Number(item.n)]));
@@ -250,10 +257,11 @@ export async function runSiteMonthlyReports(pool, { now = new Date(), period = n
     const client = await pool.connect();
     try {
       await client.query("begin");
+      await requireSiteAiAccess(client, scope);
       const stored = await client.query(
-        `insert into site_reports (site_id, kind, period_start, period_end, profile_id, previous_report_id, probe_run_key, payload, summary_ru, status)
-         values ($1, $9, $2::timestamptz, $3::timestamptz, $4, $5, $6, $7::jsonb, $8, 'ready') returning id`,
-        [row.id, window.start, window.end, row.profile_id, previous.rows[0]?.id ?? null, probe?.runKey ?? null, JSON.stringify(report.payload), report.summaryRu, kind],
+        `insert into site_reports (site_id, kind, period_start, period_end, profile_id, previous_report_id, probe_run_key, payload, summary_ru, status, requested_by_user_id)
+         values ($1, $9, $2::timestamptz, $3::timestamptz, $4, $5, $6, $7::jsonb, $8, 'ready', $10) returning id`,
+        [row.id, window.start, window.end, row.profile_id, previous.rows[0]?.id ?? null, probe?.runKey ?? null, JSON.stringify(report.payload), report.summaryRu, kind, requestedByUserId ?? row.user_id],
       );
       const markdown = renderSiteReportMarkdown(report).toString("utf8");
       await client.query(
@@ -276,8 +284,8 @@ export async function runSiteMonthlyReports(pool, { now = new Date(), period = n
 }
 
 /** Отчёт по запросу пользователя: последние 30 дней, тип on_demand, та же сборка и та же дельта. */
-export async function runSiteReportOnDemand(pool, { siteId, now = new Date(), siteArticlesQueue = null }) {
+export async function runSiteReportOnDemand(pool, { siteId, requestedByUserId = null, now = new Date(), siteArticlesQueue = null }) {
   const end = now.toISOString();
   const start = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000).toISOString();
-  return runSiteMonthlyReports(pool, { now, period: { start, end }, siteId: Number(siteId), kind: "on_demand", siteArticlesQueue });
+  return runSiteMonthlyReports(pool, { now, period: { start, end }, siteId: Number(siteId), requestedByUserId, kind: "on_demand", siteArticlesQueue });
 }

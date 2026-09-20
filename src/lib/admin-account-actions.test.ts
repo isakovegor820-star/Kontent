@@ -17,7 +17,7 @@ function fakePool(target: Target) {
   const query = vi.fn(async (sqlValue: string, params: unknown[] = []) => {
     const sql = sqlValue.replace(/\s+/gu, " ").trim();
     statements.push({ sql, params });
-    if (sql.startsWith("select id, email, blocked_at, ai_daily_limit from users") || sql.startsWith("select email, blocked_at from users")) {
+    if (sql.startsWith("select id, email, blocked_at, ai_daily_limit,") || sql.startsWith("select email, blocked_at from users")) {
       return { rowCount: target ? 1 : 0, rows: target ? [target] : [] };
     }
     if (sql.startsWith("update sessions set expires_at = now()")) return { rowCount: 2, rows: [] };

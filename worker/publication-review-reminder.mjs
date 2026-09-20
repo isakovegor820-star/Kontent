@@ -400,11 +400,15 @@ export async function processPublicationReviewReminderJob({ pool, notifyUser, da
   let delivered = false;
   let errorCode = "reminder_delivery_failed";
   try {
-    delivered = await notifyUser(
+    const outcome = await notifyUser(
       claimed.responsibleUserId,
       `Пора проверить актуальность публикации${claimed.title ? ` в «${claimed.title}»` : ""}. `
         + "Откройте календарь и выберите: оставить, обновить, открепить или снять вручную.",
-    ) === true;
+      undefined,
+      { projectId, eventKey: `review-reminder:${reviewTaskId}:${data.jobKey}` },
+    );
+    delivered = outcome === true;
+    if (outcome === null) errorCode = "delivery_unknown";
   } catch (error) {
     errorCode = safeErrorCode(error, errorCode);
   }

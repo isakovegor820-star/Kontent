@@ -3,6 +3,8 @@ import { useProjects } from "@/components/app/project-provider";
 import { useProjectFetch, useProjectCall, useProjectStorageKey } from "@/lib/use-project-transport";
 
 
+import { projectFetch as fetch } from "@/lib/project-fetch";
+
 // А9. ИИ-студия (ТЗ 5.6, Приложение А).
 // Диалог + быстрые команды. ИИ помнит стиль пользователя и следует настройкам платформы.
 // Главное действие — сгенерировать и отправить в календарь.
@@ -1047,7 +1049,14 @@ function StudioPageInner() {
   // Уходим с экрана — печать останавливается.
   useEffect(() => {
     const box = streamRef.current;
+    // A full document navigation may reject fetch before React unmounts. Retire
+    // the owner first so its catch cannot start another request from the old page.
+    const onPageHide = () => {
+      if (abortStudioStream(box)) setMessages(stopStudioStreamingMessages);
+    };
+    window.addEventListener("pagehide", onPageHide);
     return () => {
+      window.removeEventListener("pagehide", onPageHide);
       abortStudioStream(box);
     };
   }, []);
@@ -1961,6 +1970,7 @@ function StudioPageInner() {
             ) throw new AiTerminalAckError(409, terminalRequestId ?? null, false);
           } catch (error) {
             if ((error as Error)?.name === "AbortError") throw error;
+            if (!ownsStream()) return;
             const ackRequestId = error instanceof AiTerminalAckError ? error.requestId : null;
             setMsg({
               text: completion.text,
@@ -1983,6 +1993,7 @@ function StudioPageInner() {
             void s.refreshAiUsage();
             return;
           }
+          if (!ownsStream()) return;
           setMsg({
             text: completion.text,
             // Готовый черновик говорит сам за себя. Требование ручной проверки остаётся —
@@ -2040,6 +2051,7 @@ function StudioPageInner() {
       clearCancel();
       void s.refreshAiUsage();
     } catch (err) {
+      if (!ownsStream()) return;
       // «Стоп» пользователя = AbortError: просто фиксируем, что успело напечататься.
       const aborted = (err as Error)?.name === "AbortError";
       if (ownsStream()) {
@@ -2252,6 +2264,7 @@ function StudioPageInner() {
     const stopped = abortStudioStream(streamRef.current);
     if (!stopped) return;
     setMessages(stopStudioStreamingMessages);
+    void s.refreshAiUsage();
   };
 
   const regenerate = (id: string) => {

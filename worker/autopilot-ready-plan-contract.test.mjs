@@ -171,10 +171,10 @@ describe("Autopilot ready-plan generation contract", () => {
   });
 
   it("rebuilds the final publication schedule after selecting winners from the reserve", () => {
-    expect(source).toContain("const publicationSlots = periodSlots(publicationTargetCount, planWeeks, bestHour)");
+    expect(source).toContain("const publicationSlots = periodSlots(publicationTargetCount, planWeeks, bestHour, scheduleStartDay)");
     expect(source).toContain("pair.item.scheduledAt = publicationSlots[index]");
     expect(source.indexOf("const candidateSelection = selectAutopilotCandidates(")).toBeLessThan(
-      source.indexOf("const publicationSlots = periodSlots(publicationTargetCount, planWeeks, bestHour)"),
+      source.indexOf("const publicationSlots = periodSlots(publicationTargetCount, planWeeks, bestHour, scheduleStartDay)"),
     );
   });
 

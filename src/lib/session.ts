@@ -30,6 +30,7 @@ export interface SessionUser {
   tg_id: number | null;
   vk_id: number | null;
   email: string | null;
+  email_verified?: boolean;
   name: string | null;
   avatar: string | null;
   onboarding_completed_at: string | null;
@@ -91,6 +92,7 @@ export async function getSessionUser(req: NextRequest): Promise<SessionUser | nu
   const pool = getPool();
   const rows = await pool.query<SessionUser & { expires_at: string; has_project_context: boolean }>(
     `select u.id, u.tg_id, u.vk_id, u.email, u.name, u.avatar,
+            (u.email is not null and u.verified_email = u.email) as email_verified,
             u.onboarding_completed_at, s.expires_at,
             exists (
               select 1
@@ -148,8 +150,9 @@ export async function destroySession(req: NextRequest, res: NextResponse): Promi
       await getPool().query(`delete from sessions where token_hash = $1`, [hashSessionToken(token)]);
     }
   } finally {
-    // Local logout must not depend on PostgreSQL availability. The server-side row may
-    // be cleaned up later, but this browser must stop presenting the credential now.
+    // Stage cookie clearing on the supplied response. If deletion fails, the caller
+    // must discard this response and report the failure; only confirmed revocation
+    // may complete logout and remove the credential needed for an explicit retry.
     clearSessionCookie(res);
   }
 }

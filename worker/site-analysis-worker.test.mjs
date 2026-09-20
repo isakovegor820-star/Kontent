@@ -1,4 +1,9 @@
 import { describe, expect, it, vi } from "vitest";
+// SQL authorization executes in sites-ai-current-access.integration.ts. These fixtures
+// isolate the existing queue/lease/atomic-quota state machine without a PostgreSQL server.
+vi.mock("./site-analysis-access.mjs", async (importOriginal) => ({
+  ...await importOriginal(), requireSiteAnalysisAiAccess: vi.fn(async () => ({id:41,user_id:7,project_id:3})),
+}));
 
 import { SiteCrawlerError } from "../src/lib/site-crawler.mjs";
 import { SITE_INTERVIEW_QUESTIONS } from "../src/lib/site-analysis/questions.data.mjs";
@@ -8,6 +13,7 @@ function analysisRow() {
   return {
     id: 41,
     user_id: 7,
+    project_id: 3,
     request_id: "req-41",
     target_url: "https://example.com/",
     confirmed_domain: "example.com",

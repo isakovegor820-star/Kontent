@@ -1,4 +1,5 @@
-import { withProjectRoute } from "@/lib/project-route";
+import { mediaAssetUrl } from "@/lib/project-native-url";
+import { mediaStorageError } from "@/lib/media-storage-quota.mjs";
 import { createHash, randomUUID } from "node:crypto";
 import type { NextRequest } from "next/server";
 
@@ -26,7 +27,7 @@ const MIME_BY_FORMAT = {
   webp: "image/webp",
 } as const;
 
-function present(row: Record<string, unknown>) {
+function present(row: Record<string, unknown>, projectId: number) {
   return {
     id: Number(row.id),
     kind: String(row.kind),
@@ -38,7 +39,7 @@ function present(row: Record<string, unknown>) {
     width: row.width_px == null ? null : Number(row.width_px),
     height: row.height_px == null ? null : Number(row.height_px),
     metadata: row.metadata ?? {},
-    url: `/api/media/assets/${row.id}`,
+    url: mediaAssetUrl(String(row.id), projectId),
     createdAt: new Date(row.created_at as string | number | Date).toISOString(),
   };
 }
@@ -54,7 +55,7 @@ function accessError(error: unknown, requestId: string) {
   return legalStudioJson({ ok: false, error: "server" }, 500, requestId);
 }
 
-async function handleGET(request: NextRequest) {
+export async function GET(request: NextRequest) {
   const requestId = randomUUID();
   const user = await getSessionUser(request);
   if (!user) return legalStudioJson({ ok: false, error: "unauthorized" }, 401, requestId);
@@ -69,13 +70,13 @@ async function handleGET(request: NextRequest) {
         order by created_at desc, id desc limit 100`,
       [membership.projectId],
     )).rows;
-    return legalStudioJson({ ok: true, assets: rows.map(present) }, 200, requestId);
+    return legalStudioJson({ ok: true, assets: rows.map((row) => present(row, membership.projectId)) }, 200, requestId);
   } catch (error) {
     return accessError(error, requestId);
   }
 }
 
-async function handlePOST(request: NextRequest) {
+export async function POST(request: NextRequest) {
   const requestId = randomUUID();
   if (!hasTrustedMutationOrigin(request)) return legalStudioJson({ ok: false, error: "forbidden_origin" }, 403, requestId);
   const user = await getSessionUser(request);
@@ -125,7 +126,7 @@ async function handlePOST(request: NextRequest) {
         order by id limit 1`,
       [membership.projectId, sha256, mimeType],
     )).rows[0];
-    if (existing) return legalStudioJson({ ok: true, asset: present(existing), duplicate: true }, 200, requestId);
+    if (existing) return legalStudioJson({ ok: true, asset: present(existing, membership.projectId), duplicate: true }, 200, requestId);
     const inserted = (await pool.query<Record<string, unknown>>(
       `insert into media_assets (
          user_id, project_id, kind, file_name, mime_type, bytes, data, storage_backend,
@@ -137,8 +138,10 @@ async function handlePOST(request: NextRequest) {
         mimeType, buffer.byteLength, buffer, sha256, info.width, info.height,
         JSON.stringify({ alt })],
     )).rows[0];
-    return legalStudioJson({ ok: true, asset: present(inserted), duplicate: false }, 201, requestId);
+    return legalStudioJson({ ok: true, asset: present(inserted, membership.projectId), duplicate: false }, 201, requestId);
   } catch (error) {
+    const storageFailure = mediaStorageError(error);
+    if (storageFailure) return legalStudioJson({ ok: false, error: storageFailure.code }, storageFailure.status, requestId);
     if (error instanceof ProjectAccessError) return accessError(error, requestId);
     if (error instanceof BoundedBodyError) {
       if (error.code === "upload_busy") {
@@ -166,6 +169,3 @@ async function handlePOST(request: NextRequest) {
     releaseBodySlot?.();
   }
 }
-
-export const GET = withProjectRoute(handleGET);
-export const POST = withProjectRoute(handlePOST);

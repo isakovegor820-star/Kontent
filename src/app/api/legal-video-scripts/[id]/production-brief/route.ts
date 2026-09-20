@@ -1,4 +1,4 @@
-import { withProjectRoute } from "@/lib/project-route";
+import { nativeRequestProjectId } from "@/lib/native-project-request";
 import { randomUUID } from "node:crypto";
 import { NextResponse, type NextRequest } from "next/server";
 
@@ -10,7 +10,7 @@ import { legalStudioError, legalStudioJson, positiveRouteId } from "../../../leg
 export const runtime = "nodejs";
 type Context = { params: Promise<{ id: string }> };
 
-async function handleGET(request: NextRequest, context: Context) {
+export async function GET(request: NextRequest, context: Context) {
   const requestId = randomUUID();
   const user = await getSessionUser(request);
   if (!user) return legalStudioJson({ ok: false, error: "unauthorized" }, 401, requestId);
@@ -18,7 +18,7 @@ async function handleGET(request: NextRequest, context: Context) {
   if (!id) return legalStudioJson({ ok: false, error: "bad_request" }, 400, requestId);
   try {
     const { record, brief } = await getLegalVideoProductionBrief({
-      pool: getPool(), actorUserId: user.id, scriptId: id,
+      pool: getPool(), actorUserId: user.id, scriptId: id, projectId: nativeRequestProjectId(request),
     });
     return new NextResponse(brief, {
       status: 200,
@@ -33,5 +33,3 @@ async function handleGET(request: NextRequest, context: Context) {
     return legalStudioError(error, requestId);
   }
 }
-
-export const GET = withProjectRoute(handleGET);
