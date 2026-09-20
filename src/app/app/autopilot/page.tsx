@@ -198,6 +198,8 @@ interface State {
   brief: Brief | null;
   briefReady: boolean;
   channelId: number | null;
+  // Покрытие уже запланированных постов автопилота: «сколько» и «до какого числа».
+  scheduleCoverage: { count: number; until: string | null } | null;
 }
 
 interface OverviewPostStat {
@@ -943,6 +945,105 @@ function QuickSettingsDialog({
   );
 }
 
+interface ScheduleCoverage {
+  count: number;
+  until: string | null;
+}
+
+function scheduleConflictDescription(coverage: ScheduleCoverage | null): string {
+  const count = Number(coverage?.count) || 0;
+  const until = coverage?.until
+    ? new Date(coverage.until).toLocaleDateString("ru-RU", { timeZone: MSK, day: "numeric", month: "long" })
+    : null;
+  return `В календаре уже стоит ${count} ${plural(count, "пост", "поста", "постов")}`
+    + (until ? ` — они запланированы до ${until}.` : ".")
+    + " Реши, что делать с новым планом: он не должен незаметно заменить уже одобренное.";
+}
+
+// Выбор судьбы уже запланированных постов перед новой сборкой. Раньше любой новый
+// план молча сносил старую неделю — этот диалог закрывает гонку до того, как случится.
+function ScheduleConflictDialog({
+  open,
+  coverage,
+  busy,
+  onContinue,
+  onReplace,
+  onClose,
+}: {
+  open: boolean;
+  coverage: ScheduleCoverage | null;
+  busy: boolean;
+  onContinue: () => void;
+  onReplace: () => void;
+  onClose: () => void;
+}) {
+  const dialogRef = useRef<HTMLDialogElement>(null);
+  const titleId = useId();
+  const descriptionId = useId();
+
+  useEffect(() => {
+    const dialog = dialogRef.current;
+    if (!dialog) return;
+    if (open && !dialog.open) dialog.showModal();
+    if (!open && dialog.open) dialog.close();
+  }, [open]);
+
+  return (
+    <dialog
+      ref={dialogRef}
+      aria-labelledby={titleId}
+      aria-describedby={descriptionId}
+      onKeyDown={(event) => {
+        if (event.key !== "Escape") return;
+        event.preventDefault();
+        if (!busy) onClose();
+      }}
+      onClose={() => {
+        if (!busy) onClose();
+      }}
+      className="m-auto w-[min(560px,calc(100%-2rem))] rounded-lg border border-line bg-surface p-0 text-text shadow-card backdrop:bg-black/45"
+    >
+      <div className="p-4 sm:p-5">
+        <h2 id={titleId} className="text-balance text-[18px] font-bold leading-tight text-text">
+          В календаре уже есть посты автопилота
+        </h2>
+        <p id={descriptionId} className="mt-1 text-pretty text-[13px] leading-relaxed text-text-3">
+          {scheduleConflictDescription(coverage)}
+        </p>
+        <div className="mt-5 grid gap-2 sm:grid-cols-2">
+          <button
+            type="button"
+            disabled={busy}
+            onClick={onContinue}
+            className="rounded-lg border border-line bg-surface-inset p-4 text-left transition-colors hover:border-brand disabled:cursor-not-allowed disabled:opacity-60"
+          >
+            <span className="block text-[14px] font-bold text-text">Продолжить после запланированных</span>
+            <span className="mt-1 block text-[12px] leading-relaxed text-text-3">
+              Текущие посты останутся в календаре, новый план встанет после их конца.
+            </span>
+          </button>
+          <button
+            type="button"
+            disabled={busy}
+            onClick={onReplace}
+            className="rounded-lg border border-line p-4 text-left transition-colors hover:border-danger disabled:cursor-not-allowed disabled:opacity-60"
+          >
+            <span className="block text-[14px] font-bold text-danger-text">Заменить запланированные</span>
+            <span className="mt-1 block text-[12px] leading-relaxed text-text-3">
+              Ещё не вышедшие посты будут отменены, новый план начнётся со завтра.
+            </span>
+          </button>
+        </div>
+        <div className="mt-5 flex justify-end border-t border-line pt-4">
+          <Button type="button" variant="ghost" size="sm" onClick={onClose} disabled={busy}>
+            Отмена
+          </Button>
+        </div>
+      </div>
+    </dialog>
+  );
+}
+
 function BuildAttemptPanel({
   attempt,
   busy,
@@ -1132,6 +1233,8 @@ export default function AutopilotPage() {
     description: string;
   } | null>(null);
   const [cancelBuildConfirmation, setCancelBuildConfirmation] = useState(false);
+  // Запрошенная сборка упёрлась в уже запланированные посты: держим покрытие для диалога.
+  const [scheduleConflict, setScheduleConflict] = useState<ScheduleCoverage | null>(null);
   const loadSequence = useRef(0);
   const loadAbort = useRef<AbortController | null>(null);
   const activePlanIdentity = useRef<string | null>(null);
@@ -1330,7 +1433,7 @@ export default function AutopilotPage() {
     };
   }, [building, load]);
 
-  const generate = async () => {
+  const generate = async (scheduleMode?: "continue" | "replace") => {
     if (busy) return;
     setBusy(true);
     try {
@@ -1350,6 +1453,7 @@ export default function AutopilotPage() {
           planningWeeks,
           quickSettings,
           growthMoveId,
+          ...(scheduleMode ? { scheduleMode } : {}),
         }),
       });
       const d = (await r.json().catch(() => null)) as {
@@ -1357,8 +1461,10 @@ export default function AutopilotPage() {
         error?: string;
         publicationTargetCount?: number;
         candidateCount?: number;
+        coverage?: { count?: number; until?: string | null };
       } | null;
       if (d?.ok) {
+        setScheduleConflict(null);
         const publicationCount = Number(d.publicationTargetCount) ||
           plannedPostCountForWeeks(data?.settings?.post_frequency ?? 5, planningWeeks);
         const candidateCount = Number(d.candidateCount) || autopilotCandidateCount(publicationCount);
@@ -1370,6 +1476,14 @@ export default function AutopilotPage() {
         });
         await load();
       } else {
+        // В календаре стоит одобренная неделя, а режим не выбран — спрашиваем, а не сносим.
+        if (r.status === 409 && d?.error === "schedule_exists") {
+          setScheduleConflict({
+            count: Number(d.coverage?.count) || 0,
+            until: d.coverage?.until ?? null,
+          });
+          return;
+        }
         const why: Record<string, string> = {
           no_channel: "Сначала подключи Telegram-канал.",
           no_brief: "Сначала настрой автопилот — без этого он не знает, о чём твой канал.",
@@ -1378,6 +1492,7 @@ export default function AutopilotPage() {
           bad_engine: "Выбери доступную модель и повтори.",
           bad_horizon: "Выбери период от 1 до 12 недель.",
           engine_unavailable: "Для выбранной модели не настроен API-ключ Navy.",
+          bad_schedule_mode: "Выбери, куда ставить новый план, и повтори.",
         };
         s.toast({
           kind: "danger",
@@ -1396,6 +1511,17 @@ export default function AutopilotPage() {
     } finally {
       setBusy(false);
     }
+  };
+
+  // Кнопка сборки: если покрытие уже есть и ответ ещё не дан — открываем выбор,
+  // а не отправляем запрос вслепую (сервер всё равно ответил бы 409).
+  const startBuild = () => {
+    const coverage = data?.scheduleCoverage ?? null;
+    if (coverage && coverage.count > 0) {
+      setScheduleConflict(coverage);
+      return;
+    }
+    void generate();
   };
 
   const toggleAutopilot = async () => {
@@ -2112,7 +2238,7 @@ export default function AutopilotPage() {
             type="button"
             variant="brand"
             size="md"
-            onClick={generate}
+            onClick={startBuild}
             loading={busy}
             disabled={busy || autopilotToggleBusy || planSettingsSaving || building}
           >
@@ -2219,6 +2345,15 @@ export default function AutopilotPage() {
         onCancel={() => setCancelBuildConfirmation(false)}
       />
 
+      <ScheduleConflictDialog
+        open={Boolean(scheduleConflict)}
+        coverage={scheduleConflict}
+        busy={busy}
+        onContinue={() => void generate("continue")}
+        onReplace={() => void generate("replace")}
+        onClose={() => setScheduleConflict(null)}
+      />
+
       {/* Состояние новой сборки не заменяет пригодный план. */}
       {buildAttempt && (
         <div className="mt-5">
@@ -2251,7 +2386,7 @@ export default function AutopilotPage() {
                 variant="primary"
                 data-aurora-feature="plan"
                 data-aurora-action="planned"
-                onClick={generate}
+                onClick={startBuild}
                 loading={busy}
               >
                 <Play className="h-[18px] w-[18px]" strokeWidth={2} aria-hidden />

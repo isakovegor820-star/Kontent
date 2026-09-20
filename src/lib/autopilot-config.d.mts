@@ -44,6 +44,9 @@ export function plannedDailyAutopilotPostCount(weeks: unknown): number;
 export function planCountWasCappedForWeeks(postFrequency: unknown, weeks: unknown): boolean;
 export function plannedPostCount(postFrequency: unknown, months: unknown): number;
 export function planCountWasCapped(postFrequency: unknown, months: unknown): boolean;
+export function normalizeAutopilotScheduleMode(value: unknown): "continue" | "replace";
+export function autopilotScheduleStartDay(coverageUntil: unknown, nowMs?: number): number;
+export function autopilotEffectiveScheduleDays(weeks: unknown, startDay: unknown): number;
 export function autopilotTextSimilarity(left: unknown, right: unknown): number;
 export function autopilotTopicSimilarity(left: unknown, right: unknown): number;
 export function findAutopilotNearDuplicate(

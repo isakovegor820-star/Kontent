@@ -8,7 +8,7 @@ import {
   resumeAutopilotPartialPlan,
 } from "./autopilot-weekly-queue.mjs";
 
-function harness({ plans = [], queueRejects = false } = {}) {
+function harness({ plans = [], queueRejects = false, calendar = { count: 0, until: null } } = {}) {
   const tx = {
     query: vi.fn(async (sql) => {
       const normalized = String(sql).replace(/\s+/gu, " ").trim();
@@ -27,6 +27,9 @@ function harness({ plans = [], queueRejects = false } = {}) {
         };
       }
       if (normalized.startsWith("select id, project_id, user_id")) return { rows: plans, rowCount: plans.length };
+      if (normalized.startsWith("select count(*)::int as count, max(scheduled_at)")) {
+        return { rows: [calendar], rowCount: 1 };
+      }
       if (normalized.startsWith("insert into autopilot_plan")) return { rows: [{ id: "701" }], rowCount: 1 };
       throw new Error(`unexpected tx query: ${normalized}`);
     }),
@@ -313,6 +316,51 @@ describe("weekly Autopilot queue dispatch", () => {
 
     expect(result).toEqual({ status: "skipped", reason: "coverage_sufficient" });
     expect(queue.add).not.toHaveBeenCalled();
+  });
+
+  it("skips the rebuild on calendar coverage of a plan already marked done", async () => {
+    // Одобренные посты живут в posts, а их план к моменту крон-запуска может быть done.
+    const { pool, queue } = harness({
+      plans: [{ id: "45", status: "done", items: [] }],
+      calendar: { count: 4, until: new Date("2026-09-15T16:00:00.000Z") },
+    });
+
+    const result = await enqueueWeeklyAutopilotPlan({
+      pool,
+      queue,
+      projectId: 4,
+      userId: 9,
+      channelId: 12,
+      nowMs: Date.parse("2026-08-24T12:00:00.000Z"),
+    });
+
+    expect(result).toEqual({ status: "skipped", reason: "coverage_sufficient" });
+    expect(queue.add).not.toHaveBeenCalled();
+  });
+
+  it("hands the calendar coverage window to the worker as a continue-mode placeholder", async () => {
+    const { tx, pool, queue } = harness({
+      plans: [{ id: "45", status: "approved", items: [{ scheduledAt: "2026-08-27T16:00:00.000Z" }] }],
+      calendar: { count: 6, until: new Date("2026-08-30T16:00:00.000Z") },
+    });
+
+    const result = await enqueueWeeklyAutopilotPlan({
+      pool,
+      queue,
+      projectId: 4,
+      userId: 9,
+      channelId: 12,
+      nowMs: Date.parse("2026-08-24T12:00:00.000Z"),
+    });
+
+    expect(result).toMatchObject({ status: "queued", planId: 701 });
+    const insert = tx.query.mock.calls.find(([sql]) =>
+      String(sql).includes("insert into autopilot_plan"),
+    );
+    // schedule_mode захардкожен в SQL-значении, а не в параметрах
+    expect(insert[0]).toContain("'continue'");
+    // coverage_until — ISO-строка, последний параметр $11
+    expect(insert[1].at(-1)).toBe("2026-08-30T16:00:00.000Z");
   });
 
   it("keeps a durable build pending when Redis cannot confirm enqueue", async () => {

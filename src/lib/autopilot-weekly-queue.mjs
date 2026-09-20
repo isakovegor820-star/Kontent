@@ -438,10 +438,23 @@ export async function enqueueWeeklyAutopilotPlan({
       const activePlan = ["pending", "approved", "approving"].includes(currentPlan?.status)
         ? currentPlan
         : null;
+      // Покрытие считаем по календарю, а не по items плана: одобренный пост живёт в posts
+      // и может относиться к плану, уже помеченному done. От этого же окна зависит, куда
+      // worker сдвинет новый план в режиме «продолжить».
+      const calendarCoverage = (
+        await tx.query(
+          `select count(*)::int as count, max(scheduled_at) as until
+             from posts
+            where project_id = $1 and channel_id = $2
+              and status = 'scheduled' and publication_origin = 'autopilot'
+              and scheduled_at > now()`,
+          [projectId, channelId],
+        )
+      ).rows[0];
       const coverageUntil = (Array.isArray(activePlan?.items) ? activePlan.items : [])
         .map((item) => Date.parse(String(item?.scheduledAt || "")))
         .filter(Number.isFinite)
-        .reduce((latest, value) => Math.max(latest, value), 0);
+        .reduce((latest, value) => Math.max(latest, value), Number(calendarCoverage?.until) || 0);
       if (coverageUntil > nowMs + 7 * 86_400_000) {
         await tx.query("rollback");
         return { status: "skipped", reason: "coverage_sufficient" };
@@ -461,9 +474,10 @@ export async function enqueueWeeklyAutopilotPlan({
         `insert into autopilot_plan
             (project_id, user_id, channel_id, week_start, status, generation_engine,
              generation_post_frequency, expected_post_count, publication_target_count,
-             candidate_count, planning_months, planning_weeks, quick_settings, build_activity_at)
+             candidate_count, planning_months, planning_weeks, quick_settings, build_activity_at,
+             schedule_mode, coverage_until)
          values ($1, $2, $3, current_date, 'building', $4, $5, $6, $6, $7,
-                 $8, $9, $10::jsonb, now())
+                 $8, $9, $10::jsonb, now(), 'continue', $11::timestamptz)
          returning id`,
         [
           projectId,
@@ -476,6 +490,7 @@ export async function enqueueWeeklyAutopilotPlan({
           planningMonths,
           planningWeeks,
           JSON.stringify(quickSettings),
+          coverageUntil > 0 ? new Date(coverageUntil).toISOString() : null,
         ],
       );
       planId = positiveInteger(inserted.rows[0]?.id, "plan_id");
