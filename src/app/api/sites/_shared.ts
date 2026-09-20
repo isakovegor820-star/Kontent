@@ -1,4 +1,3 @@
-import { nativeRequestProjectId } from "@/lib/native-project-request";
 import { randomUUID } from "node:crypto";
 
 import { NextRequest, NextResponse } from "next/server";
@@ -8,7 +7,6 @@ import { getPool } from "@/lib/db";
 import {
   ProjectAccessError,
   requireSelectedProjectPermission,
-  requireProjectPermission,
   type ProjectPermission,
 } from "@/lib/project-permissions";
 import { hasTrustedMutationOrigin } from "@/lib/request-origin";
@@ -36,7 +34,7 @@ export type SiteRouteResolution =
 export async function resolveSiteRoute(
   req: NextRequest,
   permission: ProjectPermission,
-  options: { mutation?: boolean; native?: boolean; label: string },
+  options: { mutation?: boolean; label: string },
 ): Promise<SiteRouteResolution> {
   const requestId = randomUUID();
   if (options.mutation && !hasTrustedMutationOrigin(req)) {
@@ -46,9 +44,7 @@ export async function resolveSiteRoute(
   if (!user) return { ok: false, response: jsonWithRequest({ error: "unauthorized" }, 401, requestId) };
   try {
     const pool = getPool();
-    const membership = options.native
-      ? await requireProjectPermission(pool, user.id, nativeRequestProjectId(req), permission)
-      : await requireSelectedProjectPermission(pool, user.id, permission);
+    const membership = await requireSelectedProjectPermission(pool, user.id, permission);
     return { ok: true, context: { requestId, pool, userId: user.id, projectId: membership.projectId } };
   } catch (error) {
     if (error instanceof ProjectAccessError) {
@@ -76,7 +72,6 @@ export async function requireSite(
 }
 
 export function siteErrorResponse(error: unknown, label: string, requestId: string) {
-  if (error instanceof ProjectAccessError) return jsonWithRequest({ error: "access_denied" }, 403, requestId);
   if (error instanceof SiteServiceError) {
     return jsonWithRequest({ error: error.code }, error.status, requestId);
   }

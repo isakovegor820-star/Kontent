@@ -2,8 +2,6 @@
 import { useProjectFetch } from "@/lib/use-project-transport";
 
 
-import { projectFetch as fetch } from "@/lib/project-fetch";
-
 // Гибридный поиск: локальная база отвечает сразу, внешний discovery работает в фоне.
 // OSINT-досье отделено от первичных источников и всегда показывает уверенность.
 

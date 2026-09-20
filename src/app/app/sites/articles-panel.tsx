@@ -1,13 +1,15 @@
 "use client";
+import { useProjectCall } from "@/lib/use-project-transport";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { CheckCircle2, ExternalLink, FileText, RefreshCw, Sparkles, XCircle } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { Badge, Card, Field, Input, Textarea } from "@/components/ui/primitives";
 import { cn } from "@/lib/utils";
+import { articleHasQualityBlock } from "@/lib/site-articles/quality.mjs";
 
-import { ARTICLE_STATUS_LABEL, errorMessage, formatDate, requestJson } from "./client";
+import { ARTICLE_STATUS_LABEL, errorMessage, formatDate, requestJson as unscopedRequestJson } from "./client";
 
 type Article = {
   id: number;
@@ -33,6 +35,7 @@ type Props = {
   siteId: number;
   verified: boolean;
   hasDestinations: boolean;
+  destinationsLoaded: boolean;
   hasProfile: boolean;
   onSiteChanged: () => void;
 };
@@ -59,7 +62,8 @@ const MANUAL_TYPES = [
   ["machine_readable_page", "Страница о компании"],
 ] as const;
 
-export function ArticlesPanel({ siteId, verified, hasDestinations, hasProfile, onSiteChanged }: Props) {
+export function ArticlesPanel({ siteId, verified, hasDestinations, destinationsLoaded, hasProfile, onSiteChanged }: Props) {
+  const requestJson = useProjectCall(unscopedRequestJson);
   const [articles, setArticles] = useState<Article[]>([]);
   const [loaded, setLoaded] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -70,6 +74,9 @@ export function ArticlesPanel({ siteId, verified, hasDestinations, hasProfile, o
   const [draft, setDraft] = useState({ title: "", metaDescription: "", bodyMarkdown: "" });
   const [manualType, setManualType] = useState<string>("audience_answer");
   const [manualBrief, setManualBrief] = useState("");
+  const detailRequest = useRef(0);
+  const detailRefresh = useRef("");
+  useEffect(() => () => { detailRequest.current += 1; }, [siteId]);
 
   const load = useCallback(async () => {
     try {
@@ -82,7 +89,7 @@ export function ArticlesPanel({ siteId, verified, hasDestinations, hasProfile, o
     } finally {
       setLoaded(true);
     }
-  }, [siteId]);
+  }, [requestJson, siteId]);
 
   // eslint-disable-next-line react-hooks/set-state-in-effect -- state changes only after the request settles
   useEffect(() => { void load(); }, [load]);
@@ -94,24 +101,44 @@ export function ArticlesPanel({ siteId, verified, hasDestinations, hasProfile, o
     return () => clearInterval(timer);
   }, [active, load]);
 
-  const openArticle = useCallback(async (id: number) => {
-    setOpenId(id);
-    setEditing(false);
+  const loadArticle = useCallback(async (id: number, request: number) => {
     const { status, body } = await requestJson<{ article?: Article; error?: string }>(`/api/sites/${siteId}/articles/${id}`);
+    if (request !== detailRequest.current) return;
     if (status === 200 && body.article) {
       setDetail(body.article);
       setDraft({ title: body.article.title, metaDescription: body.article.metaDescription || "", bodyMarkdown: body.article.bodyMarkdown || "" });
+    } else {
+      setError(errorMessage(body.error, "Не удалось открыть материал."));
     }
-  }, [siteId]);
+  }, [requestJson, siteId]);
+
+  const openArticle = useCallback(async (id: number) => {
+    const request = ++detailRequest.current;
+    setOpenId(id);
+    setDetail(null);
+    setEditing(false);
+    await loadArticle(id, request);
+  }, [loadArticle]);
+
+  // List polling must also update the open card at the terminal transition. Do
+  // not replace unsaved edits or let an old response replace a newer selection.
+  const selected = articles.find((article) => article.id === openId);
+  useEffect(() => {
+    if (editing || !selected || !detail || selected.id !== detail.id) return;
+    const revision = `${siteId}:${selected.id}:${selected.status}:${selected.version}:${selected.updatedAt}`;
+    if (detailRefresh.current === revision) return;
+    detailRefresh.current = revision;
+    if (selected.status !== detail.status || selected.version !== detail.version || selected.updatedAt !== detail.updatedAt) {
+      void loadArticle(selected.id, ++detailRequest.current);
+    }
+  }, [detail, editing, loadArticle, selected, siteId]);
 
   const act = useCallback(async (id: number, action: string, extra: Record<string, unknown> = {}) => {
-    const reviewed = detail?.id === id ? detail : articles.find((article) => article.id === id);
-    if (!reviewed) return;
     setBusy(`${id}:${action}`);
     setError(null);
     const { status, body } = await requestJson<{ error?: string }>(`/api/sites/${siteId}/articles/${id}`, {
       method: "POST",
-      body: JSON.stringify({ ...extra, action, version: reviewed.version, status: reviewed.status }),
+      body: JSON.stringify({ action, ...extra }),
     });
     setBusy(null);
     if (status >= 400) {
@@ -121,14 +148,14 @@ export function ArticlesPanel({ siteId, verified, hasDestinations, hasProfile, o
     await load();
     if (openId === id) await openArticle(id);
     onSiteChanged();
-  }, [siteId, load, openId, openArticle, onSiteChanged, detail, articles]);
+  }, [requestJson, siteId, load, openId, openArticle, onSiteChanged]);
 
   const saveEdit = useCallback(async () => {
     if (!detail) return;
     setBusy(`${detail.id}:edit`);
     const { status, body } = await requestJson<{ error?: string; issues?: Array<{ message: string; severity: string }> }>(`/api/sites/${siteId}/articles/${detail.id}`, {
       method: "PATCH",
-      body: JSON.stringify({ ...draft, version: detail.version, status: detail.status }),
+      body: JSON.stringify(draft),
     });
     setBusy(null);
     if (status >= 400) {
@@ -138,7 +165,7 @@ export function ArticlesPanel({ siteId, verified, hasDestinations, hasProfile, o
     setEditing(false);
     await load();
     await openArticle(detail.id);
-  }, [detail, draft, siteId, load, openArticle]);
+  }, [detail, requestJson, siteId, draft, load, openArticle]);
 
   const plan = useCallback(async () => {
     setBusy("plan");
@@ -147,7 +174,7 @@ export function ArticlesPanel({ siteId, verified, hasDestinations, hasProfile, o
     setBusy(null);
     if (status >= 400) setError(errorMessage(body.error, "Не удалось запустить планирование."));
     else setTimeout(() => void load(), 1500);
-  }, [siteId, load]);
+  }, [requestJson, siteId, load]);
 
   const createManual = useCallback(async (event: React.FormEvent) => {
     event.preventDefault();
@@ -164,7 +191,7 @@ export function ArticlesPanel({ siteId, verified, hasDestinations, hasProfile, o
     }
     setManualBrief("");
     await load();
-  }, [siteId, manualType, manualBrief, load]);
+  }, [requestJson, siteId, manualType, manualBrief, load]);
 
   const pending = articles.filter((item) => item.status === "needs_review").length;
 
@@ -176,10 +203,12 @@ export function ArticlesPanel({ siteId, verified, hasDestinations, hasProfile, o
           <div>
             <h3 className="type-h3 text-text">Материалы для сайта</h3>
             <p className="type-secondary mt-1 text-text-2">
-              Аврора планирует материалы по профилю сайта раз в день. Каждый материал ждёт одобрения; в очереди сейчас: {pending}.
+              {loaded
+                ? `Аврора планирует материалы по профилю сайта раз в день. На одобрении сейчас: ${pending}.`
+                : "Загружаем очередь материалов…"}
             </p>
             {!verified && <p className="type-caption mt-2 text-fire-text">Домен не подтверждён — материалы можно одобрять, но публикация откроется после подтверждения.</p>}
-            {verified && !hasDestinations && <p className="type-caption mt-2 text-fire-text">Нет настроенного назначения — добавь WordPress или включи раздел на вкладке «Публикация».</p>}
+            {verified && destinationsLoaded && !hasDestinations && <p className="type-caption mt-2 text-fire-text">Нет настроенного назначения — добавь WordPress или включи раздел на вкладке «Публикация».</p>}
           </div>
           <Button type="button" size="sm" variant="secondary" onClick={plan} disabled={busy === "plan" || !hasProfile}>
             <Sparkles className="h-4 w-4" aria-hidden />Спланировать сейчас
@@ -291,12 +320,16 @@ export function ArticlesPanel({ siteId, verified, hasDestinations, hasProfile, o
 
               <div className="mt-5 flex flex-wrap gap-2">
                 {["needs_review", "approved", "failed"].includes(detail.status) && (
-                  <Button type="button" size="sm" onClick={() => act(detail.id, detail.status === "approved" ? "publish" : "approve")} disabled={busy !== null}>
+                  <Button type="button" size="sm" onClick={() => act(detail.id, "approve")} disabled={busy !== null || articleHasQualityBlock(detail)}>
                     <CheckCircle2 className="h-4 w-4" aria-hidden />{detail.status === "approved" ? "Опубликовать" : "Одобрить"}
                   </Button>
                 )}
                 {["needs_review", "approved", "failed"].includes(detail.status) && !editing && (
-                  <Button type="button" size="sm" variant="secondary" onClick={() => setEditing(true)}>Править</Button>
+                  <Button type="button" size="sm" variant="secondary" onClick={() => {
+                    detailRequest.current += 1;
+                    detailRefresh.current = "";
+                    setEditing(true);
+                  }}>Править</Button>
                 )}
                 {["needs_review", "approved", "failed", "draft"].includes(detail.status) && (
                   <Button type="button" size="sm" variant="ghost" onClick={() => act(detail.id, "reject", { reason: "rejected_by_reviewer" })} disabled={busy !== null}>

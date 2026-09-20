@@ -1,6 +1,6 @@
 "use client";
+import { useProjectFetch } from "@/lib/use-project-transport";
 
-import { projectFetch as fetch } from "@/lib/project-fetch";
 
 /**
  * КАРКАС РАБОЧИХ ЭКРАНОВ ПЛАТФОРМЫ (Приложение А: экраны А4–А12).
@@ -12,24 +12,23 @@ import { projectFetch as fetch } from "@/lib/project-fetch";
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
-import { usePathname, useRouter, useSearchParams } from "next/navigation";
+import { usePathname, useRouter } from "next/navigation";
 import { AnimatePresence, MotionConfig, motion } from "motion/react";
 import {
   BarChart3,
   BookOpen,
   Bookmark,
   Calendar,
-  ChevronDown,
   LogOut,
   ShieldCheck,
   Menu,
   Map,
+  Newspaper,
   Pencil,
   Radar,
   Globe2,
   SearchCode,
   Rocket,
-  Scale,
   ScanSearch,
   Settings,
   Sparkles,
@@ -39,10 +38,13 @@ import {
   X,
 } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
+import { SidebarNavigation, type NavItem } from "./sidebar-navigation";
+import { NAV_CHILDREN } from "@/lib/sidebar-navigation";
 import { AuroraBackground } from "@/components/aurora-background";
 import { Wordmark } from "@/components/brand";
 import { ProjectSwitcher } from "@/components/app/project-switcher";
 import { ProjectNotificationsInbox } from "@/components/app/project-notifications-inbox";
+import { AuroraDiscovery, DiscoveryToolbar } from "@/components/app/aurora-discovery";
 import { AppThemeSelector } from "@/components/app/theme-selector";
 import { Button } from "@/components/ui/button";
 import { H1, SecondaryText } from "@/components/ui/typography";
@@ -55,27 +57,11 @@ import {
   isAppRouteActive,
   type AppNavRouteId,
 } from "@/lib/app-routes";
-import {
-  LEGAL_OPPORTUNITY_UNREAD_EVENT,
-  safeLegalOpportunityUnreadCount,
-} from "@/lib/legal-opportunity-unread";
 import { useStore } from "@/lib/store";
 import type { User } from "@/lib/types";
 import { cn, fmtNum, plural } from "@/lib/utils";
 
 /* ------------------------------------------------------------- НАВИГАЦИЯ */
-
-type NavChild = {
-  href: string;
-  label: string;
-  preserveParams?: readonly string[];
-};
-
-type NavItem = {
-  routeId: AppNavRouteId;
-  icon: LucideIcon;
-  children?: readonly NavChild[];
-};
 
 const NAV_ICONS: Record<AppNavRouteId, LucideIcon> & Partial<Record<keyof typeof APP_ROUTES, LucideIcon>> = {
   today: Sunrise,
@@ -84,7 +70,7 @@ const NAV_ICONS: Record<AppNavRouteId, LucideIcon> & Partial<Record<keyof typeof
   studio: Sparkles,
   autopilot: Rocket,
   library: Bookmark,
-  rss: Scale,
+  rss: Newspaper,
   recon: ScanSearch,
   opportunities: Map,
   radar: Radar,
@@ -94,36 +80,6 @@ const NAV_ICONS: Record<AppNavRouteId, LucideIcon> & Partial<Record<keyof typeof
   growth: TrendingUp,
   analytics: BarChart3,
   settings: Settings,
-};
-
-const NAV_CHILDREN: Partial<Record<keyof typeof APP_ROUTES, readonly NavChild[]>> = {
-  studio: [
-    { href: "/app/studio?mode=chat", label: "Чат" },
-    { href: "/app/studio/questions", label: "Запросы аудитории" },
-    { href: "/app/studio?mode=media", label: "Картинки и видео" },
-  ],
-  autopilot: [
-    { href: "/app/autopilot", label: "Обзор" },
-    { href: "/app/autopilot/month", label: "Месяц" },
-  ],
-  library: [
-    { href: "/app/library?tab=hits", label: "Референсы", preserveParams: ["channel"] },
-    { href: "/app/library?tab=posts", label: "Коллекция", preserveParams: ["channel"] },
-  ],
-  rss: [
-    { href: "/app/rss", label: "Для вас", preserveParams: ["channel"] },
-    { href: "/app/rss?view=saved", label: "Сохранённые", preserveParams: ["channel"] },
-    { href: "/app/rss?view=used", label: "Использованные", preserveParams: ["channel"] },
-    { href: "/app/rss?view=hidden", label: "Скрытые", preserveParams: ["channel"] },
-  ],
-  recon: [
-    { href: "/app/competitors", label: "Конкуренты" },
-    { href: "/app/trends", label: "Тренды" },
-  ],
-  settings: [
-    { href: "/app/settings?section=profile", label: "Профиль" },
-    { href: "/app/settings?section=content", label: "Контент и стиль" },
-  ],
 };
 
 // Три группы — ровно порядок формулы продукта: работа → разведка → итоги.
@@ -148,57 +104,49 @@ function isActive(pathname: string, item: NavItem) {
   return isAppRouteActive(pathname, item.routeId);
 }
 
-function useLegalOpportunityUnreadCount(userId: number | null) {
+function safeOpportunityCount(value: unknown): number {
+  const count = Number(value);
+  return Number.isSafeInteger(count) && count > 0 ? Math.min(count, 999) : 0;
+}
+
+function useOpportunityUnreadCount(userId: number | null, channelId: number | null) {
+  const fetch = useProjectFetch();
   const [count, setCount] = useState(0);
 
   const refresh = useCallback(async () => {
+    if (userId == null || channelId == null) {
+      setCount(0);
+      return;
+    }
     try {
-      const response = await fetch("/api/rss/items?summary=unread", { cache: "no-store" });
+      const response = await fetch(`/api/opportunities?channel=${channelId}&surface=market&view=active`, { cache: "no-store" });
       if (!response.ok) return;
-      const body = await response.json() as { unreadCount?: unknown };
-      setCount(safeLegalOpportunityUnreadCount(body.unreadCount));
+      const body = await response.json() as { opportunities?: unknown };
+      setCount(safeOpportunityCount(Array.isArray(body.opportunities) ? body.opportunities.length : 0));
     } catch {
       // Сбой фонового badge не должен перекрывать навигацию или старое корректное число.
     }
-  }, []);
+  }, [channelId, fetch, userId]);
 
   useEffect(() => {
-    if (userId == null) return;
+    if (userId == null || channelId == null) return;
 
     const startupTimer = window.setTimeout(() => void refresh(), 0);
     const interval = window.setInterval(() => void refresh(), 60_000);
-    const handleUnread = (event: Event) => {
-      const detail = (event as CustomEvent<{ count?: unknown }>).detail;
-      setCount(safeLegalOpportunityUnreadCount(detail?.count));
-    };
     const handleProjectChange = () => {
+      // The store clears and reloads channels under the new project fence. Do not
+      // issue a request with the previous project's channel during that transition.
       setCount(0);
-      void refresh();
     };
-    window.addEventListener(LEGAL_OPPORTUNITY_UNREAD_EVENT, handleUnread);
     window.addEventListener("aurora:project-changed", handleProjectChange);
     return () => {
       window.clearTimeout(startupTimer);
       window.clearInterval(interval);
-      window.removeEventListener(LEGAL_OPPORTUNITY_UNREAD_EVENT, handleUnread);
       window.removeEventListener("aurora:project-changed", handleProjectChange);
     };
-  }, [refresh, userId]);
+  }, [channelId, refresh, userId]);
 
   return count;
-}
-
-function childHref(child: NavChild, searchParams: Pick<URLSearchParams, "get">): string {
-  if (!child.preserveParams?.length) return child.href;
-
-  const [pathname, query = ""] = child.href.split("?");
-  const params = new URLSearchParams(query);
-  child.preserveParams.forEach((key) => {
-    const value = searchParams.get(key);
-    if (value) params.set(key, value);
-  });
-  const suffix = params.toString();
-  return suffix ? `${pathname}?${suffix}` : pathname;
 }
 
 /* --------------------------------------------------------------- БРЕНД */
@@ -296,12 +244,9 @@ function AiLimitCard() {
 /* ------------------------------------------------------------ СТРОКА ЮЗЕРА */
 
 function UserRow({ user, onSignOut }: { user: User; onSignOut: () => void }) {
-  const { signOutStatus, signOutError } = useStore();
-  const signingOut = signOutStatus === "pending";
   const initial = user.name.trim().charAt(0).toUpperCase() || "А";
 
   return (
-    <div className="space-y-2">
     <div className="flex items-center gap-2">
       {user.avatar ? (
         // eslint-disable-next-line @next/next/no-img-element -- authenticated account asset
@@ -333,25 +278,19 @@ function UserRow({ user, onSignOut }: { user: User; onSignOut: () => void }) {
         type="button"
         variant="ghost"
         size="icon"
-        loading={signingOut}
         onClick={onSignOut}
-        aria-label={signOutError ? "Повторить выход" : "Выйти из аккаунта"}
+        aria-label="Выйти из аккаунта"
         title="Выйти"
       >
         <LogOut className="h-[18px] w-[18px]" strokeWidth={1.75} aria-hidden />
       </Button>
-    </div>
-    <p role="status" className={cn("text-[12px] leading-relaxed text-text-2", !signingOut && "sr-only")}>
-      {signingOut ? "Завершаем сессию…" : ""}
-    </p>
-    {signOutError ? <p role="alert" className="text-[13px] leading-relaxed text-danger-text">{signOutError}</p> : null}
     </div>
   );
 }
 
 /* --------------------------------------------------------- НАЧИНКА САЙДБАРА */
 // Один и тот же состав на десктопе и в выезжающей панели телефона.
-// Активный пункт — жёлтый лист с рамкой и жёсткой тенью, без летящих индикаторов.
+// Компактный каталог: одна раскрытая ветка, активность определяется адресом страницы.
 
 function SidebarInner({
   pathname,
@@ -368,45 +307,6 @@ function SidebarInner({
   onClose?: () => void;
   closeRef?: React.RefObject<HTMLButtonElement | null>;
 }) {
-  const searchParams = useSearchParams();
-  // Сворачиваемые группы навигации: по умолчанию все открыты,
-  // группа с активным пунктом не сворачивается.
-  const [collapsedGroups, setCollapsedGroups] = useState<Set<string>>(new Set());
-  const activeItemRef = useRef<HTMLLIElement>(null);
-  const toggleGroup = useCallback((title: string) => {
-    setCollapsedGroups((prev) => {
-      const next = new Set(prev);
-      if (next.has(title)) next.delete(title); else next.add(title);
-      return next;
-    });
-  }, []);
-
-  useEffect(() => {
-    const activeItem = activeItemRef.current;
-    const navigation = activeItem?.closest("nav");
-    if (!activeItem || !navigation) return;
-
-    const revealChildren = () => {
-      const itemRect = activeItem.getBoundingClientRect();
-      const navigationRect = navigation.getBoundingClientRect();
-      if (itemRect.bottom > navigationRect.bottom) {
-        navigation.scrollTop += itemRect.bottom - navigationRect.bottom + 8;
-      } else if (itemRect.top < navigationRect.top) {
-        navigation.scrollTop -= navigationRect.top - itemRect.top + 8;
-      }
-    };
-
-    const frame = requestAnimationFrame(revealChildren);
-    const observer = new ResizeObserver(revealChildren);
-    observer.observe(activeItem);
-    observer.observe(navigation);
-
-    return () => {
-      cancelAnimationFrame(frame);
-      observer.disconnect();
-    };
-  }, [pathname]);
-
   return (
     <div className="flex h-full flex-col">
       <div className="flex h-16 shrink-0 items-center justify-between gap-2 px-4">
@@ -434,125 +334,7 @@ function SidebarInner({
 
       <ProjectSwitcher />
 
-      <nav
-        aria-label="Разделы платформы"
-        className="flex-1 space-y-4 overflow-y-auto px-3 pt-2 pb-4"
-      >
-        {NAV_GROUPS.map((group) => {
-          const hasActive = group.items.some((item) => isActive(pathname, item));
-          const isCollapsed = collapsedGroups.has(group.title) && !hasActive;
-          return (
-          <div key={group.title}>
-            <button
-              type="button"
-              onClick={() => toggleGroup(group.title)}
-              aria-expanded={!isCollapsed}
-              className="flex w-full items-center justify-between px-3 pb-1.5 text-[12px] font-bold tracking-[0.08em] text-text-3 uppercase transition-colors hover:text-text"
-            >
-              {group.title}
-              <ChevronDown
-                className={cn(
-                  "h-3.5 w-3.5 transition-transform duration-200",
-                  isCollapsed && "-rotate-90",
-                )}
-                aria-hidden
-              />
-            </button>
-            {!isCollapsed && (
-            <ul className="space-y-0.5">
-              {group.items.map((item) => {
-                const active = isActive(pathname, item);
-                const Icon = item.icon;
-                const route = APP_ROUTES[item.routeId];
-                return (
-                  <li
-                    key={item.routeId}
-                    ref={active && item.children ? activeItemRef : undefined}
-                  >
-                    <Link
-                      href={route.href}
-                      onClick={onClose}
-                      aria-current={active ? "page" : undefined}
-                      className={cn(
-                        "group relative flex min-h-11 items-center gap-3 rounded-xs py-2.5 pr-3 pl-3.5",
-                        "text-[15px] font-semibold transition-colors duration-200",
-                        active
-                          ? "bg-info-soft text-brand"
-                          : "text-text-2 hover:bg-surface-inset hover:text-text",
-                      )}
-                    >
-                      {active && (
-                        <span
-                          aria-hidden
-                          className="absolute top-3 bottom-3 left-0 w-[3px] rounded-full bg-brand-gradient"
-                        />
-                      )}
-                      <Icon
-                        className={cn(
-                          "h-[18px] w-[18px] shrink-0 transition-colors duration-150",
-                          active ? "text-brand" : "text-text-3 group-hover:text-text-2",
-                        )}
-                        strokeWidth={active ? 2 : 1.75}
-                        aria-hidden
-                      />
-                      <span className="min-w-0 flex-1 leading-tight">{route.label}</span>
-                      {item.routeId === "rss" && opportunityUnreadCount > 0 ? (
-                        <>
-                          <span
-                            aria-hidden
-                            className="nums min-w-6 shrink-0 rounded-full bg-brand px-1.5 py-1 text-center text-[11px] font-bold leading-none text-white shadow-soft"
-                          >
-                            {opportunityUnreadCount > 99 ? "99+" : opportunityUnreadCount}
-                          </span>
-                          <span className="sr-only">
-                            {`, ${opportunityUnreadCount} ${plural(opportunityUnreadCount, "новый материал", "новых материала", "новых материалов")}`}
-                          </span>
-                        </>
-                      ) : null}
-                    </Link>
-                    {active && item.children && (
-                      <ul className="mt-1 ml-6 space-y-0.5 border-l border-brand/15 pl-3">
-                        {item.children.map((child) => {
-                          const [childPath, childQuery = ""] = child.href.split("?");
-                          const childParams = new URLSearchParams(childQuery);
-                          const siblingKeys = new Set(item.children?.flatMap((entry) => {
-                            const [, query = ""] = entry.href.split("?");
-                            return Array.from(new URLSearchParams(query).keys());
-                          }) ?? []);
-                          const childActive = pathname === childPath && (
-                            childParams.size > 0
-                              ? Array.from(childParams.entries()).every(([key, value]) => searchParams.get(key) === value)
-                              : Array.from(siblingKeys).every((key) => !searchParams.has(key))
-                          );
-                          return (
-                          <li key={child.href}>
-                            <Link
-                              href={childHref(child, searchParams)}
-                              onClick={onClose}
-                              aria-current={childActive ? "page" : undefined}
-                              className={cn(
-                                "flex min-h-9 items-center rounded-xs px-3 text-[13px] font-semibold transition-colors",
-                                childActive
-                                  ? "bg-surface-inset text-brand"
-                                  : "text-text-3 hover:bg-surface-inset hover:text-brand",
-                              )}
-                            >
-                              {child.label}
-                            </Link>
-                          </li>
-                          );
-                        })}
-                      </ul>
-                    )}
-                  </li>
-                );
-              })}
-            </ul>
-            )}
-          </div>
-          );
-        })}
-      </nav>
+      <SidebarNavigation groups={NAV_GROUPS} pathname={pathname} unreadCount={opportunityUnreadCount} onClose={onClose} />
 
       <div className="shrink-0 space-y-3 border-t border-line p-3">
         <AiLimitCard />
@@ -585,7 +367,7 @@ function ShellSkeleton({
         <AuroraBackground intensity="app" grid={false} grain={false} />
       </div>
 
-      <div className="fixed inset-y-0 left-0 z-30 hidden w-[260px] flex-col border-r border-line bg-surface/80 backdrop-blur-xl lg:flex">
+      <div className="fixed inset-y-0 left-0 z-30 hidden w-[300px] flex-col border-r border-line bg-surface/80 backdrop-blur-xl lg:flex">
         <div className="flex h-16 shrink-0 items-center gap-2.5 px-4">
           <div className="skeleton h-8 w-8 rounded-xs" />
           <div className="skeleton h-4 w-24" />
@@ -606,7 +388,7 @@ function ShellSkeleton({
         </div>
       </div>
 
-      <div className="lg:pl-[260px]">
+      <div className="lg:pl-[300px]">
         <div className="sticky top-0 z-30 flex h-14 items-center justify-between border-b border-line bg-surface/80 px-3 backdrop-blur-xl lg:hidden">
           <div className="skeleton h-9 w-9 rounded-xs" />
           <div className="skeleton h-5 w-28" />
@@ -663,34 +445,37 @@ export function AppShell({
   subtitle,
   action,
   stickyHeaderOnMobile = true,
+  workspace = false,
 }: {
   children: React.ReactNode;
   title: string;
   subtitle?: string;
   action?: React.ReactNode;
   stickyHeaderOnMobile?: boolean;
+  workspace?: boolean;
 }) {
-  const { ready, authReady, authError, user, signOut, signOutStatus, refreshAuth } = useStore();
+  const { ready, authReady, authError, user, signOut, refreshAuth, realChannels, realReady } = useStore();
   const router = useRouter();
   const pathname = usePathname();
   const [menuOpen, setMenuOpen] = useState(false);
-  const opportunityUnreadCount = useLegalOpportunityUnreadCount(
+  const opportunityChannelId = realReady
+    ? realChannels.find((channel) => channel.is_active && (channel.status == null || channel.status === "active"))?.id ?? null
+    : null;
+  const opportunityUnreadCount = useOpportunityUnreadCount(
     ready && authReady && user ? user.id : null,
+    opportunityChannelId,
   );
 
   const burgerRef = useRef<HTMLButtonElement>(null);
   const closeRef = useRef<HTMLButtonElement>(null);
   const drawerRef = useRef<HTMLElement>(null);
+  // Выход уводит на лендинг — защита не должна перехватить и увести на /login
+  const leavingRef = useRef(false);
 
   /* ЗАЩИТА: без входа — на страницу входа, без мастера — в мастер.
      Ждём ответа сервера о сессии (authReady), иначе выкинем вошедшего по ошибке. */
   useEffect(() => {
-    // Both the sidebar and settings share the same server-confirmed completion.
-    if (signOutStatus === "complete") {
-      router.push("/");
-      return;
-    }
-    if (!ready || !authReady || authError) return;
+    if (!ready || !authReady || authError || leavingRef.current) return;
     if (!user) {
       router.replace("/login");
       return;
@@ -698,7 +483,7 @@ export function AppShell({
     if (!user.onboarded && pathname !== "/app/onboarding") {
       router.replace("/app/onboarding");
     }
-  }, [ready, authReady, authError, user, pathname, router, signOutStatus]);
+  }, [ready, authReady, authError, user, pathname, router]);
 
   /* На широком экране меню не существует — гасим, если экран вырос */
   useEffect(() => {
@@ -729,7 +514,7 @@ export function AppShell({
         drawerRef.current?.querySelectorAll<HTMLElement>(
           'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])',
         ) ?? [],
-      ).filter((element) => !element.hasAttribute("hidden") && element.getClientRects().length > 0);
+      ).filter((element) => !element.hasAttribute("hidden") && !element.closest("[inert]") && element.getClientRects().length > 0);
       if (focusable.length === 0) {
         e.preventDefault();
         return;
@@ -761,8 +546,10 @@ export function AppShell({
   const closeMenu = useCallback(() => setMenuOpen(false), []);
 
   const handleSignOut = useCallback(() => {
-    void signOut();
-  }, [signOut]);
+    leavingRef.current = true;
+    signOut();
+    router.push("/");
+  }, [signOut, router]);
 
   // Ошибка проверки сессии не равна «гость»: не выкидываем человека на регистрацию
   // и не показываем бесконечный скелетон, а даём явный повтор запроса.
@@ -801,13 +588,14 @@ export function AppShell({
   return (
     // reducedMotion="user": системная настройка гасит движение, оставляя прозрачность (ТЗ 7.4)
     <MotionConfig reducedMotion="user">
+      <AuroraDiscovery navigationOpen={menuOpen}>
       <div className="relative isolate min-h-dvh bg-bg">
         <div className="pointer-events-none fixed inset-0 -z-10 overflow-hidden">
           <AuroraBackground intensity="app" grid={false} grain={false} />
         </div>
 
         {/* САЙДБАР — десктоп */}
-        <aside className="fixed inset-y-0 left-0 z-30 hidden w-[260px] flex-col border-r border-line bg-surface/80 backdrop-blur-xl lg:flex">
+        <aside className="fixed inset-y-0 left-0 z-30 hidden w-[300px] flex-col border-r border-line bg-surface/80 backdrop-blur-xl lg:flex">
           <SidebarInner
             pathname={pathname}
             user={user}
@@ -841,11 +629,11 @@ export function AppShell({
               role="dialog"
               aria-modal="true"
               aria-label="Меню платформы"
-              initial={{ x: -280 }}
+              initial={{ x: "-100%" }}
               animate={{ x: 0 }}
-              exit={{ x: -280 }}
+              exit={{ x: "-100%" }}
               transition={{ type: "spring", stiffness: 380, damping: 40, mass: 0.9 }}
-              className="fixed inset-y-0 left-0 z-50 flex w-[280px] flex-col border-r border-line bg-surface/95 shadow-float backdrop-blur-2xl lg:hidden"
+              className="fixed inset-y-0 left-0 z-50 flex w-[min(320px,calc(100vw-24px))] flex-col border-r border-line bg-surface/95 shadow-float backdrop-blur-2xl lg:hidden"
             >
               <SidebarInner
                 pathname={pathname}
@@ -860,9 +648,9 @@ export function AppShell({
         </AnimatePresence>
 
         {/* ПРАВАЯ КОЛОНКА */}
-        <div className="lg:pl-[260px]">
+        <div className={cn("lg:pl-[300px]", workspace && "flex h-dvh flex-col overflow-hidden")}>
           {/* Верхняя панель — только телефон */}
-          <div className="sticky top-0 z-30 grid h-14 grid-cols-[44px_1fr_44px] items-center border-b border-line bg-surface/80 px-2 backdrop-blur-xl lg:hidden">
+          <div className="sticky top-0 z-30 grid h-14 shrink-0 grid-cols-[44px_1fr_44px] items-center border-b border-line bg-surface/80 px-2 backdrop-blur-xl lg:hidden">
             <Button
               ref={burgerRef}
               type="button"
@@ -871,7 +659,7 @@ export function AppShell({
               onClick={() => setMenuOpen(true)}
               aria-label="Открыть меню"
               aria-expanded={menuOpen}
-              aria-controls="app-drawer"
+              aria-controls={menuOpen ? "app-drawer" : undefined}
             >
               <Menu className="h-5 w-5" strokeWidth={1.75} aria-hidden />
             </Button>
@@ -881,21 +669,22 @@ export function AppShell({
 
           {/* ШАПКА КОНТЕНТА: заголовок, подзаголовок и главное действие страницы */}
           <header className={cn(
-            "z-20 border-b border-line bg-surface/70 backdrop-blur-xl lg:sticky lg:top-0",
+            "shrink-0 z-20 border-b border-line bg-surface/70 backdrop-blur-xl lg:sticky lg:top-0",
             stickyHeaderOnMobile ? "sticky top-14" : "relative",
           )}>
-            <div className="mx-auto flex max-w-[1400px] flex-wrap items-end justify-between gap-x-6 gap-y-3 px-4 py-4 sm:px-6 sm:py-5 lg:px-8">
+            <DiscoveryToolbar />
+            <div className={cn("mx-auto flex max-w-[1400px] justify-between gap-x-6 gap-y-3 px-4 sm:px-6 lg:px-8", workspace ? "items-center py-3 sm:py-4" : "flex-wrap items-end py-4 sm:py-5")}>
               <div className="min-w-0">
                 <H1>
                   {title}
                 </H1>
                 {subtitle && (
-                  <SecondaryText className="mt-1.5 max-w-2xl text-pretty">
+                  <SecondaryText className={cn("mt-1.5 max-w-2xl text-pretty", workspace && "hidden sm:block")}>
                     {subtitle}
                   </SecondaryText>
                 )}
               </div>
-              <div className="flex w-full min-w-0 flex-wrap items-center justify-end gap-2 sm:w-auto sm:shrink-0 sm:flex-nowrap">
+              <div className={cn("flex min-w-0 items-center justify-end gap-2 sm:w-auto sm:shrink-0 sm:flex-nowrap", workspace ? "shrink-0" : "w-full flex-wrap")}>
                 {action ? <div className="min-w-0 flex-1 sm:flex-none">{action}</div> : null}
                 <ProjectNotificationsInbox />
               </div>
@@ -903,9 +692,10 @@ export function AppShell({
           </header>
 
           {/* КОНТЕНТ: страница въезжает снизу — понятно, что сменился экран, а не сайт */}
-          <main id="main" className="mx-auto max-w-[1400px] px-4 pt-6 pb-[var(--app-content-bottom-inset)] sm:px-6 lg:px-8 lg:pb-10">
+          <main id="main" className={cn("mx-auto w-full max-w-[1400px] px-4 pb-[var(--app-content-bottom-inset)] sm:px-6 lg:px-8", workspace ? "min-h-0 flex-1 overflow-hidden pt-4 lg:pb-4" : "pt-6 lg:pb-10")}>
             <motion.div
               key={pathname}
+              className={workspace ? "h-full min-h-0" : undefined}
               initial={{ opacity: 0, y: 8 }}
               animate={{ opacity: 1, y: 0 }}
               transition={{ duration: 0.2, ease: [0.22, 1, 0.36, 1] }}
@@ -961,6 +751,7 @@ export function AppShell({
           </ul>
         </nav>
       </div>
+      </AuroraDiscovery>
     </MotionConfig>
   );
 }

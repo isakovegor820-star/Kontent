@@ -1,4 +1,3 @@
-import { projectFetch as fetch } from "@/lib/project-fetch";
 export interface BotLinkStatus {
   linked: boolean;
   connectionKey?: string | null;
@@ -65,21 +64,25 @@ export async function requireBotUnlinkSuccess(response: Response): Promise<void>
 /**
  * Resolves one continuous account → channel Telegram journey.
  *
- * Every launch uses the one-time /start handshake, capturing its Aurora project.
- * The bot then opens the native picker against that immutable short-lived intent.
+ * A linked account can open Telegram's native channel picker immediately. An unlinked
+ * account receives an intent-bearing /start link, so the bot shows the same picker right
+ * after it binds the private chat instead of dropping the user into the generic menu.
  */
 export async function requestTelegramChannelConnection(
   fetcher: typeof fetch = fetch,
 ): Promise<TelegramChannelConnectionLaunch> {
   const status = await parseBotLinkStatusResponse(
-    await fetcher("/api/bot/link", { cache: "no-store", signal: AbortSignal.timeout(8_000) }),
+    await fetcher("/api/bot/link", { cache: "no-store" }),
   );
   if (status.botStatus !== "up") throw new Error(`bot_${status.botStatus}`);
   if (!status.bot) throw new Error("bot_not_configured");
+  if (status.linked) {
+    if (!status.channelConnectUrl) throw new Error("channel_link_unavailable");
+    return { url: status.channelConnectUrl, bot: status.bot, linkingAccount: false };
+  }
 
   const response = await fetcher("/api/bot/link", {
     method: "POST",
-    signal: AbortSignal.timeout(8_000),
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ intent: "channel" }),
   });
@@ -87,7 +90,7 @@ export async function requestTelegramChannelConnection(
   if (!response.ok || !isRecord(body) || body.ok !== true || typeof body.url !== "string") {
     throw new Error(isRecord(body) && typeof body.error === "string" ? body.error : "bot_link_failed");
   }
-  return { url: body.url, bot: status.bot, linkingAccount: !status.linked };
+  return { url: body.url, bot: status.bot, linkingAccount: true };
 }
 
 /** A reconnect changes updated_at even when Telegram confirms the same channel id. */

@@ -5,7 +5,6 @@ import {
   PROJECT_ROLES,
   ProjectAccessError,
   requireProjectPermission,
-  selectedRequestProjectId,
   type ProjectRole,
 } from "./project-permissions";
 import { normalizeIdempotencyKey } from "./publication-idempotency";
@@ -135,7 +134,6 @@ export function hashInvitationToken(token: string): string {
 
 export async function listProjectsForUser(pool: Pick<Pool, "query">, userId: number): Promise<ProjectSummary[]> {
   if (!positiveId(userId)) throw new ProjectAccessError("invalid_project_selector");
-  const expectedProjectId = await selectedRequestProjectId();
   const result = await pool.query<{
     id: number | string;
     name: string;
@@ -164,7 +162,7 @@ export async function listProjectsForUser(pool: Pick<Pool, "query">, userId: num
     role: row.role,
     version: Number(row.version),
     personal: row.personal === true,
-    selected: expectedProjectId !== null ? Number(row.id) === expectedProjectId : row.selected === true,
+    selected: row.selected === true,
     createdAt: new Date(row.created_at).toISOString(),
   }] : []);
 }

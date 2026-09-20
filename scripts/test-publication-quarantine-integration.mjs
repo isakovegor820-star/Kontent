@@ -163,14 +163,14 @@ try {
   const postIds = new Map(inserted.rows.map((row) => [row.text, Number(row.id)]));
 
   const activeFeedId = Number((await pool.query(
-    `insert into rss_feeds (user_id, channel_id, url, is_active, project_id)
-     values ($1, $2, 'https://qa.invalid/active.xml', true, $3) returning id`,
-    [userId, activeChannelId, projectId],
+    `insert into rss_feeds (user_id, channel_id, url, is_active)
+     values ($1, $2, 'https://qa.invalid/active.xml', true) returning id`,
+    [userId, activeChannelId],
   )).rows[0].id);
   const inactiveFeedId = Number((await pool.query(
-    `insert into rss_feeds (user_id, channel_id, url, is_active, project_id)
-     values ($1, $2, 'https://qa.invalid/inactive.xml', false, $3) returning id`,
-    [userId, inactiveRssChannelId, projectId],
+    `insert into rss_feeds (user_id, channel_id, url, is_active)
+     values ($1, $2, 'https://qa.invalid/inactive.xml', false) returning id`,
+    [userId, inactiveRssChannelId],
   )).rows[0].id);
   await pool.query(
     `insert into rss_items (feed_id, guid, post_id, status)

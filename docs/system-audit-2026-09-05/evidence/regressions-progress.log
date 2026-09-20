@@ -1,9 +1,0 @@
-
- RUN  v4.1.10 /Users/egor/mvp and prod/platform
-
-
- Test Files  6 passed (6)
-      Tests  32 passed (32)
-   Start at  15:11:24
-   Duration  1.62s (transform 525ms, setup 0ms, import 1.11s, tests 443ms, environment 664ms)
-

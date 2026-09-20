@@ -1,3 +1,5 @@
+import { ProjectAccessError, requireSelectedProjectPermission } from "@/lib/project-permissions";
+import { withProjectRoute } from "@/lib/project-route";
 // Д.7 — лента идей для публикаций из залётов конкурентов. Детекция реальная (медиана × 5),
 // сценарий пишет выбранный ИИ. Незавершённые записи остаются в диагностике реестра,
 // а этот публичный список отдаёт только готовые идеи с заполненным содержанием.
@@ -5,30 +7,27 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getPool } from "@/lib/db";
 import { getSessionUser } from "@/lib/session";
-import { ProjectAccessError } from "@/lib/project-permissions";
-import { withSelectedProjectPermission } from "@/lib/selected-project-transaction";
 
 export const runtime = "nodejs";
 
-export async function GET(req: NextRequest) {
+async function handleGET(req: NextRequest) {
   const user = await getSessionUser(req);
-  if (!user) return NextResponse.json({ error: "unauthorized" }, { status: 401 });
+  if (!user) return NextResponse.json({ ideas: [] });
 
   try {
-    return await withSelectedProjectPermission(getPool(), user.id, "project.read", async (pool, membership) => {
+    const membership = await requireSelectedProjectPermission(getPool(), user.id, "project.read");
     const rows = (
-      await pool.query(
+      await getPool().query(
         `select i.id, i.topic, i.hook, i.structure, i.why_it_worked, i.format,
                 i.hit_ratio, i.status, i.ai_status, i.created_at,
                 c.handle as competitor_handle, c.title as competitor_title,
                 cp.tg_msg_id, cp.views as source_views, cp.text as source_text
            from content_ideas i
-           join competitors c on c.id = i.competitor_id
-           join channels channel on channel.id = c.channel_id and channel.project_id = $2
+           left join competitors c on c.id = i.competitor_id
            left join competitor_posts cp on cp.id = i.source_post_id
-          where i.user_id = $1 and i.status = 'new' and i.ai_status = 'ready'
+          where exists (select 1 from channels channel where channel.id = c.channel_id and channel.project_id = $1) and i.status = 'new' and i.ai_status = 'ready'
           order by i.hit_ratio desc nulls last, i.created_at desc`,
-        [user.id, membership.projectId],
+        [membership.projectId],
       )
     ).rows;
 
@@ -40,10 +39,11 @@ export async function GET(req: NextRequest) {
           : null,
     }));
     return NextResponse.json({ ideas });
-    });
   } catch (err) {
-    if (err instanceof ProjectAccessError) return NextResponse.json({ error: "access_denied" }, { status: 403 });
+    if (err instanceof ProjectAccessError) return NextResponse.json({ ok: false, error: "access_denied" }, { status: 403 });
     console.error("[/api/ideas]", err);
-    return NextResponse.json({ error: "unavailable" }, { status: 503 });
+    return NextResponse.json({ ideas: [] });
   }
 }
+
+export const GET = withProjectRoute(handleGET);

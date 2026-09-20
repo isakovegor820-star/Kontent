@@ -1,6 +1,6 @@
 "use client";
-
-import { projectNativeUrl } from "@/lib/project-native-url";
+import { useProjectCall } from "@/lib/use-project-transport";
+import { projectUrl } from "@/lib/project-transport";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
@@ -11,7 +11,9 @@ import {
   ExternalLink,
   FileSearch,
   Globe2,
+  Plus,
   RefreshCw,
+  Send,
   ShieldCheck,
   XCircle,
 } from "lucide-react";
@@ -24,7 +26,7 @@ import { createSiteAnalysisUuid } from "@/lib/site-analysis-client-key";
 import { cn } from "@/lib/utils";
 
 import { ArticlesPanel } from "./articles-panel";
-import { errorMessage, formatDate, requestJson } from "./client";
+import { errorMessage, formatDate, requestJson as unscopedRequestJson } from "./client";
 import { DestinationsPanel } from "./destinations-panel";
 import { ProbePanel } from "./probe-panel";
 
@@ -141,6 +143,15 @@ const REPORT_KIND_LABEL: Record<ReportView["kind"], string> = {
 const SEVERITY_TONE = { high: "danger", medium: "fire", low: "neutral" } as const;
 const SEVERITY_LABEL = { high: "Критично", medium: "Важно", low: "Желательно" } as const;
 
+function siteCountLabel(count: number) {
+  const lastTwo = count % 100;
+  const last = count % 10;
+  if (lastTwo >= 11 && lastTwo <= 14) return `${count} сайтов`;
+  if (last === 1) return `${count} сайт`;
+  if (last >= 2 && last <= 4) return `${count} сайта`;
+  return `${count} сайтов`;
+}
+
 function analysisLabel(status: string | null | undefined) {
   switch (status) {
     case "queued": return "В очереди";
@@ -191,10 +202,10 @@ function CopyValue({ value, label }: { value: string; label: string }) {
   );
 }
 
-function InterpretationBlock({ interpretation, status, compact = false }: { interpretation: Interpretation | null; status: ReportView["interpretationStatus"]; compact?: boolean }) {
+function InterpretationBlock({ interpretation, status, compact = false, onRetry, retrying = false }: { interpretation: Interpretation | null; status: ReportView["interpretationStatus"]; compact?: boolean; onRetry?: () => void; retrying?: boolean }) {
   if (!interpretation) {
     if (status === "pending") return <p className="type-caption mt-3 text-text-3">Интерпретация Авроры готовится…</p>;
-    if (status === "failed") return <p className="type-caption mt-3 text-text-3">Интерпретация не удалась — цифры и рекомендации выше остаются в силе.</p>;
+    if (status === "failed") return <div className="mt-3"><p className="type-caption text-text-3">Интерпретация не удалась — цифры и рекомендации выше остаются в силе.</p>{onRetry && <Button type="button" size="sm" variant="secondary" className="mt-2" disabled={retrying} onClick={onRetry}>{retrying ? "Запускаем…" : "Повторить интерпретацию"}</Button>}</div>;
     return null;
   }
   return (
@@ -248,15 +259,18 @@ function Score({ label, value }: { label: string; value: number | null }) {
 }
 
 export default function SitesPage() {
+  const requestJson = useProjectCall(unscopedRequestJson);
   const [sites, setSites] = useState<SiteListItem[]>([]);
+  const [listLoaded, setListLoaded] = useState(false);
   const [listError, setListError] = useState<string | null>(null);
   const [selectedId, setSelectedId] = useState<number | null>(null);
   const [details, setDetails] = useState<SiteDetails | null>(null);
-  const activeSiteId = useRef<number | null>(null);
-  const detailsRequest = useRef(0);
+  const [detailsLoading, setDetailsLoading] = useState(false);
+  const [detailsError, setDetailsError] = useState<string | null>(null);
 
   const [url, setUrl] = useState("");
   const [consent, setConsent] = useState(false);
+  const [connectOpen, setConnectOpen] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [formError, setFormError] = useState<string | null>(null);
   const connectKey = useRef(createSiteAnalysisUuid());
@@ -267,7 +281,11 @@ export default function SitesPage() {
   const [actionError, setActionError] = useState<string | null>(null);
   const [tab, setTab] = useState<SiteTab>("profile");
   const [destinationCount, setDestinationCount] = useState(0);
+  const [destinationsLoaded, setDestinationsLoaded] = useState(false);
   const [reportRequested, setReportRequested] = useState(false);
+  const [retryingAi, setRetryingAi] = useState<string | null>(null);
+  const detailsRequest = useRef(0);
+  const activeSiteId = useRef<number | null>(null);
 
   const loadSites = useCallback(async () => {
     try {
@@ -275,56 +293,70 @@ export default function SitesPage() {
       if (status !== 200 || !body.sites) throw Object.assign(new Error("list_failed"), { code: body.error });
       setListError(null);
       setSites(body.sites);
+      setSelectedId((currentId) => currentId !== null && body.sites!.some((site) => site.id === currentId) ? currentId : null);
+      if (body.sites.length === 0) setConnectOpen(true);
       return body.sites;
     } catch (error) {
       setListError(errorMessage((error as { code?: string }).code, "Не удалось загрузить список сайтов."));
       return [];
+    } finally {
+      setListLoaded(true);
     }
-  }, []);
+  }, [requestJson]);
 
   // Состояние обновляется только после ответа сервера — синхронных setState в эффектах нет.
   const loadDetails = useCallback(async (id: number) => {
-    if (activeSiteId.current !== id) return null;
-    const sequence = ++detailsRequest.current;
+    if (id !== activeSiteId.current) return null;
+    const request = ++detailsRequest.current;
+    setDetailsLoading(true);
+    setDetailsError(null);
     try {
       const { status, body } = await requestJson<SiteDetails & { error?: string }>(`/api/sites/${id}`);
-      if (sequence !== detailsRequest.current || activeSiteId.current !== id) return null;
+      if (request !== detailsRequest.current) return null;
       if (status !== 200 || !body.site) throw Object.assign(new Error("details_failed"), { code: body.error });
       setDetails({ site: body.site, latestAnalysis: body.latestAnalysis, profile: body.profile, reports: body.reports });
-      void requestJson<{ destinations?: Array<{ status: string; readyToPublish: boolean }> }>(`/api/sites/${id}/destinations`).then((result) => {
-        if (sequence !== detailsRequest.current || activeSiteId.current !== id) return;
-        setDestinationCount((result.body.destinations || []).filter((item) => item.status === "active" && item.readyToPublish).length);
-      });
+      void requestJson<{ destinations?: Array<{ status: string; readyToPublish: boolean }> }>(`/api/sites/${id}/destinations`)
+        .then((result) => {
+          if (request !== detailsRequest.current) return;
+          if (result.status === 200 && result.body.destinations) {
+            setDestinationCount(result.body.destinations.filter((item) => item.status === "active" && item.readyToPublish).length);
+            setDestinationsLoaded(true);
+          }
+        })
+        .catch(() => {}); // Смена проекта отменяет запрос; старое состояние уже размонтировано.
       return body;
     } catch (error) {
-      if (sequence !== detailsRequest.current || activeSiteId.current !== id) return null;
-      setActionError(errorMessage((error as { code?: string }).code, "Не удалось загрузить сайт."));
+      if (request === detailsRequest.current) {
+        setDetailsError(errorMessage((error as { code?: string }).code, "Не удалось загрузить сайт."));
+      }
       return null;
+    } finally {
+      if (request === detailsRequest.current) setDetailsLoading(false);
     }
-  }, []);
+  }, [requestJson]);
 
   // eslint-disable-next-line react-hooks/set-state-in-effect -- state changes only after the request settles
   useEffect(() => { void loadSites(); }, [loadSites]);
 
   const activeId = selectedId ?? sites[0]?.id ?? null;
+  const activeSummary = sites.find((site) => site.id === activeId) ?? null;
   const current = details && details.site.id === activeId ? details : null;
-  const detailsLoading = activeId !== null && current === null;
 
   useEffect(() => {
     activeSiteId.current = activeId;
     if (activeId === null) return;
-    // eslint-disable-next-line react-hooks/set-state-in-effect -- loadDetails updates state only after the request settles
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- request state is fenced by the active site and request sequence
     void loadDetails(activeId);
-    return () => { detailsRequest.current += 1; };
+    return () => { activeSiteId.current = null; detailsRequest.current += 1; };
   }, [activeId, loadDetails]);
 
   const selectSite = useCallback((id: number) => {
     activeSiteId.current = id;
     detailsRequest.current += 1;
-    setVerifying(false);
-    setReanalyzing(false);
-    setReportRequested(false);
     setDestinationCount(0);
+    setDestinationsLoaded(false);
+    setDetailsLoading(true);
+    setDetailsError(null);
     setVerifyMessage(null);
     setActionError(null);
     setTab("profile");
@@ -340,28 +372,38 @@ export default function SitesPage() {
     if (activeId === null) return;
     setReportRequested(true);
     const { status, body } = await requestJson<{ error?: string }>(`/api/sites/${activeId}/reports`, { method: "POST", body: JSON.stringify({}) });
-    if (activeSiteId.current !== activeId) return;
     if (status >= 400) {
       setActionError(errorMessage(body.error, "Не удалось запросить отчёт."));
       setReportRequested(false);
       return;
     }
-    setTimeout(() => {
-      if (activeSiteId.current !== activeId) return;
-      void loadDetails(activeId); setReportRequested(false);
-    }, 6000);
-  }, [activeId, loadDetails]);
+    setTimeout(() => { void loadDetails(activeId); setReportRequested(false); }, 6000);
+  }, [activeId, loadDetails, requestJson]);
 
+  const retryAi = useCallback(async (target: "profile" | "report", reportId?: number) => {
+    if (activeId === null || retryingAi) return;
+    setRetryingAi(target === "profile" ? "profile" : `report:${reportId}`);
+    setActionError(null);
+    const { status, body } = await requestJson<{ error?: string }>(`/api/sites/${activeId}/ai/retry`, {
+      method: "POST", body: JSON.stringify({ target, reportId }),
+    });
+    setRetryingAi(null);
+    if (status >= 400 && activeSiteId.current === activeId) setActionError(errorMessage(body.error, "Не удалось повторить задачу."));
+    await loadDetails(activeId);
+  }, [activeId, retryingAi, loadDetails, requestJson]);
+
+  const aiActive = Boolean(current?.profile && !current.profile.refinedAt && current.profile.aiClassification?.status !== "failed")
+    || Boolean(current?.reports.some((report) => report.interpretationStatus === "pending"));
   const analysisActive = Boolean(current?.latestAnalysis && ACTIVE_STATUSES.has(current.latestAnalysis.status));
   useEffect(() => {
-    if (!analysisActive || activeId === null) return;
+    if ((!analysisActive && !aiActive) || activeId === null) return;
     const timer = setInterval(() => {
       void loadDetails(activeId).then((loaded) => {
         if (loaded?.latestAnalysis && !ACTIVE_STATUSES.has(loaded.latestAnalysis.status)) void loadSites();
       });
-    }, 2000);
+    }, analysisActive ? 2000 : 5000);
     return () => clearInterval(timer);
-  }, [analysisActive, activeId, loadDetails, loadSites]);
+  }, [analysisActive, aiActive, activeId, loadDetails, loadSites]);
 
   const submitConnect = useCallback(async (event: React.FormEvent) => {
     event.preventDefault();
@@ -384,11 +426,12 @@ export default function SitesPage() {
     connectKey.current = createSiteAnalysisUuid();
     setUrl("");
     setConsent(false);
+    setConnectOpen(false);
     await loadSites();
     setSelectedId(body.site.id);
     setDetails({ site: body.site, latestAnalysis: body.latestAnalysis, profile: body.profile, reports: body.reports });
     if (body.analysisError) setActionError(errorMessage(body.analysisError, "Сайт подключён, но анализ не запустился."));
-  }, [consent, url, loadSites]);
+  }, [consent, requestJson, url, loadSites]);
 
   const verify = useCallback(async () => {
     if (!details) return;
@@ -398,7 +441,6 @@ export default function SitesPage() {
       `/api/sites/${details.site.id}/verify`,
       { method: "POST", body: JSON.stringify({ method: "auto" }) },
     );
-    if (activeSiteId.current !== details.site.id) return;
     setVerifying(false);
     if (status !== 200) {
       setVerifyMessage({ tone: "danger", text: errorMessage(body.error, "Проверка не выполнена.") });
@@ -411,7 +453,7 @@ export default function SitesPage() {
     } else {
       setVerifyMessage({ tone: "danger", text: verificationReason(body.reason) });
     }
-  }, [details, loadSites]);
+  }, [details, loadSites, requestJson]);
 
   const reanalyze = useCallback(async () => {
     if (!details) return;
@@ -421,19 +463,19 @@ export default function SitesPage() {
       `/api/sites/${details.site.id}/analyze`,
       { method: "POST", headers: { "idempotency-key": createSiteAnalysisUuid() }, body: JSON.stringify({}) },
     );
-    if (activeSiteId.current !== details.site.id) return;
     setReanalyzing(false);
     if ((status !== 202 && status !== 200) || !body.analysis) {
       setActionError(errorMessage(body.error, "Не удалось запустить анализ."));
       return;
     }
     setDetails((current) => (current ? { ...current, latestAnalysis: body.analysis as AnalysisView } : current));
-  }, [details]);
+  }, [details, requestJson]);
 
   const selected = current?.site ?? null;
   const profile = current?.profile ?? null;
   const analysis = current?.latestAnalysis ?? null;
   const highGaps = useMemo(() => profile?.gaps.filter((gap) => gap.severity === "high") ?? [], [profile]);
+  const showConnectForm = connectOpen || (listLoaded && !listError && sites.length === 0);
 
   return (
     <AppShell
@@ -441,49 +483,80 @@ export default function SitesPage() {
       subtitle="Подключи сайт, подтверди домен и получи стартовый аудит: что уже есть на сайте, какие темы не закрыты и что мешает поиску и ИИ-движкам вас находить."
     >
       <div className="grid items-start gap-6 xl:grid-cols-[320px_minmax(0,1fr)]">
-        <div className="min-w-0 space-y-6">
-          <Card className="p-5">
-            <div className="flex items-start gap-3">
-              <span className="grid h-11 w-11 shrink-0 place-items-center rounded-sm bg-info-soft text-brand">
-                <Globe2 className="h-5 w-5" aria-hidden />
-              </span>
-              <div>
-                <h2 className="type-h3 text-text">Подключить сайт</h2>
-                <p className="type-secondary mt-1 text-text-2">Аврора прочитает публичные страницы и соберёт профиль сайта.</p>
-              </div>
-            </div>
-            <form className="mt-5 space-y-4" onSubmit={submitConnect}>
-              <Field label="Адрес сайта" htmlFor="site-url" required error={formError ?? undefined} messageId="site-url-message">
-                <Input
-                  id="site-url"
-                  type="url"
-                  inputMode="url"
-                  placeholder="https://example.ru"
-                  value={url}
-                  onChange={(event) => setUrl(event.target.value)}
-                  required
-                  aria-describedby="site-url-message"
-                />
-              </Field>
-              <Checkbox
-                checked={consent}
-                onChange={setConsent}
-                label="У меня есть право анализировать этот сайт и публиковать на нём материалы"
-              />
-              <Button type="submit" disabled={submitting || !url.trim()} className="w-full">
-                {submitting ? "Подключаем…" : "Подключить и запустить аудит"}
-              </Button>
-            </form>
-          </Card>
-
+        <div className="min-w-0">
           <Card className="overflow-hidden">
-            <div className="border-b border-line px-5 py-4">
-              <h2 className="type-body-strong text-text">Сайты проекта</h2>
+            <div className="flex items-center justify-between gap-3 border-b border-line px-5 py-4">
+              <div>
+                <h2 className="type-body-strong text-text">Сайты проекта</h2>
+                {listLoaded && !listError && sites.length > 0 && (
+                  <p className="type-caption mt-0.5 text-text-3">{siteCountLabel(sites.length)}</p>
+                )}
+              </div>
+              {listLoaded && sites.length > 0 && (
+                <Button
+                  type="button"
+                  size="sm"
+                  variant={showConnectForm ? "ghost" : "secondary"}
+                  onClick={() => {
+                    setConnectOpen((open) => !open);
+                    setFormError(null);
+                  }}
+                  aria-expanded={showConnectForm}
+                  aria-controls="connect-site-form"
+                >
+                  <Plus className={cn("h-4 w-4 transition-transform", showConnectForm && "rotate-45")} aria-hidden />
+                  {showConnectForm ? "Скрыть" : "Добавить"}
+                </Button>
+              )}
             </div>
-            {listError ? (
-              <p role="alert" className="type-secondary p-5 text-danger-text">{listError}</p>
+
+            {showConnectForm && (
+              <section id="connect-site-form" className="border-b border-line bg-surface-2 p-5" aria-labelledby="connect-site-title">
+                <div className="flex items-start gap-3">
+                  <span className="grid h-10 w-10 shrink-0 place-items-center rounded-sm bg-info-soft text-brand">
+                    <Globe2 className="h-5 w-5" aria-hidden />
+                  </span>
+                  <div>
+                    <h3 id="connect-site-title" className="type-body-strong text-text">Подключить сайт</h3>
+                    <p className="type-caption mt-1 text-text-3">Аврора прочитает только публичные страницы. Первый аудит обычно занимает несколько минут.</p>
+                  </div>
+                </div>
+                <form className="mt-4 space-y-4" onSubmit={submitConnect}>
+                  <Field label="Адрес сайта" htmlFor="site-url" required error={formError ?? undefined} messageId="site-url-message">
+                    <Input
+                      id="site-url"
+                      type="url"
+                      inputMode="url"
+                      placeholder="https://example.ru"
+                      value={url}
+                      onChange={(event) => setUrl(event.target.value)}
+                      required
+                      aria-describedby="site-url-message"
+                    />
+                  </Field>
+                  <Checkbox
+                    checked={consent}
+                    onChange={setConsent}
+                    label="У меня есть право анализировать этот сайт и публиковать на нём материалы"
+                  />
+                  <Button type="submit" disabled={submitting || !url.trim()} className="w-full">
+                    {submitting ? "Подключаем…" : "Подключить и запустить аудит"}
+                  </Button>
+                </form>
+              </section>
+            )}
+
+            {!listLoaded ? (
+              <p role="status" className="type-secondary p-5 text-text-2">Загружаем сайты…</p>
+            ) : listError ? (
+              <div className="p-5">
+                <p role="alert" className="type-secondary text-danger-text">{listError}</p>
+                <Button type="button" size="sm" variant="secondary" className="mt-3" onClick={() => void loadSites()}>
+                  <RefreshCw className="h-4 w-4" aria-hidden />Повторить
+                </Button>
+              </div>
             ) : sites.length === 0 ? (
-              <EmptyState icon={<FileSearch className="h-5 w-5" aria-hidden />} title="Сайтов пока нет" body="Подключи первый сайт — аудит займёт несколько минут." />
+              <EmptyState icon={<FileSearch className="h-5 w-5" aria-hidden />} title="Это будет первый сайт проекта" body="Укажи адрес выше — Аврора сразу запустит стартовый аудит." />
             ) : (
               <ul className="divide-y divide-line">
                 {sites.map((item) => (
@@ -519,13 +592,39 @@ export default function SitesPage() {
         </div>
 
         <div className="min-w-0 space-y-6">
-          {!selected ? (
+          {activeId === null ? (
             <Card>
               <EmptyState
                 icon={<Globe2 className="h-5 w-5" aria-hidden />}
                 title="Выбери сайт или подключи новый"
                 body="Справа появятся подтверждение домена, профиль сайта и отчёты для скачивания."
               />
+            </Card>
+          ) : !selected ? (
+            <Card className="p-6">
+              <div className="flex items-start gap-3">
+                <span className={cn(
+                  "grid h-10 w-10 shrink-0 place-items-center rounded-sm",
+                  detailsError ? "bg-danger-soft text-danger-text" : "bg-info-soft text-brand",
+                )}>
+                  {detailsError ? <XCircle className="h-5 w-5" aria-hidden /> : <Globe2 className="h-5 w-5" aria-hidden />}
+                </span>
+                <div className="min-w-0">
+                  <h2 className="type-h3 truncate text-text">{activeSummary?.confirmedDomain ?? "Сайт"}</h2>
+                  {detailsError ? (
+                    <>
+                      <p role="alert" className="type-secondary mt-1 text-danger-text">{detailsError}</p>
+                      <Button type="button" size="sm" variant="secondary" className="mt-3" onClick={() => void loadDetails(activeId)}>
+                        <RefreshCw className="h-4 w-4" aria-hidden />Повторить загрузку
+                      </Button>
+                    </>
+                  ) : (
+                    <p role="status" className="type-secondary mt-1 text-text-2">
+                      {detailsLoading ? "Загружаем данные сайта…" : "Открываем сайт…"}
+                    </p>
+                  )}
+                </div>
+              </div>
             </Card>
           ) : (
             <>
@@ -548,7 +647,7 @@ export default function SitesPage() {
                   </div>
                 </div>
 
-                <div className="mt-5 grid gap-4 md:grid-cols-2">
+                <div className="mt-5 grid gap-4 lg:grid-cols-3">
                   <section className="rounded-sm border border-line bg-surface-2 p-4" aria-labelledby="analysis-state">
                     <h3 id="analysis-state" className="type-label text-text-2">Анализ</h3>
                     <div className="mt-2 flex items-center gap-2">
@@ -559,7 +658,7 @@ export default function SitesPage() {
                       {analysis && ACTIVE_STATUSES.has(analysis.status) && <span className="type-caption text-text-3">{analysis.progress}%</span>}
                     </div>
                     {analysis && ACTIVE_STATUSES.has(analysis.status) && (
-                      <div className="mt-3 h-1.5 overflow-hidden rounded-full bg-surface-inset" role="progressbar" aria-label="Ход анализа сайта" aria-valuenow={analysis.progress} aria-valuemin={0} aria-valuemax={100}>
+                      <div className="mt-3 h-1.5 overflow-hidden rounded-full bg-surface-inset" role="progressbar" aria-valuenow={analysis.progress} aria-valuemin={0} aria-valuemax={100}>
                         <div className="h-full bg-brand transition-[width]" style={{ width: `${analysis.progress}%` }} />
                       </div>
                     )}
@@ -613,27 +712,55 @@ export default function SitesPage() {
                       </>
                     )}
                   </section>
+
+                  <section className="rounded-sm border border-line bg-surface-2 p-4" aria-labelledby="publishing-state">
+                    <h3 id="publishing-state" className="type-label text-text-2">Публикация</h3>
+                    <div className="mt-2 flex items-center gap-2">
+                      <Send className={cn("h-4 w-4", destinationCount > 0 ? "text-success-text" : "text-text-3")} aria-hidden />
+                      <span className="type-body-strong text-text">
+                        {!destinationsLoaded ? "Проверяем…" : destinationCount > 0 ? "Готова" : "Не настроена"}
+                      </span>
+                    </div>
+                    {destinationsLoaded && destinationCount > 0 ? (
+                      <p className="type-caption mt-2 text-text-3">
+                        {destinationCount === 1 ? "Подключено одно назначение." : `Подключено назначений: ${destinationCount}.`}
+                      </p>
+                    ) : destinationsLoaded ? (
+                      <>
+                        <p className="type-caption mt-2 text-text-3">Подключи WordPress или раздел Авроры, чтобы отправлять одобренные материалы.</p>
+                        <Button type="button" size="sm" variant="secondary" className="mt-3" onClick={() => setTab("publishing")}>
+                          Настроить публикацию
+                        </Button>
+                      </>
+                    ) : (
+                      <p className="type-caption mt-2 text-text-3">Проверяем доступные назначения.</p>
+                    )}
+                  </section>
                 </div>
               </Card>
 
-              <Tabs<SiteTab>
-                value={tab}
-                onChange={setTab}
-                ariaLabel="Разделы сайта"
-                items={[
-                  { value: "profile", label: "Профиль" },
-                  { value: "articles", label: "Материалы" },
-                  { value: "publishing", label: "Публикация" },
-                  { value: "visibility", label: "Видимость в ИИ" },
-                  { value: "reports", label: "Отчёты" },
-                ]}
-              />
+              <div className="max-w-full overflow-x-auto pb-1">
+                <Tabs<SiteTab>
+                  value={tab}
+                  onChange={setTab}
+                  className="min-w-max"
+                  ariaLabel="Разделы сайта"
+                  items={[
+                    { value: "profile", label: "Профиль" },
+                    { value: "articles", label: "Материалы" },
+                    { value: "publishing", label: "Публикация" },
+                    { value: "visibility", label: "Видимость в ИИ" },
+                    { value: "reports", label: "Отчёты" },
+                  ]}
+                />
+              </div>
 
               {tab === "articles" && (
                 <ArticlesPanel
                   siteId={selected.id}
                   verified={selected.verification.state === "verified"}
                   hasDestinations={destinationCount > 0}
+                  destinationsLoaded={destinationsLoaded}
                   hasProfile={Boolean(profile)}
                   onSiteChanged={refreshCurrent}
                 />
@@ -654,19 +781,20 @@ export default function SitesPage() {
                 <ProbePanel siteId={selected.id} verified={selected.verification.state === "verified"} hasProfile={Boolean(profile)} />
               )}
 
-              {tab === "profile" && (detailsLoading ? (
-                <Card className="p-6"><p className="type-secondary text-text-2">Загружаем профиль…</p></Card>
-              ) : profile ? (
+              {tab === "profile" && (profile ? (
                 <Card className="p-5 sm:p-6">
                   <div className="flex flex-wrap items-center gap-2">
                     <h3 className="type-h3 text-text">Профиль сайта</h3>
                     {profile.aiClassification?.status === "ready" && (
                       <Badge tone="brand">уточнён моделью{profile.aiClassification.topicClusters ? ` · тем объединено: ${profile.aiClassification.topicClusters}` : ""}</Badge>
                     )}
-                    {profile.refinedAt === null && <Badge tone="neutral">уточнение моделью в очереди</Badge>}
+                    {profile.aiClassification?.status === "failed" ? <>
+                      <Badge tone="danger">уточнение не удалось</Badge>
+                      <Button type="button" size="sm" variant="secondary" disabled={retryingAi !== null} onClick={() => void retryAi("profile")}>{retryingAi === "profile" ? "Запускаем…" : "Повторить уточнение"}</Button>
+                    </> : profile.refinedAt === null && <Badge tone="neutral">{profile.aiClassification?.status === "processing" ? "уточняем профиль" : "уточнение ожидает запуска"}</Badge>}
                   </div>
                   <p className="type-secondary mt-2 text-text-2">{profile.summary}</p>
-                  {current?.reports[0] && <InterpretationBlock interpretation={current.reports[0].interpretation} status={current.reports[0].interpretationStatus} />}
+                  {current?.reports[0] && <InterpretationBlock interpretation={current.reports[0].interpretation} status={current.reports[0].interpretationStatus} retrying={retryingAi !== null} onRetry={() => void retryAi("report", current.reports[0].id)} />}
                   <div className="mt-5 grid gap-4 sm:grid-cols-2">
                     <Score label="On-page SEO" value={profile.technical.seoScore} />
                     <Score label="Готовность к генеративному поиску (GEO)" value={profile.technical.geoScore} />
@@ -757,12 +885,12 @@ export default function SitesPage() {
                           <span className="type-caption text-text-3">{formatDate(report.createdAt)}</span>
                         </div>
                         <p className="type-secondary mt-2 text-text-2">{report.summaryRu}</p>
-                        <InterpretationBlock interpretation={report.interpretation} status={report.interpretationStatus} compact />
+                        <InterpretationBlock interpretation={report.interpretation} status={report.interpretationStatus} compact retrying={retryingAi !== null} onRetry={() => void retryAi("report", report.id)} />
                         <div className="mt-3 flex flex-wrap gap-2">
                           {REPORT_FORMATS.map(([format, label]) => (
                             <a
                               key={format}
-                              href={projectNativeUrl(`/api/sites/${selected.id}/reports/${report.id}/export?format=${format}`)}
+                              href={projectUrl(`/api/sites/${selected.id}/reports/${report.id}/export?format=${format}`)}
                               download
                               className="inline-flex min-h-9 items-center gap-1.5 rounded-sm border border-line px-2.5 py-1.5 text-[12px] font-semibold text-brand hover:border-brand/35 hover:bg-info-soft"
                             >

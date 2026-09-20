@@ -1,6 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getPool } from "@/lib/db";
-import { ProjectAccessError, requireSelectedProjectPermission } from "@/lib/project-permissions";
 import { getSessionUser } from "@/lib/session";
 import { rankRssCatalog, rssCatalogSize } from "@/lib/rss-catalog";
 
@@ -16,7 +15,6 @@ export async function GET(req: NextRequest) {
   }
 
   try {
-    const membership=await requireSelectedProjectPermission(getPool(),user.id,"project.read");
     const channel = (
       await getPool().query<{
         id: number;
@@ -32,8 +30,8 @@ export async function GET(req: NextRequest) {
                     and ks.kind in ('profile_edit', 'profile')) as profile
            from channels c
            left join content_brief b on b.channel_id = c.id and b.user_id = c.user_id
-          where c.id = $1 and c.project_id = $2 and c.is_active and c.status='active'`,
-        [channelId, membership.projectId],
+          where c.id = $1 and c.user_id = $2 and c.is_active`,
+        [channelId, user.id],
       )
     ).rows[0];
 
@@ -52,8 +50,7 @@ export async function GET(req: NextRequest) {
       },
     });
   } catch (error) {
-    if(error instanceof ProjectAccessError)return NextResponse.json({error:"access_denied"},{status:403});
-    console.error("[/api/rss/catalog] GET", {errorName:error instanceof Error?error.name:"Error"});
+    console.error("[/api/rss/catalog] GET", error);
     return NextResponse.json({ error: "server" }, { status: 500 });
   }
 }

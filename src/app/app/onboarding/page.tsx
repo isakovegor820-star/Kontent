@@ -1,6 +1,6 @@
 "use client";
+import { useProjectFetch, useProjectCall } from "@/lib/use-project-transport";
 
-import { projectFetch as fetch } from "@/lib/project-fetch";
 
 // А3. Мастер первого запуска (ТЗ, приложение А + сценарий Б1).
 // Главное действие — дойти до календаря за 5 минут. Поэтому: ни сайдбара, ни лишних
@@ -34,6 +34,7 @@ import {
   TelegramIcon,
   Textarea,
 } from "@/components/ui/primitives";
+import { useProjects } from "@/components/app/project-provider";
 import { useStore } from "@/lib/store";
 import type { RealChannel } from "@/lib/types";
 import {
@@ -47,8 +48,8 @@ import { cn, initials, weekdayShort } from "@/lib/utils";
 import { RUBRICS } from "@/lib/brief";
 import { PROFILE_FORMAT_OPTIONS } from "@/lib/profile";
 import { appDraftActionHref } from "@/lib/app-routes";
-import { parseBotLinkStatusResponse, requestTelegramChannelConnection } from "@/lib/bot-link-client";
-import { createServerDraft, DraftRequestError, updateServerDraft } from "@/lib/draft-client";
+import { parseBotLinkStatusResponse } from "@/lib/bot-link-client";
+import { createServerDraft as unscopedCreateServerDraft, DraftRequestError, updateServerDraft as unscopedUpdateServerDraft } from "@/lib/draft-client";
 import { onboardingDraftReplayAction } from "@/lib/onboarding-first-material";
 import {
   completedOnboardingFallbackRoute,
@@ -511,27 +512,6 @@ function connectError(code?: string): string {
     // а не прячем за «попробуй ещё раз» — человек иначе будет тыкать кнопку вечно.
     case "taken":
       return "Этот канал уже подключён к другому аккаунту Авроры. Один канал — один аккаунт: так посты не задвоятся. Отключи канал там, где он подключён сейчас, и добавь здесь.";
-    case "telegram_identity_required":
-      return "Сначала подключи личный Telegram к аккаунту в настройках Авроры, затем повтори.";
-    case "telegram_actor_not_admin":
-      return "У подключённого Telegram-аккаунта нет права публикации в этом канале. Проверь аккаунт и права администратора.";
-    case "not_channel":
-      return "Выбери Telegram-канал. Группы и личные чаты здесь не подключаются.";
-    case "provider_timeout":
-    case "request_cancelled":
-      return "Telegram не успел подтвердить права. Проверь подключение к сети и повтори.";
-    case "provider_unavailable":
-    case "provider_invalid_response":
-      return "Telegram временно не подтвердил права. Канал не подключён — повтори чуть позже.";
-    case "rate_limited":
-    case "provider_rate_limited":
-      return "Слишком много проверок подключения. Подожди минуту и повтори.";
-    case "connection_expired":
-      return "Подтверждение подключения истекло или уже использовано. Начни подключение заново.";
-    case "bot_not_configured":
-    case "bot_credentials_invalid":
-    case "rate_limit_unavailable":
-      return "Сервис подключения временно недоступен. Повтори позже или обратись в поддержку.";
     case "empty":
       return "Вставь @адрес канала — например, @my_channel.";
     case "unauthorized":
@@ -564,6 +544,7 @@ function RealChannelRow({ channel }: { channel: RealChannel }) {
 }
 
 function StepConnect({ onBack, onNext }: { onBack: () => void; onNext: () => void | Promise<void> }) {
+  const fetch = useProjectFetch();
   const s = useStore();
   const refreshReal = s.refreshReal;
   const [handle, setHandle] = useState("");
@@ -596,7 +577,7 @@ function StepConnect({ onBack, onNext }: { onBack: () => void; onNext: () => voi
       document.removeEventListener("visibilitychange", refreshWhenVisible);
       for (const timer of refreshTimers.current) window.clearTimeout(timer);
     };
-  }, [refreshReal]);
+  }, [fetch, refreshReal]);
 
   function scheduleChannelRefresh() {
     for (const timer of refreshTimers.current) window.clearTimeout(timer);
@@ -610,15 +591,34 @@ function StepConnect({ onBack, onNext }: { onBack: () => void; onNext: () => voi
     setError(undefined);
     setFastConnecting(true);
     try {
-      const launch = await requestTelegramChannelConnection();
-      setBotUsername(launch.bot);
-      const { url, linkingAccount } = launch;
+      const status = await parseBotLinkStatusResponse(
+        await fetch("/api/bot/link", { cache: "no-store" }),
+      );
+      setBotUsername(status.bot);
+      let url = status.channelConnectUrl;
+      let linkingAccount = false;
+      if (!status.linked) {
+        const response = await fetch("/api/bot/link", { method: "POST" });
+        const body = (await response.json().catch(() => null)) as {
+          ok?: boolean;
+          url?: string;
+          error?: string;
+        } | null;
+        if (!response.ok || body?.ok !== true || !body.url) {
+          throw new Error(body?.error || "bot_link_failed");
+        }
+        url = body.url;
+        linkingAccount = true;
+      }
+      if (!url) throw new Error("bot_not_configured");
 
       scheduleChannelRefresh();
       s.toast({
         kind: "info",
-        title: linkingAccount ? "Подключи Telegram-аккаунт" : "Подтверди подключение канала",
-        body: "Нажми «Начать», затем «Выбрать канал». Аврора проверит права твоего аккаунта и бота.",
+        title: linkingAccount ? "Открой бота Авроры" : "Выбери Telegram-канал",
+        body: linkingAccount
+          ? "Нажми «Начать», затем «Выбрать канал». Возвращаться на сайт не понадобится."
+          : "Telegram добавит бота с правом публикации, а Аврора проверит и сохранит канал сама.",
       });
       window.location.assign(url);
     } catch (reason) {
@@ -747,7 +747,7 @@ function StepConnect({ onBack, onNext }: { onBack: () => void; onNext: () => voi
       </StepFooter>
       {!hasTelegram && (
         <p className="mt-3 text-center text-[13px] text-text-3">
-          Чтобы проверить канал и сохранить первый материал, подключи Telegram.
+          Чтобы проверить канал и перейти дальше, подключи Telegram.
         </p>
       )}
     </>
@@ -777,6 +777,7 @@ function StepProfile({
   onBack: () => void;
   onNext: () => void;
 }) {
+  const fetch = useProjectFetch();
   const s = useStore();
   const uid = useId();
   const [phase, setPhase] = useState<"loading" | "confirm" | "interview">("loading");
@@ -1088,6 +1089,7 @@ function StepCompetitors({
   onNext: () => void;
   onSkip: () => void;
 }) {
+  const fetch = useProjectFetch();
   const uid = useId();
   const linkId = `${uid}-link`;
   const messageId = `${uid}-link-message`;
@@ -1123,7 +1125,7 @@ function StepCompetitors({
       });
 
     return () => controller.abort();
-  }, [channelId]);
+  }, [channelId, fetch]);
 
   // Раньше здесь стоял s.addCompetitor — он клал объект с нулями в localStorage и писал
   // «Собираем досье», хотя никто ничего не собирал: до платформы канал не доезжал вообще.
@@ -1316,12 +1318,17 @@ function StepFinish({
   onMaterialChange: (value: string) => void;
   onBack: () => void;
 }) {
+  const createServerDraft = useProjectCall(unscopedCreateServerDraft);
+  const updateServerDraft = useProjectCall(unscopedUpdateServerDraft);
+  const fetch = useProjectFetch();
   const s = useStore();
   const router = useRouter();
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [savedDraftId, setSavedDraftId] = useState<number | null>(null);
   const materialRef = useRef<HTMLTextAreaElement>(null);
+  const { current: selectedProject } = useProjects();
+  const recoveryKey = selectedProject ? onboardingRecoveryKey(userId, selectedProject.id) : null;
 
   async function completeAndOpen(draftId: number) {
     if (!channelId) return;
@@ -1333,7 +1340,7 @@ function StepFinish({
       setError("Материал сохранён, но сервер не подтвердил завершение настройки. Повтори — дубликат не появится.");
       return;
     }
-    clearQuizLS(userId);
+    clearQuizLS(recoveryKey);
     s.toast({
       kind: "success",
       title: "Всё готово",
@@ -1484,10 +1491,12 @@ function StepFinish({
 
 // Ключ localStorage для сохранения прогресса quiz между визитами.
 function loadQuizFromLS(
-  userId: number,
+  recoveryKey: string | null,
+  legacyKey?: string,
 ): { quiz: QuizAnswers; step: StepNo; channelId: number | null } | null {
   try {
-    const recovered = parseOnboardingRecovery(localStorage.getItem(onboardingRecoveryKey(userId)));
+    const recovered = parseOnboardingRecovery(recoveryKey ? localStorage.getItem(recoveryKey) : null)
+      ?? (legacyKey ? parseOnboardingRecovery(localStorage.getItem(legacyKey)) : null);
     if (!recovered) return null;
     return {
       quiz: recovered.quiz,
@@ -1498,30 +1507,35 @@ function loadQuizFromLS(
 }
 
 function saveQuizToLS(
-  userId: number,
+  recoveryKey: string | null,
   quiz: QuizAnswers,
   step: StepNo,
   channelId: number | null,
 ) {
+  if (!recoveryKey) return;
   try {
     localStorage.setItem(
-      onboardingRecoveryKey(userId),
+      recoveryKey,
       serializeOnboardingRecovery({ quiz, step, channelId }),
     );
   } catch { /* full */ }
 }
 
-function clearQuizLS(userId: number) {
-  try { localStorage.removeItem(onboardingRecoveryKey(userId)); } catch { /* ok */ }
+function clearQuizLS(recoveryKey: string | null) {
+  if (!recoveryKey) return;
+  try { localStorage.removeItem(recoveryKey); } catch { /* ok */ }
 }
 
 function Wizard({ userId }: { userId: number }) {
+  const { current: selectedProject } = useProjects();
+  const recoveryKey = selectedProject ? onboardingRecoveryKey(userId, selectedProject.id) : null;
+  const fetch = useProjectFetch();
   const s = useStore();
   const reduced = useReducedMotion();
 
   // Восстанавливаем прогресс из localStorage: если юзер закрыл вкладку между шагами,
   // ответы не потеряются.
-  const [restored] = useState(() => loadQuizFromLS(userId));
+  const [restored] = useState(() => loadQuizFromLS(recoveryKey, selectedProject?.personal ? onboardingRecoveryKey(userId) : undefined));
   const [pickedChannelId, setPickedChannelId] = useState<number | null>(
     () => restored?.channelId ?? null,
   );
@@ -1580,7 +1594,7 @@ function Wizard({ userId }: { userId: number }) {
         setProgressState("error");
       });
     return () => controller.abort();
-  }, [progressReload, userId]);
+  }, [fetch, progressReload, userId]);
 
   const lockedChannelExists =
     lockedChannelId == null || tgChannels.some((channel) => channel.id === lockedChannelId);
@@ -1591,10 +1605,10 @@ function Wizard({ userId }: { userId: number }) {
     const reset = window.setTimeout(() => {
       setLockedChannelId(null);
       setStepRaw(2);
-      saveQuizToLS(userId, quiz, 2, channelId);
+      saveQuizToLS(recoveryKey, quiz, 2, channelId);
     }, 0);
     return () => window.clearTimeout(reset);
-  }, [channelId, lockedChannelExists, quiz, s.realError, s.realReady, step, userId]);
+  }, [channelId, lockedChannelExists, quiz, recoveryKey, s.realError, s.realReady, step]);
 
   function persistProgress(payload: {
     step: StepNo;
@@ -1624,7 +1638,7 @@ function Wizard({ userId }: { userId: number }) {
   // Browser recovery is immediate; the same transition is serialized to the server.
   const setStep = (v: StepNo, options: { skippedFirstSource?: boolean } = {}) => {
     setStepRaw(v);
-    saveQuizToLS(userId, quiz, v, effectiveChannelId);
+    saveQuizToLS(recoveryKey, quiz, v, effectiveChannelId);
     persistProgress({
       step: v,
       channelId: effectiveChannelId,
@@ -1633,7 +1647,7 @@ function Wizard({ userId }: { userId: number }) {
   };
   const setQuiz = (v: QuizAnswers) => {
     setQuizRaw(v);
-    saveQuizToLS(userId, v, step, effectiveChannelId);
+    saveQuizToLS(recoveryKey, v, step, effectiveChannelId);
   };
 
   // Сохраняем бриф (source='quiz') после подключения канала.
@@ -1734,7 +1748,7 @@ function Wizard({ userId }: { userId: number }) {
           value={effectiveChannelId}
           onChange={(nextChannelId) => {
             setPickedChannelId(nextChannelId);
-            saveQuizToLS(userId, quiz, step, nextChannelId);
+            saveQuizToLS(recoveryKey, quiz, step, nextChannelId);
           }}
           label="Канал для профиля и публикации"
           className="mt-5 rounded-md border border-line bg-surface p-4"

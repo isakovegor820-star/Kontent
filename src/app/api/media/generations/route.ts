@@ -1,4 +1,4 @@
-import { mediaAssetUrl } from "@/lib/project-native-url";
+import { withProjectRoute } from "@/lib/project-route";
 import { readJsonBodyValue } from "@/lib/bounded-request-body";
 import { NextRequest, NextResponse } from "next/server";
 import { createHash, randomUUID } from "node:crypto";
@@ -53,7 +53,7 @@ type GenerationRow = {
   queue_confirmed_at?: Date | string | null;
 };
 
-function present(row: GenerationRow, projectId: number) {
+function present(row: GenerationRow) {
   const assetId = row.output_asset_id ? String(row.output_asset_id) : null;
   return {
     id: String(row.id),
@@ -70,8 +70,8 @@ function present(row: GenerationRow, projectId: number) {
     seconds: row.seconds,
     style: row.style,
     assetId,
-    assetUrl: assetId ? mediaAssetUrl(assetId, projectId) : null,
-    downloadUrl: assetId ? `${mediaAssetUrl(assetId, projectId)}&download=1` : null,
+    assetUrl: assetId ? `/api/media/assets/${assetId}` : null,
+    downloadUrl: assetId ? `/api/media/assets/${assetId}?download=1` : null,
     mimeType: row.mime_type,
     bytes: row.bytes,
     errorCode: row.error_code,
@@ -131,7 +131,7 @@ function mediaRequestKey(req: NextRequest): string | null {
   return /^[A-Za-z0-9:_-]{8,96}$/u.test(value) ? value : null;
 }
 
-export async function GET(req: NextRequest) {
+async function handleGET(req: NextRequest) {
   const requestId = randomUUID();
   const user = await getSessionUser(req);
   if (!user) return mediaResponse(requestId, { generations: [], error: "unauthorized" }, 401);
@@ -143,7 +143,7 @@ export async function GET(req: NextRequest) {
       `${SELECT_GENERATION} where g.project_id = $1 order by g.created_at desc limit 24`,
       [membership.projectId],
     );
-    return mediaResponse(requestId, { generations: rows.rows.map((row) => present(row, membership.projectId)) });
+    return mediaResponse(requestId, { generations: rows.rows.map(present) });
   } catch (error) {
     if (error instanceof ProjectAccessError) {
       return mediaResponse(requestId, { generations: [], error: "project_access_denied" }, 403);
@@ -153,7 +153,7 @@ export async function GET(req: NextRequest) {
   }
 }
 
-export async function POST(req: NextRequest) {
+async function handlePOST(req: NextRequest) {
   if (!hasTrustedMutationOrigin(req)) {
     return mediaResponse(randomUUID(), { error: "forbidden_origin" }, 403);
   }
@@ -193,7 +193,7 @@ export async function POST(req: NextRequest) {
       requestId = replay.rows[0].request_id;
       return mediaResponse(
         requestId,
-        { generation: present(replay.rows[0], membership.projectId), replayed: true },
+        { generation: present(replay.rows[0]), replayed: true },
         activeGeneration(replay.rows[0].status) ? 202 : 200,
       );
     }
@@ -325,12 +325,12 @@ export async function POST(req: NextRequest) {
     await tx.query(`select id from users where id = $1 for update`, [user.id]);
     const stale = await tx.query<{ ai_usage_reservation_id: string | null }>(
       `update media_generations
-          set status = 'failed', error_code = 'stale_generation',
+          set status = 'failed', error_code = 'stale_generation', worker_lease_token = null, worker_heartbeat_at = null,
               error_message = 'Предыдущая генерация прервалась. Запусти её ещё раз.',
               updated_at = now(), completed_at = now()
         where user_id = $1 and kind = $2 and project_id = $3
           and status in ('queued','submitting','generating','saving')
-          and updated_at < now() - interval '15 minutes'
+          and coalesce(worker_heartbeat_at, updated_at) < now() - interval '15 minutes'
         returning ai_usage_reservation_id`,
       [user.id, input.kind, membership.projectId],
     );
@@ -448,7 +448,7 @@ export async function POST(req: NextRequest) {
         if (row?.queue_confirmed_at) {
           return mediaResponse(
             row.request_id,
-            { generation: present(row, membership.projectId), replayed: true },
+            { generation: present(row), replayed: true },
             activeGeneration(row.status) ? 202 : 200,
           );
         }
@@ -478,7 +478,7 @@ export async function POST(req: NextRequest) {
     return mediaResponse(
       requestId,
       {
-        generation: present(row.rows[0], membership.projectId),
+        generation: present(row.rows[0]),
         remaining: Math.max(0, dailyLimit - 1),
         aiUsage: { used: reservation.used, limit: AI_DAILY_LIMIT },
       },
@@ -491,3 +491,6 @@ export async function POST(req: NextRequest) {
     return mediaResponse(requestId, { error: "server", retryable: true }, 500);
   }
 }
+
+export const GET = withProjectRoute(handleGET);
+export const POST = withProjectRoute(handlePOST);

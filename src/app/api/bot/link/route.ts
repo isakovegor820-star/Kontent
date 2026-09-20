@@ -7,6 +7,8 @@
 
 import { NextRequest, NextResponse } from "next/server";
 import {
+  getBotAccountConnection,
+  disconnectBotAccount,
   createLegacyBotLink,
   normalizeTelegramBotUsername,
 } from "@/lib/bot-connection.mjs";
@@ -16,8 +18,7 @@ import { getSessionUser } from "@/lib/session";
 import { hasTrustedMutationOrigin } from "@/lib/request-origin";
 import { probeRedisAndPublicationWorker } from "@/lib/readiness-probes";
 
-import { ProjectAccessError, requireSelectedProjectPermission } from "@/lib/project-permissions";
-import { checkRateLimit, rateLimitResponse } from "@/lib/rate-limit";
+import { readJsonBodyValue } from "@/lib/bounded-request-body";
 
 export const runtime = "nodejs";
 
@@ -31,28 +32,25 @@ export async function GET(req: NextRequest) {
   if (!user) return NextResponse.json({ error: "unauthorized" }, { status: 401 });
 
   try {
-    const [result, runtime] = await Promise.all([
-      getPool().query<{ tg_chat_id: string | null }>(
-        `select tg_chat_id from users where id = $1`,
-        [user.id],
-      ),
+    const [connection, runtime] = await Promise.all([
+      getBotAccountConnection(getPool(), user.id),
       probeRedisAndPublicationWorker(),
     ]);
-    const row = result.rows[0];
     const bot = botUsername();
     return NextResponse.json({
-      linked: !!row?.tg_chat_id,
+      linked: connection.telegramChatId !== null,
+      connectionKey: connection.connectionKey,
       bot,
       channelConnectUrl: telegramChannelAdminUrl(bot),
       botStatus: runtime.telegramPolling,
-    });
+    }, { headers: { "Cache-Control": "no-store" } });
   } catch (err) {
     console.error("[/api/bot/link] GET", err);
     return NextResponse.json({ error: "server" }, { status: 500 });
   }
 }
 
-/** Выдать свежую ссылку привязки. */
+/** Open the saved account, or issue a fresh account/channel connection intent. */
 export async function POST(req: NextRequest) {
   if (!hasTrustedMutationOrigin(req)) {
     return NextResponse.json({ ok: false, error: "forbidden_origin" }, { status: 403 });
@@ -69,16 +67,15 @@ export async function POST(req: NextRequest) {
     );
   }
 
-  const limit = await checkRateLimit(`telegram-link:user:${user.id}`, 10, 60, { failureMode: "closed" });
-  if (!limit.allowed) return rateLimitResponse(limit);
   try {
     const body = await req.json().catch(() => null) as { intent?: unknown } | null;
-    const projectId = body?.intent === "channel"
-      ? (await requireSelectedProjectPermission(getPool(), user.id, "project.manage")).projectId
-      : null;
+    if (body?.intent !== "channel") {
+      const account = await getPool().query<{ tg_chat_id: string | null }>(`select tg_chat_id from users where id = $1`, [user.id]);
+      if (account.rows[0]?.tg_chat_id) return NextResponse.json({ ok: true, linked: true, url: `https://t.me/${bot}` });
+    }
     // Замена старого кода и выпуск нового происходят одной транзакцией: при сбое
     // предыдущая рабочая ссылка не исчезнет без новой ссылки на замену.
-    const link = await createLegacyBotLink(getPool(), { userId: user.id, ...(projectId ? { projectId } : {}) });
+    const link = await createLegacyBotLink(getPool(), { userId: user.id });
     const startPayload = body?.intent === "channel" ? `${link.code}_channel` : link.code;
 
     return NextResponse.json({
@@ -87,7 +84,6 @@ export async function POST(req: NextRequest) {
       expiresInMin: link.expiresInMinutes,
     });
   } catch (err) {
-    if (err instanceof ProjectAccessError) return NextResponse.json({ ok: false, error: "access_denied" }, { status: 403 });
     console.error("[/api/bot/link] POST", err);
     return NextResponse.json({ ok: false, error: "server" }, { status: 500 });
   }
@@ -101,7 +97,14 @@ export async function DELETE(req: NextRequest) {
   const user = await getSessionUser(req);
   if (!user) return NextResponse.json({ ok: false, error: "unauthorized" }, { status: 401 });
   try {
-    await getPool().query(`update users set tg_chat_id = null where id = $1`, [user.id]);
+    const body = await readJsonBodyValue(req).catch(() => null) as { confirm?: unknown; connectionKey?: unknown } | null;
+    if (body?.confirm !== true || typeof body.connectionKey !== "string") {
+      return NextResponse.json({ ok: false, error: "confirmation_required" }, { status: 400 });
+    }
+    const result = await disconnectBotAccount(getPool(), { userId: user.id, expectedConnectionKey: body.connectionKey, source: "settings" });
+    if (result.state !== "disconnected" && result.state !== "already_disconnected") {
+      return NextResponse.json({ ok: false, error: result.state }, { status: 409 });
+    }
     return NextResponse.json({ ok: true });
   } catch (err) {
     console.error("[/api/bot/link] DELETE", err);

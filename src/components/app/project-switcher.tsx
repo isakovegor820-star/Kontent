@@ -86,7 +86,6 @@ export function ProjectSwitcherView({
           compact ? "w-full max-w-52 truncate" : "w-full",
         )}
       >
-        {!current && <option value="" disabled>Выберите проект</option>}
         {projects.map((project) => (
           <option key={project.id} value={project.id}>{project.name}</option>
         ))}

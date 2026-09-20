@@ -2,8 +2,6 @@
 import { useProjectFetch } from "@/lib/use-project-transport";
 
 
-import { projectFetch as fetch } from "@/lib/project-fetch";
-
 // База знаний канала (РАГ). ОТКУДА автопилот берёт факты для постов.
 //
 // Зачем этот экран вообще существует: ИИ выдумывал. В канал ушло «решение Судьи

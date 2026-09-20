@@ -123,7 +123,7 @@ async function handlePOST(req: NextRequest) {
       engine: isEngineId(ch.ai_engine) ? ch.ai_engine : null,
       temperature: 0.3,
       maxTokens: 700,
-    }, { signal: req.signal, spendScope: { pool, userId: user.id, projectId } });
+    }, { signal: req.signal });
     const raw = completed.text;
     const parsed = parseJsonLoose(raw);
     if (!parsed) {
