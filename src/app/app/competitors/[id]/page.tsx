@@ -1,4 +1,6 @@
 "use client";
+import { useProjectFetch } from "@/lib/use-project-transport";
+
 
 import { projectFetch as fetch } from "@/lib/project-fetch";
 
@@ -183,6 +185,7 @@ function BarRow({
 /* ------------------------------------------------------------------ экран */
 
 export default function DossierPage() {
+  const fetch = useProjectFetch();
   const params = useParams<{ id: string }>();
   const reduce = useReducedMotion();
   const id = params?.id;
@@ -199,7 +202,7 @@ export default function DossierPage() {
     } finally {
       setLoading(false);
     }
-  }, [id]);
+  }, [fetch, id]);
 
   useEffect(() => {
     // eslint-disable-next-line react-hooks/set-state-in-effect -- загрузка при монтировании

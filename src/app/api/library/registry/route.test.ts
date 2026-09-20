@@ -1,5 +1,5 @@
+import { ProjectRequest } from "@/test/project-request";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { NextRequest } from "next/server";
 
 const mocks = vi.hoisted(() => ({
   getSessionUser: vi.fn(),
@@ -29,13 +29,13 @@ describe("GET /api/library/registry", () => {
 
   it("requires authentication before building the analytical snapshot", async () => {
     mocks.getSessionUser.mockResolvedValue(null);
-    const response = await GET(new NextRequest("http://localhost/api/library/registry"));
+    const response = await GET(new ProjectRequest(1, "http://localhost/api/library/registry"));
     expect(response.status).toBe(401);
     expect(mocks.buildLibraryRegistrySnapshot).not.toHaveBeenCalled();
   });
 
   it("keeps user rating and objective Score filters separate", async () => {
-    const response = await GET(new NextRequest(
+    const response = await GET(new ProjectRequest(1,
       "http://localhost/api/library/registry?channel=11&ratingMin=4&scoreMin=80&format=photo&sort=velocity",
     ));
     expect(response.status).toBe(200);

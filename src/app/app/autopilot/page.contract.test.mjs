@@ -15,11 +15,11 @@ describe("Autopilot build UI contract", () => {
     expect(source).toContain('role="progressbar"');
     expect(source).toContain("attempt.readyCount");
     expect(source).toContain("data?.buildAttempt?.status");
-    expect(source).toContain("Остановить сборку");
+    expect(source).toContain("Приостановить сборку");
     expect(source).toContain('method: "DELETE"');
     expect(source).toContain("attempt.publicationTargetCount");
     expect(source).not.toContain("Резерв автоматически не публикуется");
-    expect(source).not.toContain("кандидатов");
+    expect(source).toContain("недостающих кандидатов");
     expect(source).toContain("Требует внимания");
   });
 
@@ -43,27 +43,30 @@ describe("Autopilot build UI contract", () => {
     expect(source).toContain("Собрать план снова");
     expect(source).not.toContain("Собрать заново");
     expect(source).toContain("const hasUsablePlan = Boolean(plan && visible.length > 0)");
-    expect(source).toContain("{!hasUsablePlan && !buildAttempt && (");
+    expect(source).not.toContain("Собери первый контент-план");
   });
 
-  it("keeps quick settings behind a compact accessible dialog", () => {
+  it("keeps Autopilot status, plan controls and build action in one inline control center", () => {
     expect(source).toContain("Настроить посты");
-    expect(source).toContain('aria-haspopup="dialog"');
-    expect(source).toContain("dialog.showModal()");
+    expect(source).toContain("<PlanSettingsPanel");
+    expect(source).toContain("<AutopilotHero");
     expect(source).toContain("Параметры следующего плана");
     expect(source).toContain('type="range"');
     expect(source).toContain("Сохранить параметры");
+    expect(source).toContain("Количество и набор будут меняться от поста к посту");
     expect(source).toContain("quick_settings: quickSettings");
     expect(source.match(/id="autopilot-horizon"/gu)).toHaveLength(1);
+    expect(source).not.toContain("dialog.showModal()");
+    expect(source).not.toContain('aria-haspopup="dialog"');
     expect(source).not.toContain("Почему такой план");
   });
 
   it("implements the Autopilot overview hierarchy from the approved design", () => {
     expect(source).toContain("Аврора создаёт контент, публикует и анализирует результаты.");
-    expect(source).toContain("Контент создаётся и публикуется");
-    expect(source).toContain("Расписание публикаций");
+    expect(source).toContain("План ждёт твоей проверки");
+    expect(source).toContain("<AutopilotCalendar");
     expect(source).toContain("Последние публикации");
-    expect(source).toContain("Смотреть полный календарь");
+    expect(source).toContain("onReschedule={rescheduleItem}");
     expect(source).toContain("Опубликовано");
     expect(source).toContain("Просмотры");
     expect(source).toContain("Вовлечённость");
@@ -79,7 +82,7 @@ describe("Autopilot build UI contract", () => {
     expect(source).toContain("Уже запланированные публикации остаются в календаре");
     expect(source).toContain("disabled={busy || blocked}");
     expect(source).not.toContain("disabled={busy || blocked || building}");
-    expect(source).toContain("!automaticRecovery && !waitingForQuota && !pausedRecovery");
+    expect(source).toContain("!automaticRecovery && !waitingForQuota && !pausedWithAutopilot");
     expect(source).toContain("отдельный повтор не нужен");
   });
 
@@ -87,7 +90,7 @@ describe("Autopilot build UI contract", () => {
     expect(source).toContain("Включить автопилот");
     expect(source).toContain("Собрать новый план");
     expect(source).not.toContain("Запустить автопилот");
-    expect(source).toContain("onClick={generate}");
+    expect(source).toContain("onBuild={() => void generate()}");
     expect(source).toContain("onToggle={() => void toggleAutopilot()}");
     expect(source).toContain("const shouldStartFirstPlan = enabled && !data.activePlan && !data.plan && !data.buildAttempt");
     expect(source).toContain("if (shouldStartFirstPlan)");
@@ -104,7 +107,8 @@ describe("Autopilot build UI contract", () => {
 
   it("waits for each poll to finish and reports generation/cancel network failures", () => {
     expect(source).not.toContain("setInterval(load, 3000)");
-    expect(source).toContain("setTimeout(poll, 3000)");
+    expect(source).toContain("setTimeout(poll, pollingDelay)");
+    expect(source).toContain('attempt.recoveryState === "auto_retry_scheduled"');
     expect(source).toContain("Не удалось запустить сборку");
     expect(source).toContain("Не удалось остановить сборку");
   });
@@ -124,14 +128,12 @@ describe("Autopilot build UI contract", () => {
     expect(source).toContain("const hasUsablePlan = Boolean(plan && visible.length > 0)");
     expect(source).not.toContain("Источники и контекст");
     expect(source).toContain("reviewedIndexes");
-    expect(source).toContain("Подтвердить просмотр");
-    expect(source).toContain("attentionItems.length + scheduledPlanCheckpoints === plan.publicationTargetCount");
-    expect(source).toContain("добавить в календарь");
-    expect(source).toContain("Проверено ${reviewedCount} из");
+    expect(source).toContain("selectedIndexes,");
+    expect(source).toContain("Сохранить и вернуться в автопилот");
+    expect(source).toContain("Выбрать для календаря");
+    expect(source).toContain("Добавить в календарь");
     expect(source).toContain("Редактировать");
-    expect(source).toContain("Сохранить и проверить");
     expect(source).toContain("Заменить пост");
-    expect(source).toContain("Поставь пост в календарь оттуда");
     expect(source).toContain("max-w-[68ch]");
     expect(source).not.toContain("нужна правка");
     expect(source).not.toContain("Что здесь поправить");
@@ -147,8 +149,11 @@ describe("Autopilot build UI contract", () => {
   it("uses an accessible in-app confirmation for calendar scheduling", () => {
     expect(source).toContain("<ConfirmDialog");
     expect(source).toContain('confirmVariant="primary"');
-    expect(source).toContain('confirmVariant="danger"');
-    expect(source).toContain("Остановить текущую сборку?");
+    expect(source).not.toContain('confirmVariant="danger"');
+    expect(source).toContain("Приостановить текущую сборку?");
+    expect(source).toContain('attempt.recoveryState === "paused_no_progress"');
+    expect(source).toContain("attempt.nextRetryAt");
+    expect(source).toContain("Ничего не удалено");
     expect(source).not.toContain("window.confirm(");
     expect(source).not.toContain("window.alert(");
   });

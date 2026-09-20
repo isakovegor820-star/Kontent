@@ -10,6 +10,27 @@ export interface AiFailureInfo {
   dimension?: string;
 }
 
+export const AI_USAGE_FINALIZATION_RECOVERY_RU =
+  "Текст получен, но сервер не подтвердил его сохранение. Черновик оставлен в чате — повтори тот же запрос с сохранённым ключом.";
+
+export const AI_TERMINAL_ACK_RECOVERY_RU =
+  "Ответ получен, но подтверждение списания не завершилось. Повтори тот же запрос: сохранённый результат вернётся без нового вызова модели.";
+
+/**
+ * A generated draft already explains the useful outcome. Persistence recovery stays
+ * available through the adjacent retry/copy actions and must not look like a failed post.
+ * Matching the legacy strings also removes the card from sessions saved by older clients.
+ */
+export function visibleStudioAiErrorRu(message: string | null | undefined): string | null {
+  const normalized = message?.trim() ?? "";
+  if (!normalized) return null;
+  if (
+    normalized === AI_USAGE_FINALIZATION_RECOVERY_RU
+    || normalized === AI_TERMINAL_ACK_RECOVERY_RU
+  ) return null;
+  return normalized;
+}
+
 /** Calm, concrete Russian recovery copy for both HTTP preflight and stream failures. */
 export function aiFailureRecoveryRu(info: AiFailureInfo | null, status?: number): string {
   if (status === 400) return "Запрос не принят. Проверь текст и повтори отправку.";
@@ -23,6 +44,18 @@ export function aiFailureRecoveryRu(info: AiFailureInfo | null, status?: number)
   }
   if (info?.error === "request_result_unavailable") {
     return "Запрос был списан раньше, но его сохранённый результат недоступен. Не повторяй его с новым ключом; передай номер запроса в поддержку.";
+  }
+  if (info?.error === "usage_finalization_unavailable") {
+    return AI_USAGE_FINALIZATION_RECOVERY_RU;
+  }
+  if (info?.error === "usage_unavailable") {
+    return "Сервис учёта генераций временно недоступен. Запрос не отправлен модели; подожди немного и повтори его.";
+  }
+  if (info?.error === "generation_result_pending_ack") {
+    return "Текст уже получен и ожидает подтверждения. Повтори тот же запрос — сервер восстановит результат без нового вызова модели.";
+  }
+  if (info?.error === "generation_operation_unavailable") {
+    return "Не удалось подготовить защищённое сохранение результата. Запрос не отправлен модели; повтори его позже.";
   }
   if (info?.error === "ai_operation_budget_exhausted") {
     return info.dimension === "tokens"

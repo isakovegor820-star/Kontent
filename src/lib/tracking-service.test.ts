@@ -85,13 +85,27 @@ describe("tracking service", () => {
       challenge,
       resolve,
       fetchPinned: vi.fn(async () => ({ status: 302, location: "https://internal.example/secret", body: "" })),
-    })).rejects.toMatchObject({ code: "verification_unavailable" });
+    })).rejects.toMatchObject({ code: "verification_redirect" });
     await expect(verifyTrackerChallengeFile({
       siteOrigin: "https://law.example.ru",
       challenge,
       resolve,
       fetchPinned: vi.fn(async () => ({ status: 200, location: null, body: `${challenge}\n` })),
-    })).rejects.toMatchObject({ code: "verification_unavailable" });
+    })).rejects.toMatchObject({ code: "verification_content_mismatch" });
+  });
+
+  it.each([
+    [404, "verification_file_missing"],
+    [401, "verification_access_denied"],
+    [403, "verification_access_denied"],
+    [500, "verification_unavailable"],
+  ])("reports a safe diagnostic for HTTP %s", async (status, code) => {
+    await expect(verifyTrackerChallengeFile({
+      siteOrigin: "https://law.example.ru",
+      challenge: "aurora-site-verification=abcdefghijklmnopqrstuvwxyzABCDEFG",
+      resolve: async () => [{ address: "93.184.216.34", family: 4 }],
+      fetchPinned: async () => ({ status, location: null, body: "private server error details" }),
+    })).rejects.toMatchObject({ code });
   });
 
   it("records a public browser signal without promoting tracking to active", async () => {
@@ -123,7 +137,7 @@ describe("tracking service", () => {
     expect(db.query.mock.calls[0]?.[0]).toContain("signal_received_at");
   });
 
-  it("activates only after authenticated exact challenge verification and audits the result", async () => {
+  it.each(["file", "script"] as const)("activates only after authenticated %s verification and audits the result", async (verificationMethod) => {
     const before = {
       status: "pending_verification",
       site_origin: "https://law.example.ru",
@@ -158,19 +172,23 @@ describe("tracking service", () => {
       throw new Error(`unexpected outer SQL: ${sql}`);
     });
     const verifyChallenge = vi.fn(async () => true);
+    const verifyScript = vi.fn(async () => true);
     const result = await verifyProjectTrackingSite({
       pool: { ...pool, query } as never,
       actorUserId: 11,
       expectedVersion: 2,
-      verifyChallenge,
+      verifyChallenge, verifyScript, verificationMethod, appOrigin: "https://aurora.example",
       now: new Date("2026-08-12T10:00:00.000Z"),
     });
     expect(result.verified).toBe(true);
     expect(result.tracking.status).toBe("active");
-    expect(verifyChallenge).toHaveBeenCalledWith({
-      siteOrigin: before.site_origin,
-      challenge: before.verification_challenge,
-    });
+    if (verificationMethod === "file") {
+      expect(verifyChallenge).toHaveBeenCalledWith({ siteOrigin: before.site_origin, challenge: before.verification_challenge });
+      expect(verifyScript).not.toHaveBeenCalled();
+    } else {
+      expect(verifyScript).toHaveBeenCalledWith({ siteOrigin: before.site_origin, challenge: before.verification_challenge, publicKey: before.public_key, appOrigin: "https://aurora.example" });
+      expect(verifyChallenge).not.toHaveBeenCalled();
+    }
     expect(client.query.mock.calls.some(([sql, params]) =>
       String(sql).includes("insert into audit_events") && params?.[2] === "tracking.site.verified"
     )).toBe(true);

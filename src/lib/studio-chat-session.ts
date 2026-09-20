@@ -32,6 +32,18 @@ export type StudioChatMessage = {
   generationResultId?: number;
 };
 
+/** Editing is available for complete text even when publication requires review. */
+export function lastRewritableStudioMessage(messages: readonly StudioChatMessage[]): StudioChatMessage | undefined {
+  return [...messages].reverse().find((message) =>
+    message.role === "ai"
+    && !message.streaming
+    && !message.interrupted
+    && (!message.errorMessage || message.reviewable || message.postable)
+    && Boolean(message.text.trim())
+    && !isStudioGenerationPlaceholder(message.text),
+  );
+}
+
 export type StudioChatGeneration = {
   cmd: AiCommand;
   input: string;
@@ -47,6 +59,10 @@ export type StudioChatGeneration = {
   referenceIntent?: "create" | "discuss";
   channelId?: number | null;
   postSettings?: PostSettings;
+  /** Stable draft identity and source relation survive a reload before editor handoff. */
+  resultClientKey?: string;
+  growthMoveId?: number;
+  opportunityId?: number;
 };
 
 export type StudioChatSession = {
@@ -82,6 +98,25 @@ export function mergeStudioChatSessions(
     workspaceMode: local.workspaceMode,
     generations: [...generations].filter(([id]) => messageIds.has(id)),
   };
+}
+
+/**
+ * A pagehide keepalive cannot resolve a revision conflict, so it is safe only
+ * after this tab has learned the server revision for the active account.
+ */
+export function shouldSendStudioSessionPageHide({
+  snapshotOwner,
+  persistenceOwner,
+  serverRevisionKnown,
+}: {
+  snapshotOwner: number;
+  persistenceOwner: number | null;
+  serverRevisionKnown: boolean;
+}): boolean {
+  return serverRevisionKnown
+    && Number.isSafeInteger(snapshotOwner)
+    && snapshotOwner > 0
+    && snapshotOwner === persistenceOwner;
 }
 
 const VERSION = 2;
@@ -299,11 +334,20 @@ function safeGeneration(value: unknown): StudioChatGeneration | null {
         ? Number(value.channelId)
         : undefined,
     postSettings: isRecord(value.postSettings) ? normalizePostSettings(value.postSettings) : undefined,
+    resultClientKey: typeof value.resultClientKey === "string" && /^[A-Za-z0-9:_-]{8,128}$/u.test(value.resultClientKey)
+      ? value.resultClientKey
+      : undefined,
+    growthMoveId: Number.isSafeInteger(value.growthMoveId) && Number(value.growthMoveId) > 0
+      ? Number(value.growthMoveId)
+      : undefined,
+    opportunityId: Number.isSafeInteger(value.opportunityId) && Number(value.opportunityId) > 0
+      ? Number(value.opportunityId)
+      : undefined,
   };
 }
 
-export function studioChatStorageKey(owner: number): string {
-  return `aurora:studio-chat:v${VERSION}:user-${normalizedOwner(owner)}`;
+export function studioChatStorageKey(owner: number, projectId?: number): string {
+  return `aurora:studio-chat:v${VERSION}:user-${normalizedOwner(owner)}${projectId ? `:project-${projectId}` : ""}`;
 }
 
 export function serializeStudioChatSession(owner: number, session: StudioChatSession): string {

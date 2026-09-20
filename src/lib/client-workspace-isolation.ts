@@ -1,4 +1,5 @@
 import type { AppState } from "./types";
+import { parseSelectedProjectResponse } from "./project-client";
 
 const STORAGE_PREFIX = "aurora.state.v2";
 
@@ -41,13 +42,11 @@ export function workspaceStorageKey(identity: ClientWorkspaceIdentity): string {
 }
 
 /**
- * Only the dedicated server-owned current-project response may establish a workspace.
+ * Only the shared, validated server project DTO may establish a workspace.
  * Event payloads and arbitrary client project ids intentionally do not match this shape.
  */
 export function parseServerSelectedProjectId(value: unknown): number | null {
-  if (!isRecord(value) || value.ok !== true || !isRecord(value.project)) return null;
-  const projectId = Number(value.project.projectId);
-  return positiveId(projectId) ? projectId : null;
+  return parseSelectedProjectResponse(value)?.id ?? null;
 }
 
 export function isStoredAppState(value: unknown): value is AppState {

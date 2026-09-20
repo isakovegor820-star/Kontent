@@ -38,6 +38,13 @@ function item(overrides: Partial<LibraryRegistryItem>): LibraryRegistryItem {
 }
 
 describe("library filters", () => {
+  it("orders news by publication time even when cached freshness and score favor old posts", () => {
+    const rows = [
+      item({ id: "old", postedAt: "2026-08-01T10:00:00Z", freshness: 1, analyticsScore: 99 }),
+      item({ id: "new", postedAt: "2026-09-09T10:00:00Z", freshness: null, analyticsScore: null }),
+    ];
+    expect(filterAndSortLibraryItems(rows, parseLibraryFilters({ sort: "published" })).map((row) => row.id)).toEqual(["new", "old"]);
+  });
   it("returns the complete registry unless the hit-only filter is explicit", () => {
     expect(parseLibraryFilters(new URLSearchParams()).hitOnly).toBe(false);
     expect(parseLibraryFilters(new URLSearchParams("hit=only")).hitOnly).toBe(true);

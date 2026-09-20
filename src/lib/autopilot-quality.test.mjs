@@ -6,14 +6,77 @@ import {
   autopilotQualityFailureKind,
   fitAutopilotDraftLength,
   padDraftToMinimum,
+  prepareAutopilotDraftForm,
   removeUnverifiedSemanticClaims,
   trimDraftToMaximum,
 } from "./autopilot-quality.mjs";
 import { evaluateAutopilotItem } from "./autopilot-approval.mjs";
-import { hasAutomaticQualityApproval, normalizePostQuality } from "./post-quality.mjs";
+import { buildRewritePrompt, hasAutomaticQualityApproval, normalizePostQuality } from "./post-quality.mjs";
 import { validateSemanticClaims } from "./semantic-claims.mjs";
 
 const checkedAt = () => new Date("2026-08-02T10:00:00.000Z");
+
+describe("Autopilot targeted editing and semantic recovery", () => {
+  it("does not disguise a short post with repeated stock questions", async () => {
+    const rules = normalizePostQuality({
+      preset: "custom", desiredMinChars: 900, desiredMaxChars: 1500,
+      publicationMinChars: 120, publicationMaxChars: 4096,
+      hookRequired: false, requireConclusion: false, disclaimerRequired: false, boldPolicy: "none",
+      factsPolicy: "open",
+    });
+    const draft = "Прочитайте условия договора.\n\nОтметьте непонятные пункты.\n\nСоставьте вопросы перед обсуждением документа.";
+    const prepared = prepareAutopilotDraftForm(draft, rules);
+    expect(prepared).toBe(draft);
+    expect(prepareAutopilotDraftForm(prepared, rules)).toBe(prepared);
+    expect(prepareAutopilotDraftForm(`${draft}\n\nИсточник: редакционная база\nhttps://example.test/story`, rules)).toBe(prepared);
+    const prompt = buildRewritePrompt(prepared, {
+      violations: [{ code: "too_short", message: "Недостаточный объём" }, { code: "hook", message: "Длинная первая строка" }],
+      desiredLength: { actualChars: prepared.length, minChars: 900, maxChars: 1500 },
+    });
+    expect(prompt).toContain("900–1500");
+    expect(prompt).toContain("около 1200");
+    expect(prompt).toContain("Исправь первую строку");
+    expect(prompt).toContain("Не добирай объём повторениями");
+  });
+
+  it.each(["passed", "not_checked"])("rechecks the same text once and keeps the final verdict %s", async (terminal) => {
+    let calls = 0;
+    const payloads = [];
+    const adapter = { id: "test", async check(input) {
+      payloads.push(input);
+      calls += 1;
+      return { verdicts: input.claims.map((claim) => ({
+        claimId: claim.id,
+        verdict: calls === 2 && terminal === "passed" ? "non_factual" : "unknown",
+        evidenceIds: [],
+      })) };
+    } };
+    const result = await assessAutopilotDraft({
+      text: "Прочитайте документ. Отметьте вопросы.",
+      quality: { factsPolicy: "open", hookRequired: false }, sources: [],
+      semanticAdapter: adapter, semanticRetryLimit: 99,
+    });
+    expect(calls).toBe(2);
+    expect(payloads[1]).toEqual(payloads[0]);
+    expect(result.semantic.status).toBe(terminal);
+    if (terminal === "not_checked") expect(hasAutomaticQualityApproval(result)).toBe(false);
+  });
+
+  it("does not retry a negative factual verdict until the checker agrees", async () => {
+    let calls = 0;
+    const result = await assessAutopilotDraft({
+      text: "Организация открыла филиал.", quality: { factsPolicy: "open" }, sources: [],
+      semanticRetryLimit: 1,
+      semanticAdapter: { id: "test", async check({ claims }) {
+        calls += 1;
+        return { verdicts: claims.map((claim) => ({ claimId: claim.id, verdict: "unsupported", evidenceIds: [] })) };
+      } },
+    });
+    expect(calls).toBe(1);
+    expect(result.semantic.status).toBe("blocked");
+    expect(hasAutomaticQualityApproval(result)).toBe(false);
+  });
+});
 const source = {
   id: "knowledge-446",
   text: "Статья 446 ГПК РФ регулирует исполнительский иммунитет единственного пригодного для постоянного проживания жилья.",

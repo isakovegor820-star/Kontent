@@ -9,20 +9,12 @@ import {
   type ProjectRole,
 } from "./project-permissions";
 import { normalizeIdempotencyKey } from "./publication-idempotency";
+import type { ProjectDto } from "./project-dto";
 
 export const INVITABLE_PROJECT_ROLES = ["author", "approver", "publisher"] as const;
 export type InvitableProjectRole = (typeof INVITABLE_PROJECT_ROLES)[number];
 
-export type ProjectSummary = {
-  id: number;
-  name: string;
-  timezone: string;
-  role: ProjectRole;
-  version: number;
-  personal: boolean;
-  selected: boolean;
-  createdAt: string;
-};
+export type ProjectSummary = ProjectDto;
 
 export type ProjectMemberSummary = {
   userId: number;
@@ -394,7 +386,7 @@ export async function createProjectInvitation(input: {
   const expiresAt = new Date(Date.now() + ttlDays * 24 * 60 * 60 * 1000);
 
   const invitation = await withTransaction(input.pool, async (client) => {
-    await requireProjectPermission(client, input.actorUserId, input.projectId, "members.manage");
+    await requireProjectPermission(client, input.actorUserId, input.projectId, "members.manage", { lock: true, lockProject: false });
     await client.query(`select id from projects where id = $1 and is_archived = false for update`, [input.projectId]);
     const duplicate = await client.query(
       `select id from project_invitations
@@ -463,7 +455,7 @@ export async function revokeProjectInvitation(input: {
 }): Promise<{ replayed: boolean }> {
   if (!positiveId(input.invitationId)) throw new ProjectTeamError("invitation_not_found");
   return withTransaction(input.pool, async (client) => {
-    await requireProjectPermission(client, input.actorUserId, input.projectId, "members.manage");
+    await requireProjectPermission(client, input.actorUserId, input.projectId, "members.manage", { lock: true, lockProject: false });
     const result = await client.query<{
       id: number | string;
       role: string;

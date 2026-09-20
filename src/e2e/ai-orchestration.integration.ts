@@ -53,7 +53,7 @@ function openAiSuccess(response: ServerResponse, body: { stream?: boolean }) {
 const provider = createServer(async (request, response) => {
   const body = await jsonBody(request);
   requests.push(body);
-  const primary = body.model === "deepseek-v4-pro";
+  const primary = body.model === "gpt-5.6-terra";
   if (mode === "all-fail") {
     response.writeHead(503);
     response.end("unavailable");
@@ -142,12 +142,12 @@ describe("Gate 4 common AI orchestration on disposable infrastructure", () => {
     const direct = await completeAiText({
       system: "SYSTEM",
       user: "DIRECT",
-      engine: "navy-deepseek-pro",
+      engine: "navy-gpt-5-4",
     }, { env: process.env, timeoutMs: 100 });
     expect(direct).toMatchObject({ engine: "navy-deepseek-flash", fallbackUsed: true, attempts: 2 });
 
     const events = [];
-    for await (const event of orchestrateText({ kind: "write", task: "STREAM" }, "navy-deepseek-pro", {
+    for await (const event of orchestrateText({ kind: "write", task: "STREAM" }, "navy-gpt-5-4", {
       firstTokenMs: 100,
       overallMs: 2_000,
       fallbackEngines: ["navy-deepseek-flash"],
@@ -155,7 +155,7 @@ describe("Gate 4 common AI orchestration on disposable infrastructure", () => {
     })) events.push(event);
     expect(events).toContainEqual(expect.objectContaining({
       type: "fallback",
-      fromEngine: "navy-deepseek-pro",
+      fromEngine: "navy-gpt-5-4",
       toEngine: "navy-deepseek-flash",
     }));
     expect(events).toContainEqual(expect.objectContaining({ type: "delta", engine: "navy-deepseek-flash" }));

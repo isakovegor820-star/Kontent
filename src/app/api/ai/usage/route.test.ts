@@ -1,5 +1,5 @@
+import { ProjectRequest } from "@/test/project-request";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { NextRequest } from "next/server";
 
 const mocks = vi.hoisted(() => ({
   getSessionUser: vi.fn(),
@@ -16,7 +16,7 @@ vi.mock("@/lib/ai-usage", () => ({
 
 import { GET } from "./route";
 
-const request = () => new NextRequest("http://localhost/api/ai/usage");
+const request = () => new ProjectRequest(1, "http://localhost/api/ai/usage");
 
 describe("GET /api/ai/usage", () => {
   beforeEach(() => {
@@ -55,7 +55,7 @@ describe("GET /api/ai/usage", () => {
       error: "usage_unavailable",
     });
     expect(body.used).not.toBe(0);
-    expect(response.headers.get("cache-control")).toBe("no-store");
+    expect(response.headers.get("cache-control")).toBe("private, no-store");
     expect(log).toHaveBeenCalledWith(
       "[/api/ai/usage] usage unavailable",
       { name: "Error" },

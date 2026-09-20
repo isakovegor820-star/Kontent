@@ -1,4 +1,7 @@
 "use client";
+import { useProjectFetch, useProjectCall } from "@/lib/use-project-transport";
+import { projectFetch as fetch } from "@/lib/project-transport";
+
 
 import { projectFetch as fetch } from "@/lib/project-fetch";
 
@@ -11,6 +14,7 @@ import {
 } from "lucide-react";
 
 import { AppShell } from "@/components/app/shell";
+import { WorkCenterNav } from "@/components/app/work-center-nav";
 import { EvidenceCard } from "@/components/app/evidence-card";
 import { ChannelPicker, useChannelChoice } from "@/components/app/channel-picker";
 import { Button, buttonClassName } from "@/components/ui/button";
@@ -66,8 +70,8 @@ function evidenceSourceLabel(move: GrowthMoveRecord): string {
   return `${sourceType} · ${sourceLabel}`;
 }
 
-function telemetry(event: "growth.board.viewed" | "growth.evidence.opened" | "growth.move.started", input: { moveId?: number; channelId?: number | null }) {
-  void fetch("/api/growth/events", {
+async function unscopedTelemetry(event: "growth.board.viewed" | "growth.evidence.opened" | "growth.move.started", input: { moveId?: number; channelId?: number | null }) {
+  await fetch("/api/growth/events", {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ event, ...input }),
@@ -162,6 +166,11 @@ function GrowthSkeleton() {
 }
 
 export default function GrowthPage() {
+  const guardedTelemetry = useProjectCall(unscopedTelemetry);
+  const telemetry = useCallback((...args: Parameters<typeof unscopedTelemetry>) => {
+    void guardedTelemetry(...args).catch(() => undefined);
+  }, [guardedTelemetry]);
+  const fetch = useProjectFetch();
   const store = useStore();
   const [picked, setPicked] = useState<number | null>(() => {
     if (typeof window === "undefined") return null;
@@ -174,6 +183,7 @@ export default function GrowthPage() {
   const [loadError, setLoadError] = useState(false);
   const [busyId, setBusyId] = useState<number | null>(null);
   const [liveMessage, setLiveMessage] = useState("");
+  const [showAllMoves, setShowAllMoves] = useState(false);
   const [requestFence] = useState(createWorkspaceRequestFence);
   const channelRef = useRef(channelId);
 
@@ -197,7 +207,7 @@ export default function GrowthPage() {
       if (isAbortError(error) || !isCurrent()) return;
       setLoadError(true); setLiveMessage("Не удалось загрузить рекомендации. Можно попробовать снова.");
     } finally { if (isCurrent()) setLoading(false); }
-  }, [requestFence]);
+  }, [fetch, requestFence, telemetry]);
 
   useEffect(() => { channelRef.current = channelId; }, [channelId]);
   useEffect(() => { void load(); return () => requestFence.invalidate(); }, [channelId, load, requestFence]);
@@ -215,10 +225,12 @@ export default function GrowthPage() {
 
   const visibleBoard = board?.channelId === channelId ? board : null;
   const primary = visibleBoard?.moves.find((move) => move.lifecycle === "open") ?? null;
-  const secondary = visibleBoard?.moves.filter((move) => move.id !== primary?.id) ?? [];
+  const allSecondary = visibleBoard?.moves.filter((move) => move.id !== primary?.id) ?? [];
+  const secondary = showAllMoves ? allSecondary : allSecondary.slice(0, 4);
 
   return (
     <AppShell title="Развитие" subtitle="Лучший ход недели, доказательства и реальный результат — без обещаний роста.">
+      <WorkCenterNav current="growth" channelId={channelId} />
       <ChannelPicker channels={tgChannels} value={channelId} onChange={setPicked} label="Канал" className="mb-6" />
       <div className="sr-only" role="status" aria-live="polite" aria-atomic="true">{liveMessage}</div>
       <div role="region" aria-busy={loading} aria-label="Траектория развития" className="min-w-0">
@@ -234,10 +246,12 @@ export default function GrowthPage() {
 
           <section aria-labelledby="growth-primary-heading"><div className="mb-4"><p className="type-caption font-semibold text-brand">Лучший следующий шаг</p><h2 id="growth-primary-heading" className="mt-1 text-balance text-[22px] font-bold leading-tight tracking-tight text-text">Главный ход недели</h2></div>
             {primary ? <Card className="overflow-hidden ring-1 ring-brand/20"><div className="grid min-w-0 gap-6 p-5 sm:p-6 lg:grid-cols-[minmax(0,1.5fr)_minmax(15rem,0.7fr)]"><div className="min-w-0"><div className="flex flex-wrap items-center gap-2"><ConfidenceBadge confidence={primary.confidence} /><LifecycleBadge lifecycle={primary.lifecycle} /></div><h3 className="mt-4 max-w-[24ch] text-balance text-[26px] font-bold leading-[1.12] tracking-tight text-text sm:text-[32px]">{primary.title}</h3><p className="mt-4 max-w-[68ch] text-pretty text-[15px] leading-relaxed text-text-2">{primary.reason}</p><p className="mt-3 max-w-[68ch] text-[14px] leading-relaxed text-text"><span className="font-semibold">Проверяем:</span> {primary.evidence.metricLabel}</p><div className="mt-6 flex flex-col items-start gap-2 sm:flex-row sm:flex-wrap sm:items-center"><Link href={primary.actionHref} onClick={() => telemetry("growth.move.started", { moveId: primary.id, channelId: visibleBoard.channelId })} className={buttonClassName({ variant: "primary", size: "md", className: "w-full whitespace-normal text-center sm:w-auto" })}><Sparkles className="h-4 w-4 shrink-0" aria-hidden />{moveCta(primary)}</Link><Button variant="ghost" size="sm" disabled={busyId !== null} loading={busyId === primary.id} onClick={() => void skipMove(primary)}>Не актуально</Button>{primary.artifactDraftId && <EvidenceCard kind="draft" id={primary.artifactDraftId} compact />}</div></div><div className="min-w-0 rounded-sm bg-surface-inset p-4"><dl className="space-y-4"><div><dt className="type-caption text-text-3">Влияние</dt><dd className="mt-1 text-[14px] font-semibold text-text">{primary.evidence.opportunityStrength >= 4 ? "Высокое" : primary.evidence.opportunityStrength >= 2 ? "Среднее" : "Нужно проверить"}</dd></div><div><dt className="type-caption text-text-3">Усилие</dt><dd className="mt-1 text-[14px] font-semibold text-text">{primary.evidence.effort}</dd></div><div><dt className="type-caption text-text-3">Основание</dt><dd className="mt-1 break-words text-[14px] leading-relaxed text-text">{evidenceSourceLabel(primary)}</dd></div></dl></div></div><details className="group border-t border-line px-5 sm:px-6" onToggle={(event) => { if (event.currentTarget.open) telemetry("growth.evidence.opened", { moveId: primary.id, channelId: visibleBoard.channelId }); }}><summary className="flex min-h-14 cursor-pointer list-none items-center justify-between gap-3 font-semibold text-text focus-visible:rounded-xs focus-visible:ring-4 focus-visible:ring-brand/15"><span className="flex items-center gap-2"><BarChart3 className="h-4 w-4 text-brand" aria-hidden />Почему Аврора так решила</span><ChevronDown className="h-4 w-4 transition-transform duration-150 group-open:rotate-180 motion-reduce:transition-none" aria-hidden /></summary><div className="pb-6"><Evidence move={primary} /></div></details></Card>
-            : <Card><EmptyState icon={<CircleCheck className="h-6 w-6" aria-hidden />} title={visibleBoard.moves.length ? "Все ходы недели закрыты" : "Пока нет подтверждённого хода"} body={visibleBoard.moves.length ? "Аврора следит за публикациями и результатом. Новый лучший ход появится с новым сигналом." : "Добавь данные ниже — Аврора соберёт устойчивую рекомендацию без догадок."} /></Card>}
+            : <Card><EmptyState icon={<CircleCheck className="h-6 w-6" aria-hidden />} title={visibleBoard.moves.length ? "Все ходы недели закрыты" : "Пока нет подтверждённого хода"} body={visibleBoard.moves.length ? "Все доступные ходы уже начаты или разобраны. Новые подходящие сигналы пополняют подборку в течение недели." : "Добавь данные ниже — Аврора соберёт устойчивую рекомендацию без догадок."} /></Card>}
           </section>
 
           {secondary.length > 0 && <section aria-labelledby="growth-more-heading"><h2 id="growth-more-heading" className="text-balance text-[20px] font-bold leading-tight text-text">Ещё ходы этой недели</h2><ul className="mt-5 space-y-7">{secondary.map((move) => <li key={move.id} className="min-w-0"><div className="flex min-w-0 flex-col gap-4 sm:flex-row sm:items-start sm:justify-between"><div className="min-w-0 flex-1"><div className="flex flex-wrap items-center gap-2"><LifecycleBadge lifecycle={move.lifecycle} /><ConfidenceBadge confidence={move.confidence} /></div><h3 className="mt-3 text-balance text-[17px] font-semibold leading-snug text-text">{move.title}</h3><p className="mt-2 max-w-[68ch] text-[14px] leading-relaxed text-text-2">{move.reason}</p><p className="mt-2 text-[13px] leading-relaxed text-text-3"><span className="font-semibold text-text-2">Критерий:</span> {move.evidence.metricLabel}</p></div><div className="flex shrink-0 flex-wrap items-center gap-2">{move.lifecycle === "open" && <Link href={move.actionHref} onClick={() => telemetry("growth.move.started", { moveId: move.id, channelId: visibleBoard.channelId })} className={buttonClassName({ variant: "secondary", size: "sm", className: "whitespace-normal" })}>{moveCta(move)}</Link>}{move.lifecycle === "open" && <Button variant="ghost" size="sm" disabled={busyId !== null} loading={busyId === move.id} onClick={() => void skipMove(move)}>Не актуально</Button>}</div></div><details className="group mt-3" onToggle={(event) => { if (event.currentTarget.open) telemetry("growth.evidence.opened", { moveId: move.id, channelId: visibleBoard.channelId }); }}><summary className="flex min-h-11 cursor-pointer list-none items-center gap-2 text-[13px] font-semibold text-text-2 focus-visible:rounded-xs focus-visible:ring-4 focus-visible:ring-brand/15">Источник и методика <ChevronDown className="h-4 w-4 transition-transform duration-150 group-open:rotate-180 motion-reduce:transition-none" aria-hidden /></summary><div className="rounded-sm bg-surface-inset p-4"><Evidence move={move} compact /><p className="mt-3 max-w-[68ch] text-[13px] leading-relaxed text-text-3">{move.evidence.methodology} · {move.evidence.freshnessLabel}</p></div></details></li>)}</ul></section>}
+
+          {allSecondary.length > 4 && <Button variant="secondary" className="min-h-11" aria-expanded={showAllMoves} onClick={() => setShowAllMoves(!showAllMoves)}>{showAllMoves ? "Свернуть рекомендации" : `Показать остальные (${allSecondary.length - 4})`}</Button>}
 
           {visibleBoard.readiness.length > 0 && <section aria-labelledby="growth-readiness-heading"><Card><div className="p-5 sm:p-6"><h2 id="growth-readiness-heading" className="text-balance text-[20px] font-bold leading-tight text-text">Сделать рекомендации точнее</h2><p className="mt-2 max-w-[68ch] text-[14px] leading-relaxed text-text-2">Только незавершённые шаги, которые откроют Авроре новые подтверждённые сигналы.</p><ul className="mt-5 grid min-w-0 gap-4 lg:grid-cols-2">{visibleBoard.readiness.map((item) => <li key={item.id} className="min-w-0 rounded-sm bg-surface-inset p-4"><h3 className="text-[15px] font-semibold text-text">{item.title}</h3><p className="mt-2 text-[14px] leading-relaxed text-text-2">{item.body}</p><Link href={item.href} className={buttonClassName({ variant: "secondary", size: "sm", className: "mt-4 whitespace-normal" })}>{item.cta}<ArrowRight className="h-4 w-4" aria-hidden /></Link></li>)}</ul></div></Card></section>}
 

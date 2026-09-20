@@ -76,7 +76,7 @@ describe("configured semantic AI adapter", () => {
         evidenceIds: ["source-1"],
         reasonCode: "direct_source_support",
       }],
-      model: "deepseek-v4-pro",
+      model: "gpt-5.6-sol",
     });
     expect(fetchImpl).toHaveBeenCalledTimes(1);
     expect(fetchImpl.mock.calls[0][0]).toBe("https://navy.example/v1/chat/completions");
@@ -127,7 +127,7 @@ describe("configured semantic AI adapter", () => {
     });
 
     await expect(adapter.check({ claims, evidence })).resolves.toMatchObject({
-      model: "minimax-m3",
+      model: "deepseek-v4-flash",
       verdicts: [{ verdict: "supported", evidenceIds: ["source-1"] }],
     });
     expect(fetchImpl).toHaveBeenCalledTimes(2);

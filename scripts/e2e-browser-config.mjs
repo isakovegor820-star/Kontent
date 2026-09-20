@@ -48,6 +48,64 @@ export function resolveE2eCaptureArtifacts(value) {
   return raw === "1";
 }
 
+export async function performE2eBrowserAuthenticatedRequest({
+  path,
+  method = "GET",
+  headers = {},
+  data,
+  timeoutMs = 120_000,
+} = {}) {
+  const timeout = Number(timeoutMs);
+  if (!Number.isSafeInteger(timeout) || timeout < 1) {
+    throw new Error("E2E browser request timeout must be a positive integer");
+  }
+  const controller = new AbortController();
+  let timeoutId;
+  const request = async () => {
+    const capturedHeaders = { ...headers };
+    if (!capturedHeaders["x-aurora-project-id"] && path !== "/api/projects/current") {
+      const current = await fetch("/api/projects/current", {
+        cache: "no-store",
+        signal: controller.signal,
+      }).then((response) => response.json());
+      if (current.project?.id) capturedHeaders["x-aurora-project-id"] = String(current.project.id);
+    }
+    const response = await fetch(path, {
+      method,
+      headers: { ...capturedHeaders, ...(data === undefined ? {} : { "content-type": "application/json" }) },
+      body: data === undefined ? undefined : JSON.stringify(data),
+      cache: "no-store",
+      signal: controller.signal,
+    });
+    let text = "";
+    try { text = await response.text(); } catch {}
+    return {
+      status: response.status,
+      ok: response.ok,
+      text,
+      headers: {
+        contentType: response.headers.get("content-type"),
+        requestId: response.headers.get("x-ai-request-id") || response.headers.get("x-request-id"),
+        replayed: response.headers.get("x-ai-replayed"),
+        acknowledged: response.headers.get("x-ai-acknowledged"),
+      },
+    };
+  };
+  try {
+    return await Promise.race([
+      request(),
+      new Promise((_, reject) => {
+        timeoutId = globalThis.setTimeout(() => {
+          reject(new Error(`e2e_browser_request_timeout:${method}:${path}`));
+          controller.abort();
+        }, timeout);
+      }),
+    ]);
+  } finally {
+    if (timeoutId !== undefined) globalThis.clearTimeout(timeoutId);
+  }
+}
+
 export function sanitizeE2eNetworkUrl(value, baseUrl) {
   try {
     const url = new URL(String(value), String(baseUrl));
@@ -158,6 +216,8 @@ export function classifyE2eKnownBrowserObservation({
 export function classifyE2eKnownWebKitRequestCancellation({
   engine,
   requestUrl,
+  requestMethod,
+  resourceType,
   failure,
   currentUrl,
   baseUrl,
@@ -183,7 +243,38 @@ export function classifyE2eKnownWebKitRequestCancellation({
     currentUrl,
     webPort,
   });
-  return observation ? { ...observation, message: rawMessage } : null;
+  if (observation) return { ...observation, message: rawMessage };
+
+  // These loaders are deliberately aborted by the workspace request fence or by
+  // leaving the bot connection page. Require requestfailed("cancelled") evidence;
+  // a matching pageerror alone must still fail the browser-runtime assertion.
+  let current;
+  try {
+    current = new URL(String(currentUrl || ""));
+  } catch {
+    return null;
+  }
+  if (
+    String(requestMethod || "").toUpperCase() !== "GET"
+    || resourceType !== "fetch"
+    || current.origin !== expectedBase.origin
+    || expectedBase.hostname !== "127.0.0.1"
+    || Number(expectedBase.port) !== Number(webPort)
+  ) return null;
+  const detail = `${request.pathname}${request.search}`;
+  if (
+    current.pathname === "/app/settings"
+    && current.searchParams.get("section") === "project"
+    && ["/api/channels", "/api/posts", "/api/ai/usage"].includes(detail)
+  ) return { kind: "webkit.cancelled-project-refresh", detail, message: rawMessage };
+  if (
+    current.pathname === "/bot/connect"
+    && request.pathname === "/login"
+    && /^[A-Za-z0-9_-]+$/u.test(request.searchParams.get("_rsc") || "")
+    && [...request.searchParams.keys()].every((key) => ["_rsc", "next"].includes(key))
+    && (!request.searchParams.has("next") || request.searchParams.get("next") === "/bot/connect")
+  ) return { kind: "webkit.cancelled-bot-login-prefetch", detail, message: rawMessage };
+  return null;
 }
 
 export function classifyE2eKnownWebKitDocumentNavigationCancellation({
@@ -233,6 +324,54 @@ export function classifyE2eKnownWebKitDocumentNavigationCancellation({
   };
 }
 
+export function classifyE2eKnownWebKitProvisionalWorkspacePoll({
+  engine,
+  errorName,
+  message,
+  navigationPending = false,
+  sourceUrl,
+  documentRequestUrl,
+  elapsedMs,
+  baseUrl,
+} = {}) {
+  if (resolveE2eBrowserEngine(engine) !== "webkit" || !navigationPending) return null;
+  const elapsed = Number(elapsedMs);
+  if (!Number.isFinite(elapsed) || elapsed < 0 || elapsed > 30_000) return null;
+  let base;
+  let source;
+  let destination;
+  try {
+    base = new URL(String(baseUrl || ""));
+    source = new URL(String(sourceUrl || ""));
+    destination = new URL(String(documentRequestUrl || ""));
+  } catch {
+    return null;
+  }
+  if (
+    base.hostname !== "127.0.0.1"
+    || !["http:", "https:"].includes(base.protocol)
+    || source.origin !== base.origin
+    || destination.origin !== base.origin
+    || !/^\/app(?:\/|$)/u.test(source.pathname)
+    || !/^\/app(?:\/|$)/u.test(destination.pathname)
+    || errorName !== `Fetch API cannot load ${base.protocol.slice(0, -1)}`
+  ) return null;
+  // WebKit rejects new fetches while the old document has a provisional loader,
+  // before pagehide/visibilitychange and before emitting any network request.
+  // Only the three exact GET-only workspace polling endpoints reproduced in the browser
+  // fixture qualify. Unhandled rejections still fail via the independent listener.
+  for (const path of ["/api/channels", "/api/posts", "/api/ai/usage"]) {
+    if (message === `/${base.host}${path}${WEBKIT_CANCELLED_REQUEST_SUFFIX}`) {
+      return {
+        kind: "webkit.provisional-document-workspace-poll",
+        detail: path,
+        navigation: { from: source.pathname, to: destination.pathname, elapsedMs: elapsed },
+      };
+    }
+  }
+  return null;
+}
+
 export function classifyE2eExpectedSessionExpiryWebKitPageError({
   active = false,
   engine,
@@ -268,8 +407,27 @@ export function classifyE2eExpectedSessionExpiryWebKitPageError({
   const originPrefix = `/127.0.0.1:${port}`;
   if (!requestTarget.startsWith(`${originPrefix}/`)) return null;
   const pathAndQuery = requestTarget.slice(originPrefix.length);
+  let expectedCalendarTrendRequest = false;
+  if (current.pathname === "/app/calendar") {
+    try {
+      const requestUrl = new URL(pathAndQuery, base);
+      expectedCalendarTrendRequest = requestUrl.pathname === "/api/trends"
+        && requestUrl.searchParams.get("scope") === "niche"
+        && requestUrl.searchParams.get("period") === "week"
+        && /^\d+$/u.test(requestUrl.searchParams.get("channel") || "")
+        && [...requestUrl.searchParams.keys()].sort().join(",") === "channel,period,scope";
+    } catch {}
+  }
   const expectedPaths = {
     "/app/calendar": ["/api/drafts", "/api/projects", "/api/projects/current"],
+    // WebKit can report cancelled loaders against the outgoing document while
+    // the expiry test's navigation to Calendar is still provisional.
+    "/app/settings": [
+      "/api/legal-sources",
+      "/api/bot/link",
+      "/api/tracking/settings",
+      "/api/tracking/templates",
+    ],
     "/app/studio": [
       "/api/studio/session",
       "/api/settings",
@@ -278,7 +436,7 @@ export function classifyE2eExpectedSessionExpiryWebKitPageError({
       "/api/posts",
     ],
   }[current.pathname];
-  if (!expectedPaths?.includes(pathAndQuery)) {
+  if (!expectedPaths?.includes(pathAndQuery) && !expectedCalendarTrendRequest) {
     return null;
   }
   return { kind: "session-expiry.webkit-cancelled-api-request", detail: pathAndQuery };

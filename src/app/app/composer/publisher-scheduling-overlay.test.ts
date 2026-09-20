@@ -24,7 +24,7 @@ describe("publisher scheduling overlay contract", () => {
     expect(source).toContain('const canPublish = projectRole === "owner" || projectRole === "publisher";');
     expect(source).toContain('const scheduleIsPublicationOverlay = canPublish && editorialState === "approved";');
 
-    const persist = section(source, "const persistDraft = useCallback", "const saveDraft = useCallback");
+    const persist = section(source, "const persistDraft = useCallback", "const currentSchedule = useMemo");
     expect(persist).toContain("if (!canEditContent) return Promise.resolve(null);");
 
     const remove = section(source, "const removeCurrent = useCallback", "const value = useMemo");
@@ -83,28 +83,30 @@ describe("publisher scheduling overlay contract", () => {
   });
 
   it("persists editor formatting and explains the VK limitation", () => {
-    const persist = section(source, "const persistDraft = useCallback", "const saveDraft = useCallback");
+    const persist = section(source, "const persistDraft = useCallback", "const currentSchedule = useMemo");
     expect(persist).toMatch(/const common = \{\s*text,\s*formatting,/);
 
-    const dependencies = persist.slice(persist.lastIndexOf("[\n      canEditContent,"));
-    expect(dependencies).toContain("\n      formatting,");
+    const dependencies = persist.slice(persist.lastIndexOf("[canEditContent,"));
+    expect(dependencies).toMatch(/\bformatting\b/);
 
     expect(source).toContain("Форматирование применится в Telegram. VK опубликует обычный текст.");
     expect(source).toContain("один текст, оформление — только для Telegram");
   });
 
-  it("keeps removed advanced panels out of the composer", () => {
+  it("keeps unrelated advanced panels out of the composer", () => {
     for (const removed of [
       "Семантическая проверка недоступна",
       "Я проверил(а) факты",
       "Типограф и словарь",
       "Скачать пакет TenChat",
       "<TenChatExportCard",
-      "<TrackingBuilder",
       "<PublicationSettingsPanel",
       "<TypographerPanel",
     ]) {
       expect(source).not.toContain(removed);
     }
+    expect(source).toContain("<TrackingBuilder");
+    expect(source).toContain("defaultOpen={trackingRequested}");
+    expect(source).toContain('document.getElementById("composer-tracking")');
   });
 });

@@ -217,7 +217,12 @@ export async function* orchestrateText(
   const now = options.now ?? Date.now;
   const circuitBreaker = options.circuitBreaker === undefined ? aiProviderCircuitBreaker : options.circuitBreaker;
   const streamFactory = options.streamFactory
-    ?? ((input, engine, signal) => generateText(input, engine, signal, { requestTimeoutMs: null }));
+    ?? ((input, engine, signal) => generateText(input, engine, signal, {
+      requestTimeoutMs: null,
+      // Each provider call must pass beforeAttempt and be recorded separately. An
+      // empty result moves to the declared fallback instead of a hidden paid retry.
+      allowEmptyRetry: false,
+    }));
   const firstTokenMs = safeMs(options.firstTokenMs, DEFAULT_FIRST_TOKEN_MS);
   const overallMs = safeMs(options.overallMs, DEFAULT_OVERALL_MS);
   const candidates = [primary, ...new Set(options.fallbackEngines ?? [])].filter(

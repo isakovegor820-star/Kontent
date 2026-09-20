@@ -1,4 +1,6 @@
 "use client";
+import { useProjectFetch } from "@/lib/use-project-transport";
+
 
 import { projectFetch as fetch } from "@/lib/project-fetch";
 
@@ -53,6 +55,7 @@ export function PublicationFollowupSection({
   operationId: number;
   onUpdateRequested?: (draftId: number) => void;
 }) {
+  const fetch = useProjectFetch();
   const statusId = useId();
   const [destinations, setDestinations] = useState<PublicationDestinationFollowup[] | null>(null);
   const [loading, setLoading] = useState(true);
@@ -71,7 +74,7 @@ export function PublicationFollowupSection({
     const parsed = response.ok ? parsePublicationFollowupResponse(body) : null;
     if (!parsed) throw body;
     return parsed;
-  }, [operationId]);
+  }, [fetch, operationId]);
 
   useEffect(() => {
     const controller = new AbortController();

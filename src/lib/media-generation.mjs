@@ -12,6 +12,8 @@ export const MEDIA_GENERATION_STATUSES = Object.freeze([
   "failed",
 ]);
 
+// This version identifies the persisted prompt-context schema (DB supports 1..3).
+// Wording refinements within that schema do not require a new persisted version.
 export const MEDIA_PROMPT_POLICY = Object.freeze({
   id: "aurora-media-prompt",
   version: 3,
@@ -282,6 +284,7 @@ export function buildNavyMediaPayload(generation) {
     `БЕЗОПАСНЫЕ ЗОНЫ: ${layout.safeZones}.`,
     `РАЗМЕЩЕНИЕ ОБЪЕКТА: ${layout.objectPlacement}.`,
     `КОМПОЗИЦИЯ: ${layout.composition}.`,
+    "ГЕОМЕТРИЯ: естественные пропорции людей и предметов, ровный горизонт и вертикали, без растяжения, сжатия и широкоугольных искажений. Выстрой сцену сразу под выбранный формат; не вытягивай объект для заполнения холста. Сохрани голову, лицо и важные детали целиком внутри кадра.",
     `СВЕТ: ${direction.light}.`,
     `ЦВЕТ: ${direction.color}.`,
     `СТИЛЬ: ${styleText}.`,

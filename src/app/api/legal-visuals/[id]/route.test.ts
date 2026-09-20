@@ -1,4 +1,4 @@
-import { NextRequest } from "next/server";
+import { ProjectRequest } from "@/test/project-request";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
@@ -34,7 +34,7 @@ describe("legal visual item route", () => {
 
   it("uses the authenticated actor for the project-scoped design read", async () => {
     mocks.getDesign.mockResolvedValue({ id: 101, projectId: 7 });
-    const response = await GET(new NextRequest("http://localhost/api/legal-visuals/101"), context);
+    const response = await GET(new ProjectRequest(7, "http://localhost/api/legal-visuals/101"), context);
     expect(response.status).toBe(200);
     expect(mocks.getDesign).toHaveBeenCalledWith(expect.objectContaining({
       actorUserId: 12,
@@ -44,7 +44,7 @@ describe("legal visual item route", () => {
 
   it("returns 409 for a stale expected revision and does not hide it as a server error", async () => {
     mocks.updateDesign.mockRejectedValue(new LegalVisualServiceError("version_conflict"));
-    const response = await PATCH(new NextRequest("http://localhost/api/legal-visuals/101", {
+    const response = await PATCH(new ProjectRequest(7, "http://localhost/api/legal-visuals/101", {
       method: "PATCH",
       headers: { origin: "http://localhost", "content-type": "application/json" },
       body: JSON.stringify({ expectedRevision: 3, config: {} }),

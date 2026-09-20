@@ -9,6 +9,7 @@ describe("database pool configuration", () => {
       max: 3,
       connectionTimeoutMillis: 2_000,
       queryTimeoutMillis: 30_000,
+      slowQueryThresholdMillis: 1_000,
       statementTimeoutMillis: 30_000,
       idleInTransactionTimeoutMillis: 15_000,
       idleTimeoutMillis: 10_000,
@@ -19,7 +20,12 @@ describe("database pool configuration", () => {
       AURORA_RUNTIME_ROLE: "worker",
       AURORA_DB_POOL_MAX_WORKER: "7",
       AURORA_DB_CONNECTION_TIMEOUT_MS: "1500",
+      AURORA_DB_SLOW_QUERY_MS: "750",
     })).toMatchObject({ role: "worker", max: 7, connectionTimeoutMillis: 1_500 });
+    expect(resolveDatabasePoolConfig({
+      NODE_ENV: "test",
+      AURORA_DB_SLOW_QUERY_MS: "750",
+    })).toMatchObject({ slowQueryThresholdMillis: 750 });
   });
 
   it("requires an explicit web/worker connection budget in production", () => {
@@ -50,6 +56,15 @@ describe("database pool configuration", () => {
         NODE_ENV: "test",
         AURORA_DB_POOL_MAX: value,
       })).toThrowError("database_pool_max_invalid");
+    }
+  });
+
+  it("rejects an invalid slow-query threshold", () => {
+    for (const value of ["0", "9", "300001", "2.5", "slow"]) {
+      expect(() => resolveDatabasePoolConfig({
+        NODE_ENV: "test",
+        AURORA_DB_SLOW_QUERY_MS: value,
+      })).toThrowError("database_slow_query_threshold_invalid");
     }
   });
 });

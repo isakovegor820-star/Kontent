@@ -121,6 +121,7 @@ export function Toaster() {
 
   return (
     <div
+      role="region"
       aria-label="Уведомления"
       className={cn(
         "pointer-events-none fixed inset-x-0 z-[90] flex flex-col items-center gap-2 p-4 sm:inset-x-auto sm:right-6 sm:items-end sm:p-0",

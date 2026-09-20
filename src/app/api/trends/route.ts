@@ -1,5 +1,7 @@
+import { withProjectRoute } from "@/lib/project-route";
 import { NextRequest, NextResponse } from "next/server";
 import { resolveChannel } from "@/lib/autopilot";
+import { radarMeasuredMedianSql, radarMeasuredRatioSql } from "@/lib/trend-dataset";
 import { getPool } from "@/lib/db";
 import { getStatsQueue } from "@/lib/queue";
 import { getSessionUser } from "@/lib/session";
@@ -36,7 +38,7 @@ interface ItemRow {
   competitor_title: string | null;
   tg_msg_id: number;
   text: string | null;
-  views: number;
+  views: number | null;
   reactions: number | null;
   photo_url: string | null;
   media: string | null;
@@ -292,7 +294,7 @@ async function internetScope(
            result.id,
            coalesce(nullif(result.handle, ''), split_part(replace(result.url, 'https://t.me/s/', 'https://t.me/'), '/', 4)) as handle,
            result.title, result.subscribers, result.verified_at,
-           coalesce(result.posted_at, result.verified_at) as posted_at
+           result.posted_at
       from radar_search_results result
       join radar_search_runs run on run.id = result.run_id and run.user_id = $1
      where result.user_id = $1
@@ -324,10 +326,12 @@ async function internetScope(
                 result.result_type,
                 coalesce(nullif(result.handle, ''), split_part(replace(result.url, 'https://t.me/s/', 'https://t.me/'), '/', 4)) as handle,
                 result.title, result.text, result.url, result.external_id,
-                coalesce(result.views, 0)::int as views,
+                result.views,
                 result.reactions,
-                coalesce(result.posted_at, result.verified_at) as posted_at,
+                result.posted_at,
                 result.quality_score,
+                ${radarMeasuredMedianSql("result")} as measured_median,
+                ${radarMeasuredRatioSql("result")} as measured_ratio,
                 result.verified_at
            from radar_search_results result
            join radar_search_runs run on run.id = result.run_id and run.user_id = $1
@@ -348,9 +352,9 @@ async function internetScope(
                   else id::int
                 end as tg_msg_id,
                 text, views, reactions, null::text as photo_url, null::text as media,
-                posted_at, null::numeric as median, null::int as matured,
-                case when result_type = 'trend' then 1.5::numeric end as ratio,
-                true as is_mature,
+                posted_at, measured_median as median, null::int as matured,
+                measured_ratio as ratio,
+                (verified_at >= posted_at + interval '48 hours') as is_mature,
                 null::bigint as idea_id, null::text as topic, null::text as hook,
                 null::text as structure, null::text as why_it_worked, null::text as ai_status,
                 url, result_type, quality_score
@@ -369,7 +373,7 @@ async function internetScope(
   return { competitors: sources, items, norms: [] as NormRow[] };
 }
 
-export async function GET(req: NextRequest) {
+async function handleGET(req: NextRequest) {
   const user = await getSessionUser(req);
   if (!user) return NextResponse.json({ error: "unauthorized" }, { status: 401 });
 
@@ -414,7 +418,7 @@ export async function GET(req: NextRequest) {
                 (select count(*)::int from competitor_posts p where p.competitor_id = c.id) as posts,
                 (select max(p.posted_at) from competitor_posts p where p.competitor_id = c.id) as newest_post_at
            from competitors c
-          where c.channel_id = $1 and c.network = 'tg'
+          where c.channel_id = $1 and c.network = 'tg' and c.is_active
           order by c.added_at`,
         [channelId],
       )
@@ -431,7 +435,7 @@ export async function GET(req: NextRequest) {
                     and cp.collected_at >= cp.posted_at + interval '${TREND_MATURE_HOURS} hours') as is_mature
              from competitor_posts cp
              join competitors c on c.id = cp.competitor_id
-            where c.channel_id = $1 and c.network = 'tg'
+            where c.channel_id = $1 and c.network = 'tg' and c.is_active
               and cp.views is not null and cp.posted_at is not null
          ),
          med as (
@@ -468,7 +472,7 @@ export async function GET(req: NextRequest) {
                 count(*)::int as matured
            from competitor_posts cp
            join competitors c on c.id = cp.competitor_id
-          where c.channel_id = $1 and c.network = 'tg'
+          where c.channel_id = $1 and c.network = 'tg' and c.is_active
             and cp.views is not null and cp.posted_at is not null
             and cp.posted_at >= now() - interval '${TREND_BASELINE_DAYS} days'
             and cp.posted_at < now() - interval '${TREND_MATURE_HOURS} hours'
@@ -481,7 +485,7 @@ export async function GET(req: NextRequest) {
     const waiting = (
       await pool.query<{ n: number }>(
         `select count(*)::int as n from competitor_suggestions
-          where channel_id = $1 and status = 'new' and on_topic is distinct from false`,
+          where channel_id = $1 and status = 'new' and on_topic = true`,
         [channelId],
       )
     ).rows[0].n;
@@ -501,7 +505,7 @@ export async function GET(req: NextRequest) {
   }
 }
 
-export async function POST(req: NextRequest) {
+async function handlePOST(req: NextRequest) {
   if (!hasTrustedMutationOrigin(req)) {
     return NextResponse.json({ ok: false, error: "forbidden" }, { status: 403 });
   }
@@ -707,3 +711,6 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ ok: false, error: "server" }, { status: 500 });
   }
 }
+
+export const GET = withProjectRoute(handleGET);
+export const POST = withProjectRoute(handlePOST);

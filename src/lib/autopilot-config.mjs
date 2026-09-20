@@ -3,26 +3,14 @@
 // the public option lists.
 import { ENGINE_PRESENTATION } from "./engine-presentation.mjs";
 
-// This list is also the order the channel settings dropdown renders, so the first entry
-// reads as the recommendation. DeepSeek Pro used to lead it while being the one model that
-// does not answer inside the worker attempt budget at all, and a channel that picked it
-// spent every draft's first attempt waiting for a timeout. Reliability decides the order,
-// and the notes say plainly what a slow model costs.
+// This list is also the order the channel settings dropdown renders. The technical ids are
+// durable product slots; provider-facing names below document the model currently routed
+// through each slot, while ENGINE_PRESENTATION supplies the user-facing Aurora names.
 export const AUTOPILOT_ENGINE_OPTIONS = Object.freeze([
   {
     id: "navy-deepseek-flash",
-    label: "DeepSeek V4 Flash",
-    note: "Быстро и надёжно доводит план до конца — вариант по умолчанию.",
-  },
-  {
-    id: "navy-minimax-m3",
-    label: "MiniMax M3",
-    note: "Длинный контекст и вариативная подача, отвечает медленнее.",
-  },
-  {
-    id: "navy-gpt-5-4",
-    label: "GPT-5.4",
-    note: "Сильнее в сложной структуре и аккуратной редактуре.",
+    label: "Qwen 3.8 27B",
+    note: "Быстрый вариант по умолчанию.",
   },
   {
     id: "navy-qwen-3-6",
@@ -30,26 +18,32 @@ export const AUTOPILOT_ENGINE_OPTIONS = Object.freeze([
     note: "Экономный вариант для коротких постов и подборок.",
   },
   {
+    id: "navy-gpt-5-4",
+    label: "GPT-5.6 Terra",
+    note: "Структура и аккуратная редактура.",
+  },
+  {
+    id: "navy-minimax-m3",
+    label: "DeepSeek V4 Flash",
+    note: "Быстрые альтернативные варианты подачи.",
+  },
+  {
     id: "navy-deepseek-pro",
-    label: "DeepSeek V4 Pro",
-    note: "Самый подробный, но часто не укладывается в отведённое время.",
+    label: "GPT-5.6 Sol",
+    note: "Развёрнутые материалы и подробный анализ.",
   },
 ].map((engine) => ({ ...engine, ...ENGINE_PRESENTATION[engine.id] })));
 
-// DeepSeek Flash is the only Navy model that reliably finishes an Autopilot topic/post
-// inside the worker attempt budget. MiniMax and GPT-5.4 stay selectable, but they are
-// too slow or too bursty to be the automatic first hop.
+// The default product slot now routes to Qwen 3.8.
 export const DEFAULT_AUTOPILOT_ENGINE = "navy-deepseek-flash";
-// Fallback order is recovery order, so it must be ranked by observed reliability rather
-// than by capability. GPT-5.4 was the second hop while the upstream route behind it
-// answered every Autopilot request with a provider error, which spent one attempt of every
-// draft's budget before recovery could even begin. It stays in the fleet — the same route
-// recovers — but only after the models that actually complete a draft.
+// Fallback order is recovery order: stable Qwen routes first, then Terra, retained
+// DeepSeek Flash, and finally the depth route.
 export const AUTOPILOT_FAST_FALLBACK_FLEET = Object.freeze([
   "navy-deepseek-flash",
   "navy-qwen-3-6",
-  "navy-minimax-m3",
   "navy-gpt-5-4",
+  "navy-minimax-m3",
+  "navy-deepseek-pro",
 ]);
 
 // A provider wave can fail without invalidating the plan. BullMQ retries the same durable
@@ -229,13 +223,27 @@ export function autopilotTopicSimilarity(left, right) {
 
 export function findAutopilotNearDuplicate(candidate, existing, threshold = AUTOPILOT_SIMILARITY_THRESHOLD) {
   let best = null;
+  const candidateOpening = String(candidate?.draft || "").trim().split("\n").find(Boolean) || "";
+  const candidateEnding = String(candidate?.draft || "").trim().split(/\n+/u).filter(Boolean).at(-1) || "";
   for (let index = 0; index < existing.length; index++) {
     const other = existing[index];
     const topicScore = autopilotTopicSimilarity(candidate?.topic, other?.topic);
     const textScore = autopilotTextSimilarity(candidate?.draft, other?.draft);
-    const score = Math.max(topicScore, textScore);
+    const otherOpening = String(other?.draft || "").trim().split("\n").find(Boolean) || "";
+    const otherEnding = String(other?.draft || "").trim().split(/\n+/u).filter(Boolean).at(-1) || "";
+    const openingScore = autopilotTextSimilarity(candidateOpening, otherOpening);
+    const endingScore = autopilotTextSimilarity(candidateEnding, otherEnding);
+    // Whole-post similarity misses a copied hook or stock final because those fragments are
+    // small compared with the body. Treat a near-identical opening or ending as repetition,
+    // while allowing short generic phrases to coexist when their wording is actually different.
+    const score = Math.max(
+      topicScore,
+      textScore,
+      openingScore >= 0.82 ? openingScore : 0,
+      endingScore >= 0.9 ? endingScore : 0,
+    );
     if (score >= threshold && (!best || score > best.score)) {
-      best = { index, score, topicScore, textScore };
+      best = { index, score, topicScore, textScore, openingScore, endingScore };
     }
   }
   return best;
@@ -264,14 +272,21 @@ export function autopilotPresentationVariant(index, quality = {}) {
   const presentation = PRESENTATIONS[Math.abs(Number(index) || 0) % PRESENTATIONS.length];
   const emojisAllowed = allowedDecoration(quality, "emojiPolicy", "maxEmojis");
   const hashtagsAllowed = allowedDecoration(quality, "hashtagsPolicy", "maxHashtags");
-  const emojiMode = emojisAllowed && index % 3 !== 0 ? "one" : "none";
+  const maximumEmojis = Math.max(0, Math.min(3, Number(quality?.maxEmojis || 0)));
+  const emojiCount = !emojisAllowed
+    ? 0
+    : quality?.emojiPolicy === "active"
+      ? 1 + (Math.abs(Number(index) || 0) % maximumEmojis)
+      : index % 3 === 0 ? 0 : 1;
+  const emojiMode = emojiCount === 0 ? "none" : emojiCount === 1 ? "one" : "multiple";
   const hashtagsMode = hashtagsAllowed && index % 5 === 4 ? "one_or_two" : "none";
   return {
-    key: `${Math.abs(Number(index) || 0) % PRESENTATIONS.length}-${emojiMode}-${hashtagsMode}`,
+    key: `${Math.abs(Number(index) || 0) % PRESENTATIONS.length}-${emojiCount}-${hashtagsMode}`,
     name: presentation[0],
     structure: presentation[1],
     hook: presentation[2],
     emojiMode,
+    emojiCount,
     hashtagsMode,
   };
 }
@@ -282,8 +297,8 @@ export function presentationVariantPrompt(variant) {
     `— форма: ${variant.name};`,
     `— структура: ${variant.structure};`,
     `— начни ${variant.hook};`,
-    variant.emojiMode === "one"
-      ? "— используй ровно один уместный эмодзи, не превращай текст в украшение;"
+    variant.emojiCount > 0
+      ? `— используй ${variant.emojiCount === 1 ? "ровно один" : `ровно ${variant.emojiCount}`} уместных эмодзи; не повторяй эмодзи из соседних постов;`
       : "— не используй эмодзи;",
     variant.hashtagsMode === "one_or_two"
       ? "— заверши одним или двумя предметными хэштегами;"
@@ -292,11 +307,39 @@ export function presentationVariantPrompt(variant) {
   ].join("\n");
 }
 
-function fallbackEmoji(quality, index) {
+const EMOJI_TOKEN = /\p{Extended_Pictographic}(?:\uFE0E|\uFE0F)?/gu;
+
+function emojiPool(quality) {
   const configured = String(quality?.allowedEmoji || "")
-    .match(/\p{Extended_Pictographic}/gu);
-  const pool = configured?.length ? configured : ["📌", "💡", "✅", "🔎", "🧭"];
-  return pool[Math.abs(Number(index) || 0) % pool.length];
+    .match(EMOJI_TOKEN);
+  return [...new Set(configured?.length ? configured : ["📌", "💡", "✅", "🔎", "🧭", "✨", "💬"])];
+}
+
+function applyEmojiVariation(draft, count, quality, index) {
+  const cleanDraft = String(draft || "")
+    .replace(EMOJI_TOKEN, "")
+    .replace(/[ \t]{2,}/gu, " ")
+    .replace(/ +\n/gu, "\n")
+    .trim();
+  if (!cleanDraft || count <= 0) return cleanDraft;
+  const pool = emojiPool(quality);
+  const chosen = Array.from(
+    { length: Math.min(count, pool.length) },
+    (_, offset) => pool[(Math.abs(Number(index) || 0) + offset) % pool.length],
+  );
+  const lines = cleanDraft.split("\n");
+  const targets = lines
+    .map((line, lineIndex) => ({ line, lineIndex }))
+    .filter(({ line }) => line.trim())
+    .slice(0, Math.max(1, chosen.length));
+  chosen.forEach((emoji, offset) => {
+    const target = targets[offset % targets.length];
+    if (!target) return;
+    lines[target.lineIndex] = offset === 0
+      ? `${emoji} ${lines[target.lineIndex].trimStart()}`
+      : `${lines[target.lineIndex].trimEnd()} ${emoji}`;
+  });
+  return lines.join("\n").trim();
 }
 
 function hashtagsFromBrief(brief, quality, limit) {
@@ -308,11 +351,8 @@ function hashtagsFromBrief(brief, quality, limit) {
 }
 
 export function applyAutopilotPresentation(draft, variant, quality = {}, brief = {}, index = 0) {
-  let value = String(draft || "").trim();
+  let value = applyEmojiVariation(draft, Number(variant.emojiCount || 0), quality, index);
   if (!value) return value;
-  if (variant.emojiMode === "one" && !/\p{Extended_Pictographic}/u.test(value)) {
-    value = `${fallbackEmoji(quality, index)} ${value}`;
-  }
   if (variant.hashtagsMode === "one_or_two" && !/(^|\s)#[\p{L}\p{N}_]+/u.test(value)) {
     const limit = Math.max(0, Math.min(2, Number(quality?.maxHashtags || 0)));
     const hashtags = hashtagsFromBrief(brief, quality, limit);

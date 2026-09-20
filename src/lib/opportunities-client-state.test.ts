@@ -13,5 +13,7 @@ describe("opportunities client state", () => {
   it("gives stale and missing actions a recoverable message", () => {
     expect(opportunityActionError("opportunity_stale")).toContain("Обновите карту");
     expect(opportunityActionError("opportunity_not_found")).toContain("Обновите карту");
+    expect(opportunityActionError("opportunity_source_unavailable")).toContain("Источник");
+    expect(opportunityActionError("opportunity_draft_invalid")).toContain("другую тему");
   });
 });

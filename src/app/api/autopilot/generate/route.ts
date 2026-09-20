@@ -1,3 +1,4 @@
+import { withProjectRoute } from "@/lib/project-route";
 // Д.9 — собрать план недели сейчас (кнопка «Собрать план») ДЛЯ ВЫБРАННОГО КАНАЛА.
 // Строит воркер (ИИ + аналитика).
 
@@ -32,7 +33,7 @@ import { GrowthArtifactLinkError, linkGrowthMovePlanInTransaction } from "@/lib/
 
 export const runtime = "nodejs";
 
-export async function POST(req: NextRequest) {
+async function handlePOST(req: NextRequest) {
   if (!hasTrustedMutationOrigin(req)) {
     return NextResponse.json({ ok: false, error: "forbidden_origin" }, { status: 403 });
   }
@@ -378,7 +379,7 @@ export async function POST(req: NextRequest) {
   }
 }
 
-export async function DELETE(req: NextRequest) {
+async function handleDELETE(req: NextRequest) {
   if (!hasTrustedMutationOrigin(req)) {
     return NextResponse.json({ ok: false, error: "forbidden_origin" }, { status: 403 });
   }
@@ -401,6 +402,7 @@ export async function DELETE(req: NextRequest) {
     const tx = await pool.connect();
     let planId: string | null = null;
     let repairJobId: string | null = null;
+    let recoveryJobId: string | null = null;
     try {
       await tx.query("begin");
       await tx.query(
@@ -408,22 +410,28 @@ export async function DELETE(req: NextRequest) {
           where project_id = $1 and channel_id = $2 for update`,
         [projectId, channelId],
       );
-      const cancelled = await tx.query(
+      const paused = await tx.query(
         `update autopilot_plan
-            set status = 'error', rules = 'cancelled', terminal_outcome = 'cancelled',
-                revision = revision + 1
+            set status = 'partial', terminal_outcome = 'partial',
+                build_report = (coalesce(build_report, '{}'::jsonb) - 'nextRetryAt')
+                  || '{"recoveryState":"paused_by_user","nextRetryAt":null}'::jsonb,
+                build_activity_at = now(), revision = revision + 1
           where id = (
             select id from autopilot_plan
-             where project_id = $1 and channel_id = $2 and status = 'building'
+             where project_id = $1 and channel_id = $2
+               and status in ('building', 'partial')
              order by created_at desc limit 1
              for update
           )
-          returning id, last_repair_job_id`,
+          returning id, last_repair_job_id, build_report`,
         [projectId, channelId],
       );
-      planId = cancelled.rows[0]?.id ? String(cancelled.rows[0].id) : null;
-      repairJobId = cancelled.rows[0]?.last_repair_job_id
-        ? String(cancelled.rows[0].last_repair_job_id)
+      planId = paused.rows[0]?.id ? String(paused.rows[0].id) : null;
+      repairJobId = paused.rows[0]?.last_repair_job_id
+        ? String(paused.rows[0].last_repair_job_id)
+        : null;
+      recoveryJobId = paused.rows[0]?.build_report?.autoRecovery?.jobId
+        ? String(paused.rows[0].build_report.autoRecovery.jobId)
         : null;
       if (planId) {
         await tx.query(
@@ -450,10 +458,11 @@ export async function DELETE(req: NextRequest) {
         const jobIds = [
           `autopilot-plan-${planId}`,
           ...(repairJobId ? [`autopilot-repair-${projectId}-${repairJobId}`] : []),
+          ...(recoveryJobId ? [`autopilot-continue-${planId}-${recoveryJobId}`] : []),
         ];
         for (const jobId of jobIds) {
           const job = await queue.getJob(jobId);
-          await job?.remove();
+          if (job) await job.remove().catch(() => {});
         }
       } catch (error) {
         // The DB status is the authority. An active worker will fail its next guarded
@@ -464,7 +473,7 @@ export async function DELETE(req: NextRequest) {
         });
       }
     }
-    return NextResponse.json({ ok: true, cancelled: Boolean(planId), planId });
+    return NextResponse.json({ ok: true, paused: Boolean(planId), cancelled: Boolean(planId), planId });
   } catch (error) {
     if (error instanceof ProjectAccessError) {
       return NextResponse.json({ ok: false, error: "access_denied" }, { status: 403 });
@@ -473,3 +482,6 @@ export async function DELETE(req: NextRequest) {
     return NextResponse.json({ ok: false, error: "server" }, { status: 500 });
   }
 }
+
+export const POST = withProjectRoute(handlePOST);
+export const DELETE = withProjectRoute(handleDELETE);

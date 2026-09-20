@@ -1,0 +1,71 @@
+.status {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: fit-content;
+  max-width: 100%;
+  min-height: 28px;
+  color: var(--text-3);
+}
+
+.label {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  font-size: 13px;
+  font-weight: 400;
+  line-height: 1.5;
+}
+
+.stop {
+  position: relative;
+  display: grid;
+  flex: 0 0 28px;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: 1px solid var(--border-strong);
+  border-radius: 50%;
+  background: transparent;
+  color: var(--text-3);
+  cursor: pointer;
+}
+
+/* Keep a 44px touch target around the visually compact control. */
+.stop::after {
+  position: absolute;
+  inset: -9px;
+  content: "";
+}
+
+.stop:hover {
+  background: var(--surface-inset);
+  color: var(--text);
+}
+
+.stop:focus-visible {
+  outline: 2px solid var(--brand-1);
+  outline-offset: 3px;
+}
+
+.stopIcon {
+  width: 8px;
+  height: 8px;
+  border-radius: 2px;
+  background: currentColor;
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .label {
+    animation: breathe 2.4s ease-in-out infinite;
+  }
+
+  .stop {
+    transition: background-color 150ms ease, color 150ms ease;
+  }
+}
+
+@keyframes breathe {
+  0%, 100% { opacity: 0.72; }
+  50% { opacity: 1; }
+}

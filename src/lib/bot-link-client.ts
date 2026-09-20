@@ -1,6 +1,7 @@
 import { projectFetch as fetch } from "@/lib/project-fetch";
 export interface BotLinkStatus {
   linked: boolean;
+  connectionKey?: string | null;
   bot: string | null;
   channelConnectUrl: string | null;
   botStatus: "up" | "down" | "not_configured" | "conflict";
@@ -47,6 +48,7 @@ export async function parseBotLinkStatusResponse(response: Response): Promise<Bo
   }
   return {
     linked: body.linked,
+    ...(body.connectionKey === null || (typeof body.connectionKey === "string" && /^[a-f0-9]{32}$/u.test(body.connectionKey)) ? { connectionKey: body.connectionKey } : {}),
     bot: body.bot ?? null,
     channelConnectUrl: body.channelConnectUrl ?? null,
     botStatus: body.botStatus as BotLinkStatus["botStatus"],

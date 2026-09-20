@@ -1,3 +1,4 @@
+import { withProjectRoute } from "@/lib/project-route";
 import { randomUUID } from "node:crypto";
 import { NextRequest } from "next/server";
 
@@ -27,12 +28,12 @@ async function mutationContext(req: NextRequest, ctx: Context) {
   return { requestId, user, id };
 }
 
-export async function PATCH(req: NextRequest, ctx: Context) {
+async function handlePATCH(req: NextRequest, ctx: Context) {
   if (!hasTrustedMutationOrigin(req)) {
     return trackingJson({ ok: false, error: "forbidden_origin" }, 403);
   }
   const context = await mutationContext(req, ctx);
-  if ("response" in context) return context.response;
+  if ("response" in context) return context.response!;
   const parsed = await readTrackingBodyResult(req, ["expectedVersion", "name", "values"]);
   if (!parsed.ok) return trackingBodyFailure(parsed, context.requestId);
   const body = parsed.body;
@@ -48,12 +49,12 @@ export async function PATCH(req: NextRequest, ctx: Context) {
   }
 }
 
-export async function DELETE(req: NextRequest, ctx: Context) {
+async function handleDELETE(req: NextRequest, ctx: Context) {
   if (!hasTrustedMutationOrigin(req)) {
     return trackingJson({ ok: false, error: "forbidden_origin" }, 403);
   }
   const context = await mutationContext(req, ctx);
-  if ("response" in context) return context.response;
+  if ("response" in context) return context.response!;
   const parsed = await readTrackingBodyResult(req, ["expectedVersion"]);
   if (!parsed.ok) return trackingBodyFailure(parsed, context.requestId);
   const body = parsed.body;
@@ -67,3 +68,6 @@ export async function DELETE(req: NextRequest, ctx: Context) {
     return trackingApiError(error, context.requestId);
   }
 }
+
+export const PATCH = withProjectRoute(handlePATCH);
+export const DELETE = withProjectRoute(handleDELETE);

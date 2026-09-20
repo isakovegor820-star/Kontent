@@ -128,6 +128,7 @@ export type MonthlyCampaignPlanRecord = {
 export type MonthlyCampaignRegenerationRecord = {
   id: number;
   planId: number;
+  resultPlanId: number | null;
   scope: MonthlyCampaignRegenerationScope;
   weekStartsOn: string | null;
   status: "pending" | "processing" | "completed" | "stale" | "retryable_failed" | "failed" | "cancelled";
@@ -628,7 +629,7 @@ export async function getMonthlyCampaign(input: {
     itemsByPlan.set(item.planId, list);
   }
   const regenerationResult = await input.pool.query<Record<string, unknown>>(
-    `select id, plan_id, scope, week_starts_on, status, base_plan_version,
+    `select id, plan_id, result_plan_id, scope, week_starts_on, status, base_plan_version,
             error_code, created_at, updated_at, completed_at
        from monthly_campaign_regeneration_operations
       where campaign_id = $1 and project_id = $2
@@ -662,6 +663,7 @@ export async function getMonthlyCampaign(input: {
     regenerations: regenerationResult.rows.map((row) => ({
       id: Number(row.id),
       planId: Number(row.plan_id),
+      resultPlanId: row.result_plan_id == null ? null : Number(row.result_plan_id),
       scope: String(row.scope) as MonthlyCampaignRegenerationScope,
       weekStartsOn: row.week_starts_on == null ? null : dateOnly(row.week_starts_on),
       status: String(row.status) as MonthlyCampaignRegenerationRecord["status"],

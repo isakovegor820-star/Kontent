@@ -1,4 +1,6 @@
 "use client";
+import { useProjectFetch } from "@/lib/use-project-transport";
+
 
 import { projectNativeUrl } from "@/lib/project-native-url";
 
@@ -111,6 +113,7 @@ function emailError(code?: string, provider?: string): string {
 }
 
 export function ProfileBriefSection() {
+  const fetch = useProjectFetch();
   const store = useStore();
   const router = useRouter();
   const uid = useId();
@@ -196,7 +199,7 @@ export function ProfileBriefSection() {
         if (!controller.signal.aborted) setLoading(false);
       });
     return () => controller.abort();
-  }, [channelId]);
+  }, [channelId, fetch]);
   /* eslint-enable react-hooks/set-state-in-effect */
 
   useEffect(() => {

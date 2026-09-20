@@ -6,6 +6,7 @@ import { getPool } from "./db";
 import { requireSelectedProjectPermission } from "./project-permissions";
 import { RELEASE_1_FEATURE, TODAY_RANKING_VERSION, release1Enabled } from "./content-intelligence";
 import { topicFromSourceText } from "./reference-adaptation";
+import { loadTodayPublications, type TodayPublication } from "./today-publications";
 
 type Queryable = Pick<Pool | PoolClient, "query">;
 
@@ -85,6 +86,8 @@ export type TodayBoard = {
   availability: "ready" | "partial" | "unavailable";
   items: TodayItem[];
   completedItems: TodayCompletedItem[];
+  hiddenRecommendationKinds?: TodayRecommendationKind[];
+  publicationQueue?: { state: "ready" | "unavailable"; items: TodayPublication[] };
   partialErrors: Array<{ source: TodaySource; message: string }>;
   sourceStatuses: Array<{
     source: TodaySource;
@@ -177,6 +180,7 @@ async function scopeFor(db: Queryable, actorUserId: number, requestedChannelId: 
   return {
     projectId: membership.projectId,
     timezone: project.timezone,
+    canPublish: membership.role === "owner" || membership.role === "publisher",
     channelId: row ? Number(row.id) : null,
     label: row ? channelLabel(row) : "Канал не подключён",
     channels: rows.map((candidate) => ({
@@ -265,13 +269,16 @@ async function opportunityItems(
   scope: { projectId: number; channelId: number },
   label: string,
   timezone: string,
+  userId: number,
 ): Promise<TodayItem[]> {
   const rows = (await db.query<{
     id: string; title: string; confidence: "low" | "medium" | "high"; epistemic_state: string;
     observed_at: string | null; expires_at: string; fingerprint: string; evidence: Record<string, unknown>;
     source_available: boolean;
-  }>(`select snapshot.id, snapshot.title, snapshot.confidence, snapshot.epistemic_state,
+    growth_move_id: string; action_href: string; artifact_draft_id: string | null; angle?: string;
+  }>(`select snapshot.id, snapshot.title, snapshot.independent_angle as angle, snapshot.confidence, snapshot.epistemic_state,
              snapshot.observed_at::text, snapshot.expires_at::text, snapshot.fingerprint, snapshot.evidence,
+             move.id as growth_move_id, move.action_href, move.artifact_draft_id,
              exists (
                select 1
                  from competitor_posts source_post
@@ -287,31 +294,49 @@ async function opportunityItems(
                   and length(trim(source_post.text)) > 0
              ) as source_available
         from opportunity_snapshots snapshot
+        join growth_moves move on move.id = snapshot.growth_move_id
+          and move.project_id = snapshot.project_id and move.channel_id = snapshot.channel_id
         where snapshot.project_id = $1 and snapshot.channel_id = $2 and snapshot.expires_at > now()
-        order by snapshot.observed_at desc nulls last, snapshot.expires_at desc, snapshot.id desc limit 2`, [scope.projectId, scope.channelId])).rows;
+          and move.status = 'open'
+          and move.artifact_draft_id is null
+          and not exists (
+            select 1 from today_item_states state
+             where state.project_id = $1 and state.channel_id = $2 and state.user_id = $3
+               and state.fingerprint = encode(sha256(convert_to('today:' || $4 || ':opportunity:' || snapshot.id || ':' || snapshot.fingerprint, 'UTF8')), 'hex')
+               and state.state <> 'active'
+               and (state.state <> 'snoozed' or state.snoozed_until is null or state.snoozed_until > now())
+          )
+        order by snapshot.observed_at desc nulls last, snapshot.expires_at desc, snapshot.id desc limit 20`, [scope.projectId, scope.channelId, userId, TODAY_RANKING_VERSION])).rows;
   const gap = rows.length > 0 ? await nextCalendarGap(db, scope, timezone).catch(() => null) : null;
   return rows.map((row, index) => {
     const sourceId = Number(row.evidence?.sourceId);
     const actionable = row.source_available === true && row.evidence?.sourceKind === "competitor_post"
       && Number.isSafeInteger(sourceId) && sourceId > 0;
     const fillsGap = index === 0 && Boolean(gap) && actionable;
+    const growthHref = Number(row.growth_move_id) > 0
+      ? row.artifact_draft_id
+        ? `/app/composer?draft=${Number(row.artifact_draft_id)}&from=today`
+        : `/app/studio?growthMove=${Number(row.growth_move_id)}&channel=${scope.channelId}&intent=create`
+      : null;
     return {
       fingerprint: sha(`today:${TODAY_RANKING_VERSION}:opportunity:${row.id}:${row.fingerprint}`),
-      type: "opportunity", title: row.title,
+      type: "opportunity", title: row.evidence?.sourceKind === "audience_question"
+        ? row.angle?.match(/«([^»]+)»/u)?.[1] || row.title : row.title,
       whyNow: fillsGap && gap
-        ? `В календаре свободно ${localDateLabel(gap)}. Эта актуальная возможность лучше других подходит, чтобы заполнить окно.`
-        : index === 0 ? "Это самая свежая свободная тема с доказуемым источником." : "Сигнал ещё актуален и подходит для самостоятельного материала.",
+        ? `В календаре свободно ${localDateLabel(gap)}. Подготовьте материал по этой теме для ближайшей публикации.`
+        : row.artifact_draft_id ? "Материал уже создан. Проверьте его и выберите время публикации."
+          : "Тема найдена в источниках канала. Подготовьте самостоятельный материал и проверьте результат.",
       channelId: scope.channelId, channelLabel: label, confidence: row.confidence,
       epistemicState: row.epistemic_state === "insufficient_data" ? "insufficient_data" : "inferred",
       freshness: hoursAgo(row.observed_at), priority: 80 - index,
-      primaryAction: actionable
+      primaryAction: growthHref ? { label: row.artifact_draft_id ? "Открыть материал" : "Подготовить материал", href: growthHref } : actionable
         ? { label: fillsGap ? "Заполнить окно" : "Создать черновик", href: `/app/opportunities?opportunity=${row.id}&channel=${scope.channelId}` }
         : { label: "Открыть возможность", href: `/app/opportunities?opportunity=${row.id}&channel=${scope.channelId}` },
       secondaryAction: { label: "Напомнить завтра", state: "snoozed" },
       evidence: { kind: "opportunity", id: Number(row.id) },
       sourceLabel: typeof row.evidence?.sourceLabel === "string" && row.evidence.sourceLabel.trim()
         ? row.evidence.sourceLabel : "Карта возможностей",
-      smartAction: actionable ? {
+      smartAction: actionable && !growthHref ? {
         kind: fillsGap ? "fill_calendar_gap" : "create_opportunity_draft",
         subjectId: Number(row.id),
         ...(fillsGap && gap ? { scheduledLocalDate: gap } : {}),
@@ -321,7 +346,7 @@ async function opportunityItems(
   });
 }
 
-async function reviewItems(db: Queryable, scope: { projectId: number; channelId: number }, label: string): Promise<TodayItem[]> {
+async function reviewItems(db: Queryable, scope: { projectId: number; channelId: number }, label: string, userId: number): Promise<TodayItem[]> {
   const rows = (await db.query<{ id: string; version: string; updated_at: string; editorial_state: string }>(
     `select draft.id, draft.version, draft.updated_at::text,
             coalesce(workflow.state, 'draft') as editorial_state
@@ -330,7 +355,14 @@ async function reviewItems(db: Queryable, scope: { projectId: number; channelId:
        left join draft_editorial_workflows workflow on workflow.draft_id = draft.id and workflow.project_id = draft.project_id
       where draft.project_id = $1 and draft.purpose <> 'source_context'
         and (workflow.state in ('in_review','changes_requested') or draft.purpose = 'needs_review')
-      order by draft.updated_at desc limit 2`, [scope.projectId, scope.channelId])).rows;
+        and not exists (
+          select 1 from today_item_states state
+           where state.project_id = $1 and state.channel_id = $2 and state.user_id = $3
+             and state.fingerprint = encode(sha256(convert_to('today:' || $4 || ':review:' || draft.id || ':' || draft.version, 'UTF8')), 'hex')
+             and state.state <> 'active'
+             and (state.state <> 'snoozed' or state.snoozed_until is null or state.snoozed_until > now())
+        )
+      order by draft.updated_at desc limit 20`, [scope.projectId, scope.channelId, userId, TODAY_RANKING_VERSION])).rows;
   return rows.map((row) => {
     return {
       fingerprint: sha(`today:${TODAY_RANKING_VERSION}:review:${row.id}:${row.version}`),
@@ -487,11 +519,7 @@ async function resultSource(
   const currentStart = Temporal.Instant.from(new Date().toISOString()).toZonedDateTimeISO(timezone).toPlainDate().subtract({ days: 6 });
   const measured = rows.filter((row) => (row.views != null || row.reactions != null)
     && Temporal.PlainDate.compare(localDate(row.published_at, timezone), currentStart) >= 0);
-  const noteworthy = measured.find((candidate) => {
-    const baseline = rows.filter((row) => Number(row.post_id) !== Number(candidate.post_id) && row.views != null && new Date(row.published_at) < new Date(candidate.published_at));
-    return baseline.length >= 3;
-  }) ?? measured[0];
-  if (!noteworthy) return { items: [], pulse };
+  const items = measured.map((noteworthy): TodayItem => {
   const baselineValues = rows
     .filter((row) => Number(row.post_id) !== Number(noteworthy.post_id) && row.views != null && new Date(row.published_at) < new Date(noteworthy.published_at))
     .map((row) => Number(row.views)).sort((a, b) => a - b);
@@ -513,12 +541,12 @@ async function resultSource(
   const comparison = median != null && noteworthy.views != null
     ? ` Медиана предыдущих публикаций — ${Math.round(median).toLocaleString("ru-RU")} просмотров.` : "";
   const action = resultKind === "success"
-    ? { label: "Запланировать продолжение", kind: "continue_post" as const }
+    ? { label: "Подготовить продолжение", kind: "continue_post" as const }
     : resultKind === "weak"
       ? { label: "Подготовить улучшенную версию", kind: "improve_post" as const }
       : null;
   const item: TodayItem = {
-    fingerprint: sha(`today:${TODAY_RANKING_VERSION}:result:${noteworthy.post_id}`),
+    fingerprint: sha(`today:${TODAY_RANKING_VERSION}:result:${noteworthy.post_id}:${resultKind}`),
     type: "result",
     title: resultKind === "success" ? "Развить успешную публикацию" : resultKind === "weak" ? "Улучшить слабый результат" : "Проверить свежий результат публикации",
     whyNow: `${metrics}.${comparison} Это наблюдаемые данные, а не обещание роста.`,
@@ -532,7 +560,9 @@ async function resultSource(
     smartAction: action && canCreate ? { kind: action.kind, subjectId: Number(noteworthy.post_id) } : null,
     recommendationKind: resultKind === "success" ? "result_success" : resultKind === "weak" ? "result_weak" : "result_update",
   };
-  return { items: [item], pulse };
+  return item;
+  });
+  return { items, pulse };
 }
 
 /* Readiness comes from source truth, not visible cards: cards may already be done or snoozed. */
@@ -602,7 +632,7 @@ async function dailyReadinessDecision(
       fingerprint: sha(`today:${TODAY_RANKING_VERSION}:readiness:competitors:${scope.channelId}:${localDay}`),
       type: "risk",
       title: missing === 1 ? "Добавьте ещё одного конкурента" : "Добавьте двух конкурентов",
-      whyNow: `Сейчас у канала ${readiness.competitorCount} ${readiness.competitorCount === 1 ? "конкурент" : "конкурентов"}. Для ежедневных возможностей нужны минимум два активных источника.`,
+      whyNow: `Сейчас у канала ${readiness.competitorCount} ${readiness.competitorCount === 1 ? "конкурент" : "конкурентов"}. Ещё один активный источник поможет разнообразить темы и сравнивать сигналы.`,
       primaryAction: { label: "Добавить конкурентов", href: `/app/competitors?channel=${scope.channelId}` },
     };
   }
@@ -811,13 +841,16 @@ export async function loadTodayBoard(input: { actorUserId: number; channelId: nu
   };
   const channelId = scope.channelId;
   const sourceScope = { projectId: scope.projectId, channelId };
+  const publicationQueuePromise = loadTodayPublications(db, { ...sourceScope, timezone: scope.timezone, canPublish: scope.canPublish })
+    .then((items) => ({ state: "ready" as const, items }))
+    .catch(() => ({ state: "unavailable" as const, items: [] }));
   const loaded = await Promise.all([
     (async () => {
-      try { return { source: "opportunities" as const, items: await opportunityItems(db, sourceScope, scope.label, scope.timezone), failed: false, pulse: null }; }
+      try { return { source: "opportunities" as const, items: await opportunityItems(db, sourceScope, scope.label, scope.timezone, input.actorUserId), failed: false, pulse: null }; }
       catch { return { source: "opportunities" as const, items: [] as TodayItem[], failed: true, pulse: null }; }
     })(),
     (async () => {
-      try { return { source: "reviews" as const, items: await reviewItems(db, sourceScope, scope.label), failed: false, pulse: null }; }
+      try { return { source: "reviews" as const, items: await reviewItems(db, sourceScope, scope.label, input.actorUserId), failed: false, pulse: null }; }
       catch { return { source: "reviews" as const, items: [] as TodayItem[], failed: true, pulse: null }; }
     })(),
     (async () => {
@@ -859,14 +892,15 @@ export async function loadTodayBoard(input: { actorUserId: number; channelId: nu
   }).catch(() => null);
   const safeReadiness = readinessData
     ?? { competitorCount: 0, opportunityCount: 0, publishedCount: 0, statsCount: 0, doneToday: 0, snoozed: 0 };
-  const fallbackDecision = collected.length === 0 && readinessData
+  const visible = await applyUserState(db, input.actorUserId, sourceScope, collected);
+  const fallbackDecision = visible.length === 0 && readinessData
     ? await dailyReadinessDecision(db, sourceScope, scope.label, scope.timezone, readinessData).catch(() => null)
     : null;
   const items = rankTodayItems(await applyUserState(
     db,
     input.actorUserId,
     { projectId: scope.projectId, channelId },
-    fallbackDecision ? [fallbackDecision] : collected,
+    fallbackDecision ? [fallbackDecision] : visible,
   ));
   const completedItems = await loadCompletedItems(db, {
     projectId: scope.projectId,
@@ -882,12 +916,21 @@ export async function loadTodayBoard(input: { actorUserId: number; channelId: nu
     .map((status) => status.lastSuccessfulAt)
     .filter((value): value is string => Boolean(value))
     .sort();
+  const kinds: TodayRecommendationKind[] = ["opportunity", "calendar_gap", "result_success", "result_weak", "result_update"];
+  const preferenceFingerprints = kinds.map((recommendationKind) => todayPreferenceFingerprint({ ...sourceScope, recommendationKind }));
+  const preferences = (await db.query<{ fingerprint: string }>(
+    `select fingerprint from today_item_states where project_id = $1 and channel_id = $2 and user_id = $3
+      and fingerprint = any($4::char(64)[]) and state = 'dismissed'`,
+    [scope.projectId, channelId, input.actorUserId, preferenceFingerprints],
+  )).rows;
   return {
     ...shared,
     enabled,
     availability,
     items,
     completedItems,
+    hiddenRecommendationKinds: kinds.filter((_, index) => preferences.some((row) => row.fingerprint === preferenceFingerprints[index])),
+    publicationQueue: await publicationQueuePromise,
     partialErrors,
     sourceStatuses,
     lastSuccessfulAt: successfulTimes.at(-1) ?? null,

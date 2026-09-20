@@ -46,7 +46,7 @@ const acceptedJobs = new Set<string>();
 function request(draftId: number, draftVersion: number, key: string, fingerprint?: string) {
   return new NextRequest("http://localhost/api/publication-operations", {
     method: "POST",
-    headers: { "content-type": "application/json", "idempotency-key": key },
+    headers: { "content-type": "application/json", "idempotency-key": key, "x-aurora-project-id": String(projectId) },
     body: JSON.stringify({
       draftId,
       draftVersion,

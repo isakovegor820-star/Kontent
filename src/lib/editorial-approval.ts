@@ -704,8 +704,9 @@ async function requireEditorialProject(
   db: Queryable,
   userId: number,
   permission: ProjectPermission,
+  options: { lock?: boolean } = {},
 ): Promise<number> {
-  return (await requireSelectedProjectPermission(db, userId, permission)).projectId;
+  return (await requireSelectedProjectPermission(db, userId, permission, options)).projectId;
 }
 
 export async function getEditorialSnapshotForUser(
@@ -826,7 +827,7 @@ export async function submitDraftForEditorialReview(
   pool: TransactionPool = getPool(),
 ): Promise<{ workflow: EditorialWorkflow; request: EditorialRequest }> {
   return transaction(pool, async (db) => {
-    const projectId = await requireEditorialProject(db, userId, "content.submit");
+    const projectId = await requireEditorialProject(db, userId, "content.submit", { lock: true });
     const workflowRow = await loadWorkflow(db, projectId, draftId, true);
     if (!workflowRow) throw new EditorialNotFoundError();
     assertExactRevision(workflowRow, input);
@@ -912,7 +913,7 @@ export async function addDraftEditorialComment(
   pool: TransactionPool = getPool(),
 ): Promise<EditorialComment> {
   return transaction(pool, async (db) => {
-    const projectId = await requireEditorialProject(db, userId, "content.review");
+    const projectId = await requireEditorialProject(db, userId, "content.review", { lock: true });
     const workflowRow = await loadWorkflow(db, projectId, draftId, true);
     if (!workflowRow) throw new EditorialNotFoundError();
     const revision = await db.query<{
@@ -976,7 +977,7 @@ export async function decideDraftEditorialRequest(
   pool: TransactionPool = getPool(),
 ): Promise<{ workflow: EditorialWorkflow; decisionId: number }> {
   return transaction(pool, async (db) => {
-    const projectId = await requireEditorialProject(db, userId, "content.approve");
+    const projectId = await requireEditorialProject(db, userId, "content.approve", { lock: true });
     // All editorial writers take locks in workflow -> request order. Keeping one
     // order prevents an edit that invalidates an approval from deadlocking a reviewer.
     const workflowRow = await loadWorkflow(db, projectId, draftId, true);

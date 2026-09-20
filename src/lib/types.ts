@@ -247,6 +247,8 @@ export interface RealPost {
   quarantined_at: string | null;
   quarantine_reason: string | null;
   schedule_revision: number;
+  /** Verified plan/outbox link for moving an existing Autopilot publication. */
+  autopilot_can_reschedule?: boolean;
   scheduled_timezone: string | null;
   scheduled_offset: string | null;
   scheduled_disambiguation: "reject" | "earlier" | "later" | null;

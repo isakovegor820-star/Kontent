@@ -5,7 +5,8 @@
 // видны как roadmap, но выбрать их нельзя.
 //
 // Пользователь выбирает вариант Авроры. Технические маршруты и резервирование
-// остаются внутри сервиса; ID сохраняются для совместимости настроек.
+// остаются внутри сервиса; ID — долговечные слоты и сохраняются для совместимости
+// уже записанных пользовательских и Autopilot-настроек при смене provider model.
 import { ENGINE_PRESENTATION } from "./engine-presentation.mjs";
 
 export type EngineId =
@@ -46,37 +47,37 @@ export interface Engine {
 const ENGINE_CONFIGS: Engine[] = [
   {
     id: "navy-deepseek-pro",
-    label: "DeepSeek V4 Pro",
+    label: "GPT-5.6 Sol",
     vendor: "NavyAI",
-    note: "Основная модель: лучше держит длинную задачу, голос автора и ограничения редакции.",
+    note: "Глубокая проработка сложных и длинных материалов.",
     needs: "NAVYAI_API_KEY",
     baseUrl: "https://api.navy/v1",
-    model: "deepseek-v4-pro",
+    model: "gpt-5.6-sol",
+    protocol: "openai",
+    keyEnv: "NAVYAI_API_KEY",
+    ruFriendly: false,
+  },
+  {
+    id: "navy-deepseek-flash",
+    label: "Qwen 3.8 27B",
+    vendor: "NavyAI",
+    note: "Быстрые повседневные посты и новые варианты подачи.",
+    needs: "NAVYAI_API_KEY",
+    baseUrl: "https://api.navy/v1",
+    model: "qwen3.8-27b",
     protocol: "openai",
     keyEnv: "NAVYAI_API_KEY",
     ruFriendly: false,
     recommended: true,
   },
   {
-    id: "navy-deepseek-flash",
-    label: "DeepSeek V4 Flash",
-    vendor: "NavyAI",
-    note: "Быстрее отвечает на короткие задачи: черновики, переписывание и варианты хуков.",
-    needs: "NAVYAI_API_KEY",
-    baseUrl: "https://api.navy/v1",
-    model: "deepseek-v4-flash",
-    protocol: "openai",
-    keyEnv: "NAVYAI_API_KEY",
-    ruFriendly: false,
-  },
-  {
     id: "navy-gpt-5-4",
-    label: "GPT-5.4",
+    label: "GPT-5.6 Terra",
     vendor: "NavyAI",
-    note: "Сильный универсальный редактор для сложной структуры и аккуратной переработки текста.",
+    note: "Универсальный редактор для структуры и аккуратной переработки текста.",
     needs: "NAVYAI_API_KEY",
     baseUrl: "https://api.navy/v1",
-    model: "gpt-5.4",
+    model: "gpt-5.6-terra",
     protocol: "openai",
     keyEnv: "NAVYAI_API_KEY",
     ruFriendly: false,
@@ -95,12 +96,12 @@ const ENGINE_CONFIGS: Engine[] = [
   },
   {
     id: "navy-minimax-m3",
-    label: "MiniMax M3",
+    label: "DeepSeek V4 Flash",
     vendor: "NavyAI",
-    note: "Помогающая модель для второго варианта, критики и длинного контекста.",
+    note: "Свежая подача, альтернативные углы и быстрые варианты текста.",
     needs: "NAVYAI_API_KEY",
     baseUrl: "https://api.navy/v1",
-    model: "minimax-m3",
+    model: "deepseek-v4-flash",
     protocol: "openai",
     keyEnv: "NAVYAI_API_KEY",
     ruFriendly: false,

@@ -1,4 +1,5 @@
-import { createHash } from "node:crypto";
+import { growthWeekStart, coversTopic, humanFreshness, loadSignals, persistGrowthCandidates, buildGrowthMoves } from "./growth-candidates.mjs";
+export { GROWTH_TIME_ZONE, moscowCalendarDate, growthWeekStart, significantTokens, tokenOverlap, coversTopic, growthFingerprint, goalFitForMove, evidenceWeight, effortWeight, rankGrowthMoves, buildGrowthMoves } from "./growth-candidates.mjs";
 import type { Pool, PoolClient } from "pg";
 
 import { getPool } from "./db";
@@ -11,8 +12,6 @@ import {
   type LibraryScoredItem,
   type LibraryScoringInput,
 } from "./library-scoring.mjs";
-
-export const GROWTH_TIME_ZONE = "Europe/Moscow";
 export const GROWTH_MOVE_KINDS = ["topic", "rhythm", "offer", "audience"] as const;
 export type GrowthMoveKind = (typeof GROWTH_MOVE_KINDS)[number];
 export const GROWTH_MOVE_STATUSES = ["open", "done", "skipped"] as const;
@@ -40,6 +39,20 @@ export type GrowthEvidence = {
   opportunityStrength: number;
   urgency: number;
   effort: "Небольшое" | "Среднее" | "Заметное";
+  opportunityType?: "breaking_news" | "rising_topic" | "evergreen_gap" | "competitor_gap" | "audience_need" | "offer_gap";
+  priorityScore?: number;
+  profileHash?: string;
+  publishBefore?: string | null;
+  expiresAt?: string;
+  sourceCount?: number;
+  sources?: Array<{ url: string; label?: string | null; trust?: number }>;
+  whyNow?: string;
+  relevanceScore?: number;
+  momentumScore?: number;
+  freshnessScore?: number;
+  trustScore?: number;
+  whitespaceScore?: number;
+  formatSuggestion?: string;
 };
 
 export type GrowthLifecycle =
@@ -88,7 +101,9 @@ export type GrowthMoveDraft = {
   title: string;
   reason: string;
   prompt: string;
-  sourceKind: "competitor_post" | "site_analysis" | "audience_question" | "stats" | null;
+  sourceKind: "competitor_post" | "site_analysis" | "audience_question" | "stats"
+    | "market_signal" | "news_event" | "trend_post" | "radar_result" | "rss_item"
+    | "channel_profile" | null;
   sourceId: string | null;
   sourceLabel: string | null;
   missingSlots: number | null;
@@ -142,6 +157,41 @@ type SiteOffer = {
   landing?: string | null;
 };
 type AudienceAsk = { id: number; question: string; occurrences?: number; lastSeenAt?: string | null };
+type ResearchProfile = {
+  niche: string;
+  audience: string;
+  goal: string;
+  taboo: string;
+  rubrics: string[];
+  formats: string[];
+  opportunityKeywords: string[];
+  excludedKeywords: string[];
+  language: string;
+  region: string | null;
+  searchText: string;
+  terms: string[];
+  excludedTerms: string[];
+  hash: string;
+};
+type MarketCandidate = {
+  sourceKind: "market_signal" | "news_event" | "channel_profile";
+  sourceId: string;
+  sourceLabel: string;
+  title: string;
+  summary: string;
+  observedAt: string;
+  type: NonNullable<GrowthEvidence["opportunityType"]>;
+  priority: number;
+  sourceCount: number;
+  sources: Array<{ url: string; label?: string | null; trust?: number }>;
+  relevance: number;
+  momentum: number;
+  freshness: number;
+  trust: number;
+  profileHash: string;
+  publishBefore: string | null;
+  expiresAt: string;
+};
 
 export type GrowthSignals = {
   ownPosts30d: OwnPost[];
@@ -151,85 +201,19 @@ export type GrowthSignals = {
   competitorWeeklyMedian: number | null;
   siteOffer: SiteOffer | null;
   audienceQuestion: AudienceAsk | null;
+  audienceQuestions?: AudienceAsk[];
   goal: string | null;
+  researchProfile?: ResearchProfile | null;
+  marketCandidates?: MarketCandidate[];
   ownPublishedCount: number;
   latestDataAt: string | null;
   trackingStatus: string | null;
 };
 
-const STOP_WORDS = new Set([
-  "этот", "эта", "это", "того", "также", "после", "перед", "только", "можно",
-  "нужно", "когда", "чтобы", "который", "которая", "которые", "сегодня",
-  "просто", "очень", "более", "между", "через", "или", "если", "ваш", "ваша",
-  "that", "this", "with", "from", "your", "have", "been", "will",
-]);
-
-export function moscowCalendarDate(now = new Date()): string {
-  return new Intl.DateTimeFormat("en-CA", {
-    timeZone: GROWTH_TIME_ZONE,
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-  }).format(now);
-}
-
-export function growthWeekStart(now = new Date()): string {
-  const ymd = moscowCalendarDate(now);
-  const [year, month, day] = ymd.split("-").map(Number);
-  const utc = new Date(Date.UTC(year, month - 1, day));
-  const dow = utc.getUTCDay();
-  utc.setUTCDate(utc.getUTCDate() - (dow === 0 ? 6 : dow - 1));
-  return utc.toISOString().slice(0, 10);
-}
-
 export function previousGrowthWeekStart(weekStart: string): string {
   const [year, month, day] = weekStart.split("-").map(Number);
   const utc = new Date(Date.UTC(year, month - 1, day - 7));
   return utc.toISOString().slice(0, 10);
-}
-
-export function significantTokens(text: string): Set<string> {
-  const matches = String(text || "")
-    .toLowerCase()
-    .replace(/https?:\/\/\S+/gu, " ")
-    .match(/[a-zа-яё0-9]{4,}/gu) ?? [];
-  return new Set(matches.filter((token) => !STOP_WORDS.has(token)));
-}
-
-export function tokenOverlap(left: string, right: string): number {
-  const a = significantTokens(left);
-  const b = significantTokens(right);
-  if (a.size === 0 || b.size === 0) return 0;
-  let shared = 0;
-  for (const token of a) {
-    if (b.has(token)) shared += 1;
-  }
-  return shared / Math.min(a.size, b.size);
-}
-
-export function coversTopic(ownPosts: OwnPost[], topicText: string): boolean {
-  return ownPosts.some((post) => tokenOverlap(post.text, topicText) >= 0.28);
-}
-
-export function growthFingerprint(parts: {
-  kind: GrowthMoveKind;
-  sourceKind: GrowthMoveDraft["sourceKind"];
-  sourceId: string | null;
-}): string {
-  return createHash("sha256")
-    .update(`${parts.kind}:${parts.sourceKind ?? "none"}:${parts.sourceId ?? "none"}`)
-    .digest("hex");
-}
-
-function clip(text: string, max: number): string {
-  const clean = text.replace(/\s+/g, " ").trim();
-  if (clean.length <= max) return clean;
-  return `${clean.slice(0, max - 1).trimEnd()}…`;
-}
-
-function topicLabel(text: string): string {
-  const firstLine = String(text || "").split(/\n/u)[0] || "";
-  return clip(firstLine.replace(/^#+\s*/u, ""), 80) || "эту тему";
 }
 
 export function buildGrowthDiagnosis(signals: GrowthSignals): {
@@ -240,7 +224,7 @@ export function buildGrowthDiagnosis(signals: GrowthSignals): {
   const gaps: string[] = [];
 
   if (signals.competitorCount < 2) {
-    gaps.push("Добавь хотя бы двух конкурентов — иначе сравнивать ритм и темы не с чем.");
+    gaps.push("Без конкурентов карта уже использует профиль канала и открытые источники. Их добавление сделает сравнение тем и ритма точнее.");
   }
   if (!signals.siteOffer) {
     gaps.push("Нет разбора сайта — ход про услугу не ставлю.");
@@ -304,231 +288,6 @@ export function buildGrowthDiagnosis(signals: GrowthSignals): {
   return { diagnosis, gaps };
 }
 
-const KIND_TIE_BREAK: Record<GrowthMoveKind, number> = {
-  topic: 0,
-  offer: 1,
-  audience: 2,
-  rhythm: 3,
-};
-
-export function goalFitForMove(goal: string | null, kind: GrowthMoveKind): number {
-  const value = String(goal ?? "").toLocaleLowerCase("ru");
-  if (!value) return 0;
-  if (/продаж|заяв|выруч|клиент|лид/u.test(value)) {
-    return ({ offer: 5, audience: 4, topic: 2, rhythm: 2 } as const)[kind];
-  }
-  if (/вовлеч|комьюнити|сообществ|диалог|общени/u.test(value)) {
-    return ({ audience: 5, topic: 4, rhythm: 3, offer: 2 } as const)[kind];
-  }
-  if (/охват|бренд|узнаваем|подпис|аудитор/u.test(value)) {
-    return ({ topic: 5, rhythm: 4, audience: 3, offer: 2 } as const)[kind];
-  }
-  if (/трафик|переход|сайт/u.test(value)) {
-    return ({ offer: 4, topic: 4, audience: 3, rhythm: 2 } as const)[kind];
-  }
-  return 1;
-}
-
-export function evidenceWeight(confidence: GrowthConfidence): number {
-  if (confidence === "answered") return 4;
-  if (confidence === "hypothesis") return 2;
-  return 0;
-}
-
-export function effortWeight(effort: GrowthEvidence["effort"]): number {
-  if (effort === "Небольшое") return 2;
-  if (effort === "Среднее") return 1;
-  return 0;
-}
-
-/**
- * Internal ordering only. It is deliberately additive and inspectable: goal fit (0–5),
- * evidence (0–4), opportunity (0–4), urgency (0–3), lower effort (0–2), and a
- * concrete prompt/source (0–2). Stable kind/fingerprint tie-breaks prevent refresh jitter.
- */
-export function rankGrowthMoves(
-  drafts: GrowthMoveDraft[],
-  goal: string | null,
-): GrowthMoveDraft[] {
-  return drafts
-    .map((draft) => ({
-      draft,
-      score:
-        goalFitForMove(goal, draft.kind)
-        + evidenceWeight(draft.confidence)
-        + Math.max(0, Math.min(4, draft.evidence.opportunityStrength))
-        + Math.max(0, Math.min(3, draft.evidence.urgency))
-        + effortWeight(draft.evidence.effort)
-        + (draft.prompt.trim() && draft.sourceKind ? 2 : 0),
-    }))
-    .sort((left, right) =>
-      right.score - left.score
-      || KIND_TIE_BREAK[left.draft.kind] - KIND_TIE_BREAK[right.draft.kind]
-      || left.draft.fingerprint.localeCompare(right.draft.fingerprint))
-    .slice(0, 3)
-    .map(({ draft }, index) => ({ ...draft, rankPosition: index + 1 }));
-}
-
-function evidence(input: Omit<GrowthEvidence, "freshnessLabel">): GrowthEvidence {
-  return {
-    ...input,
-    freshnessLabel: input.observedAt ? humanFreshness(input.observedAt) : "Дата источника недоступна",
-  };
-}
-
-export function buildGrowthMoves(signals: GrowthSignals): GrowthMoveDraft[] {
-  const drafts: GrowthMoveDraft[] = [];
-
-  const uncovered = signals.competitorHits.find((hit) => !coversTopic(signals.ownPosts30d, hit.text));
-  if (uncovered) {
-    const who = uncovered.title || `@${uncovered.handle}`;
-    const topic = topicLabel(uncovered.text);
-    drafts.push({
-      kind: "topic",
-      confidence: signals.competitorCount >= 2 && signals.competitorHits.length >= 3
-        ? "answered" : "hypothesis",
-      title: `Напиши свой пост про «${topic}»`,
-      reason: `Тема заходит у ${who}. Пишем новый текст в голосе канала, не копию.`,
-      prompt: [
-        `Напиши новый пост в голосе канала на тему: «${topic}».`,
-        `Тема заходит у конкурента ${who}. Не копируй чужой текст — напиши свой.`,
-      ].join(" "),
-      sourceKind: "competitor_post",
-      sourceId: String(uncovered.id),
-      sourceLabel: who,
-      missingSlots: null,
-      fingerprint: growthFingerprint({
-        kind: "topic",
-        sourceKind: "competitor_post",
-        sourceId: String(uncovered.id),
-      }),
-      evidence: evidence({
-        sourceType: "Пост конкурента",
-        sourceLabel: who,
-        href: "/app/competitors",
-        sampleSize: signals.competitorHits.length || null,
-        periodLabel: "последние 30 дней",
-        observedAt: signals.latestDataAt,
-        methodology: "Сравниваем подтверждённые залёты добавленных конкурентов с темами твоих публикаций за 30 дней.",
-        metricLabel: uncovered.views == null
-          ? "Пост отмечен как залёт; просмотры недоступны"
-          : `${uncovered.views} просмотров у исходного поста`,
-        opportunityStrength: uncovered.views != null && uncovered.views >= 1_000 ? 4 : 3,
-        urgency: 2,
-        effort: "Среднее",
-      }),
-    });
-  }
-
-  if (signals.competitorWeeklyMedian != null && signals.competitorCount >= 2) {
-    const target = Math.max(3, Math.round(signals.competitorWeeklyMedian));
-    const missing = target - signals.ownPosts7d;
-    if (missing > 0) {
-      drafts.push({
-        kind: "rhythm",
-        confidence: signals.ownPosts30d.length > 0 ? "answered" : "hypothesis",
-        title: `Верни ритм: не хватает ${missing} ${pluralPosts(missing)}`,
-        reason: `За неделю вышло ${signals.ownPosts7d}, у конкурентов обычно около ${target}.`,
-        prompt: `Собери недельный план так, чтобы закрыть дыру в ${missing} ${pluralPosts(missing)}.`,
-        sourceKind: "stats",
-        sourceId: "7d",
-        sourceLabel: "своя статистика",
-        missingSlots: Math.min(20, missing),
-        fingerprint: growthFingerprint({ kind: "rhythm", sourceKind: "stats", sourceId: "7d" }),
-        evidence: evidence({
-          sourceType: "Статистика публикаций",
-          sourceLabel: "своя статистика и ритм конкурентов",
-          href: "/app/analytics",
-          sampleSize: signals.competitorCount,
-          periodLabel: "7 дней против медианы за 28 дней",
-          observedAt: signals.latestDataAt,
-          methodology: "Сравниваем число твоих публикаций за 7 дней с медианным недельным темпом активных конкурентов за 28 дней.",
-          metricLabel: `${signals.ownPosts7d} против медианы ${target}; не хватает ${missing}`,
-          opportunityStrength: missing >= 3 ? 4 : missing >= 2 ? 3 : 2,
-          urgency: missing >= 2 ? 3 : 2,
-          effort: missing >= 4 ? "Заметное" : "Среднее",
-        }),
-      });
-    }
-  }
-
-  if (signals.siteOffer) {
-    const mentioned = coversTopic(signals.ownPosts30d, signals.siteOffer.answer)
-      || signals.ownPosts30d.some((post) => post.text.includes(signals.siteOffer!.domain));
-    if (!mentioned) {
-      const landing = signals.siteOffer.landing ? ` Посадочная: ${signals.siteOffer.landing}.` : "";
-      drafts.push({
-        kind: "offer",
-        confidence: "answered",
-        title: "Сделай пост с понятным предложением",
-        reason: clip(`На сайте есть услуга, в канале её не было: ${signals.siteOffer.answer}`, 500),
-        prompt: clip(
-          `Напиши пост с понятным предложением из разбора сайта: ${signals.siteOffer.answer}.${landing} Не обещай рост или результат, которого нет в фактах.`,
-          2000,
-        ),
-        sourceKind: "site_analysis",
-        sourceId: String(signals.siteOffer.jobId),
-        sourceLabel: signals.siteOffer.domain,
-        missingSlots: null,
-        fingerprint: growthFingerprint({
-          kind: "offer",
-          sourceKind: "site_analysis",
-          sourceId: String(signals.siteOffer.jobId),
-        }),
-        evidence: evidence({
-          sourceType: "Разбор сайта",
-          sourceLabel: signals.siteOffer.domain,
-          href: "/app/site-analysis",
-          sampleSize: 1,
-          periodLabel: "последний завершённый разбор",
-          observedAt: signals.latestDataAt,
-          methodology: "Сопоставляем подтверждённое предложение из последнего разбора сайта с темами публикаций канала за 30 дней.",
-          metricLabel: "Предложение найдено на сайте, но не найдено в недавних постах",
-          opportunityStrength: 4,
-          urgency: 2,
-          effort: "Среднее",
-        }),
-      });
-    }
-  }
-
-  if (signals.audienceQuestion) {
-    drafts.push({
-      kind: "audience",
-      confidence: "answered",
-      title: "Ответь на вопрос аудитории",
-      reason: `Вопрос ещё без поста: «${clip(signals.audienceQuestion.question, 180)}»`,
-      prompt: `Напиши пост-ответ на вопрос аудитории: «${clip(signals.audienceQuestion.question, 400)}»`,
-      sourceKind: "audience_question",
-      sourceId: String(signals.audienceQuestion.id),
-      sourceLabel: "запрос аудитории",
-      missingSlots: null,
-      fingerprint: growthFingerprint({
-        kind: "audience",
-        sourceKind: "audience_question",
-        sourceId: String(signals.audienceQuestion.id),
-      }),
-      evidence: evidence({
-        sourceType: "Запрос аудитории",
-        sourceLabel: "запрос аудитории",
-        href: "/app/studio/questions",
-        sampleSize: signals.audienceQuestion.occurrences ?? 1,
-        periodLabel: "актуальный открытый запрос",
-        observedAt: signals.audienceQuestion.lastSeenAt ?? signals.latestDataAt,
-        methodology: "Берём открытый вопрос с наивысшим приоритетом и частотой, на который ещё нет связанного ответа.",
-        metricLabel: signals.audienceQuestion.occurrences && signals.audienceQuestion.occurrences > 1
-          ? `${signals.audienceQuestion.occurrences} похожих обращения`
-          : "1 подтверждённый вопрос",
-        opportunityStrength: (signals.audienceQuestion.occurrences ?? 1) >= 3 ? 4 : 3,
-        urgency: 3,
-        effort: "Небольшое",
-      }),
-    });
-  }
-
-  return rankGrowthMoves(drafts, signals.goal);
-}
-
 export function growthActionHref(input: {
   id: number;
   kind: GrowthMoveKind;
@@ -542,25 +301,6 @@ export function growthActionHref(input: {
   if (input.kind === "rhythm") return `/app/autopilot?${params.toString()}`;
   params.set("intent", "create");
   return `/app/studio?${params.toString()}`;
-}
-
-function pluralPosts(n: number): string {
-  const abs = Math.abs(n) % 100;
-  const last = abs % 10;
-  if (abs >= 11 && abs <= 14) return "постов";
-  if (last === 1) return "пост";
-  if (last >= 2 && last <= 4) return "поста";
-  return "постов";
-}
-
-function humanFreshness(value: string | Date, now = new Date()): string {
-  const date = value instanceof Date ? value : new Date(value);
-  if (!Number.isFinite(date.getTime())) return "Свежесть неизвестна";
-  const hours = Math.max(0, Math.floor((now.getTime() - date.getTime()) / 3_600_000));
-  if (hours < 1) return "Обновлено меньше часа назад";
-  if (hours < 24) return `Обновлено ${hours} ч назад`;
-  const days = Math.floor(hours / 24);
-  return `Обновлено ${days} ${days === 1 ? "день" : days < 5 ? "дня" : "дней"} назад`;
 }
 
 export function growthPeriodLabel(weekStart: string): string {
@@ -587,11 +327,18 @@ function fallbackEvidence(row: {
     : row.source_kind === "site_analysis" ? "Разбор сайта"
       : row.source_kind === "audience_question" ? "Запрос аудитории"
         : row.source_kind === "stats" ? "Статистика публикаций"
+          : row.source_kind === "news_event" || row.source_kind === "rss_item" ? "Свежая новость"
+            : row.source_kind === "market_signal" || row.source_kind === "trend_post" || row.source_kind === "radar_result" ? "Рыночный сигнал"
+              : row.source_kind === "channel_profile" ? "Профиль канала"
           : "Источник не сохранён";
   const href = row.source_kind === "competitor_post" ? "/app/competitors"
     : row.source_kind === "site_analysis" ? "/app/site-analysis"
       : row.source_kind === "audience_question" ? "/app/studio/questions"
-        : row.source_kind === "stats" ? "/app/analytics" : null;
+        : row.source_kind === "stats" ? "/app/analytics"
+          : row.source_kind === "channel_profile" ? "/app/settings?section=content"
+            : row.source_kind === "news_event" || row.source_kind === "rss_item"
+              || row.source_kind === "market_signal" || row.source_kind === "trend_post" || row.source_kind === "radar_result"
+              ? "/app/radar" : null;
   return {
     sourceType,
     sourceLabel: row.source_label,
@@ -615,6 +362,7 @@ function parseEvidence(value: unknown, row: Parameters<typeof fallbackEvidence>[
   const source = value as Partial<GrowthEvidence>;
   const fallback = fallbackEvidence(row);
   return {
+    ...source,
     sourceType: typeof source.sourceType === "string" ? source.sourceType : fallback.sourceType,
     sourceLabel: typeof source.sourceLabel === "string" ? source.sourceLabel : fallback.sourceLabel,
     href: typeof source.href === "string" ? source.href : fallback.href,
@@ -679,217 +427,6 @@ function mapMove(row: {
     artifactDraftId,
     artifactAutopilotPlanId,
     outcome: null,
-  };
-}
-
-async function loadSignals(
-  pool: Pick<Pool, "query">,
-  input: { projectId: number; channelId: number },
-): Promise<GrowthSignals> {
-  const own = (
-    await pool.query<{ id: string; text: string; published_at: string }>(
-      `select id, text, published_at::text
-         from posts
-        where channel_id = $1
-          and project_id = $2
-          and status in ('published', 'published_unverified')
-          and published_at >= now() - interval '30 days'
-        order by published_at desc`,
-      [input.channelId, input.projectId],
-    )
-  ).rows.map((row) => ({
-    id: Number(row.id),
-    text: row.text || "",
-    publishedAt: row.published_at,
-  }));
-
-  const ownPosts7d = (
-    await pool.query<{ n: string }>(
-      `select count(*)::int as n
-         from posts
-        where channel_id = $1
-          and project_id = $2
-          and status in ('published', 'published_unverified')
-          and published_at >= (
-            date_trunc('day', now() at time zone 'Europe/Moscow') - interval '6 days'
-          ) at time zone 'Europe/Moscow'`,
-      [input.channelId, input.projectId],
-    )
-  ).rows[0];
-
-  const competitorCount = Number((
-    await pool.query<{ n: string }>(
-      `select count(*)::int as n
-         from competitors
-        where channel_id = $1 and is_active = true`,
-      [input.channelId],
-    )
-  ).rows[0]?.n ?? 0);
-
-  const competitorHits = (
-    await pool.query<{
-      id: string;
-      text: string | null;
-      views: number | null;
-      handle: string;
-      title: string | null;
-    }>(
-      `select p.id, p.text, p.views, c.handle, coalesce(c.custom_title, c.title) as title
-         from competitor_posts p
-         join competitors c on c.id = p.competitor_id
-        where c.channel_id = $1
-          and c.is_active = true
-          and p.posted_at >= now() - interval '30 days'
-          and (
-            p.is_hit = true
-            or (p.views is not null and p.views >= 50)
-          )
-        order by p.is_hit desc, p.views desc nulls last, p.posted_at desc
-        limit 12`,
-      [input.channelId],
-    )
-  ).rows.map((row) => ({
-    id: Number(row.id),
-    text: row.text || "",
-    views: row.views,
-    handle: row.handle,
-    title: row.title,
-  }));
-
-  const weekly = (
-    await pool.query<{ weekly: string }>(
-      `select percentile_cont(0.5) within group (order by weekly)::float as weekly
-         from (
-           select count(*)::float / 4.0 as weekly
-             from competitor_posts p
-             join competitors c on c.id = p.competitor_id
-            where c.channel_id = $1
-              and c.is_active = true
-              and p.posted_at >= now() - interval '28 days'
-            group by c.id
-           having count(*) >= 4
-         ) rates`,
-      [input.channelId],
-    )
-  ).rows[0];
-
-  const offerRow = (
-    await pool.query<{
-      job_id: string;
-      domain: string;
-      answer: string;
-    }>(
-      `select j.id as job_id, j.confirmed_domain as domain, a.short_answer as answer
-         from site_analysis_jobs j
-         join site_analysis_answers a
-           on a.analysis_id = j.id and a.run_revision = j.run_revision
-        where j.status = 'ready'
-          and j.project_id = $1
-          and a.question_id = 'offer.catalog'
-          and a.status in ('answered', 'hypothesis')
-        order by j.completed_at desc nulls last, j.id desc
-        limit 1`,
-      [input.projectId],
-    )
-  ).rows[0];
-
-  const landingRow = offerRow
-    ? (
-      await pool.query<{ answer: string }>(
-        `select a.short_answer as answer
-           from site_analysis_answers a
-          where a.analysis_id = $1
-            and a.question_id = 'funnel.landing_pages'
-            and a.status in ('answered', 'hypothesis')
-          limit 1`,
-        [Number(offerRow.job_id)],
-      )
-    ).rows[0]
-    : null;
-
-  const audienceRow = (
-    await pool.query<{ id: string; question: string; occurrences: number; last_seen_at: string | null }>(
-      `select id, question, occurrences, last_seen_at::text
-         from audience_questions
-        where project_id = $1 and status = 'new'
-          and 1 = (
-            select count(*)::int from channels
-             where project_id = $1 and network = 'tg' and is_active = true and status = 'active'
-          )
-        order by priority desc, occurrences desc, last_seen_at desc, id desc
-        limit 1`,
-      [input.projectId],
-    )
-  ).rows[0];
-
-  const briefRow = (
-    await pool.query<{ goal: string | null }>(
-      `select nullif(btrim(goal), '') as goal
-         from content_brief
-        where project_id = $1 and channel_id = $2
-        order by ready desc, updated_at desc
-        limit 1`,
-      [input.projectId, input.channelId],
-    )
-  ).rows[0];
-
-  const ownPublishedCount = Number((
-    await pool.query<{ n: string }>(
-      `select count(*)::int as n
-         from posts
-        where project_id = $1 and channel_id = $2
-          and status in ('published', 'published_unverified')`,
-      [input.projectId, input.channelId],
-    )
-  ).rows[0]?.n ?? 0);
-
-  const latestDataAt = (
-    await pool.query<{ collected_at: string | null }>(
-      `select greatest(
-          (select max(stats.collected_at) from post_stats stats
-            join posts post on post.id = stats.post_id and post.project_id = stats.project_id
-           where stats.project_id = $1 and post.channel_id = $2),
-          (select max(posted_at) from competitor_posts post
-            join competitors competitor on competitor.id = post.competitor_id
-           where competitor.channel_id = $2 and competitor.is_active = true)
-        )::text as collected_at`,
-      [input.projectId, input.channelId],
-    )
-  ).rows[0]?.collected_at ?? null;
-
-  const trackingStatus = (
-    await pool.query<{ status: string }>(
-      `select status from project_tracking_settings where project_id = $1`,
-      [input.projectId],
-    )
-  ).rows[0]?.status ?? null;
-
-  return {
-    ownPosts30d: own,
-    ownPosts7d: Number(ownPosts7d?.n ?? 0),
-    competitorCount,
-    competitorHits,
-    competitorWeeklyMedian: weekly?.weekly == null ? null : Number(weekly.weekly),
-    siteOffer: offerRow
-      ? {
-        jobId: Number(offerRow.job_id),
-        domain: offerRow.domain,
-        answer: offerRow.answer,
-        landing: landingRow?.answer ?? null,
-      }
-      : null,
-    audienceQuestion: audienceRow
-      ? {
-        id: Number(audienceRow.id),
-        question: audienceRow.question,
-        occurrences: Number(audienceRow.occurrences) || 1,
-        lastSeenAt: audienceRow.last_seen_at,
-      }
-      : null,
-    goal: briefRow?.goal ?? null,
-    ownPublishedCount,
-    latestDataAt,
-    trackingStatus,
   };
 }
 
@@ -1141,7 +678,7 @@ async function enrichMoveLifecycle(
   });
 }
 
-function buildReadiness(signals: GrowthSignals): GrowthReadinessItem[] {
+export function buildReadiness(signals: GrowthSignals): GrowthReadinessItem[] {
   const items: GrowthReadinessItem[] = [];
   if (signals.competitorCount < 2) items.push({
     id: "competitors",
@@ -1163,7 +700,7 @@ function buildReadiness(signals: GrowthSignals): GrowthReadinessItem[] {
   if (signals.trackingStatus !== "active") items.push({
     id: "tracking", title: "Подключи tracking",
     body: "Аврора сможет подтверждать переходы и заявки, а не принимать их отсутствие за ноль.",
-    href: "/app/settings?section=tracking", cta: "Настроить tracking",
+    href: "/app/settings?section=integrations&setting=tracking", cta: "Настроить tracking",
   });
   return items;
 }
@@ -1222,42 +759,7 @@ async function growthBoard(input: {
       await client.query("select pg_advisory_xact_lock(hashtextextended($1, 0))", [
         `growth:${channelId}:${weekStart}`,
       ]);
-      const existing = await loadWeekMoves(client, channelId, weekStart);
-      const incompleteLegacySet = existing.some((move) => move.actionHref === "/app/growth");
-      if (existing.length === 0 || incompleteLegacySet) {
-        const drafts = buildGrowthMoves(signals);
-        for (const draft of drafts) {
-          await client.query(
-            `insert into growth_moves (
-               project_id, channel_id, week_start, kind, status, confidence,
-               title, reason, prompt, action_href, source_kind, source_id,
-               source_label, fingerprint, missing_slots, rank_position, evidence
-             ) values (
-               $1, $2, $3::date, $4, 'open', $5,
-               $6, $7, $8, '/app/growth', $9, $10,
-               $11, $12, $13, $14, $15::jsonb
-             )
-             on conflict (channel_id, week_start, fingerprint) do nothing`,
-            [
-              membership.projectId,
-              channelId,
-              weekStart,
-              draft.kind,
-              draft.confidence,
-              clip(draft.title, 200),
-              clip(draft.reason, 500),
-              clip(draft.prompt, 2000),
-              draft.sourceKind,
-              draft.sourceId,
-              draft.sourceLabel,
-              draft.fingerprint,
-              draft.missingSlots,
-              draft.rankPosition ?? null,
-              JSON.stringify(draft.evidence),
-            ],
-          );
-        }
-      }
+      await persistGrowthCandidates(client, { projectId: membership.projectId, channelId }, buildGrowthMoves(signals, 100), weekStart);
       moves = await loadWeekMoves(client, channelId, weekStart);
       let actionHrefUpdated = false;
       for (const move of moves) {
@@ -1544,4 +1046,24 @@ export async function recordGrowthTelemetry(input: {
 
 export function isGrowthAccessError(error: unknown): boolean {
   return error instanceof ProjectAccessError;
+}
+
+function clip(text: string, max: number): string {
+  const clean = text.replace(/\s+/g, " ").trim();
+  if (clean.length <= max) return clean;
+  return `${clean.slice(0, max - 1).trimEnd()}…`;
+}
+
+function topicLabel(text: string): string {
+  const firstLine = String(text || "").split(/\n/u)[0] || "";
+  return clip(firstLine.replace(/^#+\s*/u, ""), 80) || "эту тему";
+}
+
+function pluralPosts(n: number): string {
+  const abs = Math.abs(n) % 100;
+  const last = abs % 10;
+  if (abs >= 11 && abs <= 14) return "постов";
+  if (last === 1) return "пост";
+  if (last >= 2 && last <= 4) return "поста";
+  return "постов";
 }

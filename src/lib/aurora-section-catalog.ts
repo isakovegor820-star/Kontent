@@ -23,6 +23,7 @@ export type AuroraSectionDependency =
   | "redis"
   | "publication_worker"
   | "telegram_worker"
+  | "knowledge_index"
   | "aurora_ai"
   | "media_generation"
   | "site_analysis"
@@ -78,7 +79,7 @@ const OPERATIONAL: Record<AuroraSectionId, SectionOperationalDefinition> = {
   },
   knowledge: {
     scenario: ["added", "processed", "searched", "used"],
-    dependencies: ["web_api", "postgresql", "aurora_ai"],
+    dependencies: ["web_api", "postgresql", "redis", "knowledge_index"],
     slos: [PAGE_SLO, API_SLO, AI_SLO],
   },
   recon: {

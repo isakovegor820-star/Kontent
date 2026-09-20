@@ -2,9 +2,15 @@
 # Credentials live in the GitHub environment `production`. Agents must trigger
 # this workflow instead of asking the user for SSH access.
 name: Deploy production
+run-name: Deploy ${{ inputs.target_sha || github.event.workflow_run.head_sha }}
 
 on:
   workflow_dispatch:
+    inputs:
+      target_sha:
+        description: Exact 40-character main commit that passed CI
+        required: true
+        type: string
   workflow_run:
     workflows: ["CI"]
     branches: [main]
@@ -22,19 +28,31 @@ concurrency:
 jobs:
   deploy:
     if: >-
-      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main') ||
       (github.event_name == 'workflow_run' &&
        github.event.workflow_run.conclusion == 'success' &&
+       github.event.workflow_run.event == 'push' &&
        github.event.workflow_run.head_repository.full_name == github.repository &&
        vars.AUTO_DEPLOY_ENABLED == 'true')
     runs-on: ubuntu-latest
     timeout-minutes: 40
     environment: production
+    env:
+      AURORA_DEPLOY_SHA: ${{ inputs.target_sha || github.event.workflow_run.head_sha }}
     steps:
+      - name: Validate pinned release identity
+        run: |
+          [[ "$AURORA_DEPLOY_SHA" =~ ^[0-9a-f]{40}$ ]] || {
+            echo "An exact target_sha is required; never resolve a moving main at deploy time" >&2
+            exit 1
+          }
+
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+          # Use trusted orchestration from the workflow commit, then check out the
+          # pinned application commit only after ancestry, CI and rollback checks.
+          fetch-depth: 0
 
       - name: Setup Node
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
@@ -42,11 +60,17 @@ jobs:
           node-version: 24
           package-manager-cache: false
 
+      - name: Validate main ancestry and preserve deployment tools
+        run: |
+          node scripts/production-release-plan.mjs validate-target
+          cp scripts/deploy-production.sh "${RUNNER_TEMP}/aurora-deploy-production.sh"
+
       - name: Verify required CI checks
         env:
           GH_TOKEN: ${{ github.token }}
-          AURORA_DEPLOY_SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
-          AURORA_REQUIRED_CI_CHECKS: ${{ vars.REQUIRED_CI_CHECKS }}
+          # build is the fail-closed aggregate of all CI jobs. Optional extra checks
+          # remain supported; the aggregate can never be removed by configuration.
+          AURORA_REQUIRED_CI_CHECKS: build,${{ vars.REQUIRED_CI_CHECKS }}
         run: |
           test -n "$AURORA_REQUIRED_CI_CHECKS"
           gh api \
@@ -83,11 +107,11 @@ jobs:
             "$PRODUCTION_SSH_HOST" \
             "$PRODUCTION_SSH_HOST_FINGERPRINT"
 
-      - name: Verify exact rollback boundary
+      - name: Plan exact release and rollback boundary
+        id: release
         env:
           PRODUCTION_SSH_HOST: ${{ secrets.PRODUCTION_SSH_HOST }}
           PRODUCTION_SSH_USER: ${{ secrets.PRODUCTION_SSH_USER }}
-          AURORA_DEPLOY_SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
           AURORA_SCHEMA_ROLLBACK_AUDIT: ${{ vars.SCHEMA_ROLLBACK_AUDIT }}
         run: |
           test -n "$PRODUCTION_SSH_USER"
@@ -100,21 +124,19 @@ jobs:
               "${PRODUCTION_SSH_USER}@${PRODUCTION_SSH_HOST}" \
               'current_path="$(readlink -f /opt/aurora-current)" && test -n "$current_path" && git -C "$current_path" rev-parse --verify HEAD'
           )"
-          if [[ ! "$current_sha" =~ ^[0-9a-f]{40}$ ]]; then
-            echo "Unable to resolve the exact current production SHA" >&2
-            exit 1
-          fi
-          expected="${current_sha}:${AURORA_DEPLOY_SHA}"
-          [[ "$AURORA_SCHEMA_ROLLBACK_AUDIT" == "$expected" ]] || {
-            echo "SCHEMA_ROLLBACK_AUDIT must equal the rehearsed current:target pair: $expected" >&2
-            exit 1
-          }
+          AURORA_CURRENT_SHA="$current_sha" node scripts/production-release-plan.mjs plan
+
+      - name: Checkout pinned application commit
+        if: steps.release.outputs.deploy == 'true'
+        run: |
+          git checkout --detach "$AURORA_DEPLOY_SHA"
+          [[ "$(git rev-parse --verify HEAD)" == "$AURORA_DEPLOY_SHA" ]]
 
       - name: Build production release artifact
+        if: steps.release.outputs.deploy == 'true'
         env:
           PRODUCTION_SSH_HOST: ${{ secrets.PRODUCTION_SSH_HOST }}
           PRODUCTION_SSH_USER: ${{ secrets.PRODUCTION_SSH_USER }}
-          AURORA_DEPLOY_SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
           DATABASE_URL: "postgres://user:pass@localhost:5432/db"
           REDIS_URL: "redis://127.0.0.1:6380"
           TG_BOT_TOKEN: "0000000000:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
@@ -162,11 +184,12 @@ jobs:
             .next
 
       - name: Deploy release
+        if: steps.release.outputs.deploy == 'true'
         env:
           PRODUCTION_SSH_HOST: ${{ secrets.PRODUCTION_SSH_HOST }}
           PRODUCTION_SSH_USER: ${{ secrets.PRODUCTION_SSH_USER }}
-          AURORA_DEPLOY_SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
-          AURORA_SCHEMA_ROLLBACK_AUDIT: ${{ vars.SCHEMA_ROLLBACK_AUDIT }}
+          AURORA_SCHEMA_ROLLBACK_AUDIT: ${{ steps.release.outputs.rollback_audit }}
+          AURORA_EXPECTED_CURRENT_SHA: ${{ steps.release.outputs.current_sha }}
           AURORA_ALLOW_LOCAL_PEER_MIGRATIONS: ${{ vars.ALLOW_LOCAL_PEER_MIGRATIONS }}
           AURORA_INCOMPLETE_RELEASE_SHA: ${{ vars.INCOMPLETE_RELEASE_SHA }}
           AURORA_AVATAR_BODY_LIMIT_BYTES: ${{ vars.AVATAR_BODY_LIMIT_BYTES }}
@@ -245,18 +268,29 @@ jobs:
             -o ServerAliveInterval=15 \
             -o ServerAliveCountMax=8 \
             "${PRODUCTION_SSH_USER}@${PRODUCTION_SSH_HOST}" \
-            "AURORA_DEPLOY_SHA=${AURORA_DEPLOY_SHA} AURORA_SCHEMA_ROLLBACK_AUDIT=${AURORA_SCHEMA_ROLLBACK_AUDIT} AURORA_ALLOW_LOCAL_PEER_MIGRATIONS=${AURORA_ALLOW_LOCAL_PEER_MIGRATIONS} AURORA_INCOMPLETE_RELEASE_SHA=${AURORA_INCOMPLETE_RELEASE_SHA} AURORA_AVATAR_BODY_LIMIT_BYTES=${AURORA_AVATAR_BODY_LIMIT_BYTES} AURORA_DB_POOL_MAX_WEB=${AURORA_DB_POOL_MAX_WEB} AURORA_DB_POOL_MAX_WORKER=${AURORA_DB_POOL_MAX_WORKER} AURORA_AI_SERVICE_ENGINE=${AURORA_AI_SERVICE_ENGINE} AURORA_AI_FALLBACK_ENGINES=${AURORA_AI_FALLBACK_ENGINES} AURORA_AI_SEMANTIC_ENGINE=${AURORA_AI_SEMANTIC_ENGINE} AURORA_AI_SEMANTIC_FALLBACK_ENGINES=${AURORA_AI_SEMANTIC_FALLBACK_ENGINES} AURORA_BUILD_ARCHIVE=${remote_archive} AURORA_BUILD_ARCHIVE_SHA256=${build_archive_sha256} AURORA_SOURCE_BUNDLE=${remote_source_bundle} AURORA_SOURCE_BUNDLE_SHA256=${source_bundle_sha256} bash -s" \
-            < scripts/deploy-production.sh
+            "AURORA_DEPLOY_SHA=${AURORA_DEPLOY_SHA} AURORA_EXPECTED_CURRENT_SHA=${AURORA_EXPECTED_CURRENT_SHA} AURORA_SCHEMA_ROLLBACK_AUDIT=${AURORA_SCHEMA_ROLLBACK_AUDIT} AURORA_ALLOW_LOCAL_PEER_MIGRATIONS=${AURORA_ALLOW_LOCAL_PEER_MIGRATIONS} AURORA_INCOMPLETE_RELEASE_SHA=${AURORA_INCOMPLETE_RELEASE_SHA} AURORA_AVATAR_BODY_LIMIT_BYTES=${AURORA_AVATAR_BODY_LIMIT_BYTES} AURORA_DB_POOL_MAX_WEB=${AURORA_DB_POOL_MAX_WEB} AURORA_DB_POOL_MAX_WORKER=${AURORA_DB_POOL_MAX_WORKER} AURORA_AI_SERVICE_ENGINE=${AURORA_AI_SERVICE_ENGINE} AURORA_AI_FALLBACK_ENGINES=${AURORA_AI_FALLBACK_ENGINES} AURORA_AI_SEMANTIC_ENGINE=${AURORA_AI_SEMANTIC_ENGINE} AURORA_AI_SEMANTIC_FALLBACK_ENGINES=${AURORA_AI_SEMANTIC_FALLBACK_ENGINES} AURORA_BUILD_ARCHIVE=${remote_archive} AURORA_BUILD_ARCHIVE_SHA256=${build_archive_sha256} AURORA_SOURCE_BUNDLE=${remote_source_bundle} AURORA_SOURCE_BUNDLE_SHA256=${source_bundle_sha256} bash -s" \
+            < "${RUNNER_TEMP}/aurora-deploy-production.sh"
 
       - name: Verify production deployment
+        if: steps.release.outputs.deploy == 'true'
         env:
+          AURORA_DEPLOYMENT_SMOKE_REQUIRE_TELEGRAM: "true"
           AURORA_DEPLOYMENT_SMOKE_BASE_URL: ${{ vars.PRODUCTION_BASE_URL }}
           AURORA_DEPLOYMENT_SMOKE_PROFILE: ${{ vars.ALLOW_DEGRADED_MAIL == 'true' && 'release' || 'full' }}
           AURORA_READINESS_TOKEN: ${{ secrets.AURORA_READINESS_TOKEN }}
           PRODUCTION_SSH_HOST: ${{ secrets.PRODUCTION_SSH_HOST }}
           PRODUCTION_SSH_USER: ${{ secrets.PRODUCTION_SSH_USER }}
-          AURORA_DEPLOY_SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
         run: |
+          actual_sha="$(ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=yes -o IdentitiesOnly=yes \
+            "${PRODUCTION_SSH_USER}@${PRODUCTION_SSH_HOST}" \
+            'git -C "$(readlink -f /opt/aurora-current)" rev-parse --verify HEAD')"
+          [[ "$actual_sha" == "$AURORA_DEPLOY_SHA" ]] || {
+            echo "Production SHA does not match the pinned release" >&2
+            exit 1
+          }
+          # The previous worker's Telegram heartbeat lives for 75 seconds. Wait
+          # beyond its TTL so the smoke proves the new process is receiving commands.
+          sleep 80
           smoke_attempts=12
           for attempt in $(seq 1 "$smoke_attempts"); do
             if npm run test:deployment-smoke; then
@@ -275,5 +309,5 @@ jobs:
             -o ServerAliveCountMax=8 \
             "${PRODUCTION_SSH_USER}@${PRODUCTION_SSH_HOST}" \
             "AURORA_DEPLOY_ACTION=rollback AURORA_DEPLOY_SHA=${AURORA_DEPLOY_SHA} bash -s" \
-            < scripts/deploy-production.sh
+            < "${RUNNER_TEMP}/aurora-deploy-production.sh"
           exit 1

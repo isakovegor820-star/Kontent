@@ -6,10 +6,12 @@ import {
   plannedPostCountForWeeks,
 } from "./autopilot-config.mjs";
 import { autopilotCandidateCount } from "./autopilot-candidate-selection.mjs";
+import { autopilotRetryableItemIndexes } from "./autopilot-build-progress.mjs";
 import { normalizeAutopilotQuickSettings } from "./autopilot-style.mjs";
 import { randomUUID } from "node:crypto";
 
 export const AUTOPILOT_CONTINUATION_JOB = "autopilot-continue";
+export const AUTOPILOT_MAX_NO_PROGRESS_ATTEMPTS = 3;
 export const AUTOPILOT_AUTO_RECOVERY_STRATEGIES = Object.freeze([
   "deterministic_format",
   "provider_retry",
@@ -17,7 +19,15 @@ export const AUTOPILOT_AUTO_RECOVERY_STRATEGIES = Object.freeze([
 ]);
 
 const AUTO_RECOVERY_STRATEGIES = new Set(AUTOPILOT_AUTO_RECOVERY_STRATEGIES);
+const AUTOMATIC_RECOVERY_STATES = new Set(["auto_retry_scheduled", "waiting_quota"]);
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu;
+
+function normalizedRepairIndexes(value) {
+  if (!Array.isArray(value)) return [];
+  return [...new Set(value.map(Number).filter((index) =>
+    Number.isSafeInteger(index) && index >= 0,
+  ))].sort((left, right) => left - right);
+}
 
 export function isAutopilotAutoRecoveryStrategy(value) {
   return AUTO_RECOVERY_STRATEGIES.has(String(value || ""));
@@ -37,11 +47,44 @@ export function autopilotAutoRecoveryReport(
     nowMs = Date.now(),
     delayMs = null,
     recoveryState = null,
+    readyCount = null,
+    repairIndexes = null,
+    trackProgress = false,
+    resetNoProgress = false,
+    maxNoProgressAttempts = AUTOPILOT_MAX_NO_PROGRESS_ATTEMPTS,
   } = {},
 ) {
   if (!UUID.test(String(recoveryJobId))) throw new Error("bad_autopilot_recovery_job_id");
+  const source = report && typeof report === "object" ? report : {};
+  const previousRecovery = source.autoRecovery && typeof source.autoRecovery === "object"
+    ? source.autoRecovery
+    : {};
   const attempt = Math.max(1, Math.round(Number(attemptNumber) || 1));
-  const scheduledDelayMs = enabled
+  const boundedMaxNoProgress = Math.max(1, Math.min(
+    10,
+    Math.round(Number(maxNoProgressAttempts) || AUTOPILOT_MAX_NO_PROGRESS_ATTEMPTS),
+  ));
+  const previousReadyCount = Number(previousRecovery.lastReadyCount ?? source.lastReadyCount);
+  const measuredReadyCount = Math.max(
+    0,
+    Math.floor(Number(readyCount ?? source.selectedCount ?? source.readyCount) || 0),
+  );
+  const previousNoProgressAttempts = Math.max(
+    0,
+    Math.floor(Number(previousRecovery.noProgressAttempts ?? source.noProgressAttempts) || 0),
+  );
+  const noProgressAttempts = resetNoProgress
+    ? 0
+    : trackProgress && Number.isFinite(previousReadyCount)
+      ? measuredReadyCount > previousReadyCount ? 0 : previousNoProgressAttempts + 1
+      : previousNoProgressAttempts;
+  const stalled = enabled && trackProgress && noProgressAttempts >= boundedMaxNoProgress;
+  const state = enabled
+    ? stalled
+      ? "paused_no_progress"
+      : String(recoveryState || "auto_retry_scheduled")
+    : "paused";
+  const scheduledDelayMs = enabled && !stalled
     ? delayMs != null && Number.isFinite(Number(delayMs))
       ? Math.max(0, Number(delayMs))
       : autopilotAutoRecoveryDelayMs(attempt)
@@ -50,18 +93,62 @@ export function autopilotAutoRecoveryReport(
     ? null
     : new Date(nowMs + scheduledDelayMs).toISOString();
   return {
-    ...(report && typeof report === "object" ? report : {}),
-    recoveryState: enabled
-      ? String(recoveryState || "auto_retry_scheduled")
-      : "paused",
+    ...source,
+    recoveryState: state,
     attemptNumber: attempt,
     nextRetryAt,
+    lastReadyCount: measuredReadyCount,
+    noProgressAttempts,
+    maxNoProgressAttempts: boundedMaxNoProgress,
     autoRecovery: {
       jobId: String(recoveryJobId).toLowerCase(),
       attemptNumber: attempt,
       nextRetryAt,
+      lastReadyCount: measuredReadyCount,
+      noProgressAttempts,
+      maxNoProgressAttempts: boundedMaxNoProgress,
+      repairIndexes: normalizedRepairIndexes(
+        repairIndexes ?? previousRecovery.repairIndexes ?? source.repairIndexes,
+      ),
     },
   };
+}
+
+export function autopilotContinuationRepairIndexes(row) {
+  const report = row?.build_report && typeof row.build_report === "object" ? row.build_report : {};
+  const recovery = report.autoRecovery && typeof report.autoRecovery === "object"
+    ? report.autoRecovery
+    : {};
+  const items = Array.isArray(row?.items) ? row.items : [];
+  const available = autopilotRetryableItemIndexes(items);
+  const availableSet = new Set(available);
+  const storedIndexes = normalizedRepairIndexes(recovery.repairIndexes ?? report.repairIndexes);
+  const stored = items.length > 0
+    ? storedIndexes.filter((index) => availableSet.has(index))
+    : storedIndexes;
+  const targetCount = Math.max(
+    0,
+    Number(row?.publication_target_count || row?.expected_post_count || report.publicationTargetCount) || 0,
+  );
+  const readyCount = Math.max(0, Number(report.selectedCount ?? report.readyCount) || 0);
+  const reportedDeficit = Number(report.selectionDeficit);
+  const deficit = Math.max(
+    0,
+    Number.isFinite(reportedDeficit) ? reportedDeficit : targetCount - readyCount,
+  );
+  if (!deficit) return [];
+  if (!items.length) return stored.slice(0, deficit);
+  const byIndex = new Map(items.map((item, index) => [
+    Number.isSafeInteger(Number(item?.i)) ? Number(item.i) : index,
+    item,
+  ]));
+  const fallback = available
+    .filter((index) => !stored.includes(index))
+    .sort((left, right) =>
+      Number(Boolean(byIndex.get(right)?.news)) - Number(Boolean(byIndex.get(left)?.news)) ||
+      left - right,
+    );
+  return [...stored, ...fallback].slice(0, deficit);
 }
 
 function continuationJobOptions(planId, recoveryJobId, delay = 0) {
@@ -81,14 +168,18 @@ function recoveryDescriptor(row, { force = false, nowMs = Date.now() } = {}) {
     ? report.autoRecovery
     : {};
   const recoveryJobId = String(recovery.jobId || "").toLowerCase();
+  const recoveryState = String(report.recoveryState || "");
+  const recoverableState = AUTOMATIC_RECOVERY_STATES.has(recoveryState) ||
+    (row?.status === "building" && ["auto_repair_running", "waiting_provider"].includes(recoveryState));
   if (
     (row?.enabled !== true && report.requestedBy !== "human") ||
     !isAutopilotAutoRecoveryStrategy(row?.repair_strategy || report.primaryFix) ||
-    !UUID.test(recoveryJobId)
+    !UUID.test(recoveryJobId) ||
+    (!force && !recoverableState)
   ) return null;
   const retryAtMs = Date.parse(String(recovery.nextRetryAt || report.nextRetryAt || ""));
   const delay = force || !Number.isFinite(retryAtMs) ? 0 : Math.max(0, retryAtMs - nowMs);
-  return { recoveryJobId, delay };
+  return { recoveryJobId, delay, repairIndexes: autopilotContinuationRepairIndexes(row) };
 }
 
 async function ensurePartialRecoveryState(pool, row, { force = false, nowMs = Date.now() } = {}) {
@@ -101,15 +192,20 @@ async function ensurePartialRecoveryState(pool, row, { force = false, nowMs = Da
     (row?.enabled !== true && row?.build_report?.requestedBy !== "human") ||
     !isAutopilotAutoRecoveryStrategy(row?.repair_strategy || row?.build_report?.primaryFix)
   ) return null;
+  const priorState = String(row?.build_report?.recoveryState || "");
+  if (!force && priorState && !AUTOMATIC_RECOVERY_STATES.has(priorState)) return null;
+  const reuseRecoveryJob = existing && !force && AUTOMATIC_RECOVERY_STATES.has(priorState);
   const buildReport = autopilotAutoRecoveryReport(row.build_report, {
     enabled: true,
-    ...(existing ? { recoveryJobId: existing.recoveryJobId } : {}),
+    ...(reuseRecoveryJob ? { recoveryJobId: existing.recoveryJobId } : {}),
     attemptNumber: Math.max(
       1,
       Number(row?.build_report?.autoRecovery?.attemptNumber || row?.repair_attempt || 0) +
-        (existing ? 0 : 1),
+        (reuseRecoveryJob ? 0 : 1),
     ),
     nowMs,
+    repairIndexes: autopilotContinuationRepairIndexes(row),
+    resetNoProgress: force,
     ...(force ? { delayMs: 0 } : {}),
   });
   const updated = (
@@ -159,6 +255,9 @@ export async function dispatchAutopilotContinuation({
       channelId,
       planId,
       recoveryJobId: descriptor.recoveryJobId,
+      ...(descriptor.repairIndexes.length > 0
+        ? { repairIndexes: descriptor.repairIndexes }
+        : {}),
     },
     continuationJobOptions(planId, descriptor.recoveryJobId, descriptor.delay),
   );
@@ -237,6 +336,7 @@ export async function reconcileBuildingAutopilotPlans({ pool, queue, limit = 250
   const rows = (
     await pool.query(
       `select plan.id, plan.project_id, plan.user_id, plan.channel_id, plan.status,
+              plan.items, plan.publication_target_count, plan.expected_post_count,
               plan.build_report, plan.repair_strategy, plan.repair_attempt,
               settings.enabled
          from autopilot_plan plan
@@ -254,6 +354,8 @@ export async function reconcileBuildingAutopilotPlans({ pool, queue, limit = 250
              plan.status = 'partial'
              and (settings.enabled = true or plan.build_report->>'requestedBy' = 'human')
              and plan.repair_strategy in ('deterministic_format', 'provider_retry', 'rewrite')
+             and coalesce(plan.build_report->>'recoveryState', '')
+               in ('', 'auto_retry_scheduled', 'waiting_quota')
            )
         )
         order by plan.build_activity_at nulls first, plan.created_at, plan.id
@@ -303,6 +405,7 @@ export async function resumeAutopilotPartialPlan({
   const row = (
     await pool.query(
       `select plan.id, plan.project_id, plan.user_id, plan.channel_id, plan.status,
+              plan.items, plan.publication_target_count, plan.expected_post_count,
               plan.build_report, plan.repair_strategy, plan.repair_attempt,
               settings.enabled
          from autopilot_plan plan
@@ -407,14 +510,13 @@ export async function enqueueWeeklyAutopilotPlan({
         user_id: userId,
         channel_id: channelId,
         enabled: true,
-      }, { force: true, nowMs });
+      }, { nowMs });
       if (!prepared) {
         return { status: "skipped", reason: "partial_requires_attention", planId: Number(partialPlan.id) };
       }
       const resumed = await dispatchAutopilotContinuation({
         queue,
         row: prepared,
-        force: true,
         nowMs,
       }).catch(() => null);
       return resumed

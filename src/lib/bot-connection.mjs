@@ -24,6 +24,59 @@ export function maskBotAccountEmail(value) {
   return `${visible}${local.length > visible.length ? "***" : ""}${email.slice(at)}`;
 }
 
+/** A comparison value for the connection the user actually saw, never a credential. */
+export function botConnectionKey(userId, chatId, revision = 0) {
+  if (chatId == null) return null;
+  return createHash("sha256").update(`bot-chat:${safeUserId(userId)}:${safeTelegramId(chatId, "chatId")}:${revision}`).digest("hex").slice(0, 32);
+}
+
+// The durable change journal also distinguishes a reconnection to the same chat.
+// Read both values in one PostgreSQL snapshot so stale confirmations stay invalid.
+export async function getBotAccountConnection(pool, userId) {
+  const row = (await pool.query(
+    `select tg_chat_id,
+            coalesce((select max(id) from bot_admin_action_events
+                       where target_type = 'user' and target_id = users.id
+                         and action in ('bot.chat.connected', 'bot.chat.disconnected', 'bot.chat.transferred', 'bot.chat.transferred_away')), 0) as connection_revision
+       from users where id = $1`,
+    [safeUserId(userId)],
+  )).rows[0];
+  return { telegramChatId: row?.tg_chat_id == null ? null : Number(row.tg_chat_id),
+    connectionKey: botConnectionKey(userId, row?.tg_chat_id ?? null, row?.connection_revision ?? 0) };
+}
+
+// Connection changes are rare and span two users when a chat moves. A single short
+// transaction lock gives connect/confirm/unlink one ordering across web and workers,
+// including moves in opposite directions. Normal bot commands do not take this lock.
+async function lockBotConnections(client) {
+  await client.query("select pg_advisory_xact_lock(hashtextextended('aurora:bot-connections', 0))");
+}
+
+async function recordBotConnectionChange(client, { actorUserId, userId, action, source }) {
+  await client.query(
+    `insert into bot_admin_action_events (actor_user_id, action, target_type, target_id, safe_data)
+     values ($1, $2, 'user', $3, $4::jsonb)`,
+    [actorUserId, action, userId, JSON.stringify({ source })],
+  );
+}
+
+async function revokeBotConnectionSessions(client, chatIds, userIds, exceptTokenHash = null) {
+  // Used tickets are disposable receipts, not the saved link. Their lifecycle
+  // constraint forbids marking them revoked; remove them and retain the audit event.
+  await client.query(
+    `delete from bot_connection_sessions
+      where used_at is not null and (telegram_chat_id = any($1::bigint[]) or confirmed_user_id = any($2::bigint[]))
+        and token_hash is distinct from $3`,
+    [chatIds, userIds, exceptTokenHash],
+  );
+  await client.query(
+    `update bot_connection_sessions set revoked_at = now()
+      where telegram_chat_id = any($1::bigint[]) and used_at is null and revoked_at is null
+        and token_hash is distinct from $2`,
+    [chatIds, exceptTokenHash],
+  );
+}
+
 function safeUserId(value) {
   const id = Number(value);
   if (!Number.isSafeInteger(id) || id <= 0) {
@@ -50,6 +103,7 @@ export async function createLegacyBotLink(pool, input) {
   const client = await pool.connect();
   try {
     await client.query("begin");
+    await lockBotConnections(client);
     await client.query(
       `select pg_advisory_xact_lock(hashtextextended($1::text, 0))`,
       [`legacy_bot_link:user:${userId}`],
@@ -80,6 +134,7 @@ export async function consumeLegacyBotLink(pool, input) {
   const client = await pool.connect();
   try {
     await client.query("begin");
+    await lockBotConnections(client);
     const candidate = (
       await client.query(
         `select user_id, channel_project_id from bot_links
@@ -135,6 +190,12 @@ export async function consumeLegacyBotLink(pool, input) {
     const previousChatId = account.tg_chat_id == null ? null : Number(account.tg_chat_id);
     const moved = linked.length > 0
       || (previousChatId !== null && previousChatId !== telegramChatId);
+    // Opening a settings link is not consent to replace an existing account.
+    // Transfers use the Telegram-initiated web flow with explicit allowMove.
+    if (moved) {
+      await client.query("rollback");
+      return { state: "move_required" };
+    }
     await client.query(
       `update users
           set tg_chat_id = case when id = $1 then $2 else null end
@@ -146,6 +207,9 @@ export async function consumeLegacyBotLink(pool, input) {
         where code = $1 and used_at is null`,
       [code],
     );
+    if (previousChatId !== telegramChatId) {
+      await recordBotConnectionChange(client, { actorUserId: userId, userId, action: "bot.chat.connected", source: "settings_link" });
+    }
     await client.query("commit");
     return { state: "connected", userId, telegramChatId, moved, projectId: link.channel_project_id == null ? null : Number(link.channel_project_id) };
   } catch (error) {
@@ -165,8 +229,8 @@ function telegramDisplayName(input) {
 
 function sessionState(row, nowMs = Date.now()) {
   if (!row) return "invalid";
-  if (row.used_at) return "confirmed";
   if (row.revoked_at) return "revoked";
+  if (row.used_at) return "confirmed";
   const expiresAt = Date.parse(String(row.expires_at || ""));
   if (!Number.isFinite(expiresAt) || expiresAt <= nowMs) return "expired";
   return "pending";
@@ -190,6 +254,7 @@ export async function createBotConnectionSession(pool, input) {
   const client = await pool.connect();
   try {
     await client.query("begin");
+    await lockBotConnections(client);
     await client.query("select pg_advisory_xact_lock($1::bigint)", [telegramChatId]);
     await client.query(
       `update bot_connection_sessions
@@ -239,8 +304,12 @@ export async function inspectBotConnectionSession(pool, input) {
       [tokenHash],
     )
   ).rows[0];
-  const state = sessionState(row, input?.nowMs);
+  let state = sessionState(row, input?.nowMs);
   if (!row) return { state };
+  if (state === "confirmed") {
+    const current = await pool.query(`select id from users where id = $1 and tg_chat_id = $2`, [row.confirmed_user_id, row.telegram_chat_id]);
+    if (!current.rows.length) state = "revoked";
+  }
 
   const result = {
     state,
@@ -298,6 +367,7 @@ export async function confirmBotConnectionSession(pool, input) {
   const client = await pool.connect();
   try {
     await client.query("begin");
+    await lockBotConnections(client);
     const session = (
       await client.query(
         `select token_hash, telegram_user_id, telegram_chat_id, expires_at,
@@ -310,10 +380,15 @@ export async function confirmBotConnectionSession(pool, input) {
     ).rows[0];
     const state = sessionState(session, input?.nowMs);
     if (state === "confirmed") {
+      if (Number(session.confirmed_user_id) !== userId) {
+        await client.query("rollback");
+        return { state: "used" };
+      }
+      const current = await client.query(`select id from users where id = $1 and tg_chat_id = $2`, [userId, session.telegram_chat_id]);
       await client.query("rollback");
-      return Number(session.confirmed_user_id) === userId
+      return current.rows.length > 0
         ? { state: "already_confirmed", telegramChatId: Number(session.telegram_chat_id) }
-        : { state: "used" };
+        : { state: "revoked" };
     }
     if (state !== "pending") {
       await client.query("rollback");
@@ -367,13 +442,16 @@ export async function confirmBotConnectionSession(pool, input) {
         where token_hash = $1 and used_at is null and revoked_at is null`,
       [tokenHash, userId],
     );
-    await client.query(
-      `update bot_connection_sessions
-          set revoked_at = now()
-        where telegram_chat_id = $1 and token_hash <> $2
-          and used_at is null and revoked_at is null`,
-      [telegramChatId, tokenHash],
-    );
+    await revokeBotConnectionSessions(client, [telegramChatId, ...(accountChatId == null ? [] : [accountChatId])], [userId, ...linked.map((row) => Number(row.id))], tokenHash);
+    // Invalidate pre-transfer links so a forgotten settings tab cannot reconnect a
+    // displaced account later without a new request from that account.
+    await client.query(`delete from bot_links where user_id = any($1::bigint[]) and used_at is null`, [[userId, ...linked.map((row) => Number(row.id))]]);
+    if (accountChatId !== telegramChatId || moveRequired) {
+      await recordBotConnectionChange(client, { actorUserId: userId, userId, action: moveRequired ? "bot.chat.transferred" : "bot.chat.connected", source: "web_confirmation" });
+      for (const previous of linked) {
+        await recordBotConnectionChange(client, { actorUserId: userId, userId: Number(previous.id), action: "bot.chat.transferred_away", source: "web_confirmation" });
+      }
+    }
     await client.query("commit");
     return {
       state: "connected",
@@ -388,13 +466,25 @@ export async function confirmBotConnectionSession(pool, input) {
   }
 }
 
-export async function disconnectBotChat(pool, input) {
+export async function disconnectBotAccount(pool, input) {
   const userId = Number(input?.userId);
-  const telegramChatId = safeTelegramId(input?.telegramChatId, "telegramChatId");
-  if (!Number.isSafeInteger(userId) || userId <= 0) return false;
+  if (!Number.isSafeInteger(userId) || userId <= 0) return { state: "invalid" };
+  if (typeof input?.expectedConnectionKey !== "string" || !/^[a-f0-9]{32}$/u.test(input.expectedConnectionKey)) return { state: "confirmation_required" };
   const client = await pool.connect();
   try {
     await client.query("begin");
+    await lockBotConnections(client);
+    const account = (await client.query(`select tg_chat_id from users where id = $1 for update`, [userId])).rows[0];
+    if (!account?.tg_chat_id) {
+      await client.query("rollback");
+      return { state: "already_disconnected" };
+    }
+    const telegramChatId = Number(account.tg_chat_id);
+    const current = await getBotAccountConnection(client, userId);
+    if (current.connectionKey !== input.expectedConnectionKey) {
+      await client.query("rollback");
+      return { state: "connection_changed" };
+    }
     await client.query("select pg_advisory_xact_lock($1::bigint)", [telegramChatId]);
     const disconnected = await client.query(
       `update users set tg_chat_id = null
@@ -402,18 +492,29 @@ export async function disconnectBotChat(pool, input) {
         returning id`,
       [userId, telegramChatId],
     );
-    await client.query(
-      `update bot_connection_sessions
-          set revoked_at = now()
-        where telegram_chat_id = $1 and used_at is null and revoked_at is null`,
-      [telegramChatId],
-    );
+    if (disconnected.rowCount !== 1) {
+      await client.query("rollback");
+      return { state: "connection_changed" };
+    }
+    await revokeBotConnectionSessions(client, [telegramChatId], [userId]);
+    await client.query(`delete from bot_links where user_id = $1 and used_at is null`, [userId]);
+    await recordBotConnectionChange(client, { actorUserId: userId, userId, action: "bot.chat.disconnected", source: input.source === "telegram" ? "telegram" : "settings_confirmation" });
     await client.query("commit");
-    return disconnected.rowCount === 1;
+    return { state: "disconnected" };
   } catch (error) {
     await client.query("rollback").catch(() => {});
     throw error;
   } finally {
     client.release();
   }
+}
+
+export async function disconnectBotChat(pool, input) {
+  const userId = Number(input?.userId);
+  if (!Number.isSafeInteger(userId) || userId <= 0) return false;
+  const telegramChatId = safeTelegramId(input?.telegramChatId, "telegramChatId");
+  const current = await getBotAccountConnection(pool, userId);
+  if (current.telegramChatId !== telegramChatId) return false;
+  const result = await disconnectBotAccount(pool, { userId, expectedConnectionKey: input?.expectedConnectionKey, source: "telegram" });
+  return result.state === "disconnected";
 }

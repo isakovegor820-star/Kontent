@@ -17,16 +17,14 @@ import {
 } from "./autopilot-config.mjs";
 
 describe("autopilot planning config", () => {
-  it("offers the engine it recommends first and demotes the one that cannot finish", () => {
-    // The dropdown renders this order, so leading with a model that never answers inside the
-    // attempt budget is how a channel ends up spending every draft on a timeout.
+  it("offers the recommended fast slot first and the depth slot last", () => {
     expect(AUTOPILOT_ENGINE_OPTIONS[0].id).toBe(DEFAULT_AUTOPILOT_ENGINE);
     expect(AUTOPILOT_ENGINE_OPTIONS.at(-1).id).toBe("navy-deepseek-pro");
     expect(AUTOPILOT_ENGINE_OPTIONS.map((option) => option.id)).toEqual([
       "navy-deepseek-flash",
-      "navy-minimax-m3",
-      "navy-gpt-5-4",
       "navy-qwen-3-6",
+      "navy-gpt-5-4",
+      "navy-minimax-m3",
       "navy-deepseek-pro",
     ]);
   });
@@ -35,12 +33,12 @@ describe("autopilot planning config", () => {
     expect(DEFAULT_AUTOPILOT_ENGINE).toBe("navy-deepseek-flash");
     expect(AUTOPILOT_FAST_FALLBACK_FLEET[0]).toBe("navy-deepseek-flash");
     expect(autopilotFallbackEngines("navy-gpt-5-4")[0]).toBe("navy-deepseek-flash");
-    // Recovery must not spend an attempt on the least reliable route first.
-    expect(AUTOPILOT_FAST_FALLBACK_FLEET.at(-1)).toBe("navy-gpt-5-4");
+    expect(AUTOPILOT_FAST_FALLBACK_FLEET.at(-1)).toBe("navy-deepseek-pro");
     expect(autopilotFallbackEngines("navy-deepseek-flash")).toEqual([
       "navy-qwen-3-6",
-      "navy-minimax-m3",
       "navy-gpt-5-4",
+      "navy-minimax-m3",
+      "navy-deepseek-pro",
     ]);
     expect(autopilotAiTimeouts({}).attemptTimeoutMs).toBe(30_000);
     expect(autopilotAiTimeouts({}).overallTimeoutMs).toBe(90_000);
@@ -90,6 +88,21 @@ describe("autopilot planning config", () => {
     expect(autopilotTextSimilarity(copied[0].draft, copied[0].draft)).toBe(1);
   });
 
+  it("rejects a copied hook or stock ending even when the post bodies differ", () => {
+    const previous = [{
+      topic: "Как вести переговоры",
+      draft: "Начнём с главного\n\nСоберите факты и позиции сторон.\n\nСохраните этот пост, чтобы не потерять.",
+    }];
+    expect(findAutopilotNearDuplicate({
+      topic: "Как проверить договор",
+      draft: "Начнём с главного\n\nВыпишите сроки, риски и ответственных.\n\nПроверьте сверку перед подписанием.",
+    }, previous)?.openingScore).toBe(1);
+    expect(findAutopilotNearDuplicate({
+      topic: "Как проверить договор",
+      draft: "Договор начинается не с подписи\n\nВыпишите сроки, риски и ответственных.\n\nСохраните этот пост, чтобы не потерять.",
+    }, previous)?.endingScore).toBe(1);
+  });
+
   it("varies presentation and only adds decorations allowed by the quality profile", () => {
     const quality = {
       emojiPolicy: "restrained",
@@ -110,12 +123,27 @@ describe("autopilot planning config", () => {
     expect(result).toMatch(/\p{Extended_Pictographic}/u);
     expect(result).toContain("#право");
 
+    const active = Array.from({ length: 3 }, (_, index) => {
+      const activeVariant = autopilotPresentationVariant(index, {
+        emojiPolicy: "active",
+        maxEmojis: 3,
+        allowedEmoji: "⚖️ 📌 💡 ✅",
+      });
+      return applyAutopilotPresentation("Хук\n\nОсновная мысль.", activeVariant, {
+        emojiPolicy: "active",
+        maxEmojis: 3,
+        allowedEmoji: "⚖️ 📌 💡 ✅",
+      }, {}, index);
+    });
+    expect(active.map((value) => value.match(/\p{Extended_Pictographic}/gu)?.length)).toEqual([1, 2, 3]);
+    expect(new Set(active.map((value) => value.match(/\p{Extended_Pictographic}/u)?.[0])).size).toBe(3);
+
     const strict = autopilotPresentationVariant(4, {
       emojiPolicy: "none",
       maxEmojis: 0,
       hashtagsPolicy: "none",
       maxHashtags: 0,
     });
-    expect(applyAutopilotPresentation("Текст", strict, {}, {}, 4)).toBe("Текст");
+    expect(applyAutopilotPresentation("🔥 Текст", strict, {}, {}, 4)).toBe("Текст");
   });
 });

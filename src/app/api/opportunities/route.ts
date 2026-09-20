@@ -1,6 +1,14 @@
+import { withProjectRoute } from "@/lib/project-route";
 import { NextRequest, NextResponse } from "next/server";
 
-import { isContentIntelligenceError, listOpportunitySnapshots, refreshOpportunitySnapshots } from "@/lib/content-intelligence";
+import {
+  getOpportunityMapContext,
+  isContentIntelligenceError,
+  listOpportunitySnapshots,
+  refreshOpportunitySnapshots,
+  type OpportunityListState,
+  type OpportunityListSurface,
+} from "@/lib/content-intelligence";
 import { ProjectAccessError } from "@/lib/project-permissions";
 import { hasTrustedMutationOrigin } from "@/lib/request-origin";
 import { getSessionUser } from "@/lib/session";
@@ -10,15 +18,29 @@ const channelId = (req: NextRequest) => {
   const value = Number(req.nextUrl.searchParams.get("channel"));
   return Number.isSafeInteger(value) && value > 0 ? value : null;
 };
+const listState = (req: NextRequest): OpportunityListState => {
+  const value = req.nextUrl.searchParams.get("view");
+  return value === "saved" || value === "used" || value === "hidden" ? value : "active";
+};
+const listSurface = (req: NextRequest): OpportunityListSurface => (
+  req.nextUrl.searchParams.get("surface") === "market" ? "market" : "all"
+);
 
 async function respond(req: NextRequest, refresh: boolean) {
   const user = await getSessionUser(req);
   if (!user) return NextResponse.json({ error: "unauthorized" }, { status: 401 });
   try {
+    const input = {
+      actorUserId: user.id,
+      channelId: channelId(req),
+      state: listState(req),
+      surface: listSurface(req),
+    } as const;
     const opportunities = refresh
-      ? await refreshOpportunitySnapshots({ actorUserId: user.id, channelId: channelId(req) })
-      : await listOpportunitySnapshots({ actorUserId: user.id, channelId: channelId(req) });
-    return NextResponse.json({ opportunities }, { headers: { "Cache-Control": "no-store" } });
+      ? await refreshOpportunitySnapshots(input)
+      : await listOpportunitySnapshots(input);
+    const context = await getOpportunityMapContext({ actorUserId: user.id, channelId: channelId(req) });
+    return NextResponse.json({ opportunities, context }, { headers: { "Cache-Control": "no-store" } });
   } catch (error) {
     if (isContentIntelligenceError(error)) {
       const status = error.code === "feature_disabled" ? 403 : error.code === "channel_not_found" ? 422 : 400;
@@ -30,8 +52,11 @@ async function respond(req: NextRequest, refresh: boolean) {
   }
 }
 
-export async function GET(req: NextRequest) { return respond(req, false); }
-export async function POST(req: NextRequest) {
+async function handleGET(req: NextRequest) { return respond(req, false); }
+async function handlePOST(req: NextRequest) {
   if (!hasTrustedMutationOrigin(req)) return NextResponse.json({ error: "forbidden_origin" }, { status: 403 });
   return respond(req, true);
 }
+
+export const GET = withProjectRoute(handleGET);
+export const POST = withProjectRoute(handlePOST);

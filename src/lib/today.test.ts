@@ -386,8 +386,16 @@ describe("Today board states", () => {
     const firstResult = first.items.find((candidate) => candidate.type === "result");
     const secondResult = second.items.find((candidate) => candidate.type === "result");
     expect(firstResult?.fingerprint).toBe(secondResult?.fingerprint);
-    expect(firstResult?.primaryAction.label).toBe("Запланировать продолжение");
+    expect(firstResult?.primaryAction.label).toBe("Подготовить продолжение");
     expect(firstResult?.smartAction?.kind).toBe("continue_post");
+    const changed = await loadTodayBoard({ actorUserId: 9, channelId: 11 }, todayDb({ resultRows: row("503", 50) }) as never);
+    const changedResult = changed.items.find((candidate) => candidate.type === "result");
+    expect(changedResult?.recommendationKind).toBe("result_weak");
+    expect(changedResult?.fingerprint).not.toBe(firstResult?.fingerprint);
+    const multiple = await loadTodayBoard({ actorUserId: 9, channelId: 11 }, todayDb({ resultRows: [
+      { ...row("504", 170)[0], post_id: "92" }, ...row("503", 150),
+    ] }) as never);
+    expect(multiple.items.filter(candidate => candidate.type === "result")).toHaveLength(2);
     vi.useRealTimers();
   });
 

@@ -2,7 +2,9 @@ import { describe, expect, it, vi } from "vitest";
 
 import {
   AUTOPILOT_CONTINUATION_JOB,
+  AUTOPILOT_MAX_NO_PROGRESS_ATTEMPTS,
   autopilotAutoRecoveryReport,
+  dispatchAutopilotContinuation,
   enqueueWeeklyAutopilotPlan,
   reconcileBuildingAutopilotPlans,
   resumeAutopilotPartialPlan,
@@ -87,6 +89,93 @@ describe("weekly Autopilot queue dispatch", () => {
         nextRetryAt: "2026-08-27T07:01:00.000Z",
       },
     });
+  });
+
+  it("pauses after three consecutive recovery attempts without progress", () => {
+    const recoveryJobId = "113229a4-6c97-4ad0-90c9-0dc8d5c598a3";
+    let report = autopilotAutoRecoveryReport(
+      { selectedCount: 4, primaryFix: "rewrite" },
+      { recoveryJobId, readyCount: 4, repairIndexes: [6], trackProgress: true },
+    );
+    expect(report.noProgressAttempts).toBe(0);
+
+    for (let attempt = 2; attempt <= 4; attempt++) {
+      report = autopilotAutoRecoveryReport(report, {
+        recoveryJobId,
+        attemptNumber: attempt,
+        readyCount: 4,
+        repairIndexes: [6],
+        trackProgress: true,
+      });
+    }
+
+    expect(AUTOPILOT_MAX_NO_PROGRESS_ATTEMPTS).toBe(3);
+    expect(report).toMatchObject({
+      recoveryState: "paused_no_progress",
+      nextRetryAt: null,
+      lastReadyCount: 4,
+      noProgressAttempts: 3,
+      maxNoProgressAttempts: 3,
+      autoRecovery: {
+        repairIndexes: [6],
+        nextRetryAt: null,
+      },
+    });
+  });
+
+  it("resets the no-progress counter as soon as another post becomes ready", () => {
+    const recoveryJobId = "213229a4-6c97-4ad0-90c9-0dc8d5c598a3";
+    const report = autopilotAutoRecoveryReport({
+      selectedCount: 4,
+      primaryFix: "rewrite",
+      autoRecovery: { lastReadyCount: 4, noProgressAttempts: 2 },
+    }, {
+      recoveryJobId,
+      readyCount: 5,
+      repairIndexes: [7],
+      trackProgress: true,
+    });
+
+    expect(report).toMatchObject({
+      recoveryState: "auto_retry_scheduled",
+      lastReadyCount: 5,
+      noProgressAttempts: 0,
+      autoRecovery: { repairIndexes: [7] },
+    });
+  });
+
+  it("queues only the exact missing candidate indexes", async () => {
+    const recoveryJobId = "313229a4-6c97-4ad0-90c9-0dc8d5c598a3";
+    const queue = { add: vi.fn(async () => ({})) };
+    const row = {
+      id: 46,
+      project_id: 4,
+      user_id: 9,
+      channel_id: 12,
+      enabled: true,
+      repair_strategy: "rewrite",
+      publication_target_count: 5,
+      items: [
+        { i: 4, status: "pending", aiReady: false, buildState: "failed" },
+        { i: 6, status: "pending", aiReady: false, buildState: "failed" },
+      ],
+      build_report: autopilotAutoRecoveryReport({
+        selectedCount: 4,
+        selectionDeficit: 1,
+        primaryFix: "rewrite",
+      }, {
+        recoveryJobId,
+        repairIndexes: [6],
+      }),
+    };
+
+    await dispatchAutopilotContinuation({ queue, row });
+
+    expect(queue.add).toHaveBeenCalledWith(
+      AUTOPILOT_CONTINUATION_JOB,
+      expect.objectContaining({ planId: 46, repairIndexes: [6] }),
+      expect.any(Object),
+    );
   });
 
   it("creates a durable placeholder and uses the dedicated retrying queue", async () => {
@@ -430,6 +519,36 @@ describe("weekly Autopilot queue dispatch", () => {
     );
   });
 
+  it("replays an already-claimed continuation after a worker restart", async () => {
+    const recoveryJobId = "633229a4-6c97-4ad0-90c9-0dc8d5c598a3";
+    const row = {
+      id: "706",
+      project_id: "4",
+      user_id: "9",
+      channel_id: "12",
+      status: "building",
+      enabled: true,
+      repair_strategy: "rewrite",
+      build_report: {
+        ...autopilotAutoRecoveryReport({ primaryFix: "rewrite" }, { recoveryJobId }),
+        recoveryState: "auto_repair_running",
+      },
+    };
+    const pool = { query: vi.fn(async () => ({ rows: [row], rowCount: 1 })) };
+    const queue = { add: vi.fn(async () => ({})) };
+
+    await expect(reconcileBuildingAutopilotPlans({ pool, queue })).resolves.toEqual({
+      scanned: 1,
+      enqueued: 1,
+      pending: 0,
+    });
+    expect(queue.add).toHaveBeenCalledWith(
+      AUTOPILOT_CONTINUATION_JOB,
+      expect.objectContaining({ planId: 706, recoveryJobId }),
+      expect.objectContaining({ jobId: `autopilot-continue-706-${recoveryJobId}` }),
+    );
+  });
+
   it("continues a manually requested build even while recurring Autopilot is paused", async () => {
     const recoveryJobId = "433229a4-6c97-4ad0-90c9-0dc8d5c598a3";
     const row = {
@@ -461,6 +580,32 @@ describe("weekly Autopilot queue dispatch", () => {
       { projectId: 4, userId: 9, channelId: 12, planId: 704, recoveryJobId },
       expect.objectContaining({ jobId: `autopilot-continue-704-${recoveryJobId}` }),
     );
+  });
+
+  it("does not reconcile a plan paused after repeated no-progress attempts", async () => {
+    const recoveryJobId = "533229a4-6c97-4ad0-90c9-0dc8d5c598a3";
+    const row = {
+      id: "705",
+      project_id: "4",
+      user_id: "9",
+      channel_id: "12",
+      status: "partial",
+      enabled: true,
+      repair_strategy: "rewrite",
+      build_report: {
+        ...autopilotAutoRecoveryReport({ primaryFix: "rewrite" }, { recoveryJobId }),
+        recoveryState: "paused_no_progress",
+      },
+    };
+    const pool = { query: vi.fn(async () => ({ rows: [row], rowCount: 1 })) };
+    const queue = { add: vi.fn(async () => ({})) };
+
+    await expect(reconcileBuildingAutopilotPlans({ pool, queue })).resolves.toEqual({
+      scanned: 1,
+      enqueued: 0,
+      pending: 0,
+    });
+    expect(queue.add).not.toHaveBeenCalled();
   });
 
   it("leaves a failed reconciliation row pending for the next tick", async () => {

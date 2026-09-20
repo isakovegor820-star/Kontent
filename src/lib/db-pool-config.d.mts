@@ -5,6 +5,7 @@ export type DatabasePoolConfig = Readonly<{
   max: number;
   connectionTimeoutMillis: number;
   queryTimeoutMillis: number;
+  slowQueryThresholdMillis: number;
   statementTimeoutMillis: number;
   idleInTransactionTimeoutMillis: number;
   idleTimeoutMillis: number;

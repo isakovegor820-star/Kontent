@@ -117,6 +117,10 @@ describe("TrackingSettingsSection contracts", () => {
       '<script src="https://aurora.example/api/tracking/client.js" data-project-key="tracker_public_key_1234567890"></script>',
     );
     expect(trackingInstallSnippet("https://aurora.example", 'bad" key')).toBeNull();
+    const challenge = "aurora-site-verification=abcdefghijklmnopqrstuvwxyzABCDEFG";
+    expect(trackingInstallSnippet("https://aurora.example", "tracker_public_key_1234567890", challenge))
+      .toContain(`data-aurora-verification="${challenge}"`);
+    expect(trackingInstallSnippet("https://aurora.example", "tracker_public_key_1234567890", 'bad" challenge')).toBeNull();
   });
 
   it("keeps forms semantic, labelled, project-aware and mobile-safe", () => {
@@ -138,13 +142,14 @@ describe("TrackingSettingsSection contracts", () => {
     expect(source).toContain('role="status"');
     expect(source).toContain('role="alert"');
     expect(source).toContain("min-h-11");
-    expect(source).toContain("text-base sm:text-");
+    expect(source).toContain("text-base text-text sm:text-");
     expect(source).toContain("break-words");
     expect(source).toContain("Домен не подтверждён");
     expect(source).toContain("/api/tracking/settings/verify");
-    expect(source).toContain("Подтвердить домен");
-    expect(source).toContain("не заменяет подтверждение домена");
-    expect(source).toContain("Секретные ключи здесь не показываются");
+    expect(source).toContain("TrackingConnectionGuide");
+    const guide = fs.readFileSync(path.join(process.cwd(), "src/components/app/tracking-connection-guide.tsx"), "utf8");
+    expect(guide).toContain("не заменяет подтверждение домена");
+    expect(guide).toContain("Секретные ключи здесь не показываются");
     expect(source).toContain('parsed.status === "active"');
     expect(source.match(/variant="brand"/gu)).toHaveLength(1);
     expect(source).not.toContain("transition-all");

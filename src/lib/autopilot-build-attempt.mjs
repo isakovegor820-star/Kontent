@@ -100,7 +100,10 @@ export function serializeAutopilotPublicItem(source) {
     scheduledAt: typeof item.scheduledAt === "string" ? item.scheduledAt : null,
     topic: typeof item.topic === "string" ? item.topic : "",
     rubric: typeof item.rubric === "string" ? item.rubric : null,
-    draft: sanitizeAutopilotPublicText(item.draft),
+    draft: Array.isArray(item.formatting) ? String(item.draft ?? "") : sanitizeAutopilotPublicText(item.draft),
+    editorVersion: Number(item.editorVersion) > 0 ? Number(item.editorVersion) : undefined,
+    media: item.media ?? undefined,
+    formatting: Array.isArray(item.formatting) ? item.formatting : undefined,
     status: typeof item.status === "string" ? item.status : "pending",
     aiReady: item.aiReady === true,
     invented: Array.isArray(item.invented) ? item.invented.map(String).slice(0, 20) : undefined,
@@ -166,6 +169,7 @@ export function autopilotBuildAttemptDto(row, expected) {
   const selectedCount = Number(persistedReport?.selectedCount);
   const readyForPlan = Math.min(
     publicationTargetCount,
+    measuredProgress.ready,
     Math.max(
       0,
       Number.isFinite(selectedCount) ? selectedCount : measuredProgress.ready,
@@ -188,13 +192,21 @@ export function autopilotBuildAttemptDto(row, expected) {
   const persistedDeficit = Number(persistedReport?.selectionDeficit);
   const selectionDeficit = Math.max(
     0,
+    publicationTargetCount - progress.ready,
     Number.isFinite(persistedDeficit)
       ? persistedDeficit
       : publicationTargetCount - progress.ready,
   );
-  const retryableItemIndexes = autopilotRetryableItemIndexes(items)
-    .sort((left, right) => Number(items[right]?.news === true) - Number(items[left]?.news === true))
-    .slice(0, selectionDeficit);
+  const availableRetryIndexes = autopilotRetryableItemIndexes(items)
+    .sort((left, right) => Number(items[right]?.news === true) - Number(items[left]?.news === true));
+  const persistedRepairIndexes = Array.isArray(persistedReport?.autoRecovery?.repairIndexes)
+    ? [...new Set(persistedReport.autoRecovery.repairIndexes.map(Number))]
+        .filter((index) => availableRetryIndexes.includes(index))
+    : [];
+  const retryableItemIndexes = [
+    ...persistedRepairIndexes,
+    ...availableRetryIndexes.filter((index) => !persistedRepairIndexes.includes(index)),
+  ].slice(0, selectionDeficit);
   const causes = Array.isArray(persistedReport?.causes) && persistedReport.causes.length
     ? persistedReport.causes
     : report.causes;
@@ -205,6 +217,8 @@ export function autopilotBuildAttemptDto(row, expected) {
     "auto_retry_scheduled",
     "auto_repair_running",
     "paused",
+    "paused_no_progress",
+    "paused_by_user",
     "waiting_quota",
     "manual_repair",
   ].includes(
@@ -239,6 +253,14 @@ export function autopilotBuildAttemptDto(row, expected) {
       : null,
     attemptNumber: Math.max(0, Number(persistedReport?.attemptNumber) || 0),
     maxAttempts: Math.max(0, Number(persistedReport?.maxAttempts) || 0),
+    noProgressAttempts: Math.max(
+      0,
+      Number(persistedReport?.autoRecovery?.noProgressAttempts ?? persistedReport?.noProgressAttempts) || 0,
+    ),
+    maxNoProgressAttempts: Math.max(
+      0,
+      Number(persistedReport?.autoRecovery?.maxNoProgressAttempts ?? persistedReport?.maxNoProgressAttempts) || 0,
+    ),
     nextRetryAt: typeof persistedReport?.nextRetryAt === "string"
       ? persistedReport.nextRetryAt
       : null,

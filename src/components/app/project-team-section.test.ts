@@ -55,6 +55,8 @@ describe("ProjectTeamSection contracts", () => {
     expect(source).toContain('role="alert"');
     expect(source).toContain("min-h-11");
     expect(source).toContain("break-words");
+    expect(source).toContain('data-project-team-interactive={interactive ? "true" : "false"}');
+    expect(source).toContain('disabled={!interactive || savingKey === "invitation-create"}');
     expect(source).not.toContain("transition-all");
   });
 });

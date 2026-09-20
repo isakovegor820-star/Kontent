@@ -1,5 +1,5 @@
+import { ProjectRequest } from "@/test/project-request";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { NextRequest } from "next/server";
 
 import { normalizePostQuality } from "@/lib/post-quality.mjs";
 
@@ -27,7 +27,7 @@ vi.mock("@/lib/db", () => ({ getPool: () => ({ query: mocks.query, connect: mock
 import { POST } from "./route";
 
 function request() {
-  return new NextRequest("http://localhost/api/settings/preview", {
+  return new ProjectRequest(12, "http://localhost/api/settings/preview", {
     method: "POST",
     headers: { "content-type": "application/json", origin: "http://localhost" },
     body: JSON.stringify({ channelId: 21, topic: "Ошибки в договоре" }),

@@ -10,6 +10,7 @@ import {
   monthlyCampaignWorkflowStep,
   parseMonthlyCampaignDetail,
   parseMonthlyCampaignList,
+  shouldPollMonthlyCampaignRegeneration,
   type MonthlyCampaignClientItem,
 } from "./monthly-campaign-client";
 
@@ -34,7 +35,7 @@ const campaign = {
 describe("monthly campaign client contract", () => {
   it("parses strict project campaign responses and rejects incomplete items", () => {
     expect(parseMonthlyCampaignList({ ok: true, campaigns: [campaign] })).toEqual([campaign]);
-    expect(parseMonthlyCampaignDetail({
+    const detail = parseMonthlyCampaignDetail({
       ok: true,
       campaign,
       plans: [{
@@ -63,13 +64,34 @@ describe("monthly campaign client contract", () => {
       regenerations: [{
         id: 9,
         planId: 5,
+        resultPlanId: null,
         scope: "month",
         weekStartsOn: null,
         status: "pending",
         targetItemIds: [7],
         errorCode: null,
       }],
-    })).toMatchObject({ plans: [{ items: [{ id: 7 }] }], regenerations: [{ scope: "month" }] });
+    });
+    expect(detail).toMatchObject({ plans: [{ items: [{ id: 7 }] }], regenerations: [{ scope: "month" }] });
+    expect(shouldPollMonthlyCampaignRegeneration(detail)).toBe(true);
+
+    const completedBeforeResultPlanIsVisible = {
+      ...detail!,
+      regenerations: detail!.regenerations.map((operation) => ({
+        ...operation,
+        status: "completed" as const,
+        resultPlanId: 6,
+      })),
+    };
+    expect(shouldPollMonthlyCampaignRegeneration(completedBeforeResultPlanIsVisible)).toBe(true);
+    expect(shouldPollMonthlyCampaignRegeneration({
+      ...completedBeforeResultPlanIsVisible,
+      plans: [...completedBeforeResultPlanIsVisible.plans, {
+        ...completedBeforeResultPlanIsVisible.plans[0],
+        id: 6,
+        revision: 2,
+      }],
+    })).toBe(false);
     expect(parseMonthlyCampaignDetail({ ok: true, campaign, plans: [{ id: 5, items: [{}] }], regenerations: [] }))
       .toBeNull();
   });

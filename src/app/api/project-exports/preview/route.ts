@@ -1,3 +1,4 @@
+import { withProjectRoute } from "@/lib/project-route";
 import { randomUUID } from "node:crypto";
 import { NextRequest, NextResponse } from "next/server";
 
@@ -22,7 +23,7 @@ function response(requestId: string, body: Record<string, unknown>, status = 200
   });
 }
 
-export async function POST(req: NextRequest) {
+async function handlePOST(req: NextRequest) {
   const requestId = randomUUID();
   if (!hasTrustedMutationOrigin(req)) {
     return response(requestId, { ok: false, error: "forbidden_origin" }, 403);
@@ -64,3 +65,5 @@ export async function POST(req: NextRequest) {
     return response(requestId, { ok: false, error: "server", retryable: true }, 500);
   }
 }
+
+export const POST = withProjectRoute(handlePOST);

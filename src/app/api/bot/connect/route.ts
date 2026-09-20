@@ -75,6 +75,21 @@ export async function POST(req: NextRequest) {
         token: body.token,
         userId: user?.id ?? null,
       });
+      const ownerConfirmed = inspection.state === "confirmed"
+        && user != null
+        && inspection.confirmedByUserId === user.id;
+      const exposesConnection = inspection.state === "pending" || ownerConfirmed;
+      if (!exposesConnection) {
+        // Expired, revoked, unknown and already-consumed secrets deliberately have
+        // one indistinguishable public shape. A replay must not be an oracle for
+        // token existence, lifecycle state, Telegram identity or the owning account.
+        return NextResponse.json({
+          ok: true,
+          state: "unavailable",
+          authenticated: Boolean(user),
+          bot: botUsername(),
+        });
+      }
       return NextResponse.json({
         ok: true,
         state: inspection.state,
@@ -119,11 +134,17 @@ export async function POST(req: NextRequest) {
         bot: botUsername(),
       });
     }
+    if (
+      result.state === "invalid"
+      || result.state === "expired"
+      || result.state === "revoked"
+      || result.state === "used"
+    ) {
+      return NextResponse.json({ ok: false, error: "link_unavailable" }, { status: 410 });
+    }
     const status = result.state === "move_required"
       ? 409
-      : result.state === "expired" || result.state === "revoked" || result.state === "used"
-        ? 410
-        : result.state === "account_disabled"
+      : result.state === "account_disabled"
           ? 403
           : 400;
     return NextResponse.json({ ok: false, error: result.state, ...result }, { status });

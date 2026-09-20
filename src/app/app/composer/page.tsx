@@ -1,4 +1,6 @@
 "use client";
+import { useProjectFetch, useProjectCall, useProjectStorageKey } from "@/lib/use-project-transport";
+
 
 import { projectNativeUrl } from "@/lib/project-native-url";
 
@@ -37,7 +39,6 @@ import {
   CalendarClock,
   CheckCircle2,
   ChevronDown,
-  CircleStop,
   Clock,
   ExternalLink,
   Flame,
@@ -73,11 +74,13 @@ import {
   composerTrackingDraftSelection,
   composerTrackingHasInput,
   EMPTY_COMPOSER_TRACKING,
+  TrackingBuilder,
   type ComposerTrackingValue,
 } from "@/components/app/tracking-builder";
 import { Button, buttonClassName } from "@/components/ui/button";
 import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import { RichTextEditor } from "@/components/ui/rich-text-editor";
+import { TaskStatus } from "@/components/ui/task-status";
 import {
   Badge,
   Card,
@@ -102,11 +105,14 @@ import {
   type AiDraftPhase,
 } from "@/lib/ai-draft-projection";
 import {
-  acknowledgeAiTerminal,
+  acknowledgeAiTerminal as unscopedAcknowledgeAiTerminal,
   stableAiClientRequest,
   type AiClientRequestIdentity,
 } from "@/lib/ai-client-idempotency";
+import { aiFailureRecoveryRu, type AiFailureInfo } from "@/lib/ai-client-recovery";
 import { getAiUsageMetrics } from "@/lib/ai-usage-sync";
+import { postSettingsForSourceLanguage } from "@/lib/content-language";
+import { createPostFromSource, SourcePostCreationError } from "@/lib/source-post-client";
 import {
   composerHydrationIdentity,
   composerPersistedDraftHref,
@@ -116,21 +122,21 @@ import {
 import {
   activeComposerNetworks,
   createDraftClientKey,
-  createServerDraft,
-  deleteServerDraft,
+  createServerDraft as unscopedCreateServerDraft,
+  deleteServerDraft as unscopedDeleteServerDraft,
   DRAFT_AUTOSAVE_DELAY_MS,
   draftMatchesWrite,
   DraftRequestError,
   ensureDraftClientKey,
-  getServerDraft,
+  getServerDraft as unscopedGetServerDraft,
   isRecoverableLegacyDraft,
-  recoverServerDraft,
+  recoverServerDraft as unscopedRecoverServerDraft,
   resolveAcknowledgedDraftRevision,
   runSingleDraftSave,
   reusableAcknowledgedDraft,
   scheduleDraftAutosave,
   shouldAutosaveDraft,
-  updateServerDraft,
+  updateServerDraft as unscopedUpdateServerDraft,
 } from "@/lib/draft-client";
 import type {
   DraftAiValidation,
@@ -156,7 +162,7 @@ import {
   type DraftReviewBlockedReason,
 } from "@/lib/draft-review";
 import {
-  approvePersonalDraftForPublication,
+  approvePersonalDraftForPublication as unscopedApprovePersonalDraftForPublication,
   editorialErrorMessage,
   type ClientEditorialState,
 } from "@/lib/editorial-client";
@@ -165,12 +171,12 @@ import {
   publicationOperationReachedCalendar,
 } from "@/lib/publication-operation-feedback";
 import {
-  cancelPublication,
-  getPublicationOperationEditorContext,
+  cancelPublication as unscopedCancelPublication,
+  getPublicationOperationEditorContext as unscopedGetPublicationOperationEditorContext,
   publicationEditorMutationKind,
   publicationOperationIsSettled,
-  reschedulePublication,
-  restorePublicationToDraft,
+  reschedulePublication as unscopedReschedulePublication,
+  restorePublicationToDraft as unscopedRestorePublicationToDraft,
   type PublicationOperationEditorContext,
 } from "@/lib/publication-lifecycle-client";
 import { renderPublicationTracking } from "@/lib/publication-tracking";
@@ -368,6 +374,8 @@ interface HydrateInput {
 }
 
 interface ComposerValue {
+  isAutopilotDraft: boolean;
+  saveToAutopilot: () => Promise<void>;
   hydrated: boolean;
   draftLoadError: "not_found" | "source_context" | null;
   editingId: string | null;
@@ -423,6 +431,7 @@ interface ComposerValue {
   canRecoverDraft: boolean;
   recoveryState: DraftRecoveryState;
   recoveryError: string;
+  sourceCreationProgress: string;
   recoverDraft: () => Promise<void>;
   topicOpen: boolean;
   setTopicOpen: (v: boolean) => void;
@@ -482,6 +491,16 @@ function useComposer() {
 /* ---------------------------------------------------------------- СТРАНИЦА */
 
 export default function ComposerPage() {
+  const acknowledgeAiTerminal = useProjectCall(unscopedAcknowledgeAiTerminal);
+  const updateServerDraft = useProjectCall(unscopedUpdateServerDraft);
+  const createServerDraft = useProjectCall(unscopedCreateServerDraft);
+  const recoverServerDraft = useProjectCall(unscopedRecoverServerDraft);
+  const approvePersonalDraftForPublication = useProjectCall(unscopedApprovePersonalDraftForPublication);
+  const reschedulePublication = useProjectCall(unscopedReschedulePublication);
+  const cancelPublication = useProjectCall(unscopedCancelPublication);
+  const restorePublicationToDraft = useProjectCall(unscopedRestorePublicationToDraft);
+  const deleteServerDraft = useProjectCall(unscopedDeleteServerDraft);
+  const fetch = useProjectFetch();
   const s = useStore();
   const projects = useProjects();
   const router = useRouter();
@@ -494,6 +513,8 @@ export default function ComposerPage() {
   const projectTimezone = projects.current?.timezone ?? "UTC";
   const draftWorkspaceId = currentProjectId == null ? null : projectDraftWorkspaceId(currentProjectId);
 
+  const [isAutopilotDraft, setIsAutopilotDraft] = useState(false);
+  const autopilotReturnLock = useRef(false);
   const [hydrated, setHydrated] = useState(false);
   const [draftLoadError, setDraftLoadError] = useState<"not_found" | "source_context" | null>(null);
   const [editingId, setEditingId] = useState<string | null>(null);
@@ -525,6 +546,7 @@ export default function ComposerPage() {
   const [blockedReason, setBlockedReason] = useState<DraftReviewBlockedReason | null>(null);
   const [recoveryState, setRecoveryState] = useState<DraftRecoveryState>("idle");
   const [recoveryError, setRecoveryError] = useState("");
+  const [sourceCreationProgress, setSourceCreationProgress] = useState("");
   const [, setAiValidation] = useState<DraftAiValidation | null>(null);
   const [generationResultId, setGenerationResultId] = useState<number | null>(null);
   const [topicOpen, setTopicOpen] = useState(false);
@@ -560,6 +582,7 @@ export default function ComposerPage() {
   const draftRequestRef = useRef<Promise<ServerDraft | null> | null>(null);
   const draftDeleteRequestRef = useRef<Promise<void> | null>(null);
   const recoveryRequestRef = useRef<Promise<void> | null>(null);
+  const sourceCreationAbortRef = useRef<AbortController | null>(null);
   const activePublicationRequestRef = useRef<Promise<void> | null>(null);
   const recoveryClientKeyRef = useRef<string | null>(null);
   const autosaveCancelRef = useRef<(() => void) | null>(null);
@@ -583,6 +606,10 @@ export default function ComposerPage() {
     && draftId != null
     && isDraftRecoveryAllowedReason(blockedReason);
 
+  useEffect(() => () => {
+    sourceCreationAbortRef.current?.abort();
+  }, [composerUserId, currentProjectId, draftId]);
+
   useEffect(() => {
     if (!s.authReady || !s.user) return;
     const controller = new AbortController();
@@ -593,7 +620,7 @@ export default function ComposerPage() {
       })
       .catch(() => {});
     return () => controller.abort();
-  }, [s.authReady, s.user]);
+  }, [fetch, s.authReady, s.user]);
 
   const savePostSettings = useCallback(async (value: PostSettings) => {
     const previous = postSettings;
@@ -620,7 +647,7 @@ export default function ComposerPage() {
     } finally {
       setPostSettingsSaving(false);
     }
-  }, [postSettings, s]);
+  }, [fetch, postSettings, s]);
 
   const markDraftDirty = useCallback(() => {
     currentDraftWriteRef.current = null;
@@ -710,6 +737,8 @@ export default function ComposerPage() {
     ownerUserId,
   }: HydrateInput) => {
     setDraftLoadError(null);
+    setIsAutopilotDraft(Boolean((draft?.client_key ?? pending?.clientKey)?.startsWith("autopilot-item:"))
+      && !Number(new URLSearchParams(window.location.search).get("publication")));
     const fallback = new Date(Date.now() + 3600_000);
     fallback.setMinutes(0, 0, 0); // ровный час — по нему легче попадать глазом
     const scheduleFields = localScheduleFieldsForInstant(
@@ -803,6 +832,7 @@ export default function ComposerPage() {
     setRecoveryState("idle");
     setRecoveryError("");
     recoveryClientKeyRef.current = null;
+    setSourceCreationProgress("");
     setDate(pending?.form.date ?? draft?.scheduled_local_date ?? d ?? scheduleFields.localDate);
     setTime(pending?.form.time ?? draft?.scheduled_local_time ?? t ?? scheduleFields.localTime);
     setScheduleTimezone(
@@ -844,6 +874,7 @@ export default function ComposerPage() {
     draftClientKeyRef.current = null;
     setEditingId(null);
     setDraftId(null);
+    setIsAutopilotDraft(false);
     setDraftVersion(null);
     setEditorialState("draft");
     setText("");
@@ -946,7 +977,7 @@ export default function ComposerPage() {
       })
       .catch(() => {});
     return () => controller.abort();
-  }, [channelId]);
+  }, [channelId, fetch]);
 
   const toggleNetwork = useCallback(
     (n: Network, on: boolean) => {
@@ -1206,6 +1237,12 @@ export default function ComposerPage() {
 
       const subject = topic.trim() || text.trim();
       const source = cmd === "rewrite" || cmd === "shorten" ? text : subject;
+      // Every assistant command transforms or extends the visible post. Its language
+      // therefore wins over a stale topic or previously saved publication setting.
+      const assistantPostSettings = postSettingsForSourceLanguage(
+        postSettings,
+        text.trim() || source,
+      );
       const contextChannelId = networks.includes("tg")
         ? channelId
         : networks.includes("vk")
@@ -1286,7 +1323,7 @@ export default function ComposerPage() {
           channelId: contextChannelId,
           inputDraftId: draftId,
           inputDraftVersion: draftVersion,
-          postSettings,
+          postSettings: assistantPostSettings,
         });
         const aiRequest = stableAiClientRequest(aiRequestRef.current, requestBody);
         aiRequestRef.current = aiRequest;
@@ -1301,13 +1338,13 @@ export default function ComposerPage() {
         });
         requestId = response.headers.get("x-ai-request-id") ?? undefined;
         if (!response.ok || !response.body) {
-          const info = (await response.json().catch(() => null)) as { error?: string; requestId?: string } | null;
+          const info = (await response.json().catch(() => null)) as AiFailureInfo | null;
           requestId = info?.requestId ?? requestId;
           const message = response.status === 429
             ? "Дневной лимит исчерпан. Счётчик обновлён с сервера."
             : info?.error === "brief_insufficient_facts"
               ? "Для безопасного текста не хватает фактов. Добавь детали в бриф."
-              : "Генерация сейчас недоступна. Исходный текст не изменён.";
+              : aiFailureRecoveryRu(info, response.status);
           s.toast({
             kind: "danger",
             title: "Не получилось",
@@ -1399,19 +1436,7 @@ export default function ComposerPage() {
         void s.refreshAiUsage();
       }
     },
-    [
-      canEditContent,
-      channelId,
-      draftId,
-      draftVersion,
-      networks,
-      postSettings,
-      s,
-      text,
-      topic,
-      typing,
-      vkChannelId,
-    ],
+    [acknowledgeAiTerminal, canEditContent, channelId, draftId, draftVersion, fetch, networks, postSettings, s, text, topic, typing, vkChannelId],
   );
 
   const applyAiPreview = useCallback(() => {
@@ -1794,32 +1819,7 @@ export default function ComposerPage() {
         }
       });
     },
-    [
-      canEditContent,
-      channelIds,
-      composerUserId,
-      date,
-      draftId,
-      draftVersion,
-      formatting,
-      generationResultId,
-      legacyId,
-      media,
-      networks,
-      noDate,
-      origin,
-      s,
-      scheduleTimezone,
-      sourceRef,
-      text,
-      tgChannels,
-      time,
-      timeDisambiguation,
-      tracking,
-      validate,
-      vkChannelIds,
-      vkChannels,
-    ],
+    [canEditContent, channelIds, composerUserId, createServerDraft, date, draftId, draftVersion, formatting, generationResultId, legacyId, media, networks, noDate, origin, s, scheduleTimezone, sourceRef, text, tgChannels, time, timeDisambiguation, tracking, updateServerDraft, validate, vkChannelIds, vkChannels],
   );
 
   const currentSchedule = useMemo(
@@ -1984,6 +1984,44 @@ export default function ComposerPage() {
     return result ?? await acceptCurrentAcknowledgement(acknowledgedDraftRef.current);
   }, [persistDraft]);
 
+  const saveToAutopilot = useCallback(async () => {
+    if (autopilotReturnLock.current || !isAutopilotDraft) return;
+    autopilotReturnLock.current = true;
+    setSaving(true);
+    try {
+      const draft = await saveDraft();
+      if (!draft) return;
+      const response = await fetch("/api/autopilot/item/draft", {
+        method: "PATCH", headers: { "content-type": "application/json" },
+        body: JSON.stringify({ draftId: draft.id, draftVersion: draft.version }),
+      });
+      const result = await response.json();
+      if (!response.ok || !result.ok) {
+        const messages: Record<string, string> = {
+          invalid_schedule: "Выбери дату и время не раньше чем через минуту.",
+          empty_draft: "Добавь текст поста.",
+          channel_changed: "У поста автопилота должен остаться исходный Telegram-канал. Верни его в настройках публикации.",
+          quality_failed: "Новая версия не прошла проверку качества. Исправь текст: запланированный пост пока не изменён.",
+          post_changed: "Публикация изменилась или уже отправляется. Открой её актуальную версию; правки сохранены в черновике.",
+          publication_in_progress: "Пост уже отправляется. Правки сохранены в черновике.",
+          stale_plan: "План изменился в другой вкладке. Повтори сохранение и возврат.",
+          version_conflict: "Есть более новая версия черновика. Обнови редактор перед повторным сохранением.",
+          access_denied: "Недостаточно прав для изменения этой публикации.",
+        };
+        throw new Error(messages[result.error] ?? "Не удалось вернуть правки в автопилот. Черновик сохранён, попробуй ещё раз.");
+      }
+      await s.refreshReal();
+      s.toast({ kind: result.queuePending ? "info" : "success", title: result.postId ? "Запланированный пост обновлён" : "Правки возвращены в автопилот",
+        body: result.queuePending ? "Изменения сохранены. Очередь публикации восстанавливается." : result.postId ? "В основном календаре сохранена та же публикация." : "Проверь пост и добавь его в основной календарь, когда будешь готов." });
+      const current = new URLSearchParams(window.location.search);
+      const view = current.get("autopilotView"); const anchor = current.get("autopilotAnchor");
+      const context = (view === "month" || view === "week") && anchor && /^\d{4}-\d{2}-\d{2}$/u.test(anchor) && Number.isFinite(Date.parse(anchor)) ? `&autopilotView=${view}&autopilotAnchor=${anchor}` : "";
+      router.push(`/app/autopilot?channel=${result.channelId}&item=${result.index}&plan=${result.planId}${result.postId ? `&post=${result.postId}` : ""}${context}`);
+    } catch (error) {
+      s.toast({ kind: "danger", title: "Правки ещё не применены", body: error instanceof Error ? error.message : "Повтори сохранение и возврат." });
+    } finally { setSaving(false); autopilotReturnLock.current = false; }
+  }, [fetch, isAutopilotDraft, saveDraft, router, s]);
+
   const recoverDraft = useCallback((): Promise<void> => runSingleDraftSave(
     recoveryRequestRef,
     async () => {
@@ -1993,6 +2031,38 @@ export default function ComposerPage() {
         || draftVersion == null
         || !isDraftRecoveryAllowedReason(blockedReason)
       ) return;
+
+      const source = acknowledgedDraftRef.current;
+      if (blockedReason === "source_context_not_publishable" && source?.source_ref?.kind === "rss") {
+        const controller = new AbortController();
+        sourceCreationAbortRef.current = controller;
+        setRecoveryState("loading");
+        setRecoveryError("");
+        try {
+          const result = await createPostFromSource(source, {
+            signal: controller.signal,
+            onProgress: setSourceCreationProgress,
+          });
+          if (controller.signal.aborted) return;
+          setRecoveryState("success");
+          s.toast({
+            kind: "success",
+            title: result.created ? "Пост создан" : "Открываем созданный пост",
+            body: "ИИ подготовил отдельный текст. Исходный инфоповод сохранён.",
+          });
+          router.replace(`/app/composer?draft=${result.draft.id}&suggestMedia=1`);
+        } catch (error) {
+          if (controller.signal.aborted) return;
+          setRecoveryState("failed");
+          setRecoveryError(error instanceof SourcePostCreationError
+            ? error.message
+            : "Не удалось создать пост. Источник сохранён — повторите действие.");
+        } finally {
+          if (sourceCreationAbortRef.current === controller) sourceCreationAbortRef.current = null;
+          void s.refreshAiUsage();
+        }
+        return;
+      }
 
       const snapshot = currentDraftWriteRef.current ?? currentDraftWrite;
       const bad = validate(false);
@@ -2051,18 +2121,10 @@ export default function ComposerPage() {
         );
       }
     },
-  ), [
-    blockedReason,
-    currentDraftWrite,
-    draftId,
-    draftVersion,
-    roleCanEditContent,
-    router,
-    s,
-    validate,
-  ]);
+  ), [blockedReason, currentDraftWrite, draftId, draftVersion, recoverServerDraft, roleCanEditContent, router, s, validate]);
 
   const publish = useCallback(async (mode: PublicationMode) => {
+    if (isAutopilotDraft) { await saveToAutopilot(); return; }
     if (!canPublish) {
       s.toast({
         kind: "danger",
@@ -2354,6 +2416,11 @@ export default function ComposerPage() {
     activePublicationError,
     activePublicationRequested,
     bestTime,
+    isAutopilotDraft,
+    saveToAutopilot,
+    approvePersonalDraftForPublication,
+    reschedulePublication,
+    cancelPublication,
     canPublish,
     composerUserId,
     date,
@@ -2423,7 +2490,7 @@ export default function ComposerPage() {
         setSaving(false);
       }
     },
-  ), [activePublication, s, saving]);
+  ), [activePublication, cancelPublication, s, saving]);
 
   const cloneActivePublication = useCallback(() => runSingleDraftSave(
     activePublicationRequestRef,
@@ -2457,7 +2524,7 @@ export default function ComposerPage() {
         setSaving(false);
       }
     },
-  ), [activePublication, clearActivePublication, router, s, saving]);
+  ), [activePublication, clearActivePublication, restorePublicationToDraft, router, s, saving]);
 
   const removeCurrent = useCallback(() => runSingleDraftSave(
     draftDeleteRequestRef,
@@ -2507,10 +2574,12 @@ export default function ComposerPage() {
       s.toast({ kind: "success", title: "Черновик удалён из календаря" });
       router.push("/app/calendar");
     },
-  ), [canEditContent, composerUserId, draftId, draftVersion, editingId, legacyId, router, s]);
+  ), [canEditContent, composerUserId, deleteServerDraft, draftId, draftVersion, editingId, legacyId, router, s]);
 
   const value = useMemo<ComposerValue>(
     () => ({
+      isAutopilotDraft,
+      saveToAutopilot,
       hydrated,
       draftLoadError,
       editingId,
@@ -2561,6 +2630,7 @@ export default function ComposerPage() {
       canRecoverDraft,
       recoveryState,
       recoveryError,
+      sourceCreationProgress,
       recoverDraft,
       topicOpen,
       setTopicOpen,
@@ -2610,6 +2680,8 @@ export default function ComposerPage() {
       failHydration,
     }),
     [
+      isAutopilotDraft,
+      saveToAutopilot,
       aiBusy,
       aiPreview,
       aiReview,
@@ -2680,6 +2752,7 @@ export default function ComposerPage() {
       recoverDraft,
       recoveryError,
       recoveryState,
+      sourceCreationProgress,
       removeCurrent,
       runAi,
       saveDraft,
@@ -2710,7 +2783,7 @@ export default function ComposerPage() {
     <ComposerCtx.Provider value={value}>
       <AppShell
         title="Редактор поста"
-        subtitle="Создавай, оформляй и добавляй публикации в календарь."
+        subtitle={isAutopilotDraft ? "Отредактируй пост и верни его в план автопилота." : "Создавай, оформляй и добавляй публикации в календарь."}
         action={draftId ? <EvidenceCard kind="draft" id={draftId} label="Доказательства" /> : undefined}
       >
         <Suspense fallback={<ComposerSkeleton />}>
@@ -2779,6 +2852,7 @@ type RevisionHistoryItem = {
 };
 
 function RevisionHistoryPanel() {
+  const fetch = useProjectFetch();
   const c = useComposer();
   const [open, setOpen] = useState(false);
   const [loading, setLoading] = useState(false);
@@ -2799,7 +2873,7 @@ function RevisionHistoryPanel() {
     } finally {
       setLoading(false);
     }
-  }, [c.draftId]);
+  }, [c.draftId, fetch]);
 
   if (!c.draftId) {
     return <p className="text-[13px] leading-relaxed text-text-3">Первая серверная версия появится после автосохранения.</p>;
@@ -2871,10 +2945,11 @@ function ComposerActionBar() {
   const personal = projects.current?.personal === true;
   const approved = (personal || c.editorialState === "approved") && c.blockedReason == null;
   const blocked = c.blockedReason ? DRAFT_BLOCKED_COPY[c.blockedReason] : null;
+  const createsSourcePost = c.blockedReason === "source_context_not_publishable" && c.sourceRef?.kind === "rss";
   const activeSettled = c.activePublication == null
     ? false
     : publicationOperationIsSettled(c.activePublication);
-  const visible = c.canPublish || blocked != null;
+  const visible = c.canPublish || blocked != null || (c.isAutopilotDraft && c.canEditContent);
   useLayoutEffect(() => {
     const root = document.documentElement;
     const previousClearance = root.style.getPropertyValue("--composer-action-bar-clearance");
@@ -2912,14 +2987,23 @@ function ComposerActionBar() {
     };
   }, [visible]);
   if (!visible) return null;
+  const hasContent = c.text.trim().length > 0;
   const unavailable = !c.hydrated || c.draftSaveState === "saving" || c.typing || c.saving;
+  const publicationUnavailable = unavailable || !hasContent;
   return (
     <div
       ref={barRef}
       className="relative z-10 mt-4 lg:fixed lg:right-8 lg:bottom-4 lg:left-[calc(260px+2rem)] lg:mt-0"
     >
       <div className="mx-auto w-full max-w-5xl rounded-md border border-line bg-surface/95 p-3 shadow-lift backdrop-blur-xl sm:p-4">
-        {blocked ? (
+        {c.isAutopilotDraft ? (
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <p className="max-w-[60ch] text-[13px] text-text-2">Правки вернутся в автопилот. Если пост уже в календаре, будет обновлена та же публикация.</p>
+            <Button variant="primary" onClick={() => void c.saveToAutopilot()} disabled={unavailable || !c.canEditContent} loading={c.saving}>
+              Сохранить и вернуться в автопилот
+            </Button>
+          </div>
+        ) : blocked ? (
           <section
             aria-labelledby="composer-recovery-title"
             aria-busy={c.recoveryState === "loading" || undefined}
@@ -2933,11 +3017,13 @@ function ComposerActionBar() {
                 {blocked.title}
               </h2>
               <p className="mt-1 max-w-[72ch] text-pretty text-[13px] leading-relaxed text-text-2">
-                {blocked.body}
+                {createsSourcePost
+                  ? "ИИ напишет новый пост по фактам инфоповода и откроет его для редактирования. Исходный материал сохранится по прежней ссылке."
+                  : blocked.body}
               </p>
               <div aria-live="polite" aria-atomic="true" className="min-h-5">
                 {c.recoveryState === "loading" && (
-                  <p className="mt-1 text-[13px] font-medium text-brand">Создаём отдельный пост…</p>
+                  <p className="mt-1 text-[13px] font-medium text-brand">{createsSourcePost ? c.sourceCreationProgress || "Подготавливаем новый пост…" : "Создаём отдельный пост…"}</p>
                 )}
                 {c.recoveryState === "success" && (
                   <p className="mt-1 text-[13px] font-medium text-success-text">Новый пост создан. Открываем редактор…</p>
@@ -2959,7 +3045,7 @@ function ComposerActionBar() {
                   loading={c.recoveryState === "loading"}
                   onClick={() => void c.recoverDraft()}
                 >
-                  {blocked.action}
+                  {createsSourcePost && c.recoveryState === "failed" ? "Повторить создание поста" : blocked.action}
                 </Button>
               ) : (
                 <Link
@@ -3026,10 +3112,12 @@ function ComposerActionBar() {
             </div>
           </div>
         ) : c.activePublication ? (
-          <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+          <div className="flex flex-col gap-3 lg:grid lg:grid-cols-[minmax(9rem,1fr)_auto] lg:items-center">
             <div className="min-w-0 text-[13px]" aria-live="polite">
               <p className="font-semibold text-text">
-                {activeSettled
+                {!hasContent
+                  ? "Черновик не заполнен"
+                  : activeSettled
                   ? "Публикация уже завершена"
                   : c.activePublication.status === "cancelled"
                     ? "Публикация отменена"
@@ -3043,7 +3131,7 @@ function ComposerActionBar() {
                   : `${fmtDateTime(c.activePublication.scheduledAt, c.activePublication.timezone)} · ${c.draftSaveState === "saved" ? "изменения сохранены" : "сохраняем изменения"}`}
               </p>
             </div>
-            <div className="flex flex-col gap-2 sm:flex-row sm:flex-wrap lg:justify-end">
+            <div className="flex flex-col gap-2 sm:flex-row sm:flex-wrap lg:flex-nowrap lg:justify-end">
               {activeSettled ? (
                 <Button
                   variant="brand"
@@ -3061,8 +3149,8 @@ function ComposerActionBar() {
                   <Button
                     variant="brand"
                     size="sm"
-                    className="w-full sm:w-auto"
-                    disabled={unavailable}
+                    className="w-full shrink-0 sm:w-auto"
+                    disabled={publicationUnavailable}
                     loading={c.publicationMode === "calendar"}
                     data-aurora-feature="draft"
                     data-aurora-action="published"
@@ -3072,6 +3160,19 @@ function ComposerActionBar() {
                     {c.activePublication.status === "cancelled"
                       ? "Запланировать снова"
                       : "Обновить публикацию"}
+                  </Button>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="w-full shrink-0 sm:w-auto"
+                    disabled={unavailable}
+                    loading={c.publicationMode === "now"}
+                    data-aurora-feature="draft"
+                    data-aurora-action="published"
+                    onClick={c.publishNow}
+                  >
+                    {c.publicationMode !== "now" && <Send className="h-4 w-4" aria-hidden />}
+                    Опубликовать сейчас
                   </Button>
                   {c.activePublication.status !== "cancelled" && (
                     <Button
@@ -3091,13 +3192,19 @@ function ComposerActionBar() {
             </div>
           </div>
         ) : (
-          <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+          <div className="flex flex-col gap-3" data-composer-action-layout="ready">
             <div className="min-w-0 text-[13px]" aria-live="polite">
               <p className="font-semibold text-text">
-                {approved ? "Готово к публикации" : "Нужно согласовать пост"}
+                {!hasContent
+                  ? "Черновик не заполнен"
+                  : approved
+                    ? personal ? "Готово к решению владельца" : "Готово к публикации"
+                    : "Нужно согласовать пост"}
               </p>
               <p className="truncate text-text-3">
-                {c.draftSaveState === "offline"
+                {!hasContent
+                  ? "Добавьте текст — после этого станут доступны действия с публикацией."
+                  : c.draftSaveState === "offline"
                   ? "Нет сети — изменения защищены локальной копией"
                   : c.draftSaveState === "saving"
                     ? "Сохраняем изменения…"
@@ -3106,12 +3213,12 @@ function ComposerActionBar() {
                       : "Изменения сохраняются автоматически"}
               </p>
             </div>
-            <div className="flex flex-col gap-2 sm:flex-row sm:flex-wrap lg:justify-end">
+            <div className="grid w-full min-w-0 gap-2 sm:grid-cols-2 lg:flex lg:flex-nowrap lg:justify-end">
               <Button
                 variant="brand"
                 size="sm"
-                className="w-full sm:w-auto"
-                disabled={unavailable}
+                className="w-full shrink-0 lg:w-auto"
+                disabled={publicationUnavailable}
                 loading={c.publicationMode === "calendar"}
                 data-aurora-feature="draft"
                 data-aurora-action="published"
@@ -3120,15 +3227,15 @@ function ComposerActionBar() {
                 {c.publicationMode !== "calendar" && <CalendarClock className="h-4 w-4" aria-hidden />}
                 Добавить в календарь
               </Button>
-              <details className="rounded-sm border border-line bg-surface-inset sm:hidden">
+              <details className="group rounded-sm border border-line bg-surface-inset sm:hidden">
                 <summary className="flex min-h-11 cursor-pointer items-center justify-center px-3 text-[13px] font-semibold text-text focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand">
                   Другие действия
                 </summary>
-                <div className="grid gap-2 border-t border-line p-2">
+                <div className="hidden gap-2 border-t border-line p-2 group-open:grid">
                   <Button
                     variant="outline"
                     size="sm"
-                    disabled={unavailable}
+                    disabled={publicationUnavailable}
                     loading={c.publicationMode === "now"}
                     data-aurora-feature="draft"
                     data-aurora-action="published"
@@ -3140,7 +3247,7 @@ function ComposerActionBar() {
                   <Button
                     variant="outline"
                     size="sm"
-                    disabled={unavailable}
+                    disabled={publicationUnavailable}
                     loading={c.publicationMode === "queue"}
                     data-aurora-feature="draft"
                     data-aurora-action="published"
@@ -3163,11 +3270,11 @@ function ComposerActionBar() {
                   )}
                 </div>
               </details>
-              <div className="hidden flex-wrap gap-2 sm:flex">
+              <div className="hidden sm:contents lg:flex lg:flex-nowrap lg:gap-2">
                 <Button
                   variant="outline"
                   size="sm"
-                  disabled={unavailable}
+                  disabled={publicationUnavailable}
                   loading={c.publicationMode === "now"}
                   data-aurora-feature="draft"
                   data-aurora-action="published"
@@ -3179,7 +3286,7 @@ function ComposerActionBar() {
                 <Button
                   variant="outline"
                   size="sm"
-                  disabled={unavailable}
+                  disabled={publicationUnavailable}
                   loading={c.publicationMode === "queue"}
                   data-aurora-feature="draft"
                   data-aurora-action="published"
@@ -3212,6 +3319,10 @@ function ComposerActionBar() {
 /* ---------------------------------------------------------------- РЕДАКТОР */
 
 function ComposerInner() {
+  const generatedMediaStorageKey = useProjectStorageKey("aurora:generated-media");
+  const getServerDraft = useProjectCall(unscopedGetServerDraft);
+  const getPublicationOperationEditorContext = useProjectCall(unscopedGetPublicationOperationEditorContext);
+  const fetch = useProjectFetch();
   const s = useStore();
   const projects = useProjects();
   const router = useRouter();
@@ -3255,6 +3366,7 @@ function ComposerInner() {
       : dateRaw;
   const timeParam = params.get("time");
   const channelParam = Number(params.get("channel")) || null;
+  const trackingRequested = params.get("tracking") === "1";
   const fromMedia = params.get("fromMedia") === "1";
   const suggestMedia = params.get("suggestMedia") === "1";
   const ideaParam = params.get("idea")?.trim().slice(0, 1_000) ?? "";
@@ -3290,6 +3402,7 @@ function ComposerInner() {
   const topicRef = useRef<HTMLInputElement>(null);
   const loadedKey = useRef<string | null>(null);
   const seededSuggestionRef = useRef("");
+  const startedSourceCreationRef = useRef("");
   const storeReady = s.ready;
   const authReady = s.authReady;
   const realReady = s.realReady;
@@ -3297,10 +3410,20 @@ function ComposerInner() {
   const localPosts = s.posts;
   const currentUserId = s.user?.id ?? null;
   const currentProjectId = projects.current?.id ?? null;
-  const canEditContent = c.canEditContent;
+  const canEditContent = c.canEditContent && !(c.isAutopilotDraft && c.saving);
   const currentProjectPersonal = projects.current?.personal === true;
   const currentWorkspaceId = currentProjectId == null ? null : projectDraftWorkspaceId(currentProjectId);
   const toast = s.toast;
+
+  useEffect(() => {
+    if (!hydrated || !trackingRequested) return;
+    const frame = window.requestAnimationFrame(() => {
+      const section = document.getElementById("composer-tracking");
+      section?.scrollIntoView({ behavior: reduce ? "auto" : "smooth", block: "center" });
+      section?.querySelector<HTMLInputElement>('input[type="url"]')?.focus({ preventScroll: true });
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [hydrated, reduce, trackingRequested]);
 
   // Pending outbox is selected before the server snapshot, so a hard reload never flashes
   // and then overwrites the newer local text with an older acknowledged version.
@@ -3386,11 +3509,11 @@ function ComposerInner() {
       let generatedMedia: Post["media"] = null;
       if (fromMedia) {
         try {
-          generatedMedia = JSON.parse(sessionStorage.getItem("aurora:generated-media") || "null") as Post["media"];
+          generatedMedia = JSON.parse(sessionStorage.getItem(generatedMediaStorageKey) || "null") as Post["media"];
         } catch {
           generatedMedia = null;
         }
-        sessionStorage.removeItem("aurora:generated-media");
+        sessionStorage.removeItem(generatedMediaStorageKey);
       }
       hydrate({
         ownerUserId: currentUserId,
@@ -3423,33 +3546,21 @@ function ComposerInner() {
       cancelled = true;
       controller.abort();
     };
-  }, [
-    beginHydration,
-    channelParam,
-    currentDraftId,
-    currentProjectId,
-    currentProjectPersonal,
-    currentUserId,
-    currentWorkspaceId,
-    dateParam,
-    draftParam,
-    failHydration,
-    fromMedia,
-    hydrate,
-    hydrated,
-    legacyParam,
-    authReady,
-    localPosts,
-    projects.ready,
-    realChannels,
-    realReady,
-    setComposerChannelId,
-    setComposerNetworks,
-    setComposerVkChannelId,
-    storeReady,
-    timeParam,
-    toast,
-  ]);
+  }, [beginHydration, channelParam, currentDraftId, currentProjectId, currentProjectPersonal, currentUserId, currentWorkspaceId, dateParam, draftParam, failHydration, fromMedia, hydrate, hydrated, legacyParam, authReady, localPosts, generatedMediaStorageKey, projects.ready, realChannels, realReady, setComposerChannelId, setComposerNetworks, setComposerVkChannelId, storeReady, timeParam, toast, getServerDraft]);
+
+  // The RSS dialog already confirmed generation. Opening a source without this intent
+  // remains read-only; a failed attempt waits for an explicit retry from the action bar.
+  const createSourceIntent = params.get("intent") === "create";
+  useEffect(() => {
+    const identity = `${currentUserId}:${currentProjectId}:${draftParam}`;
+    if (
+      !createSourceIntent || !hydrated || currentDraftId !== draftParam
+      || !c.canRecoverDraft || c.blockedReason !== "source_context_not_publishable"
+      || c.sourceRef?.kind !== "rss" || startedSourceCreationRef.current === identity
+    ) return;
+    startedSourceCreationRef.current = identity;
+    void c.recoverDraft();
+  }, [c, createSourceIntent, currentDraftId, currentProjectId, currentUserId, draftParam, hydrated]);
 
   useEffect(() => {
     if (!publicationParam) {
@@ -3471,15 +3582,7 @@ function ComposerInner() {
         if (!controller.signal.aborted) failActivePublicationLoad();
       });
     return () => controller.abort();
-  }, [
-    beginActivePublicationLoad,
-    clearActivePublication,
-    currentDraftId,
-    failActivePublicationLoad,
-    hydrated,
-    publicationParam,
-    setActivePublication,
-  ]);
+  }, [beginActivePublicationLoad, clearActivePublication, currentDraftId, failActivePublicationLoad, getPublicationOperationEditorContext, hydrated, publicationParam, setActivePublication]);
 
   useEffect(() => {
     if (
@@ -3639,7 +3742,7 @@ function ComposerInner() {
   };
 
   const onKeyDown = (e: React.KeyboardEvent<HTMLDivElement>) => {
-    if (c.canPublish && (e.metaKey || e.ctrlKey) && e.key === "Enter") {
+    if (c.text.trim() && (c.canPublish || (c.isAutopilotDraft && c.canEditContent)) && (e.metaKey || e.ctrlKey) && e.key === "Enter") {
       e.preventDefault();
       c.schedule();
     }
@@ -3660,6 +3763,7 @@ function ComposerInner() {
       >
         <Link
           href={returnTarget.href}
+          onClick={c.isAutopilotDraft ? (event) => { event.preventDefault(); if (!c.saving) void c.saveToAutopilot(); } : undefined}
           className={cn(
             "inline-flex min-h-11 items-center gap-2 rounded-xs px-2 text-[14px] font-semibold text-text-2",
             "transition-colors duration-200 hover:bg-surface-inset hover:text-text",
@@ -3667,7 +3771,7 @@ function ComposerInner() {
           )}
         >
           <ArrowLeft className="h-4 w-4" aria-hidden />
-          {returnTarget.label}
+          {c.isAutopilotDraft ? "Сохранить и вернуться в автопилот" : returnTarget.label}
         </Link>
       </nav>
 
@@ -3771,7 +3875,11 @@ function ComposerInner() {
             {!canEditContent && (
               <p role="status" className="mt-2 text-[13px] leading-relaxed text-text-2">
                 {c.blockedReason === "source_context_not_publishable"
-                  ? "Материал-источник открыт только для чтения. Отдельный пост будет создан только после вашего подтверждения."
+                  ? c.sourceRef?.kind === "rss"
+                    ? c.recoveryState === "loading"
+                      ? "ИИ создаёт отдельный пост. Материал-источник остаётся без изменений."
+                      : "Материал-источник открыт только для чтения. Нажмите «Создать пост из материала», чтобы ИИ написал новый текст."
+                    : "Материал-источник открыт только для чтения. Отдельный пост будет создан только после вашего подтверждения."
                   : c.recoveryState === "loading"
                     ? "Текущий текст зафиксирован для создания отдельного поста."
                     : "Согласованный текст открыт только для чтения. Публикатор выбирает дату и отправляет именно эту версию."}
@@ -3797,7 +3905,7 @@ function ComposerInner() {
                 </p>
               ) : (
                 <p className="text-[13px] text-text-3">
-                  {c.canPublish ? "Ctrl + Enter — запланировать" : "Изменения сохраняются автоматически"}
+                  {c.isAutopilotDraft ? "Ctrl + Enter — сохранить и вернуться в автопилот" : c.canPublish ? "Ctrl + Enter — запланировать" : "Изменения сохраняются автоматически"}
                 </p>
               )}
               <span className="nums shrink-0 text-[13px] text-text-3">{chars(len)}</span>
@@ -3883,27 +3991,34 @@ function ComposerInner() {
                 key="ai-preview"
                 {...fade}
                 aria-label="Предварительный вариант от ИИ"
-                aria-busy={c.aiPreview.status === "running" || undefined}
                 className={cn(
                   "space-y-3 rounded-sm border p-3",
                   c.aiPreview.status === "interrupted"
                     ? "border-fire/30 bg-fire-soft/50"
-                    : "border-brand/25 bg-info-soft/50",
+                    : "border-line bg-surface",
                 )}
               >
-                <div className="flex flex-wrap items-start gap-2">
-                  <div className="min-w-0 flex-1">
-                    <p className="text-[13px] font-semibold text-text">Новый вариант</p>
-                    <p role="status" aria-live="polite" aria-atomic="true" className="text-[12px] text-text-3">
-                      {c.aiPreview.status === "running"
-                        ? aiDraftPhaseLabel(c.aiPreview.phase)
-                        : c.aiPreview.status === "ready"
+                {c.aiPreview.status === "running" ? (
+                  <TaskStatus
+                    label={aiDraftPhaseLabel(c.aiPreview.phase, c.aiBusy ?? "write")}
+                    onStop={c.stopAi}
+                  />
+                ) : (
+                  <div className="flex flex-wrap items-start gap-2">
+                    <div className="min-w-0 flex-1">
+                      <p className="text-[13px] font-semibold text-text">Новый вариант</p>
+                      <p role="status" aria-live="polite" aria-atomic="true" className="text-[12px] text-text-3">
+                        {c.aiPreview.status === "ready"
                           ? "Вариант готов. Исходный текст не изменится, пока ты его не применишь."
                           : "Генерация остановлена. Готовая часть сохранена отдельно; исходный пост не изменён."}
-                    </p>
+                      </p>
+                    </div>
                   </div>
-                </div>
-                <div className="max-h-56 overflow-y-auto whitespace-pre-wrap rounded-xs bg-surface px-3 py-2 text-[14px] leading-relaxed text-text">
+                )}
+                <div
+                  aria-busy={c.aiPreview.status === "running" || undefined}
+                  className="max-h-56 overflow-y-auto whitespace-pre-wrap rounded-xs bg-surface px-3 py-2 text-[14px] leading-relaxed text-text"
+                >
                   {c.aiPreview.text}
                 </div>
                 {c.aiPreview.status !== "running" && (
@@ -3918,20 +4033,12 @@ function ComposerInner() {
                 )}
               </motion.section>
             )}
-            {typing && (
+            {typing && !c.aiPreview && (
               <motion.div
                 key="typing"
                 {...fade}
-                className="flex items-center gap-2 rounded-sm bg-info-soft px-3 py-2"
               >
-                <Sparkles className="h-4 w-4 animate-pulse text-brand motion-reduce:animate-none" aria-hidden />
-                <span role="status" aria-live="polite" aria-atomic="true" className="text-[13px] font-semibold text-info-text">
-                  {c.aiPreview ? aiDraftPhaseLabel(c.aiPreview.phase) : "ИИ готовит черновик…"}
-                </span>
-                <Button variant="ghost" size="sm" onClick={c.stopAi} className="ml-auto">
-                  <CircleStop className="h-4 w-4" aria-hidden />
-                  Стоп
-                </Button>
+                <TaskStatus label={aiDraftPhaseLabel(null, c.aiBusy ?? "write")} onStop={c.stopAi} />
               </motion.div>
             )}
           </AnimatePresence>
@@ -4107,7 +4214,7 @@ function ComposerInner() {
               <Checkbox
                 id="net-tg"
                 checked={tgOn}
-                disabled={!canEditContent}
+                disabled={!canEditContent || c.isAutopilotDraft}
                 onChange={(v) => c.toggleNetwork("tg", v)}
                 label={
                   <span className="inline-flex items-center gap-1.5">
@@ -4121,7 +4228,7 @@ function ComposerInner() {
               <Checkbox
                 id="net-vk"
                 checked={vkOn}
-                disabled={!canEditContent}
+                disabled={!canEditContent || c.isAutopilotDraft}
                 onChange={(v) => c.toggleNetwork("vk", v)}
                 label={
                   <span className="inline-flex items-center gap-1.5">
@@ -4164,7 +4271,7 @@ function ComposerInner() {
                     <button
                       key={ch.id}
                       type="button"
-                      disabled={!canEditContent}
+                      disabled={!canEditContent || c.isAutopilotDraft}
                       onClick={() => c.toggleChannelId(ch.id)}
                       aria-pressed={on}
                       className={cn(
@@ -4195,7 +4302,7 @@ function ComposerInner() {
                     <button
                       key={ch.id}
                       type="button"
-                      disabled={!canEditContent}
+                      disabled={!canEditContent || c.isAutopilotDraft}
                       onClick={() => c.toggleVkChannelId(ch.id)}
                       aria-pressed={on}
                       className={cn(
@@ -4216,6 +4323,14 @@ function ComposerInner() {
           )}
         </div>
         </EditorSection>
+
+        {!c.isAutopilotDraft && <TrackingBuilder
+          value={c.tracking}
+          onChange={c.setTracking}
+          disabled={!canEditContent}
+          validationError={c.errors.tracking}
+          defaultOpen={trackingRequested}
+        />}
 
         {!currentProjectPersonal && (
           <>

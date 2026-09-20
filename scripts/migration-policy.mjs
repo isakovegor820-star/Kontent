@@ -8,6 +8,9 @@ const DESTRUCTIVE_STATEMENTS = [
 ];
 
 const APPROVED_REPLACED_CONSTRAINTS = new Set([
+  // Replaced by project/channel-scoped uniqueness without deleting existing rows.
+  "rss_feeds_user_id_url_key",
+  "radar_search_runs_user_request_key",
   "ai_usage_status_check",
   "ai_usage_reservation_fields_check",
   "hashtag_sets_user_id_name_key",
@@ -24,6 +27,14 @@ const APPROVED_REPLACED_CONSTRAINTS = new Set([
   "autopilot_plan_status_check",
   "autopilot_settings_pkey",
   "content_brief_source_check",
+  "content_brief_language_check",
+  "content_brief_region_check",
+  "content_brief_research_profile_hash_check",
+  "growth_moves_source_kind_check",
+  "opportunity_snapshots_type_check",
+  "opportunity_snapshots_priority_check",
+  "opportunity_snapshots_source_count_check",
+  "opportunity_snapshots_profile_hash_check",
   "rss_items_skip_reason_check",
   // N18 replaces the global key with user/project/url after a coordinated cutover.
   "rss_feeds_user_id_url_key",

@@ -132,6 +132,12 @@ journalctl -u aurora-web.service --since '-25 min' --no-pager -o cat 2>/dev/null
   | grep -aE '^\[(worker|start|web)\]|preflight|database_pool|Error:|error:' \
   | tail -n 40 | redact || echo "(no matching journal lines)"
 
+section "MEDIA WORKER ATTEMPTS (safe diagnostic fields, last 3 h)"
+journalctl -u aurora-worker.service --since '-3 hours' --no-pager -o cat 2>/dev/null \
+  | grep -aA 10 -E '^\[media-worker\]' \
+  | grep -aE '^\[media-worker\]|^  (event|requestId|generationId|code|retryable|attempt|outcome):' \
+  | tail -n 100 | redact || echo "(no media attempt telemetry)"
+
 section "RUNTIME ENV KEY NAMES (values never printed)"
 if [[ -n "$current_path" && -f "$current_path/.env.production" ]]; then
   printf 'env_file=%s\n' "$current_path/.env.production"
@@ -208,7 +214,16 @@ if [[ -n "$current_path" && -f "$current_path/.env.production" ]]; then
       echo "redis-cli not installed on host"
     else
       printf 'ping=%s\n' "$(redis-cli -u "$REDIS_URL" ping 2>&1 | redact)"
-      for queue in autopilot-plans publish; do
+      # CLIENT LIST is server-wide. Restrict consumers to this URL's logical DB.
+      redis_db="$(node -e 'const p = new URL(process.env.REDIS_URL).pathname.slice(1); if (!/^\d*$/.test(p)) process.exit(1); process.stdout.write(String(Number(p || 0)))' 2>/dev/null || true)"
+      redis_clients=""
+      consumers_available=false
+      if [[ -n "$redis_db" ]] && redis_clients="$(redis-cli -u "$REDIS_URL" --raw client list 2>/dev/null)" \
+        && [[ "$redis_clients" == *"id="* ]] \
+        && ! printf '%s\n' "$redis_clients" | awk ' /name=bull:/ && !/ db=[0-9]+( |$)/ {missing=1} END {exit !missing}'; then
+        consumers_available=true
+      fi
+      for queue in autopilot-plans publish media-generation; do
         printf '%s wait=%s active=%s delayed=%s failed=%s completed=%s paused=%s\n' \
           "$queue" \
           "$(redis-cli -u "$REDIS_URL" llen "bull:${queue}:wait" 2>/dev/null)" \
@@ -217,14 +232,17 @@ if [[ -n "$current_path" && -f "$current_path/.env.production" ]]; then
           "$(redis-cli -u "$REDIS_URL" zcard "bull:${queue}:failed" 2>/dev/null)" \
           "$(redis-cli -u "$REDIS_URL" zcard "bull:${queue}:completed" 2>/dev/null)" \
           "$(redis-cli -u "$REDIS_URL" exists "bull:${queue}:paused" 2>/dev/null)"
-        # A registered BullMQ consumer is exactly what /api/autopilot/generate counts, and
-        # BullMQ names that client after the base64 of the queue name, not the queue name.
-        # Matching the plain name reported zero consumers for a fully healthy worker.
-        queue_b64="$(printf '%s' "$queue" | base64 -w0)"
-        printf '%s consumers=%s\n' \
-          "$queue" \
-          "$(redis-cli -u "$REDIS_URL" --no-raw client list 2>/dev/null \
-              | grep -c "name=bull:${queue_b64}" || echo 0)"
+        # Registration is not proof that a job executed successfully.
+        queue_b64="$(printf '%s' "$queue" | base64 | tr -d '\n')"
+        if [[ "$consumers_available" == true ]]; then
+          consumer_count="$(printf '%s\n' "$redis_clients" | awk -v db="$redis_db" -v wanted="bull:$queue_b64" '
+            {name=""; client_db=""; for(i=1;i<=NF;i++) {if($i ~ /^name=/) name=substr($i,6); if($i ~ /^db=/) client_db=substr($i,4)}}
+            client_db == db && (name == wanted || index(name,wanted ":") == 1) {count++}
+            END {print count+0}')"
+        else
+          consumer_count=unavailable
+        fi
+        printf '%s consumers=%s\n' "$queue" "$consumer_count"
         # A job that exhausted its attempts keeps its deterministic id, and BullMQ ignores a
         # later `add` for an id it already holds, so these ids are what silently swallows
         # every replay of the matching plan.
@@ -233,14 +251,23 @@ if [[ -n "$current_path" && -f "$current_path/.env.production" ]]; then
           "$(redis-cli -u "$REDIS_URL" zrange "bull:${queue}:failed" 0 -1 2>/dev/null \
               | paste -sd, - || true)"
       done
-      printf 'autopilot_meta_keys=%s\n' \
-        "$(redis-cli -u "$REDIS_URL" --scan --pattern 'bull:autopilot-plans:*' --count 200 2>/dev/null | wc -l)"
-      # Which BullMQ consumers exist at all. The worker builds them in a fixed order, so
-      # the set that registered says how far top-level startup actually got.
-      printf 'registered_bull_consumers=%s\n' \
-        "$(redis-cli -u "$REDIS_URL" --no-raw client list 2>/dev/null \
-            | sed -nE 's/.*[[:space:]]name=(bull:[^[:space:]]+).*/\1/p' \
-            | sort | uniq -c | awk '{printf "%s(%s) ", $2, $1}' || true)"
+      # --count is not a redis-cli SCAN option. Check success before counting,
+      # deduplicate SCAN results, and name the value for all matching queue keys.
+      if queue_keys="$(redis-cli -u "$REDIS_URL" --scan --pattern 'bull:autopilot-plans:*' 2>/dev/null)" \
+        && ! printf '%s\n' "$queue_keys" | grep -Eq '^(ERR |NOAUTH |NOPERM |WRONGPASS |\(error\))'; then
+        printf 'autopilot_queue_keys=%s\n' "$(printf '%s\n' "$queue_keys" | awk 'NF && !seen[$0]++ {count++} END {print count+0}')"
+      else
+        echo 'autopilot_queue_keys=unavailable'
+      fi
+      if [[ "$consumers_available" == true ]]; then
+        printf 'registered_bull_consumers=%s\n' \
+          "$(printf '%s\n' "$redis_clients" | awk -v db="$redis_db" '
+            {name=""; client_db=""; for(i=1;i<=NF;i++) {if($i ~ /^name=/) name=substr($i,6); if($i ~ /^db=/) client_db=substr($i,4)}}
+            client_db == db && name ~ /^bull:/ {print name}' \
+            | sort | uniq -c | awk '{printf "%s(%s) ", $2, $1}')"
+      else
+        echo 'registered_bull_consumers=unavailable'
+      fi
     fi
   ) || echo "(redis probe failed)"
 fi
@@ -319,7 +346,7 @@ else
         console.log(JSON.stringify({
           catalogStatus: catalog.status,
           modelCount: ids.length,
-          auroraEnginesPresent: ["gpt-5.4", "deepseek-v4-pro", "deepseek-v4-flash", "qwen3.6-27b", "minimax-m3"]
+          auroraEnginesPresent: ["qwen3.8-27b", "gpt-5.6-sol", "gpt-5.6-terra", "qwen3.6-27b", "deepseek-v4-flash"]
             .filter((id) => ids.includes(id)),
           sample: ids.slice(0, 40),
         }));
@@ -327,24 +354,14 @@ else
         console.log(JSON.stringify({ catalogFailure: String(error?.message || error).slice(0, 200) }));
       }
 
-      // Autopilot fails with `reasoning_without_content` (cut off mid-`<think>`) and
-      // `empty_generation` (no `content` at all) in roughly equal measure across every
-      // engine, so the question is not which model is broken but which request shape gets a
-      // visible answer out of this endpoint. Each variant isolates one knob: the deployed
-      // shape, an explicit thinking-disable, and a budget large enough to finish reasoning
-      // *and* answer. `reasoningChars` says whether the text is merely in the other field.
-      const thinkingOff = { chat_template_kwargs: { enable_thinking: false } };
+      // Probe the exact request shape deployed for every Aurora product slot.
+      // `reasoningChars` distinguishes a visible answer from hidden-only output.
       const variants = [
-        { label: "deepseek-v4-flash deployed shape", model: "deepseek-v4-flash", body: { max_tokens: 3000, reasoning_effort: "none" } },
-        { label: "deepseek-v4-flash budget=8000", model: "deepseek-v4-flash", body: { max_tokens: 8000, reasoning_effort: "none" } },
-        { label: "qwen3.6-27b deployed shape", model: "qwen3.6-27b", body: { max_tokens: 3000 } },
-        { label: "qwen3.6-27b enable_thinking=false", model: "qwen3.6-27b", body: { max_tokens: 3000, ...thinkingOff } },
-        { label: "qwen3.6-27b budget=8000", model: "qwen3.6-27b", body: { max_tokens: 8000 } },
-        { label: "minimax-m3 deployed shape", model: "minimax-m3", body: { max_tokens: 3000 } },
-        { label: "minimax-m3 enable_thinking=false", model: "minimax-m3", body: { max_tokens: 3000, ...thinkingOff } },
-        { label: "minimax-m3 budget=8000", model: "minimax-m3", body: { max_tokens: 8000 } },
-        { label: "gpt-5.4 deployed shape", model: "gpt-5.4", body: { max_tokens: 3000 } },
-        { label: "gpt-5.4 effort=none", model: "gpt-5.4", body: { max_tokens: 3000, reasoning_effort: "none" } },
+        { label: "Aurora Iskra / Qwen 3.8 27B", model: "qwen3.8-27b", body: { max_tokens: 3000 } },
+        { label: "Aurora Glubina / GPT-5.6 Sol", model: "gpt-5.6-sol", body: { max_tokens: 3000, reasoning_effort: "none" } },
+        { label: "Aurora Redaktor / GPT-5.6 Terra", model: "gpt-5.6-terra", body: { max_tokens: 3000, reasoning_effort: "none" } },
+        { label: "Aurora Ritm / Qwen 3.6 27B", model: "qwen3.6-27b", body: { max_tokens: 3000 } },
+        { label: "Aurora Prizma / DeepSeek V4 Flash", model: "deepseek-v4-flash", body: { max_tokens: 3000, reasoning_effort: "none" } },
       ];
       for (const variant of variants) {
         const started = Date.now();

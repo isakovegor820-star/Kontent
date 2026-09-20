@@ -1,6 +1,11 @@
 import { describe, expect, it } from "vitest";
 
-import { aiDraftPhaseLabel, createAiDraftProjection, projectAiDraftEvent } from "./ai-draft-projection";
+import {
+  aiDraftPhaseLabel,
+  createAiDraftProjection,
+  projectAiDraftEvent,
+  recoverAiDraftText,
+} from "./ai-draft-projection";
 import type { AiStreamEvent } from "./ai-stream";
 
 const requestId = "projection-test";
@@ -17,9 +22,9 @@ function apply(events: AiStreamEvent[]) {
 
 describe("AI draft projection", () => {
   it("describes live drafting and the optional editorial pass", () => {
-    expect(aiDraftPhaseLabel("draft")).toBe("Пишу черновик — текст появляется сразу…");
-    expect(aiDraftPhaseLabel("editing")).toBe("Улучшаю готовый черновик…");
-    expect(aiDraftPhaseLabel("writing")).toBe("Пишу пост — текст появляется сразу…");
+    expect(aiDraftPhaseLabel("draft")).toBe("Пишу черновик…");
+    expect(aiDraftPhaseLabel("editing")).toBe("Редактирую…");
+    expect(aiDraftPhaseLabel("writing")).toBe("Пишу пост…");
   });
 
   it("never erases a complete candidate between editorial passes", () => {
@@ -71,5 +76,17 @@ describe("AI draft projection", () => {
 
     expect(state.buffer).toBe("Новый");
     expect(state.visibleText).toBe("Текущий сохранённый пост");
+  });
+
+  it("returns the visible generated draft instead of erasing it on a late stream error", () => {
+    let state = createAiDraftProjection();
+    state = projectAiDraftEvent(state, { type: "phase", phase: "writing", requestId });
+    state = projectAiDraftEvent(state, { type: "delta", text: "Готовый текст", requestId });
+
+    expect(recoverAiDraftText(state)).toBe("Готовый текст");
+  });
+
+  it("falls back to the previous text only when the failed stream produced no candidate", () => {
+    expect(recoverAiDraftText(createAiDraftProjection(), "Исходный текст")).toBe("Исходный текст");
   });
 });

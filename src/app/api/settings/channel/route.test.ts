@@ -1,5 +1,5 @@
+import { ProjectRequest } from "@/test/project-request";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { NextRequest } from "next/server";
 
 const mocks = vi.hoisted(() => ({
   getSessionUser: vi.fn(),
@@ -11,10 +11,12 @@ const mocks = vi.hoisted(() => ({
   connect: vi.fn(),
   requireProjectPermission: vi.fn(),
   requireSelectedProjectPermission: vi.fn(),
+  queueAdd: vi.fn(),
 }));
 
 vi.mock("@/lib/session", () => ({ getSessionUser: mocks.getSessionUser }));
 vi.mock("@/lib/db", () => ({ getPool: () => ({ connect: mocks.connect }) }));
+vi.mock("@/lib/queue", () => ({ getStatsQueue: () => ({ add: mocks.queueAdd }) }));
 vi.mock("@/lib/autopilot", () => ({
   resolveChannel: mocks.resolveChannel,
   ensureSettings: mocks.ensureSettings,
@@ -32,7 +34,7 @@ vi.mock("@/lib/project-permissions", async (importOriginal) => {
 import { POST } from "./route";
 
 function request(body: Record<string, unknown>, headers: Record<string, string> = {}) {
-  return new NextRequest("http://localhost/api/settings/channel", {
+  return new ProjectRequest(12, "http://localhost/api/settings/channel", {
     method: "POST",
     headers: { "content-type": "application/json", ...headers },
     body: JSON.stringify(body),
@@ -68,6 +70,7 @@ describe("POST /api/settings/channel", () => {
     mocks.requireProjectPermission.mockResolvedValue({ projectId: 12 });
     mocks.resolveChannel.mockResolvedValue(21);
     mocks.connect.mockResolvedValue({ query: mocks.query, release: mocks.release });
+    mocks.queueAdd.mockResolvedValue({});
     mocks.query.mockImplementation(async (sql: string) => {
       if (sql.includes("select enabled, mode")) return { rows: [settings], rowCount: 1 };
       if (sql.includes("returning enabled")) return { rows: [settings], rowCount: 1 };
@@ -119,7 +122,13 @@ describe("POST /api/settings/channel", () => {
     expect(statements.some((sql) => sql.includes("where user_id = $1 and channel_id = $2"))).toBe(false);
     expect(statements.some((sql) => sql.includes("insert into content_brief"))).toBe(true);
     expect(statements.some((sql) => sql.includes("update autopilot_settings"))).toBe(true);
+    expect(statements.some((sql) => sql.includes("delete from competitor_suggestions"))).toBe(true);
     expect(statements.at(-1)).toBe("commit");
+    expect(mocks.queueAdd).toHaveBeenCalledWith(
+      "discover",
+      { userId: 7, channelId: 21 },
+      expect.objectContaining({ jobId: expect.stringMatching(/^discover-topic-7-21-/u) }),
+    );
     expect(mocks.release).toHaveBeenCalledOnce();
   });
 

@@ -67,8 +67,22 @@ describe("Aurora product names", () => {
       expect(engine.label.startsWith("Аврора ")).toBe(true);
       expect(engine.note).not.toMatch(/GPT|DeepSeek|MiniMax|NavyAI|Claude|Qwen|Hermes/iu);
     }
-    expect(getEngine("navy-gpt-5-4")).toMatchObject({ label: "Аврора Редактор", model: "gpt-5.4" });
-    expect(getEngine("navy-minimax-m3")).toMatchObject({ label: "Аврора Призма", model: "minimax-m3" });
+    expect([
+      "navy-deepseek-flash",
+      "navy-deepseek-pro",
+      "navy-gpt-5-4",
+      "navy-qwen-3-6",
+      "navy-minimax-m3",
+    ].map((id) => {
+      const engine = getEngine(id);
+      return [engine.label, engine.model, Boolean(engine.recommended)];
+    })).toEqual([
+      ["Аврора Искра", "qwen3.8-27b", true],
+      ["Аврора Глубина", "gpt-5.6-sol", false],
+      ["Аврора Редактор", "gpt-5.6-terra", false],
+      ["Аврора Ритм", "qwen3.6-27b", false],
+      ["Аврора Призма", "deepseek-v4-flash", false],
+    ]);
     for (const engine of AUTOPILOT_ENGINE_OPTIONS) expect(engine.label).toBe(getEngine(engine.id).label);
   });
 });

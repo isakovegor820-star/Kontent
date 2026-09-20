@@ -1,10 +1,10 @@
+import { withProjectRoute } from "@/lib/project-route";
 import { createHash } from "node:crypto";
 import { NextRequest, NextResponse } from "next/server";
 
 import { resolveChannel } from "@/lib/autopilot";
 import { autopilotRetryableItemIndexes } from "@/lib/autopilot-build-progress.mjs";
 import {
-  isAutopilotHumanReviewItem,
   isAutopilotReaderReadyItem,
 } from "@/lib/autopilot-review.mjs";
 import { getPool } from "@/lib/db";
@@ -66,7 +66,7 @@ function repairRequestHash(
     .digest("hex");
 }
 
-export async function POST(req: NextRequest) {
+async function handlePOST(req: NextRequest) {
   if (!hasTrustedMutationOrigin(req)) {
     return NextResponse.json({ ok: false, error: "forbidden_origin" }, { status: 403 });
   }
@@ -154,7 +154,7 @@ export async function POST(req: NextRequest) {
 
       const items = Array.isArray(plan.items) ? plan.items : [];
       const readyCount = items.filter((item: Record<string, unknown>) =>
-        isAutopilotReaderReadyItem(item) || isAutopilotHumanReviewItem(item),
+        isAutopilotReaderReadyItem(item),
       ).length;
       const publicationTargetCount = Math.max(
         1,
@@ -162,7 +162,8 @@ export async function POST(req: NextRequest) {
       );
       const selectionDeficit = Math.max(
         1,
-        Number(plan.build_report?.selectionDeficit) || publicationTargetCount - readyCount,
+        Number(plan.build_report?.selectionDeficit) || 0,
+        publicationTargetCount - readyCount,
       );
       const available = autopilotRetryableItemIndexes(items).sort((left, right) =>
         Number(Boolean(items[right]?.news)) - Number(Boolean(items[left]?.news)),
@@ -337,3 +338,5 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ ok: false, error: "server" }, { status: 500 });
   }
 }
+
+export const POST = withProjectRoute(handlePOST);

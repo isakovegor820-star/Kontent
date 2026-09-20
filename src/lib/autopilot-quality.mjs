@@ -1,6 +1,7 @@
 import { normalizePostQuality, validatePostQuality } from "./post-quality.mjs";
 import { finishPostForm, normalizePostForm, reservedFormChars } from "./post-form.mjs";
 import { validateSemanticClaims } from "./semantic-claims.mjs";
+import { sanitizeAutopilotPublicText } from "./autopilot-publication.mjs";
 import {
   QUALITY_FAILURE_GUIDE,
   autopilotQualityDisposition,
@@ -139,20 +140,22 @@ export function prepareAutopilotDraftForm(text, rawQuality) {
   // Normalize against the effective Autopilot length band. This lets the form boundary
   // remove a provider-cut tail once the already-complete part is long enough for the
   // selected detail level, instead of comparing it with an unrelated channel maximum.
-  const normalized = normalizePostForm(text, formQuality);
+  // Validate the text the reader will actually receive. Removing a source footer after
+  // validation could turn an accepted draft into another too-short post.
+  const normalized = normalizePostForm(sanitizeAutopilotPublicText(text), formQuality);
   if (!normalized) return "";
   // Never let a padding question or a mandatory disclaimer hide an incomplete model
   // sentence. The quality gate will classify this as `truncated` and retry only this post.
   if (!/[.!?…»”*)\]]$/u.test(normalized)) return normalized;
   const reserved = reservedFormChars(normalized, formQuality);
-  const fitted = fitAutopilotDraftLength(
+  // A length failure needs more substance. Appending stock reader questions hides it
+  // from the gate and produces repetitive filler across an entire monthly plan.
+  const fitted = trimDraftToMaximum(
     normalized,
-    Math.max(0, desiredMinChars - reserved),
     Math.max(1, desiredMaxChars - reserved),
-    formQuality.address,
+    Math.max(0, desiredMinChars - reserved),
   );
-  // Добивка объёма склеивает вопрос читателя в отдельный абзац — форму после неё
-  // перепроверяем, иначе абзац может выйти за лимит предложений.
+  // Recheck structure after trimming, then add the required disclaimer and emphasis.
   return finishPostForm(normalizePostForm(fitted, formQuality), formQuality);
 }
 
@@ -211,6 +214,7 @@ export async function assessAutopilotDraft({
   invented = [],
   trigger = "generation",
   semanticAdapter = null,
+  semanticRetryLimit = 0,
   signal,
   now,
 }) {
@@ -222,10 +226,21 @@ export async function assessAutopilotDraft({
     trigger,
     checkedAt: now ? now() : undefined,
   });
-  const semantic = await validateSemanticClaims(
+  let semantic = await validateSemanticClaims(
     { text, sources: Array.isArray(sources) ? sources : [] },
     { adapter: semanticAdapter, signal, now },
   );
+  // Retry an unsettled checker, never a negative verdict in search of a pass. Keep the
+  // same text and evidence; the provider has its own bounded timeout/fallback policy.
+  const semanticRetries = Math.min(1, Math.max(0, Number(semanticRetryLimit) || 0));
+  for (let attempt = 0;
+    attempt < semanticRetries && semanticAdapter && semantic.status === "not_checked" && !signal?.aborted;
+    attempt += 1) {
+    semantic = await validateSemanticClaims(
+      { text, sources: Array.isArray(sources) ? sources : [] },
+      { adapter: semanticAdapter, signal, now },
+    );
+  }
   const reviewClaims = Array.isArray(semantic.reviewClaims) ? semantic.reviewClaims : [];
   const semanticMessages = semantic.status === "blocked"
     ? semantic.blockers.map((blocker) => blocker.message)

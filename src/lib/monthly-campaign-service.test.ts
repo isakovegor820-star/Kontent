@@ -18,6 +18,7 @@ import { ProjectAccessError } from "./project-permissions";
 import {
   assertNoDuplicateCampaignTopics,
   createMonthlyCampaignPlan,
+  getMonthlyCampaign,
   listMonthlyCampaigns,
   moveMonthlyCampaignItem,
   normalizeMonthlyCampaignBrief,
@@ -237,6 +238,48 @@ describe("monthly campaign parsing", () => {
 });
 
 describe("monthly campaign project service", () => {
+  it("exposes a completed regeneration result plan so clients can survive a read-skew poll", async () => {
+    const query = vi.fn(async (sql: string) => {
+      if (sql.includes("from monthly_campaigns")) return { rows: [campaignRow()] };
+      if (sql.includes("from content_brief")) return { rows: [] };
+      if (sql.includes("from monthly_campaign_plans")) return { rows: [planRow()] };
+      if (sql.includes("from monthly_campaign_items")) return { rows: [itemRow(62, 2, 1)] };
+      if (sql.includes("from monthly_campaign_regeneration_operations")) {
+        return { rows: [{
+          id: 91,
+          plan_id: 52,
+          result_plan_id: 53,
+          scope: "item",
+          week_starts_on: null,
+          status: "completed",
+          base_plan_version: 4,
+          error_code: null,
+          created_at: "2026-08-15T10:00:00.000Z",
+          updated_at: "2026-08-15T10:00:01.000Z",
+          completed_at: "2026-08-15T10:00:01.000Z",
+        }] };
+      }
+      if (sql.includes("from monthly_campaign_regeneration_targets")) {
+        return { rows: [{ operation_id: 91, item_id: 62 }] };
+      }
+      throw new Error(`unexpected SQL: ${sql}`);
+    });
+
+    const result = await getMonthlyCampaign({
+      pool: { query } as never,
+      actorUserId: 11,
+      campaignId: 41,
+    });
+
+    expect(result.regenerations[0]).toMatchObject({
+      id: 91,
+      planId: 52,
+      resultPlanId: 53,
+      status: "completed",
+      targetItemIds: [62],
+    });
+  });
+
   it("keeps list reads inside the server-selected project", async () => {
     permission.projectId = 7;
     const query = vi.fn(async (sql: string, params: unknown[]) => {

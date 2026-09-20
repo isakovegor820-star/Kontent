@@ -54,6 +54,21 @@ describe("project role permissions", () => {
     expect(String(query.mock.calls[0][0])).toContain("user_project_preferences");
   });
 
+  it("holds the selected membership through a protected transaction when requested", async () => {
+    const query = vi.fn().mockResolvedValue({
+      rows: [{ project_id: "22", user_id: "7", role: "author", version: "2" }],
+    });
+
+    await requireSelectedProjectPermission(
+      { query } as never,
+      7,
+      "content.edit",
+      { lock: true },
+    );
+
+    expect(String(query.mock.calls[0][0])).toContain("for share of member, project");
+  });
+
   it("fails closed for an invalid selector or missing membership", async () => {
     await expect(requireProjectPermission(
       { query: vi.fn() } as never,

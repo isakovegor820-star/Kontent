@@ -1,4 +1,6 @@
 "use client";
+import { useProjectFetch } from "@/lib/use-project-transport";
+
 
 import { projectFetch as fetch } from "@/lib/project-fetch";
 
@@ -78,6 +80,7 @@ function explicitEvent(target: Element, sectionId: NonNullable<ReturnType<typeof
 }
 
 export function AuroraProductTelemetry() {
+  const fetch = useProjectFetch();
   const pathname = usePathname();
   const queueRef = useRef<AuroraProductEventDraft[]>([]);
   const timerRef = useRef<number | null>(null);
@@ -106,7 +109,7 @@ export function AuroraProductTelemetry() {
       uninstall();
       flush();
     };
-  }, []);
+  }, [fetch]);
 
   useEffect(() => {
     const sectionId = auroraSectionForPath(pathname);

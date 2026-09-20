@@ -185,6 +185,33 @@ describe("AI provider orchestration", () => {
     await expect(stream.next()).rejects.toMatchObject({ code: "first_token_timeout" });
   });
 
+  it("honors the configured first-token deadline for the replacement depth model", async () => {
+    vi.useFakeTimers();
+    const calls: string[] = [];
+    const factory: AiStreamFactory = async function* (_input, engine, signal) {
+      calls.push(engine);
+      if (engine === "navy-deepseek-pro") {
+        await new Promise<never>((_resolve, reject) => {
+          signal?.addEventListener("abort", () => reject(signal.reason), { once: true });
+        });
+      }
+      yield "RECOVERED";
+    };
+    const run = collect(orchestrateText(params, "navy-deepseek-pro", {
+      firstTokenMs: 5_000,
+      overallMs: 30_000,
+      fallbackEngines: ["navy-deepseek-flash"],
+      streamFactory: factory,
+    }));
+    await vi.advanceTimersByTimeAsync(5_000);
+    const events = await run;
+    expect(calls).toEqual(["navy-deepseek-pro", "navy-deepseek-flash"]);
+    expect(events).toContainEqual(expect.objectContaining({
+      type: "fallback", reason: "first_token_timeout", toEngine: "navy-deepseek-flash",
+    }));
+    expect(events).toContainEqual({ type: "delta", engine: "navy-deepseek-flash", text: "RECOVERED" });
+  });
+
   it("обрывает весь поток по overall deadline даже после первого token", async () => {
     vi.useFakeTimers();
     const factory: AiStreamFactory = async function* (_input, _engine, signal) {
@@ -240,8 +267,8 @@ describe("AI provider orchestration", () => {
     expect(configuredFallbackEngines("navy-deepseek-pro", env)).toEqual([
       "navy-deepseek-flash",
       "navy-qwen-3-6",
-      "navy-minimax-m3",
       "navy-gpt-5-4",
+      "navy-minimax-m3",
     ]);
     expect(configuredFallbackEngines("local", { ...env, AI_FALLBACK_ENGINES: "openai" })).toEqual([]);
   });

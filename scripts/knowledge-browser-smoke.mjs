@@ -1,0 +1,56 @@
+import { createHash, randomBytes } from 'node:crypto';
+import { writeFile } from 'node:fs/promises';
+import pg from 'pg';
+import { chromium } from 'playwright-core';
+import { resolveEmbeddingConfig } from '../src/lib/embedding-config.mjs';
+const dbUrl = new URL(process.env.DATABASE_URL);
+if (dbUrl.hostname !== '127.0.0.1' || dbUrl.pathname !== '/aurora_launch_test') throw new Error('Disposable local database required');
+const base = 'http://127.0.0.1:3057';
+const pool = new pg.Pool({ connectionString: dbUrl.toString(), max: 3 });
+const userId = (await pool.query("insert into users(email,name,onboarding_completed_at) values($1,'Проверка базы знаний',now()) returning id", [`knowledge-browser-${Date.now()}@example.test`])).rows[0].id;
+const projectId = (await pool.query("insert into projects(name,created_by_user_id) values('Проверка базы знаний',$1) returning id", [userId])).rows[0].id;
+await pool.query("insert into project_members(project_id,user_id,role) values($1,$2,'owner')", [projectId,userId]);
+await pool.query('insert into user_project_preferences(user_id,selected_project_id) values($1,$2)', [userId,projectId]);
+const channelId = (await pool.query("insert into channels(project_id,user_id,network,tg_chat_id,title,handle) values($1,$2,'tg',$3,'Тестовый канал','knowledge_fixture') returning id", [projectId,userId,-Date.now()])).rows[0].id;
+const token = randomBytes(32).toString('base64url');
+await pool.query("insert into sessions(token_hash,user_id,expires_at,credential_epoch) select $1,id,now()+interval '1 hour',credential_epoch from users where id=$2", [createHash('sha256').update(token).digest('hex'),userId]);
+const sourceId = (await pool.query(`insert into knowledge_sources(user_id,channel_id,kind,title,raw_text,status,text_indexed_at,embedding_model,embedding_attempts,embedding_error_code,last_attempt_at)
+ values($1,$2,'paste','Услуги и цены','Стоимость консультации 1000 рублей. Ответ готовится за два рабочих дня.','ready',now(),$3,1,'embedding_auth',now()) returning id`, [userId,channelId,resolveEmbeddingConfig(process.env).identity])).rows[0].id;
+await pool.query("insert into knowledge_chunks(user_id,channel_id,source_id,kind,text) values($1,$2,$3,'service','Стоимость консультации 1000 рублей. Ответ готовится за два рабочих дня.')", [userId,channelId,sourceId]);
+const browser = await chromium.launch({ headless: true });
+const context = await browser.newContext({ viewport: { width: 1440, height: 1100 }, reducedMotion: 'reduce' });
+await context.addCookies([{ name: 'sid', value: token, url: base, httpOnly: true, sameSite: 'Lax' }]);
+const page = await context.newPage();
+const errors = [];
+page.on('pageerror', error => errors.push(error.message));
+try {
+  await page.goto(`${base}/app/knowledge?channel=${channelId}`, { waitUntil: 'domcontentloaded', timeout: 120000 });
+  const retry = page.getByRole('button', { name: 'Повторить обработку «Услуги и цены»' });
+  await retry.waitFor({ timeout: 120000 });
+  await page.screenshot({ path: 'reports/knowledge-engine-2026-09-14/desktop-error.png', fullPage: true });
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.waitForFunction(() => document.documentElement.scrollWidth <= innerWidth + 1);
+  await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+  await page.screenshot({ path: 'reports/knowledge-engine-2026-09-14/mobile-error.png', fullPage: true });
+  const statusColors = await page.getByText(/Текст доступен для поиска и генерации/).evaluate(el => ({ foreground: getComputedStyle(el).color, background: getComputedStyle(el.closest('[class*="bg-"]') || el.parentElement).backgroundColor }));
+  await page.setViewportSize({ width: 320, height: 844 });
+  await page.waitForFunction(() => document.documentElement.scrollWidth <= innerWidth + 1);
+  const overflow = await page.evaluate(() => document.documentElement.scrollWidth > innerWidth + 1);
+  if (overflow) throw new Error('Mobile horizontal overflow');
+  await retry.focus();
+  await page.keyboard.press('Enter');
+  await page.getByText('Материал доступен для текстового и семантического поиска.', { exact: true }).waitFor({ timeout: 90000 });
+  await page.screenshot({ path: 'reports/knowledge-engine-2026-09-14/mobile-ready.png', fullPage: true });
+  const state = (await pool.query('select status, embedding_error_code, indexed_at from knowledge_sources where id=$1', [sourceId])).rows[0];
+  if (state.status !== 'ready' || state.embedding_error_code || !state.indexed_at) throw new Error('Source not indexed');
+  await writeFile('reports/knowledge-engine-2026-09-14/browser-result.json', JSON.stringify({ ok: true, mobileOverflow: overflow, keyboardRetry: true, workerCompleted: true, statusColors, testedWidths: [1440,390,320], pageErrors: errors }, null, 2));
+  if (errors.length) throw new Error('Browser runtime error');
+  console.log('knowledge browser retry -> real BullMQ worker -> ready: passed');
+} finally {
+  await browser.close();
+  await pool.query('delete from channels where project_id=$1', [projectId]);
+  await pool.query('delete from user_project_preferences where user_id=$1', [userId]);
+  await pool.query('delete from projects where id=$1', [projectId]);
+  await pool.query('delete from users where id=$1', [userId]);
+  await pool.end();
+}

@@ -1,0 +1,86 @@
+name: Production admin access recovery
+
+on:
+  workflow_dispatch:
+    inputs:
+      expected_deployed_sha:
+        description: Exact verified production commit
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: production-deploy
+  cancel-in-progress: false
+
+jobs:
+  recover:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    environment: production
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Configure verified SSH
+        env:
+          PRODUCTION_SSH_KEY: ${{ secrets.PRODUCTION_SSH_KEY }}
+          PRODUCTION_SSH_HOST: ${{ secrets.PRODUCTION_SSH_HOST }}
+          PRODUCTION_SSH_KNOWN_HOSTS: ${{ secrets.PRODUCTION_SSH_KNOWN_HOSTS }}
+          PRODUCTION_SSH_HOST_FINGERPRINT: ${{ secrets.PRODUCTION_SSH_HOST_FINGERPRINT }}
+        run: |
+          set -Eeuo pipefail
+          umask 077
+          mkdir -p ~/.ssh
+          printf '%s\n' "$PRODUCTION_SSH_KEY" > ~/.ssh/deploy_key
+          printf '%s\n' "$PRODUCTION_SSH_KNOWN_HOSTS" > ~/.ssh/known_hosts
+          bash scripts/verify-ssh-host-identity.sh ~/.ssh/known_hosts "$PRODUCTION_SSH_HOST" "$PRODUCTION_SSH_HOST_FINGERPRINT"
+
+      - name: Issue single-use recovery for an existing allowlisted administrator
+        env:
+          PRODUCTION_SSH_HOST: ${{ secrets.PRODUCTION_SSH_HOST }}
+          PRODUCTION_SSH_USER: ${{ secrets.PRODUCTION_SSH_USER }}
+          AURORA_ADMIN_RECOVERY_PAYLOAD: ${{ secrets.AURORA_ADMIN_RECOVERY_PAYLOAD }}
+          EXPECTED_DEPLOYED_SHA: ${{ inputs.expected_deployed_sha }}
+        run: |
+          set -Eeuo pipefail
+          test -n "$AURORA_ADMIN_RECOVERY_PAYLOAD"
+          [[ "$EXPECTED_DEPLOYED_SHA" =~ ^[0-9a-f]{40}$ ]]
+          umask 077
+          payload_b64="$(printf '%s' "$AURORA_ADMIN_RECOVERY_PAYLOAD" | base64 -w0)"
+          script_b64="$(base64 -w0 < scripts/production-admin-access-recovery.mjs)"
+          {
+            printf 'set -Eeuo pipefail\numask 077\n'
+            printf 'payload_b64=%q\n' "$payload_b64"
+            printf 'script_b64=%q\n' "$script_b64"
+            printf 'expected_sha=%q\n' "$EXPECTED_DEPLOYED_SHA"
+            printf 'recovery_run_id=%q\n' "$GITHUB_RUN_ID"
+            cat <<'REMOTE'
+          current_path="$(readlink -f /opt/aurora-current)"
+          test -d "$current_path"
+          test "$(git -C "$current_path" rev-parse --verify HEAD)" = "$expected_sha"
+          test -f "$current_path/.env.production"
+          script_path="$(mktemp "$current_path/.admin-access-recovery.XXXXXX.mjs")"
+          trap 'rm -f -- "$script_path"' EXIT
+          printf '%s' "$script_b64" | base64 --decode > "$script_path"
+          set -a
+          . "$current_path/.env.production"
+          set +a
+          export AURORA_ADMIN_RECOVERY_PAYLOAD_B64="$payload_b64"
+          export AURORA_RECOVERY_RUN_ID="$recovery_run_id"
+          node "$script_path"
+          REMOTE
+          } | ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=yes -o BatchMode=yes -o IdentitiesOnly=yes \
+              -o ServerAliveInterval=15 -o ServerAliveCountMax=4 \
+              "${PRODUCTION_SSH_USER}@${PRODUCTION_SSH_HOST}" 'bash -s' > admin-recovery-sealed.json
+          test -s admin-recovery-sealed.json
+
+      - name: Save encrypted account metadata
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: admin-recovery-sealed
+          path: admin-recovery-sealed.json
+          retention-days: 1

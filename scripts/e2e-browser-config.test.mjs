@@ -7,8 +7,10 @@ import {
   classifyE2eExpectedSessionExpiryWebKitPageError,
   classifyE2eKnownBrowserObservation,
   classifyE2eKnownWebKitDocumentNavigationCancellation,
+  classifyE2eKnownWebKitProvisionalWorkspacePoll,
   classifyE2eKnownWebKitRequestCancellation,
   e2eBrowserExecutableCandidates,
+  performE2eBrowserAuthenticatedRequest,
   resolveE2eAdvanceSchedule,
   resolveE2eBuildMode,
   resolveE2eBuildTimeoutMs,
@@ -23,6 +25,27 @@ describe("real E2E browser configuration", () => {
     expect(resolveE2eBrowserEngine()).toBe("chromium");
     expect(E2E_BROWSER_ENGINES.map((engine) => resolveE2eBrowserEngine(engine)))
       .toEqual(["chromium", "firefox", "webkit"]);
+  });
+
+  it("aborts a browser fixture request that would otherwise wait forever", async () => {
+    const originalFetch = globalThis.fetch;
+    let capturedSignal;
+    globalThis.fetch = (_input, init = {}) => new Promise((_resolve, reject) => {
+      capturedSignal = init.signal;
+      capturedSignal.addEventListener("abort", () => reject(capturedSignal.reason), { once: true });
+    });
+    const startedAt = Date.now();
+    try {
+      await expect(performE2eBrowserAuthenticatedRequest({
+        path: "/api/posts",
+        headers: { "x-aurora-project-id": "7" },
+        timeoutMs: 20,
+      })).rejects.toThrow("e2e_browser_request_timeout:GET:/api/posts");
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+    expect(capturedSignal?.aborted).toBe(true);
+    expect(Date.now() - startedAt).toBeLessThan(1_000);
   });
 
   it("rejects an unknown engine before starting disposable resources", () => {
@@ -219,6 +242,65 @@ describe("real E2E browser configuration", () => {
     }
   });
 
+  it.each([
+    ["/app/settings?section=project", "/api/channels", "webkit.cancelled-project-refresh"],
+    ["/app/settings?section=project", "/api/posts", "webkit.cancelled-project-refresh"],
+    ["/app/settings?section=project", "/api/ai/usage", "webkit.cancelled-project-refresh"],
+    ["/bot/connect?source=telegram", "/login?_rsc=abc_123", "webkit.cancelled-bot-login-prefetch"],
+    ["/bot/connect?source=telegram", "/login?next=%2Fbot%2Fconnect&_rsc=abc_123", "webkit.cancelled-bot-login-prefetch"],
+  ])("requires observed cancellation evidence for %s → %s", (currentPath, requestPath, kind) => {
+    const baseUrl = "https://127.0.0.1:43190";
+    const input = {
+      engine: "webkit",
+      requestUrl: `${baseUrl}${requestPath}`,
+      requestMethod: "GET",
+      resourceType: "fetch",
+      failure: "cancelled",
+      currentUrl: `${baseUrl}${currentPath}`,
+      baseUrl,
+      webPort: 43190,
+    };
+    const message = `/127.0.0.1:43190${requestPath} due to access control checks.`;
+    expect(classifyE2eKnownWebKitRequestCancellation(input)).toEqual({ kind, detail: requestPath, message });
+    expect(classifyE2eKnownBrowserObservation({ ...input, eventKind: "pageerror", message })).toBeNull();
+    for (const override of [
+      { failure: "Blocked by access control" },
+      { requestMethod: "POST" },
+      { resourceType: "xhr" },
+      { engine: "chromium" },
+      { webPort: 43191 },
+      { currentUrl: `${baseUrl}/app/calendar` },
+      { currentUrl: `https://example.com${currentPath}` },
+      { requestUrl: `https://example.com${requestPath}` },
+    ]) {
+      expect(classifyE2eKnownWebKitRequestCancellation({ ...input, ...override })).toBeNull();
+    }
+  });
+
+  it("does not classify unrelated settings loaders or login requests as known cancellations", () => {
+    const baseUrl = "https://127.0.0.1:43190";
+    for (const [currentPath, requestPath] of [
+      ["/app/settings?section=profile", "/api/channels"],
+      ["/app/settings?section=project", "/api/projects"],
+      ["/app/settings?section=project", "/api/channels?unexpected=1"],
+      ["/bot/connect", "/login"],
+      ["/bot/connect", "/login?_rsc="],
+      ["/bot/connect", "/login?_rsc=abc&next=%2Fapp"],
+      ["/bot/connect", "/login?_rsc=abc&unexpected=1"],
+    ]) {
+      expect(classifyE2eKnownWebKitRequestCancellation({
+        engine: "webkit",
+        requestUrl: `${baseUrl}${requestPath}`,
+        requestMethod: "GET",
+        resourceType: "fetch",
+        failure: "cancelled",
+        currentUrl: `${baseUrl}${currentPath}`,
+        baseUrl,
+        webPort: 43190,
+      })).toBeNull();
+    }
+  });
+
   it("correlates only a cancelled first-party GET loader with a simultaneous same-origin document navigation", () => {
     const baseUrl = "https://127.0.0.1:43190";
     const input = {
@@ -257,6 +339,56 @@ describe("real E2E browser configuration", () => {
     ]) {
       expect(classifyE2eKnownWebKitDocumentNavigationCancellation({ ...input, ...override }))
         .toBeNull();
+    }
+  });
+
+  it("recognizes handled WebKit workspace polls only while the old document has a pending navigation", () => {
+    const baseUrl = "https://127.0.0.1:43190";
+    const input = {
+      engine: "webkit",
+      errorName: "Fetch API cannot load https",
+      message: "/127.0.0.1:43190/api/channels due to access control checks.",
+      navigationPending: true,
+      sourceUrl: `${baseUrl}/app/calendar`,
+      documentRequestUrl: `${baseUrl}/app/composer?draft=8`,
+      elapsedMs: 36,
+      baseUrl,
+    };
+    expect(classifyE2eKnownWebKitProvisionalWorkspacePoll(input)).toEqual({
+      kind: "webkit.provisional-document-workspace-poll",
+      detail: "/api/channels",
+      navigation: { from: "/app/calendar", to: "/app/composer", elapsedMs: 36 },
+    });
+    expect(classifyE2eKnownWebKitProvisionalWorkspacePoll({
+      ...input,
+      message: "/127.0.0.1:43190/api/ai/usage due to access control checks.",
+    })).toMatchObject({ detail: "/api/ai/usage" });
+    expect(classifyE2eKnownWebKitProvisionalWorkspacePoll({
+      ...input,
+      message: "/127.0.0.1:43190/api/posts due to access control checks.",
+    })).toMatchObject({ detail: "/api/posts" });
+    for (const override of [
+      { navigationPending: false },
+      { engine: "chromium" },
+      { engine: "firefox" },
+      { errorName: "Error" },
+      { errorName: "TypeError" },
+      { message: "Load failed" },
+      { message: "/127.0.0.1:43190/api/channels?projectId=8 due to access control checks." },
+      { message: "/127.0.0.1:43190/api/posts?view=range due to access control checks." },
+      { message: "/127.0.0.1:43190/api/publication-operations due to access control checks." },
+      { message: "/127.0.0.1:43190/api/drafts due to access control checks." },
+      { message: "/127.0.0.1:9999/api/channels due to access control checks." },
+      { sourceUrl: `${baseUrl}/login` },
+      { sourceUrl: "https://example.com/app/calendar" },
+      { documentRequestUrl: "https://example.com/app/composer" },
+      { documentRequestUrl: `${baseUrl}/api/channels` },
+      { elapsedMs: -1 },
+      { elapsedMs: 30_001 },
+      { elapsedMs: Number.NaN },
+      { baseUrl: "https://example.com" },
+    ]) {
+      expect(classifyE2eKnownWebKitProvisionalWorkspacePoll({ ...input, ...override })).toBeNull();
     }
   });
 
@@ -314,7 +446,7 @@ describe("real E2E browser configuration", () => {
     })).toBeNull();
   });
 
-  it("classifies only exact WebKit loader cancellations inside the Calendar expiry window", () => {
+  it("classifies only exact WebKit loader cancellations inside the session-expiry window", () => {
     const baseUrl = "https://127.0.0.1:43190";
     const input = {
       active: true,
@@ -335,6 +467,14 @@ describe("real E2E browser configuration", () => {
         message: `/127.0.0.1:43190${path} due to access control checks.`,
       })?.detail).toBe(path);
     }
+    const calendarTrendPath = "/api/trends?scope=niche&period=week&channel=4";
+    expect(classifyE2eExpectedSessionExpiryWebKitPageError({
+      ...input,
+      message: `/127.0.0.1:43190${calendarTrendPath} due to access control checks.`,
+    })).toEqual({
+      kind: "session-expiry.webkit-cancelled-api-request",
+      detail: calendarTrendPath,
+    });
     for (const path of [
       "/api/studio/session",
       "/api/settings",
@@ -348,15 +488,32 @@ describe("real E2E browser configuration", () => {
         message: `/127.0.0.1:43190${path} due to access control checks.`,
       })?.detail).toBe(path);
     }
+    for (const path of [
+      "/api/legal-sources",
+      "/api/bot/link",
+      "/api/tracking/settings",
+      "/api/tracking/templates",
+    ]) {
+      expect(classifyE2eExpectedSessionExpiryWebKitPageError({
+        ...input,
+        currentUrl: `${baseUrl}/app/settings?section=integrations&setting=utm`,
+        message: `/127.0.0.1:43190${path} due to access control checks.`,
+      })?.detail).toBe(path);
+    }
     for (const override of [
       { active: false },
       { engine: "firefox" },
       { eventKind: "console" },
       { message: "/127.0.0.1:43190/api/channels due to access control checks." },
+      { message: "/127.0.0.1:43190/api/trends?scope=global&period=week&channel=4 due to access control checks." },
+      { message: "/127.0.0.1:43190/api/trends?scope=niche&period=month&channel=4 due to access control checks." },
+      { message: "/127.0.0.1:43190/api/trends?scope=niche&period=week&channel=4&q=extra due to access control checks." },
       { message: "/127.0.0.1:43191/api/drafts due to access control checks." },
       { message: "/127.0.0.1:43190/api/drafts failed with 500" },
       { currentUrl: `${baseUrl}/app/today` },
       { currentUrl: `${baseUrl}/app/studio`, message: "/127.0.0.1:43190/api/drafts due to access control checks." },
+      { currentUrl: `${baseUrl}/app/settings`, message: "/127.0.0.1:43190/api/settings due to access control checks." },
+      { currentUrl: `${baseUrl}/app/settings`, message: "/127.0.0.1:43190/api/legal-sources?unexpected=1 due to access control checks." },
       { currentUrl: "https://example.com/app/calendar" },
       { baseUrl: "https://localhost:43190" },
       { webPort: 43191 },

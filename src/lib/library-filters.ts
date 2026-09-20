@@ -2,6 +2,7 @@ export type LibraryFormat = "text" | "photo" | "video";
 export type LibrarySavedFilter = "all" | "saved" | "unsaved";
 export type LibraryViewedFilter = "all" | "new" | "viewed";
 export type LibrarySort =
+  | "published"
   | "score"
   | "freshness"
   | "views"
@@ -85,6 +86,8 @@ export type LibraryRegistryDiagnostics = {
   aiEngine: string;
   aiEngineLabel: string;
   aiConfigured: boolean;
+  lastCollectedAt?: string | null;
+  failedSourceCount?: number;
 };
 
 type QueryLike = URLSearchParams | Record<string, unknown>;
@@ -146,7 +149,7 @@ export function parseLibraryFilters(query: QueryLike): LibraryFilters {
     scoreMax: boundedNumber(query, "scoreMax", 0, 100),
     qualities: enumList(query, "quality", ["low", "medium", "high"] as const),
     maturities: enumList(query, "maturity", ["collecting", "mature"] as const),
-    sort: (["score", "freshness", "views", "reactions", "lift", "engagement_rate", "velocity"] as string[]).includes(sort ?? "")
+    sort: (["published", "score", "freshness", "views", "reactions", "lift", "engagement_rate", "velocity"] as string[]).includes(sort ?? "")
       ? (sort as LibrarySort)
       : "score",
     direction: direction === "asc" ? "asc" : "desc",
@@ -162,6 +165,10 @@ function inRange(value: number | null, min: number | null, max: number | null) {
 }
 
 function sortable(item: LibraryRegistryItem, sort: LibrarySort) {
+  if (sort === "published") {
+    const timestamp = Date.parse(item.postedAt);
+    return Number.isFinite(timestamp) ? timestamp : null;
+  }
   if (sort === "score") return item.analyticsScore;
   if (sort === "freshness") return item.freshness;
   if (sort === "views") return item.views;

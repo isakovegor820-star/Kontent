@@ -1,4 +1,6 @@
 "use client";
+import { useProjectFetch, useProjectCall } from "@/lib/use-project-transport";
+
 
 import { projectFetch as fetch } from "@/lib/project-fetch";
 
@@ -26,19 +28,19 @@ import { useProjects } from "@/components/app/project-provider";
 import { Button } from "@/components/ui/button";
 import type { RealChannel } from "@/lib/types";
 import {
-  createProjectExport,
+  createProjectExport as unscopedCreateProjectExport,
   defaultProjectExportPeriod,
-  downloadProjectExport,
-  getProjectExport,
+  downloadProjectExport as unscopedDownloadProjectExport,
+  getProjectExport as unscopedGetProjectExport,
   isActiveProjectExport,
-  listProjectExports,
+  listProjectExports as unscopedListProjectExports,
   parseExportAuthorOptions,
   parseExportCampaignOptions,
-  previewProjectExport,
+  previewProjectExport as unscopedPreviewProjectExport,
   projectExportErrorMessage,
   projectExportFormFromOperation,
   ProjectExportClientError,
-  revokeProjectExport,
+  revokeProjectExport as unscopedRevokeProjectExport,
   validateProjectExportPeriod,
   type ClientProjectExportKind,
   type ClientProjectExportOperation,
@@ -460,6 +462,13 @@ function ProjectExportButtonForProject({
   initialPeriod?: { from: string; to: string };
   initialChannelId?: number | null;
 }) {
+  const downloadProjectExport = useProjectCall(unscopedDownloadProjectExport);
+  const listProjectExports = useProjectCall(unscopedListProjectExports);
+  const getProjectExport = useProjectCall(unscopedGetProjectExport);
+  const previewProjectExport = useProjectCall(unscopedPreviewProjectExport);
+  const createProjectExport = useProjectCall(unscopedCreateProjectExport);
+  const revokeProjectExport = useProjectCall(unscopedRevokeProjectExport);
+  const fetch = useProjectFetch();
   const titleId = useId();
   const descriptionId = useId();
   const periodErrorId = useId();
@@ -560,7 +569,7 @@ function ProjectExportButtonForProject({
     } finally {
       setOperationBusy(null);
     }
-  }, [updateRecent]);
+  }, [downloadProjectExport, updateRecent]);
 
   useEffect(() => {
     const dialog = dialogRef.current;
@@ -640,7 +649,7 @@ function ProjectExportButtonForProject({
       });
 
     await Promise.all([recentPromise, membersPromise, campaignsPromise]);
-  }, [projectId]);
+  }, [fetch, listProjectExports, projectId]);
 
   useEffect(() => {
     if (!open) return;
@@ -686,7 +695,7 @@ function ProjectExportButtonForProject({
       cancelled = true;
       controller.abort();
     };
-  }, [downloadFile, pollOperationId, updateRecent]);
+  }, [downloadFile, getProjectExport, pollOperationId, updateRecent]);
 
   const runPreview = useCallback(async (value: ProjectExportFormValue) => {
     const validation = validateProjectExportPeriod(value);
@@ -713,7 +722,7 @@ function ProjectExportButtonForProject({
     } finally {
       setPreviewing(false);
     }
-  }, []);
+  }, [previewProjectExport]);
 
   const runExport = useCallback(async (value: ProjectExportFormValue, previewHash: string) => {
     const validation = validateProjectExportPeriod(value);
@@ -747,7 +756,7 @@ function ProjectExportButtonForProject({
     } finally {
       setSubmitting(false);
     }
-  }, [downloadFile, updateRecent]);
+  }, [createProjectExport, downloadFile, updateRecent]);
 
   const refreshOperation = useCallback(async () => {
     if (!operation) return;
@@ -763,7 +772,7 @@ function ProjectExportButtonForProject({
     } finally {
       setOperationBusy(null);
     }
-  }, [downloadFile, operation, updateRecent]);
+  }, [downloadFile, getProjectExport, operation, updateRecent]);
 
   const revokeOperation = useCallback(async () => {
     if (!operation) return;
@@ -781,7 +790,7 @@ function ProjectExportButtonForProject({
     } finally {
       setOperationBusy(null);
     }
-  }, [operation, updateRecent]);
+  }, [operation, revokeProjectExport, updateRecent]);
 
   const retryOperation = useCallback(() => {
     if (!operation) return;

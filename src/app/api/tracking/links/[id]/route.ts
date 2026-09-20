@@ -1,3 +1,4 @@
+import { withProjectRoute } from "@/lib/project-route";
 import { randomUUID } from "node:crypto";
 import { NextRequest } from "next/server";
 
@@ -11,7 +12,7 @@ import { readTrackingBodyResult, trackingApiError, trackingBodyFailure, tracking
 export const runtime = "nodejs";
 type Context = { params: Promise<{ id: string }> };
 
-export async function DELETE(req: NextRequest, ctx: Context) {
+async function handleDELETE(req: NextRequest, ctx: Context) {
   if (!hasTrustedMutationOrigin(req)) {
     return trackingJson({ ok: false, error: "forbidden_origin" }, 403);
   }
@@ -37,3 +38,5 @@ export async function DELETE(req: NextRequest, ctx: Context) {
     return trackingApiError(error, requestId);
   }
 }
+
+export const DELETE = withProjectRoute(handleDELETE);

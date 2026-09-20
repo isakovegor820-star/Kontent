@@ -9,7 +9,7 @@ describe("analytics dashboard interface contract", () => {
     expect(source).toContain('label: "Публикации"');
     expect(source).toContain('label: "Рост"');
     expect(source).toContain('label: "Конкуренты"');
-    expect(source).toContain('label: "Переходы"');
+    expect(source).toContain('label: "Ссылки и заявки"');
     expect(source).toContain("<ChannelPicker");
     expect(source).toContain('id="analytics-period"');
     expect(source).toContain("&days=${periodDays}");

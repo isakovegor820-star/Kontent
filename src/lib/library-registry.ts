@@ -79,6 +79,8 @@ type DiagnosticsRow = {
   source_post_count: number | string;
   pending_idea_count: number | string;
   ai_engine: string | null;
+  last_collected_at: Date | string | null;
+  failed_source_count: number | string;
 };
 
 function numeric(value: unknown): number | null {
@@ -228,7 +230,13 @@ export async function buildLibraryRegistrySnapshot(
              join competitors competitor on competitor.id = idea.competitor_id
             where idea.user_id = $1 and competitor.channel_id = $2
               and idea.status = 'new' and idea.ai_status = 'pending') as pending_idea_count,
-          (select ai_engine from users where id = $1) as ai_engine`,
+          (select ai_engine from users where id = $1) as ai_engine,
+          (select max(collected_at) from competitors
+            where user_id = $1 and channel_id = $2 and is_active = true
+              and status = 'ready') as last_collected_at,
+          (select count(*) from competitors
+            where user_id = $1 and channel_id = $2 and is_active = true
+              and status in ('error', 'no_feed')) as failed_source_count`,
       [userId, channelId],
     ),
   ]);
@@ -325,6 +333,8 @@ export async function buildLibraryRegistrySnapshot(
       aiEngine: aiRuntime.id,
       aiEngineLabel: aiRuntime.label,
       aiConfigured: aiRuntime.configured,
+      lastCollectedAt: diagnosticRow?.last_collected_at ? iso(diagnosticRow.last_collected_at) : null,
+      failedSourceCount: Number(diagnosticRow?.failed_source_count || 0),
     },
     items: filterAndSortLibraryItems([...references, ...ideas, ...saved], filters),
   };

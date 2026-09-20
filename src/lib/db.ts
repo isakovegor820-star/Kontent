@@ -2,53 +2,15 @@
 // Работает одинаково с любой базой: локальной, Neon или своим сервером —
 // меняется только DATABASE_URL, код не трогаем (как требует ТЗ, «переезд дампом»).
 
-import { Pool, type PoolClient } from "pg";
+import { type Pool } from "pg";
 
-import { resolveDatabasePoolConfig, type DatabasePoolConfig } from "./db-pool-config.mjs";
+import { resolveDatabasePoolConfig } from "./db-pool-config.mjs";
 import { DatabasePoolMonitor, type DatabasePoolSnapshot } from "./db-pool-monitor.mjs";
+import { MonitoredPgPool } from "./monitored-pg-pool.mjs";
 
 // Один пул на процесс. В serverless функции живут недолго, поэтому пул кэшируем
 // на глобальном объекте — чтобы соседние вызовы переиспользовали соединения.
-type PoolConnectCallback = (
-  error: Error | undefined,
-  client: PoolClient | undefined,
-  done: (release?: unknown) => void,
-) => void;
-
-class MonitoredPool extends Pool {
-  readonly monitor: DatabasePoolMonitor;
-  readonly auroraConfig: DatabasePoolConfig;
-
-  constructor(config: ConstructorParameters<typeof Pool>[0], auroraConfig: DatabasePoolConfig) {
-    super(config);
-    this.auroraConfig = auroraConfig;
-    this.monitor = new DatabasePoolMonitor();
-  }
-
-  override connect(): Promise<PoolClient>;
-  override connect(callback: PoolConnectCallback): void;
-  override connect(callback?: PoolConnectCallback): Promise<PoolClient> | void {
-    const startedAt = performance.now();
-    if (callback) {
-      return super.connect((error, client, done) => {
-        this.monitor.recordAcquire(performance.now() - startedAt, error);
-        callback(error, client, done);
-      });
-    }
-    return super.connect().then(
-      (client) => {
-        this.monitor.recordAcquire(performance.now() - startedAt);
-        return client;
-      },
-      (error: unknown) => {
-        this.monitor.recordAcquire(performance.now() - startedAt, error);
-        throw error;
-      },
-    );
-  }
-}
-
-const globalForPg = globalThis as unknown as { auroraPool?: MonitoredPool };
+const globalForPg = globalThis as unknown as { auroraPool?: MonitoredPgPool };
 
 export function getPool(): Pool {
   if (globalForPg.auroraPool) return globalForPg.auroraPool;
@@ -65,7 +27,7 @@ export function getPool(): Pool {
   const sslRejectUnauthorized = process.env.PGSSL_REJECT_UNAUTHORIZED !== "false";
   const config = resolveDatabasePoolConfig();
 
-  const pool = new MonitoredPool({
+  const pool = new MonitoredPgPool({
     connectionString,
     ssl: isLocal ? false : { rejectUnauthorized: sslRejectUnauthorized },
     max: config.max,
@@ -84,6 +46,5 @@ export function getPool(): Pool {
 export function getDatabasePoolSnapshot(): DatabasePoolSnapshot {
   const pool = globalForPg.auroraPool;
   const config = pool?.auroraConfig ?? resolveDatabasePoolConfig();
-  const monitor = pool?.monitor ?? new DatabasePoolMonitor();
-  return monitor.snapshot(pool ?? null, config);
+  return pool?.auroraSnapshot() ?? new DatabasePoolMonitor().snapshot(null, config);
 }

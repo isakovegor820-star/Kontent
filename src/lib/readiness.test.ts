@@ -31,6 +31,7 @@ const readySchema = {
 };
 
 const healthyDefaults = {
+  checkedAt: new Date("2026-08-01T12:00:00Z"),
   schema: readySchema,
   aiConfigured: true,
   mailDelivery: "up" as const,
@@ -124,6 +125,7 @@ describe("readiness model", () => {
       uploadIngress: "up",
       tokenEncryption: "up",
       trackingSecrets: "up",
+      checkedAt: healthyDefaults.checkedAt,
     });
 
     expect(report).toMatchObject({
@@ -164,6 +166,11 @@ describe("readiness model", () => {
       aiProviders: [],
     });
     expect(report).toMatchObject({ status: "degraded", aiReady: false });
+  });
+  it("does not reuse an expired successful AI capability check as ready", () => {
+    const report = evaluateReadiness({ ...healthyDefaults, database: "up", redis: "up", publicationWorker: "up", aiProviders: [provider], checkedAt: new Date("2026-08-01T12:15:00Z") });
+    expect(report.aiReady).toBe(false);
+    expect(report.reasons).toContain("ai_evidence_stale");
   });
 
   it("reports an open observed AI circuit as degraded", () => {

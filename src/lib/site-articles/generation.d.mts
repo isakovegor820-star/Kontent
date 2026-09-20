@@ -1,6 +1,9 @@
 export const SITE_ARTICLE_PROMPT_VERSION: string;
 export function buildArticlePrompt(input: Record<string, unknown>): Readonly<{ system: string; user: string; promptVersion: string }>;
 export function parseArticleGeneration(text: string): Record<string, unknown>;
+export function completeArticleInternalLinks<T extends { bodyMarkdown?: string }>(article: T, options: {
+  type: string; linkablePages?: Array<{ url: string; title?: string }>; site?: { confirmedDomain?: string };
+}): T;
 export type ArticleValidationIssue = { code: string; severity: "error" | "warning"; message: string; urls?: string[] };
 export function validateArticle(
   article: { title?: string; metaDescription?: string | null; bodyMarkdown?: string; faq?: unknown; organization?: unknown },

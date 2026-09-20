@@ -6,6 +6,7 @@ import {
   useContext,
   useEffect,
   useMemo,
+  useRef,
   useState,
 } from "react";
 import {
@@ -18,6 +19,9 @@ import {
 type AppThemeContextValue = {
   preference: AppThemePreference;
   setPreference: (preference: AppThemePreference) => void;
+  saving: boolean;
+  error: string;
+  retry: () => void;
 };
 
 const AppThemeContext = createContext<AppThemeContextValue | null>(null);
@@ -42,11 +46,45 @@ export function AppThemeProvider({
 }) {
   const [preference, setPreferenceState] = useState(initialPreference);
   const [prefersDark, setPrefersDark] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
+  const pending = useRef<AppThemePreference | null>(null);
+  const running = useRef(false);
+
+  const persist = useCallback(async () => {
+    if (running.current || pending.current == null) return;
+    running.current = true;
+    setSaving(true);
+    setError("");
+    try {
+      while (pending.current != null) {
+        const theme = pending.current;
+        pending.current = null;
+        try {
+          const response = await fetch("/api/settings/account-profile", {
+            method: "PATCH", headers: { "content-type": "application/json" },
+            body: JSON.stringify({ theme }), keepalive: true,
+          });
+          const body = await response.json();
+          if (!response.ok || !body?.ok) throw new Error("theme_save_failed");
+        } catch {
+          pending.current ??= theme;
+          setError("Тема применена на этом устройстве, но не сохранена в аккаунте.");
+          break;
+        }
+      }
+    } finally {
+      running.current = false;
+      setSaving(false);
+    }
+  }, []);
 
   const setPreference = useCallback((nextPreference: AppThemePreference) => {
     setPreferenceState(nextPreference);
     writeThemeCookie(nextPreference);
-  }, []);
+    pending.current = nextPreference;
+    void persist();
+  }, [persist]);
 
   useEffect(() => {
     const media = window.matchMedia("(prefers-color-scheme: dark)");
@@ -62,7 +100,7 @@ export function AppThemeProvider({
     updateBrowserThemeColor(preference === "system" ? resolvedTheme : preference);
   }, [preference, resolvedTheme]);
 
-  const value = useMemo(() => ({ preference, setPreference }), [preference, setPreference]);
+  const value = useMemo(() => ({ preference, setPreference, saving, error, retry: () => { void persist(); } }), [preference, setPreference, saving, error, persist]);
 
   return (
     <AppThemeContext.Provider value={value}>

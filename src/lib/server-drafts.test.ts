@@ -345,11 +345,11 @@ describe("server draft transactions", () => {
       expect(sql).not.toContain("d.user_id = $1");
       expect(sql).toContain("draft_author.id = d.user_id");
       expect(sql).toContain("editorial_workflow.project_id = d.project_id");
-      if (sql.includes("limit 200")) {
+      if (sql.includes("order by d.id desc limit")) {
         expect(sql).toContain("operation.approved_revision_id is not null");
         expect(sql).toContain("operation.status in ('queued', 'published_unverified', 'published')");
       }
-      if (params?.length === 1) return { rowCount: 1, rows: [row] };
+      if (params?.[1] === 201) return { rowCount: 1, rows: [row] };
       expect(params).toEqual([7, 41]);
       return { rowCount: 1, rows: [row] };
     });
@@ -369,7 +369,7 @@ describe("server draft transactions", () => {
       5,
       "project.read",
     );
-    expect(query.mock.calls.filter(([, params]) => (params as unknown[])?.length === 2))
+    expect(query.mock.calls.filter(([, params]) => (params as unknown[])?.[1] === 41))
       .toHaveLength(2);
   });
 
@@ -472,6 +472,7 @@ describe("server draft transactions", () => {
       expect.anything(),
       5,
       "content.create",
+      { lock: true },
     );
   });
 
@@ -733,7 +734,9 @@ describe("server draft transactions", () => {
     const query = vi.fn(async (sql: string) => {
       if (sql.includes("select id from channels")) return { rowCount: 1, rows: [{ id: "11" }] };
       if (sql.includes("insert into drafts")) return { rowCount: 0, rows: [] };
-      if (sql.includes("select id from drafts where")) return { rowCount: 1, rows: [{ id: "41" }] };
+      if (sql.includes("select id, project_id from drafts where")) {
+        return { rowCount: 1, rows: [{ id: "41", project_id: "7" }] };
+      }
       if (sql.includes("select d.id")) return { rowCount: 1, rows: [row] };
       return { rowCount: 0, rows: [] };
     });
@@ -745,6 +748,23 @@ describe("server draft transactions", () => {
     expect(query.mock.calls.some(([sql]) => String(sql).includes("delete from draft_destinations"))).toBe(false);
     expect(query).toHaveBeenCalledWith("commit");
     expect(release).toHaveBeenCalledOnce();
+  });
+
+  it("fails explicitly when a client key is reused in another project", async () => {
+    const query = vi.fn(async (sql: string) => {
+      if (sql.includes("select id from channels")) return { rowCount: 1, rows: [{ id: "11" }] };
+      if (sql.includes("insert into drafts")) return { rowCount: 0, rows: [] };
+      if (sql.includes("select id, project_id from drafts where")) {
+        return { rowCount: 1, rows: [{ id: "99", project_id: "8" }] };
+      }
+      return { rowCount: 0, rows: [] };
+    });
+    const { pool } = fakePool(query);
+
+    await expect(createDraftForUser(5, input, pool as never)).rejects.toMatchObject({
+      code: "client_key_project_conflict",
+    });
+    expect(query).toHaveBeenCalledWith("rollback");
   });
 
   it("recovers a legacy AI draft as a separate manual draft without mutating the source", async () => {
@@ -1309,6 +1329,7 @@ describe("server draft transactions", () => {
       expect.anything(),
       5,
       "content.edit",
+      { lock: true },
     );
   });
 
@@ -1331,6 +1352,7 @@ describe("server draft transactions", () => {
       expect.anything(),
       23,
       "content.edit",
+      { lock: true },
     );
     expect(query.mock.calls.some(([sql]) => /^\s*delete from drafts\b/u.test(String(sql)))).toBe(false);
     const audit = query.mock.calls.find(([sql]) => String(sql).includes("draft.deleted"));

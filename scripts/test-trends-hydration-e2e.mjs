@@ -101,7 +101,7 @@ try {
     globalThis.__auroraSelectedTrendScopes = [];
     const capture = () => {
       const selected = Array.from(document.querySelectorAll('[role="tab"][aria-selected="true"]'))
-        .find((tab) => ["Моя ниша", "Интернет"].includes(tab.textContent?.trim() || ""));
+        .find((tab) => ["Мои конкуренты", "Поиск по теме"].includes(tab.textContent?.trim() || ""));
       const label = selected?.textContent?.trim();
       if (label && globalThis.__auroraSelectedTrendScopes.at(-1) !== label) {
         globalThis.__auroraSelectedTrendScopes.push(label);
@@ -161,17 +161,17 @@ try {
   // meaningful readiness boundary. Hydration is ready when the route has loaded
   // and the selected tab from the direct URL is visible and committed in the DOM.
   await page.goto("/app/trends?scope=internet", { waitUntil: "domcontentloaded", timeout: 60_000 });
-  const internetTab = page.getByRole("tab", { name: "Интернет", exact: true });
+  const internetTab = page.getByRole("tab", { name: "Поиск по теме", exact: true });
   await internetTab.waitFor({ state: "visible", timeout: 60_000 });
   await page.waitForFunction(() => Array.from(
     document.querySelectorAll('[role="tab"][aria-selected="true"]'),
-  ).some((tab) => tab.textContent?.trim() === "Интернет"), undefined, { timeout: 60_000 });
+  ).some((tab) => tab.textContent?.trim() === "Поиск по теме"), undefined, { timeout: 60_000 });
   if (await internetTab.getAttribute("aria-selected") !== "true") {
     throw new Error("Internet tab was not selected after direct navigation");
   }
   const scopes = await page.evaluate(() => globalThis.__auroraSelectedTrendScopes);
-  if (scopes.includes("Моя ниша")) throw new Error(`scope changed niche → internet: ${JSON.stringify(scopes)}`);
-  if (!scopes.includes("Интернет")) throw new Error(`Internet scope was never rendered: ${JSON.stringify(scopes)}`);
+  if (scopes.includes("Мои конкуренты")) throw new Error(`scope changed niche → internet: ${JSON.stringify(scopes)}`);
+  if (!scopes.includes("Поиск по теме")) throw new Error(`Internet scope was never rendered: ${JSON.stringify(scopes)}`);
   if (new URL(page.url()).searchParams.get("scope") !== "internet") {
     throw new Error(`scope query was not preserved: ${page.url()}`);
   }

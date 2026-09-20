@@ -49,8 +49,34 @@ describe("AI client request identity", () => {
       { status: 503 },
     ));
 
-    const error = await acknowledgeAiTerminal("studio_stream_test_1", { fetchImpl }).catch((value) => value);
+    const error = await acknowledgeAiTerminal("studio_stream_test_1", {
+      fetchImpl,
+      retryDelaysMs: [0, 0],
+    }).catch((value) => value);
     expect(error).toBeInstanceOf(AiTerminalAckError);
     expect(error).toMatchObject({ status: 503, requestId: "ack-failed", retryable: true });
+    expect(fetchImpl).toHaveBeenCalledTimes(3);
+  });
+
+  it("recovers a transient ACK with the same key and no new generation", async () => {
+    const fetchImpl = vi.fn()
+      .mockResolvedValueOnce(Response.json(
+        { ok: false, requestId: "ack-pending", retryable: true },
+        { status: 503 },
+      ))
+      .mockResolvedValueOnce(Response.json(
+        { ok: true, requestId: "ack-ready", replayed: true, generationResultId: 501 },
+        { status: 200, headers: { "x-ai-acknowledged": "true" } },
+      ));
+
+    await expect(acknowledgeAiTerminal("studio_stream_test_1", {
+      fetchImpl,
+      retryDelaysMs: [0, 0],
+    })).resolves.toMatchObject({ requestId: "ack-ready", replayed: true, generationResultId: 501 });
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+    expect(fetchImpl.mock.calls.every(([, init]) => {
+      const headers = new Headers((init as RequestInit).headers);
+      return headers.get("idempotency-key") === "studio_stream_test_1";
+    })).toBe(true);
   });
 });

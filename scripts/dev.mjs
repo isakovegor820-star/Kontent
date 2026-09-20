@@ -53,6 +53,8 @@ start("worker", process.execPath, ["--env-file-if-exists=.env.local", "worker.mj
   ...process.env,
   AURORA_RUNTIME_ROLE: "worker",
   AURORA_WORKER_MODE: "full",
+  // A local Redis lease cannot protect the production bot on a different server.
+  TG_POLLING_ENABLED: process.env.TG_POLLING_ENABLED || "0",
 });
 start("web", process.execPath, [
   "node_modules/next/dist/bin/next",

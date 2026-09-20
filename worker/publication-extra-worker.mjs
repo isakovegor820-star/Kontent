@@ -6,6 +6,7 @@ import {
   classifyTelegramChannelFailure,
   transitionChannelHealth,
 } from "../src/lib/channel-health.mjs";
+import { resolveProviderOperation } from "../src/lib/provider-capabilities.mjs";
 import { activateNextPublicationExtra } from "../src/lib/publication-extra-operations.mjs";
 import { PUBLICATION_EXTRA_QUEUE } from "../src/lib/publication-extra-queue.mjs";
 
@@ -308,6 +309,22 @@ export async function processPublicationExtraOperation({
   }
   let providerCallStarted = false;
   try {
+    const providerId = operation.network;
+    if (operation.request_snapshot?.providerId !== providerId) {
+      throw new PublicationExtraOperationError("provider_snapshot_mismatch", "Площадка сохранённого действия не совпадает с каналом.");
+    }
+    const capability = operation.kind === "first_comment" ? "firstComment"
+      : operation.kind === "configure_comments" ? "commentToggle" : "pin";
+    const readiness = resolveProviderOperation(providerId, capability, { credentialState: "ready", permissionState: "ready" });
+    if (!readiness.available) {
+      throw new PublicationExtraOperationError(
+        operation.provider_started_at ? "provider_previous_delivery_unverified" : readiness.reason,
+        operation.provider_started_at
+          ? "Площадка ранее получила запрос, но результат неизвестен. Повтор остановлен; проверь публикацию вручную."
+          : readiness.message,
+        { deliveryUnknown: Boolean(operation.provider_started_at) },
+      );
+    }
     // A previous ambiguous Telegram comment request must never be repeated blindly.
     if (
       operation.kind === "first_comment"
@@ -535,6 +552,8 @@ export async function syncTelegramDiscussionChats(pool, telegramRequest, options
 }
 
 function telegramAuthorName(message) {
+  const senderTitle = String(message?.sender_chat?.title || "").trim();
+  if (senderTitle) return senderTitle.slice(0, 200);
   const person = [message?.from?.first_name, message?.from?.last_name]
     .map((value) => String(value || "").trim())
     .filter(Boolean)
@@ -550,7 +569,7 @@ function telegramAuthorName(message) {
  * Saves an ordinary Telegram channel comment in the audience assistant inbox.
  * The bot must be present in the linked discussion supergroup to receive it.
  */
-export async function captureTelegramAudienceComment(pool, update) {
+export async function captureTelegramAudienceComment(pool, update, telegramRequest) {
   const message = update?.message;
   const discussionChatId = Number(message?.chat?.id);
   const messageId = Number(message?.message_id);
@@ -559,7 +578,7 @@ export async function captureTelegramAudienceComment(pool, update) {
     !message
     || !["group", "supergroup"].includes(String(message?.chat?.type || ""))
     || message.is_automatic_forward === true
-    || message?.from?.is_bot === true
+    || (message?.from?.is_bot === true && !message?.sender_chat)
     || !Number.isSafeInteger(discussionChatId)
     || !Number.isSafeInteger(messageId)
     || !incoming
@@ -594,6 +613,37 @@ export async function captureTelegramAudienceComment(pool, update) {
         order by channel.id limit 1`,
       [discussionChatId],
     )).rows[0];
+  }
+  // A discussion group can be attached after the worker started, and a reply to
+  // an older comment need not contain the original channel forward. Resolve the
+  // relationship from Telegram metadata before acknowledging an unmapped update.
+  if (!mapping && telegramRequest) {
+    const response = await telegramRequest("getChat", { chat_id: discussionChatId });
+    if (response?.ok !== true) {
+      if (!response || response.error_code === 429 || response.error_code >= 500) {
+        throw new Error("telegram_discussion_lookup_unavailable");
+      }
+      return { captured: false };
+    }
+    const linkedChannelId = Number(response.result?.linked_chat_id);
+    if (Number.isSafeInteger(linkedChannelId) && linkedChannelId < 0) {
+      mapping = (await pool.query(
+        `select channel.project_id, channel.id as channel_id, null::bigint as origin_message_id,
+                channel.title, channel.handle
+           from channels channel
+          where channel.network = 'tg' and channel.is_active = true and channel.status = 'active'
+            and channel.tg_chat_id = $1
+          order by channel.id limit 1`,
+        [linkedChannelId],
+      )).rows[0];
+      if (mapping) {
+        await pool.query(
+          `update channels set tg_discussion_chat_id = $2, updated_at = now()
+            where id = $1 and project_id = $3 and network = 'tg'`,
+          [mapping.channel_id, discussionChatId, mapping.project_id],
+        );
+      }
+    }
   }
   if (!mapping) return { captured: false };
 
@@ -649,7 +699,7 @@ export async function captureTelegramAudienceComment(pool, update) {
             jsonb_build_object('source', 'telegram_comment'), $3 || member.user_id::text
        from project_members member
       where member.project_id = $1 and member.status = 'active'
-        and member.role in ('owner','author','approver')
+        and member.role in ('owner','author','approver','publisher')
      on conflict (project_id, recipient_user_id, idempotency_key)
        where idempotency_key is not null do nothing`,
     [mapping.project_id, inquiry.id, `audience-comment:${inquiry.id}:`],

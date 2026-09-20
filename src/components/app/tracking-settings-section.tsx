@@ -1,4 +1,7 @@
 "use client";
+import { useProjectCall } from "@/lib/use-project-transport";
+import { projectFetch as fetch } from "@/lib/project-transport";
+
 
 import { projectFetch as fetch } from "@/lib/project-fetch";
 
@@ -13,7 +16,6 @@ import {
 import {
   Activity,
   Check,
-  Clipboard,
   Link2,
   Pencil,
   RefreshCw,
@@ -21,6 +23,7 @@ import {
   TriangleAlert,
 } from "lucide-react";
 
+import { TrackingConnectionGuide, verificationErrorMessage } from "./tracking-connection-guide";
 import { useProjects } from "@/components/app/project-provider";
 import { Button } from "@/components/ui/button";
 import { ConfirmDialog } from "@/components/ui/confirm-dialog";
@@ -229,6 +232,12 @@ export function trackingSettingsErrorMessage(code: unknown): string {
       return "Недостаточно прав для изменения настроек этого проекта.";
     case "unauthorized":
       return "Сессия истекла. Войди в аккаунт снова.";
+    case "rate_limited":
+      return "Слишком много запросов. Подожди немного и повтори попытку.";
+    case "rate_limit_unavailable":
+      return "Проверка временно недоступна. Попробуй чуть позже.";
+    case "tracker_not_connected":
+      return "Сначала сохрани адрес сайта, затем повтори подтверждение домена.";
     case "network":
       return "Нет связи с сервером. Проверь подключение и повтори попытку.";
     default:
@@ -236,7 +245,7 @@ export function trackingSettingsErrorMessage(code: unknown): string {
   }
 }
 
-async function requestJson(url: string, init?: RequestInit): Promise<{
+async function unscopedRequestJson(url: string, init?: RequestInit): Promise<{
   response: Response | null;
   body: ApiBody | null;
 }> {
@@ -313,17 +322,19 @@ function compactValues(values: TemplateFormValues): UtmValues {
   ) as UtmValues;
 }
 
-export function trackingInstallSnippet(appOrigin: string, publicKey: string): string | null {
+export function trackingInstallSnippet(appOrigin: string, publicKey: string, challenge?: string | null): string | null {
   if (!/^[A-Za-z0-9_-]{20,160}$/u.test(publicKey)) return null;
+  if (challenge && !/^aurora-site-verification=[A-Za-z0-9_-]{32,128}$/u.test(challenge)) return null;
   try {
     const origin = new URL(appOrigin).origin;
-    return `<script src="${origin}/api/tracking/client.js" data-project-key="${publicKey}"></script>`;
+    return `<script src="${origin}/api/tracking/client.js" data-project-key="${publicKey}"${challenge ? ` data-aurora-verification="${challenge}"` : ""}></script>`;
   } catch {
     return null;
   }
 }
 
 export function TrackingSettingsSection() {
+  const requestJson = useProjectCall(unscopedRequestJson);
   const projects = useProjects();
   const current = projects.current;
   const canManage = current?.role === "owner";
@@ -362,9 +373,7 @@ export function TrackingSettingsSection() {
 
   const [busyKey, setBusyKey] = useState<string | null>(null);
   const [feedback, setFeedback] = useState<Feedback>(null);
-  const [copied, setCopied] = useState(false);
-  const [installCopied, setInstallCopied] = useState(false);
-  const [verificationCopied, setVerificationCopied] = useState(false);
+  const [connectionFeedback, setConnectionFeedback] = useState<Feedback>(null);
   const [appOrigin, setAppOrigin] = useState("");
 
   useEffect(() => {
@@ -374,18 +383,14 @@ export function TrackingSettingsSection() {
 
   useEffect(() => {
     currentProjectIdRef.current = current?.id ?? null;
-    const timer = window.setTimeout(() => {
-      setCopied(false);
-      setInstallCopied(false);
-      setVerificationCopied(false);
-    }, 0);
-    return () => window.clearTimeout(timer);
   }, [current?.id]);
 
   const visibleSettings = current && settingsProjectId === current.id ? settings : null;
   const visibleTemplates = current && templatesProjectId === current.id ? templates : [];
+  const editingTemplate = visibleTemplates.find((template) => template.id === editingTemplateId);
+  const templateDirty = templateName !== (editingTemplate?.name ?? "") || JSON.stringify(templateValues) !== JSON.stringify(editingTemplate ? valuesForForm(editingTemplate.values) : EMPTY_TEMPLATE_VALUES);
   const installSnippet = visibleSettings?.publicKey
-    ? trackingInstallSnippet(appOrigin, visibleSettings.publicKey)
+    ? trackingInstallSnippet(appOrigin, visibleSettings.publicKey, visibleSettings.verificationFileContent)
     : null;
 
   const loadSettings = useCallback(async (
@@ -400,7 +405,7 @@ export function TrackingSettingsSection() {
     if (!parsed) {
       setSettingsLoadError(true);
       if (options.announce) {
-        setFeedback({ kind: "error", text: trackingSettingsErrorMessage(responseError(response, body)) });
+        setConnectionFeedback({ kind: "error", text: trackingSettingsErrorMessage(responseError(response, body)) });
       }
       return null;
     }
@@ -415,7 +420,7 @@ export function TrackingSettingsSection() {
       setWindowError(null);
     }
     if (options.announce) {
-      setFeedback(parsed.status === "active"
+      setConnectionFeedback(parsed.status === "active"
         ? { kind: "success", text: "Подключение подтверждено сервером." }
         : parsed.status === "paused"
           ? { kind: "info", text: "Трекер приостановлен. Переходы считаются, новые события сайта не принимаются." }
@@ -424,7 +429,7 @@ export function TrackingSettingsSection() {
             : "Подключение ожидает подтверждения домена и сигнала от сайта." });
     }
     return parsed;
-  }, []);
+  }, [requestJson]);
 
   const loadTemplates = useCallback(async (projectId: number, announce = false) => {
     const sequence = ++templatesSequence.current;
@@ -443,7 +448,7 @@ export function TrackingSettingsSection() {
     setTemplatesProjectId(projectId);
     setTemplatesLoadError(false);
     return parsed;
-  }, []);
+  }, [requestJson]);
 
   useEffect(() => {
     let cancelled = false;
@@ -458,8 +463,8 @@ export function TrackingSettingsSection() {
       setTemplatesProjectId(null);
       setSettingsLoadError(false);
       setTemplatesLoadError(false);
+      setConnectionFeedback(null);
       setFeedback(null);
-      setCopied(false);
       setBusyKey(null);
       setDeleteTemplate(null);
       setEditingTemplateId(null);
@@ -479,6 +484,18 @@ export function TrackingSettingsSection() {
       templatesSequence.current += 1;
     };
   }, [current?.id, loadSettings, loadTemplates]);
+
+  // Read-only status refresh while waiting for the installed script. Never verify ownership from a ping.
+  useEffect(() => {
+    if (!current || !visibleSettings?.publicKey || visibleSettings.signalReceivedAt || busyKey || projects.switching || settingsDirty) return;
+    const projectId = current.id;
+    const refresh = () => {
+      if (document.visibilityState === "visible") void loadSettings(projectId, { syncForm: false });
+    };
+    const timer = window.setInterval(refresh, 10_000);
+    window.addEventListener("focus", refresh);
+    return () => { window.clearInterval(timer); window.removeEventListener("focus", refresh); };
+  }, [current, visibleSettings?.publicKey, visibleSettings?.signalReceivedAt, busyKey, projects.switching, settingsDirty, loadSettings]);
 
   const windowOptions = useMemo(() => {
     return Array.from(new Set([7, 14, 30, 60, 90, attributionWindowDays])).sort((a, b) => a - b);
@@ -507,8 +524,9 @@ export function TrackingSettingsSection() {
       return;
     }
     const projectId = current.id;
+    settingsSequence.current += 1;
     setBusyKey("settings-save");
-    setFeedback(null);
+    setConnectionFeedback(null);
     const { response, body } = await requestJson("/api/tracking/settings", {
       method: "PUT",
       headers: { "content-type": "application/json" },
@@ -519,6 +537,7 @@ export function TrackingSettingsSection() {
       }),
     });
     if (currentProjectIdRef.current !== projectId) return;
+    settingsSequence.current += 1;
     const parsed = response?.ok ? parseTrackingSettingsResponse(body) : null;
     if (parsed) {
       setSettings(parsed);
@@ -528,9 +547,11 @@ export function TrackingSettingsSection() {
       setSettingsDirty(false);
       setOriginError(null);
       setWindowError(null);
-      setFeedback(parsed.status === "active"
+      setConnectionFeedback(parsed.status === "active"
         ? { kind: "success", text: "Настройки сохранены. Подключение сайта остаётся подтверждённым." }
-        : { kind: "success", text: "Настройки сохранены. Размести проверочный файл на сайте и подтверди домен." });
+        : parsed.status === "paused"
+          ? { kind: "info", text: "Настройки сохранены. Учёт событий сайта остаётся приостановленным." }
+        : { kind: "success", text: "Адрес сохранён. Вставь код подключения в настройки сайта и нажми «Проверить подключение»." });
     } else {
       const code = responseError(response, body);
       if (code === "invalid_origin") {
@@ -541,71 +562,55 @@ export function TrackingSettingsSection() {
         setWindowError(trackingSettingsErrorMessage(code));
       } else if (code === "version_conflict") {
         await loadSettings(projectId, { syncForm: true });
-        setFeedback({ kind: "error", text: trackingSettingsErrorMessage(code) });
+        setConnectionFeedback({ kind: "error", text: trackingSettingsErrorMessage(code) });
       } else {
-        setFeedback({ kind: "error", text: trackingSettingsErrorMessage(code) });
+        setConnectionFeedback({ kind: "error", text: trackingSettingsErrorMessage(code) });
       }
     }
     if (currentProjectIdRef.current === projectId) setBusyKey(null);
   };
 
-  const checkConnection = async () => {
-    if (!current || !visibleSettings?.publicKey || busyKey || !canManage) return;
+  const checkConnection = async (verificationMethod: "script" | "file" = "script") => {
+    if (!current || !visibleSettings?.publicKey || busyKey || !canManage || settingsDirty) return;
     const projectId = current.id;
+    settingsSequence.current += 1;
     setBusyKey("settings-check");
-    setFeedback(null);
+    setConnectionFeedback(null);
     const { response, body } = await requestJson("/api/tracking/settings/verify", {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ expectedVersion: visibleSettings.version }),
+      body: JSON.stringify({ expectedVersion: visibleSettings.version, verificationMethod }),
     });
     if (currentProjectIdRef.current !== projectId) return;
+    settingsSequence.current += 1;
     const parsed = response?.ok ? parseTrackingSettingsResponse(body) : null;
     if (parsed) {
       setSettings(parsed);
       setSettingsProjectId(projectId);
-      setFeedback(body?.verified === true
-        ? { kind: "success", text: "Домен подтверждён. События заявок можно учитывать в аналитике." }
-        : { kind: "error", text: "Проверочный файл не найден или его содержимое не совпало. Размести файл и повтори проверку." });
+      setConnectionFeedback(body?.verified === true
+        ? { kind: "success", text: "Домен подтверждён, подключение сохранено. Повторять настройку для новых публикаций не нужно." }
+        : { kind: "error", text: verificationErrorMessage(parsed.verificationErrorCode) });
     } else {
       const code = responseError(response, body);
       if (code === "version_conflict") await loadSettings(projectId, { syncForm: !settingsDirty });
-      setFeedback({ kind: "error", text: trackingSettingsErrorMessage(code) });
+      setConnectionFeedback({ kind: "error", text: trackingSettingsErrorMessage(code) });
     }
     if (currentProjectIdRef.current === projectId) setBusyKey(null);
   };
 
-  const copyVerificationContent = async () => {
-    if (!visibleSettings?.verificationFileContent) return;
-    try {
-      await navigator.clipboard.writeText(visibleSettings.verificationFileContent);
-      setVerificationCopied(true);
-      setFeedback({ kind: "success", text: "Содержимое проверочного файла скопировано." });
-    } catch {
-      setFeedback({ kind: "error", text: "Не удалось скопировать содержимое. Выдели строку и скопируй вручную." });
-    }
-  };
-
-  const copyPublicKey = async () => {
-    if (!visibleSettings?.publicKey) return;
-    try {
-      await navigator.clipboard.writeText(visibleSettings.publicKey);
-      setCopied(true);
-      setFeedback({ kind: "success", text: "Открытый ключ скопирован." });
-    } catch {
-      setFeedback({ kind: "error", text: "Не удалось скопировать ключ. Выдели его в поле и скопируй вручную." });
-    }
-  };
-
-  const copyInstallSnippet = async () => {
-    if (!installSnippet) return;
-    try {
-      await navigator.clipboard.writeText(installSnippet);
-      setInstallCopied(true);
-      setFeedback({ kind: "success", text: "Код установки скопирован." });
-    } catch {
-      setFeedback({ kind: "error", text: "Не удалось скопировать код. Выдели его и скопируй вручную." });
-    }
+  const refreshInstallation = async () => {
+    if (!current || busyKey) return;
+    const projectId = current.id;
+    setBusyKey("settings-refresh");
+    setConnectionFeedback(null);
+    const parsed = await loadSettings(projectId, { syncForm: false });
+    if (currentProjectIdRef.current !== projectId) return;
+    setConnectionFeedback(!parsed
+      ? { kind: "error", text: "Не удалось проверить установку. Проверь подключение и повтори попытку." }
+      : parsed.signalReceivedAt
+        ? { kind: "success", text: `Сигнал от сайта получен: ${formatDateTime(parsed.signalReceivedAt)}. Учёт заявок подключается один раз в инструкции ниже.` }
+        : { kind: "info", text: "Сигнал пока не получен. Опубликуй код на сайте, открой сайт в браузере и проверь установку снова." });
+    setBusyKey(null);
   };
 
   const editTemplate = (template: ProjectUtmTemplate) => {
@@ -748,7 +753,7 @@ export function TrackingSettingsSection() {
 
   return (
     <>
-      <Card as="section" aria-labelledby={titleId} className="overflow-hidden">
+      <Card as="section" data-settings-dirty={settingsDirty || templateDirty ? "true" : "false"} aria-labelledby={titleId} className="overflow-clip">
         <div className="flex items-start gap-3.5 border-b border-line px-5 py-5 sm:px-7">
           <span aria-hidden className="grid h-10 w-10 shrink-0 place-items-center rounded-sm bg-surface-inset text-text-2">
             <Activity className="h-5 w-5" strokeWidth={1.75} />
@@ -758,7 +763,7 @@ export function TrackingSettingsSection() {
               Трекинг и UTM-шаблоны
             </h2>
             <p className="mt-1 max-w-2xl text-[14px] leading-relaxed text-text-2 text-pretty">
-              Свяжи публикации с переходами и подтверждёнными заявками. Заявки учитываются только после серверного подтверждения домена.
+              Подключи сайт один раз и отслеживай переходы из публикаций. Для учёта заявок один раз добавь события формы.
             </p>
           </div>
         </div>
@@ -794,14 +799,14 @@ export function TrackingSettingsSection() {
                       Подключение сайта
                     </h3>
                     <p className="mt-1 max-w-2xl text-[13px] leading-relaxed text-text-3 text-pretty">
-                      Аврора принимает события только с точного адреса сайта и учитывает их в выбранный срок после перехода.
+                      {trackerActive ? "Подключение сохранено для этого проекта. Здесь можно посмотреть статус или изменить настройки сайта." : "Сохрани адрес, вставь один код в настройки сайта и проверь подключение. Аврора запомнит его для следующих публикаций."}
                     </p>
                   </div>
                   {visibleSettings ? (
                     trackerActive ? (
                       <Badge tone="success" className="shrink-0">
                         <Check className="h-3.5 w-3.5" aria-hidden />
-                        Трекер подключён
+                        Домен подтверждён
                       </Badge>
                     ) : visibleSettings.status === "paused" ? (
                       <Badge tone="neutral" className="shrink-0">
@@ -811,7 +816,7 @@ export function TrackingSettingsSection() {
                     ) : (
                       <Badge tone="neutral" className="shrink-0">
                         <TriangleAlert className="h-3.5 w-3.5" aria-hidden />
-                        {visibleSettings.signalReceivedAt ? "Сигнал получен · домен не подтверждён" : "Домен не подтверждён"}
+                        {visibleSettings.status === "not_connected" ? "Сайт ещё не подключён" : "Домен не подтверждён"}
                       </Badge>
                     )
                   ) : null}
@@ -844,13 +849,21 @@ export function TrackingSettingsSection() {
                       </p>
                     ) : null}
 
+                    {!trackerActive ? <ol aria-label="Шаги подключения сайта" className="mt-5 grid gap-2 rounded-sm bg-surface-inset p-4 text-[13px] text-text-2 sm:grid-cols-3">
+                      <li>1. Сохрани адрес</li><li>2. Вставь один код</li><li>3. Проверь подключение</li>
+                    </ol> : null}
+                    <details open={!trackerActive} className="mt-4">
+                      <summary className="cursor-pointer py-2 text-[13px] font-semibold text-text-2">{trackerActive ? "Изменить адрес и срок атрибуции" : "Адрес и настройки сайта"}</summary>
                     <form noValidate onSubmit={saveSettings} className="mt-5 space-y-4">
+                      {canManage && settingsDirty ? <div className="sticky top-0 z-10 flex flex-wrap items-center justify-between gap-3 rounded-sm border border-brand/30 bg-surface p-3 shadow-soft"><p className="text-[13px] text-text-2">Проект · подключение сайта. Изменения ещё не применены.</p><div className="flex flex-wrap gap-2"><Button type="button" variant="ghost" disabled={Boolean(busyKey)} onClick={() => { setSiteOrigin(visibleSettings.siteOrigin ?? ""); setAttributionWindowDays(visibleSettings.attributionWindowDays); setSettingsDirty(false); setOriginError(null); setWindowError(null); }}>Отменить</Button><Button type="submit" variant="brand" loading={busyKey === "settings-save"} disabled={Boolean(busyKey) || projects.switching}>{visibleSettings.publicKey ? "Сохранить изменения" : "Сохранить и получить код"}</Button></div></div> : null}
+                      {!canManage ? <p className="text-[13px] text-text-2">Изменить подключение может владелец проекта.</p> : null}
+                      <h4 className="text-[15px] font-bold text-text">1. Укажи сайт для переходов из публикаций</h4>
                       <div className="grid gap-4 md:grid-cols-[minmax(0,1fr)_minmax(12rem,0.38fr)]">
                         <Field
                           label="Адрес сайта"
                           htmlFor="project-tracking-origin"
                           required
-                          hint="Только адрес без пути, например https://example.ru."
+                          hint="Скопируй адрес открытого сайта без пути к странице. Например, https://example.ru. www и HTTPS должны совпадать с конечным адресом в браузере."
                           error={originError ?? undefined}
                           messageId={originMessageId}
                         >
@@ -904,108 +917,32 @@ export function TrackingSettingsSection() {
                         </Field>
                       </div>
 
-                      {!canManage ? (
-                        <p className="rounded-sm bg-surface-inset p-3 text-[13px] leading-relaxed text-text-2">
-                          Настройки доступны для просмотра. Изменить их может владелец проекта.
-                        </p>
-                      ) : (
-                        <Button type="submit" variant="brand" loading={busyKey === "settings-save"} disabled={Boolean(busyKey) || projects.switching}>
-                          Сохранить подключение
-                        </Button>
-                      )}
-                    </form>
 
-                    {visibleSettings.publicKey ? (
-                      <div className="mt-6 rounded-sm bg-surface-inset p-4 sm:p-5">
-                        {visibleSettings.verificationFileContent ? (
-                          <div className="mb-6 space-y-3">
-                            <div>
-                              <h4 className="text-[14px] font-bold text-text">Подтверждение домена</h4>
-                              <p className="mt-1 max-w-2xl text-[13px] leading-relaxed text-text-3 text-pretty">
-                                Создай файл <code className="break-all">{visibleSettings.verificationFilePath}</code> на указанном сайте. В файле должна быть только строка ниже — без пробелов и переноса строки.
-                              </p>
-                            </div>
-                            <div className="flex min-w-0 flex-col gap-2 sm:flex-row">
-                              <Input
-                                value={visibleSettings.verificationFileContent}
-                                readOnly
-                                aria-label="Содержимое проверочного файла"
-                                className="min-w-0 font-mono text-base sm:text-[13px]"
-                                onFocus={(event) => event.currentTarget.select()}
-                              />
-                              <Button type="button" variant="outline" className="shrink-0" onClick={() => void copyVerificationContent()}>
-                                <Clipboard className="h-4 w-4" aria-hidden />
-                                {verificationCopied ? "Скопировано" : "Скопировать строку"}
-                              </Button>
-                            </div>
-                            {canManage ? (
-                              <Button
-                                type="button"
-                                variant="outline"
-                                loading={busyKey === "settings-check"}
-                                disabled={Boolean(busyKey) || projects.switching}
-                                onClick={() => void checkConnection()}
-                              >
-                                <RefreshCw className="h-4 w-4" aria-hidden />
-                                Подтвердить домен
-                              </Button>
-                            ) : null}
-                          </div>
-                        ) : null}
-                        <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
-                          <div className="min-w-0">
-                            <h4 className="text-[14px] font-bold text-text">Открытый ключ проекта</h4>
-                            <p className="mt-1 max-w-2xl text-[13px] leading-relaxed text-text-3 text-pretty">
-                              Его можно размещать в коде сайта. Секретные ключи здесь не показываются.
-                            </p>
-                          </div>
-                          <p className="shrink-0 text-[12px] tabular-nums text-text-3">
-                            Последний сигнал: <time dateTime={visibleSettings.signalReceivedAt ?? undefined}>{formatDateTime(visibleSettings.signalReceivedAt)}</time>
-                          </p>
-                        </div>
-                        <div className="mt-3 flex min-w-0 flex-col gap-2 sm:flex-row">
-                          <Input
-                            value={visibleSettings.publicKey}
-                            readOnly
-                            aria-label="Открытый ключ проекта"
-                            className="min-w-0 font-mono text-base sm:text-[13px]"
-                            onFocus={(event) => event.currentTarget.select()}
-                          />
-                          <Button type="button" variant="outline" className="shrink-0" onClick={() => void copyPublicKey()}>
-                            <Clipboard className="h-4 w-4" aria-hidden />
-                            {copied ? "Скопировано" : "Скопировать ключ"}
-                          </Button>
-                        </div>
-                        {installSnippet ? (
-                          <div className="mt-6 space-y-3">
-                            <div>
-                              <h4 className="text-[14px] font-bold text-text">Код для сайта</h4>
-                              <p className="mt-1 max-w-2xl text-[13px] leading-relaxed text-text-3 text-pretty">
-                                Добавь этот тег в &lt;head&gt; страниц с формой. Он передаст сигнал установки, но не заменяет подтверждение домена.
-                              </p>
-                            </div>
-                            <pre className="max-w-full overflow-x-auto rounded-xs bg-surface px-3 py-3 text-[12px] leading-relaxed text-text">
-                              <code>{installSnippet}</code>
-                            </pre>
-                            <Button type="button" variant="outline" onClick={() => void copyInstallSnippet()}>
-                              <Clipboard className="h-4 w-4" aria-hidden />
-                              {installCopied ? "Код скопирован" : "Скопировать код установки"}
-                            </Button>
-                            <p className="max-w-2xl text-[13px] leading-relaxed text-text-3 text-pretty">
-                              При открытии или отправке формы вызови событие с постоянным номером заявки:
-                            </p>
-                            <code className="block max-w-full overflow-x-auto rounded-xs bg-surface px-3 py-3 text-[12px] leading-relaxed text-text">
-                              window.AuroraTracking.track(&quot;form_submit&quot;, &quot;form:12345678&quot;);
-                            </code>
-                          </div>
-                        ) : null}
-                      </div>
+                    </form>
+                    </details>
+
+                    {settingsDirty && visibleSettings.publicKey ? (
+                      <p role="status" className="mt-4 rounded-xs bg-surface-inset p-3 text-[13px] text-text-2">Есть несохранённые изменения. Инструкция ниже относится к {visibleSettings.siteOrigin}. Сохрани изменения перед проверкой. При смене адреса потребуется новое подтверждение домена.</p>
                     ) : null}
+                    <div aria-live="polite" aria-atomic="true" className={cn("mt-4 text-[13px] leading-relaxed", connectionFeedback?.kind === "error" ? "text-danger-text" : "text-text-2")}>
+                      {connectionFeedback?.text ?? ""}
+                    </div>
+                    <TrackingConnectionGuide
+                      key={`${current.id}:${visibleSettings.siteOrigin}:${visibleSettings.publicKey}`}
+                      settings={visibleSettings}
+                      snippet={installSnippet}
+                      canManage={canManage}
+                      disabled={Boolean(busyKey) || projects.switching || settingsDirty}
+                      checking={busyKey === "settings-check"}
+                      refreshing={busyKey === "settings-refresh"}
+                      onVerify={(method) => void checkConnection(method)}
+                      onRefresh={() => void refreshInstallation()}
+                    />
                   </>
                 ) : null}
               </section>
 
-              <section aria-labelledby={`${titleId}-templates`}>
+              <section data-setting-target="utm" aria-labelledby={`${titleId}-templates`}>
                 <div className="flex items-start gap-3">
                   <span aria-hidden className="mt-0.5 text-text-3">
                     <Link2 className="h-5 w-5" strokeWidth={1.75} />
@@ -1015,7 +952,7 @@ export function TrackingSettingsSection() {
                       UTM-шаблоны
                     </h3>
                     <p className="mt-1 max-w-2xl text-[13px] leading-relaxed text-text-3 text-pretty">
-                      Сохрани повторяющиеся метки проекта, чтобы не собирать их заново для каждой публикации.
+                      UTM-метки показывают источник, канал и кампанию в аналитике сайта. Сохрани набор и выбери его при добавлении ссылки в Композиторе. Шаблоны можно использовать без подтверждения домена; для учёта заявок в Авроре один раз подключи события формы.
                     </p>
                   </div>
                 </div>
@@ -1102,8 +1039,23 @@ export function TrackingSettingsSection() {
 
                 {canManage ? (
                   <form noValidate onSubmit={saveTemplate} className="mt-7 rounded-sm bg-surface-inset p-4 sm:p-5">
+                    <div className="sticky top-0 z-10 mb-4 flex flex-wrap items-center gap-2 rounded-sm border border-brand/30 bg-surface p-3 shadow-soft">
+                      <Button
+                        type="submit"
+                        variant="primary"
+                        loading={busyKey === "template-create" || busyKey?.startsWith("template-update-")}
+                        disabled={Boolean(busyKey) || projects.switching}
+                      >
+                        {editingTemplateId == null ? "Создать шаблон" : "Сохранить шаблон"}
+                      </Button>
+                      {editingTemplateId != null ? (
+                        <Button type="button" variant="ghost" disabled={Boolean(busyKey)} onClick={resetTemplateForm}>
+                          Отменить изменение
+                        </Button>
+                      ) : null}
+                    </div>
                     <h4 className="text-[14px] font-bold text-text">
-                      {editingTemplateId == null ? "Создать шаблон" : "Изменить шаблон"}
+                      {editingTemplateId == null ? "Новый UTM-шаблон" : "UTM-шаблон проекта"}
                     </h4>
                     <p className="mt-1 text-[13px] leading-relaxed text-text-3">
                       Не добавляй в метки имена, телефоны и электронную почту.
@@ -1193,21 +1145,7 @@ export function TrackingSettingsSection() {
                         {templateValuesError ?? "Все поля необязательные; значения ограничены 160 символами."}
                       </p>
                     </fieldset>
-                    <div className="mt-5 flex flex-wrap gap-2">
-                      <Button
-                        type="submit"
-                        variant="primary"
-                        loading={busyKey === "template-create" || busyKey?.startsWith("template-update-")}
-                        disabled={Boolean(busyKey) || projects.switching}
-                      >
-                        {editingTemplateId == null ? "Создать шаблон" : "Сохранить шаблон"}
-                      </Button>
-                      {editingTemplateId != null ? (
-                        <Button type="button" variant="ghost" disabled={Boolean(busyKey)} onClick={resetTemplateForm}>
-                          Отменить изменение
-                        </Button>
-                      ) : null}
-                    </div>
+
                   </form>
                 ) : (
                   <p className="mt-5 rounded-sm bg-surface-inset p-3 text-[13px] leading-relaxed text-text-2">

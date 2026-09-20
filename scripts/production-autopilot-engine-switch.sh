@@ -4,10 +4,8 @@
 #
 # Why this exists: `autopilot_settings.generation_engine` is a per-channel pin that
 # overrides every environment default, so a channel pinned to a route that does not answer
-# keeps failing no matter how healthy the rest of the fleet is. Production had the two
-# enabled channels pinned to DeepSeek V4 Pro, which never answers inside the worker attempt
-# budget (63 of 103 provider timeouts in one release window), and a third pinned to GPT-5.4,
-# whose upstream answers HTTP 500 on every call.
+# keeps failing no matter how healthy the rest of the fleet is. Engine ids below are durable
+# Aurora product slots; the provider model routed through a slot may change between releases.
 #
 # Scope is deliberately narrow: this touches exactly one column on explicitly named
 # channels, prints the row before and after, and never writes anything else. The build it

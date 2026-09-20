@@ -5,7 +5,7 @@ export interface AutopilotCandidate {
   news?: boolean;
   sourceConfirmed?: boolean;
   qualityScore?: number;
-  quality?: { score?: number };
+  quality?: { score?: number; passed?: boolean; publicationDisposition?: string };
   [key: string]: unknown;
 }
 

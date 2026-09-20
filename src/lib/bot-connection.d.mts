@@ -8,6 +8,13 @@ export const LEGACY_BOT_LINK_CODE_PATTERN: RegExp;
 export function createBotConnectionToken(): string;
 export function hashBotConnectionToken(rawToken: unknown): string | null;
 export function maskBotAccountEmail(value: unknown): string;
+export function botConnectionKey(userId: number, chatId: number | string | null, revision?: number | string): string | null;
+export function getBotAccountConnection(pool: Pool, userId: number): Promise<{ telegramChatId: number | null; connectionKey: string | null }>;
+export function disconnectBotAccount(pool: Pool, input: {
+  userId: number;
+  expectedConnectionKey: unknown;
+  source?: "settings" | "telegram";
+}): Promise<{ state: "invalid" | "confirmation_required" | "already_disconnected" | "connection_changed" | "disconnected" }>;
 export function normalizeTelegramBotUsername(value: unknown): string | null;
 export function parseLegacyBotStartPayload(value: unknown): {
   code: string;
@@ -26,7 +33,7 @@ export function consumeLegacyBotLink(pool: Pool, input: {
   code: unknown;
   telegramChatId: number;
 }): Promise<{
-  state: "invalid" | "account_disabled" | "connected";
+  state: "invalid" | "account_disabled" | "move_required" | "connected";
   userId?: number;
   telegramChatId?: number;
   moved?: boolean;
@@ -85,4 +92,5 @@ export function confirmBotConnectionSession(pool: Pool, input: {
 export function disconnectBotChat(pool: Pool, input: {
   userId: number;
   telegramChatId: number;
+  expectedConnectionKey: unknown;
 }): Promise<boolean>;

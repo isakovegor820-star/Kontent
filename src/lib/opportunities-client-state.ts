@@ -28,6 +28,12 @@ export function opportunityActionError(error: string | undefined): string {
   if (error === "opportunity_not_found") {
     return "Возможность больше недоступна. Обновите карту.";
   }
+  if (error === "opportunity_source_unavailable") {
+    return "Источник этой возможности больше недоступен. Обновите карту и выберите другую тему.";
+  }
+  if (error === "opportunity_draft_invalid") {
+    return "Не удалось подготовить черновик из этих данных. Обновите карту и выберите другую тему.";
+  }
   if (error === "access_denied") return "У вас нет права создавать черновик в этом проекте.";
   return "Не удалось создать черновик. Повторите попытку.";
 }

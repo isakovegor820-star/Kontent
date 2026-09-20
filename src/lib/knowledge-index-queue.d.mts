@@ -11,5 +11,5 @@ export function reconcilePendingKnowledgeSources(
   queue: {
     add(name: string, data: { sourceId: number }, options: Record<string, unknown>): Promise<unknown>;
   },
-  options?: { limit?: number },
+  options?: { limit?: number; model?: string },
 ): Promise<{ scanned: number; accepted: number; failed: number }>;

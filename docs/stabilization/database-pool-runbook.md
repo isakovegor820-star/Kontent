@@ -27,16 +27,35 @@ fail-closed.
 
 ## Доступный signal
 
-Авторизованный `GET /api/readiness` возвращает `databasePool` для текущего процесса:
+Авторизованный `GET /api/readiness` возвращает `databasePool` web-процесса. Worker
+использует тот же `MonitoredPgPool` и раз в 60 секунд, а также при shutdown, пишет
+структурированный безопасный `database pool snapshot` в stdout:
 
+- `schemaVersion: 2`, `metricsScope: process`;
 - `role`, `max`, `total`, `active`, `idle`, `waiting`;
 - `acquireWaitP95Ms`, `acquireSamples`;
 - `acquireTimeouts`, `acquireErrors`;
-- effective connection/query/statement/idle-transaction timeout.
+- `recentAcquireErrors`, `recentWindowMs`, `lastAcquireErrorAt`;
+- `queryDurationP95Ms`, `queryDurationMaxMs`, `querySamples`, `slowQueries`;
+- `queryTimeouts`, `queryErrors`;
+- `transactionDurationP95Ms`, `transactionDurationMaxMs`, `transactionSamples`;
+- `activeTransactions`, committed/rolled-back/abandoned/error counters;
+- effective connection/query/slow-query/statement/idle-transaction thresholds.
 
 Endpoint защищён существующим operator bearer или global-admin session и имеет
-`Cache-Control: no-store`. Он не агрегирует несколько web/worker processes и не заменяет
-DB/PgBouncer dashboard.
+`Cache-Control: no-store`. Метрики агрегируются в памяти одного процесса, не содержат
+SQL/parameters и имеют bounded duration sample по 1024 наблюдения. Внешний collector
+должен опрашивать каждый web process и собирать stdout каждого worker process отдельно;
+приложение не выполняет межпроцессную агрегацию и не заменяет DB/PgBouncer dashboard.
+
+Реальный `worker.mjs` выставляет роль `worker` до разрешения конфигурации, требует
+`AURORA_DB_POOL_MAX_WORKER` в production и применяет те же connection/query/statement/
+idle-transaction/idle/lifetime границы, что и web. Contract test запрещает возвращение
+к необёрнутому `new pg.Pool()` в worker runtime.
+
+Порог slow query настраивается `AURORA_DB_SLOW_QUERY_MS` (`1000` мс по умолчанию,
+допустимо `10..300000`). Это observability threshold, а не разрешение увеличивать
+statement/query timeout или pool budget.
 
 ## Локальная DB timeout integration — 2026-08-31
 
@@ -50,9 +69,9 @@ PostgreSQL 16 cluster в системном temp, запускает прило�
   (`25P03`), после чего pool создаёт рабочее соединение и `select 1` проходит;
 - snapshot не содержит текст исключения и показывает acquire timeout/error counters.
 
-Фактический прогон: 1 test file, 3 tests — pass. Успешный временный cluster остановлен,
-а его evidence-каталог сохранён по пути
-`/var/folders/l8/4bbq39ws6vz8d9h3dlt95k180000gn/T/aurora-db-pool-timeout-dt3WQA`.
+Последний фактический прогон 2026-09-06: 1 test file, 3 tests — pass. Успешный временный
+cluster остановлен, а его evidence-каталог сохранён по пути
+`/var/folders/l8/4bbq39ws6vz8d9h3dlt95k180000gn/T/aurora-db-pool-timeout-95OgoE`.
 Существующие `aurora_e2e_real`, Redis и production/live targets не использовались.
 Это подтверждает только timeout/recovery contract одного локального процесса; тест не
 создаёт PgBouncer, controlled saturation/load profile, multi-process aggregation или
@@ -67,8 +86,23 @@ production alert route.
 4. Если `acquireTimeouts` или `acquireErrors` растут, сохранить безопасные error codes и
    correlation IDs; не сохранять SQL parameters, токены или пользовательский content.
 5. Если pool wait p95 достигает или превышает 50 ms в целевом load profile, gate не пройден.
-6. Slow-query и transaction-duration metrics этим изменением не реализованы. Без них
-   первопричина насыщения **не подтверждена** и BLK-02 остаётся частичным.
+6. Сопоставить query/transaction p95/max и monotonic counters между процессами. Нельзя
+   складывать p95; глобальный percentile строится в telemetry backend из распределений
+   или process-level samples.
+7. Не записывать SQL, параметры или пользовательский content в alert/evidence. Текущие
+   application metrics намеренно содержат только длительности и безопасные counters.
+
+## Локальная timeout/saturation integration
+
+Команда запускается только с явным адресом разрешённой disposable БД:
+
+`DATABASE_POOL_TEST_DATABASE_URL=postgresql://127.0.0.1:5432/aurora_e2e_real npm run test:db-pool:integration`
+
+Скрипт fail-closed принимает только loopback и точное имя `aurora_e2e_real`. Он не
+сбрасывает схему и проверяет: bounded acquire timeout при `max=1`, server statement
+timeout, rollback прерванной транзакции, освобождение слота и последующий `select 1`.
+Это controlled local saturation contract, но не доказательство p95/capacity целевого
+staging-профиля.
 
 ## Безопасная реакция
 
@@ -94,7 +128,8 @@ heartbeat, queue recovery и data reconciliation. Сброс или очистк
 BLK-02 можно закрыть только после приложения:
 
 - утверждённого connection budget и PgBouncer/equivalent topology;
-- DB timeout integration (локальный isolated test есть) и controlled saturation result;
+- DB timeout integration и controlled saturation result (isolated и local-disposable
+  contracts есть; production-like staging result ещё требуется);
 - dashboard с pool/DB/slow-query/transaction signals и рабочим alert route;
 - load/soak evidence: pool wait p95 <50 ms, нет connection exhaustion, есть 30% запас;
 - повторного identical run и подписей Backend + SRE.

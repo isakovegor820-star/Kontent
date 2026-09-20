@@ -1,4 +1,7 @@
 "use client";
+import { useProjectCall } from "@/lib/use-project-transport";
+import { projectFetch as fetch } from "@/lib/project-transport";
+
 
 import { projectFetch as fetch } from "@/lib/project-fetch";
 
@@ -17,6 +20,7 @@ import {
   ShieldCheck,
   Sparkles,
   UserRound,
+  Trash2,
 } from "lucide-react";
 
 import { Button, buttonClassName } from "@/components/ui/button";
@@ -101,7 +105,7 @@ function assistantError(code: string | undefined): string {
   return "Не удалось выполнить действие. Проверьте соединение и повторите.";
 }
 
-async function json<T>(url: string, init?: RequestInit): Promise<T> {
+async function unscopedJson<T>(url: string, init?: RequestInit): Promise<T> {
   const response = await fetch(url, { cache: "no-store", ...init });
   const body = await response.json().catch(() => null) as (T & ApiError) | null;
   if (!response.ok || !body) {
@@ -153,6 +157,7 @@ function InquiryCard({
   canEdit,
   onGenerate,
   onSend,
+  onDiscard,
   onUpdate,
   onMessage,
 }: {
@@ -160,6 +165,7 @@ function InquiryCard({
   busy: boolean;
   canEdit: boolean;
   onGenerate: (inquiry: AudienceInquiryRecord) => void;
+  onDiscard: (inquiry: AudienceInquiryRecord) => void;
   onSend: (inquiry: AudienceInquiryRecord, reply: string) => void;
   onUpdate: (inquiry: AudienceInquiryRecord, input: { status?: AudienceInquiryStatus; suggestedReply?: string }) => void;
   onMessage: (message: string) => void;
@@ -311,6 +317,12 @@ function InquiryCard({
                     Другой вариант
                   </Button>
                 )}
+                {canEdit && canAct && !deliveryUnknown && (
+                  <Button variant="ghost" loading={busy} onClick={() => onDiscard(inquiry)}>
+                    {!busy && <Trash2 className="h-4 w-4" aria-hidden />}
+                    Удалить черновик
+                  </Button>
+                )}
                 {canEdit && !inquiry.canSendViaTelegram && (
                   <Button variant="ghost" loading={busy} onClick={() => onUpdate(inquiry, { status: "sent", suggestedReply: reply })}>
                     {!busy && <CheckCircle2 className="h-4 w-4" aria-hidden />}
@@ -356,6 +368,7 @@ function InquiryCard({
 }
 
 export function AudienceAssistantPanel() {
+  const json = useProjectCall(unscopedJson);
   const [inquiries, setInquiries] = useState<AudienceInquiryRecord[]>([]);
   const [stats, setStats] = useState<AudienceAssistantStats>(EMPTY_STATS);
   const [capabilities, setCapabilities] = useState<AudienceAssistantCapabilities | null>(null);
@@ -384,7 +397,7 @@ export function AudienceAssistantPanel() {
     } finally {
       if (!silent) setLoading(false);
     }
-  }, []);
+  }, [json]);
 
   useEffect(() => {
     const initial = window.setTimeout(() => void load(), 0);
@@ -458,6 +471,29 @@ export function AudienceAssistantPanel() {
           : input.status === "pending"
             ? "Обращение возвращено в работу."
             : "Правки ответа сохранены.");
+      await load(true);
+    } catch (error) {
+      setLoadError((error as Error).message);
+    } finally {
+      setBusyId(null);
+    }
+  };
+
+  const discard = async (inquiry: AudienceInquiryRecord) => {
+    setBusyId(inquiry.id);
+    setLoadError("");
+    setStatusMessage("");
+    try {
+      const result = await json<{ inquiry: AudienceInquiryRecord }>(
+        `/api/audience-assistant/${inquiry.id}/draft`,
+        {
+          method: "DELETE",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ expectedVersion: inquiry.version }),
+        },
+      );
+      replaceInquiry(result.inquiry);
+      setStatusMessage("Черновик удалён. Исходное обращение сохранено в разделе «Нужен ответ».");
       await load(true);
     } catch (error) {
       setLoadError((error as Error).message);
@@ -559,9 +595,10 @@ export function AudienceAssistantPanel() {
                 <InquiryCard
                   key={`${inquiry.id}:${inquiry.version}`}
                   inquiry={inquiry}
-                  busy={busyId === inquiry.id}
+                  busy={busyId != null}
                   canEdit={capabilities?.canEdit ?? EMPTY_CAPABILITIES.canEdit}
                   onGenerate={(next) => void generate(next)}
+                  onDiscard={(next) => void discard(next)}
                   onSend={(next, reply) => void sendReply(next, reply)}
                   onUpdate={(next, input) => void update(next, input)}
                   onMessage={setStatusMessage}

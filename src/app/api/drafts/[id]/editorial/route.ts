@@ -1,3 +1,4 @@
+import { withProjectRoute } from "@/lib/project-route";
 import { NextRequest } from "next/server";
 
 import { getEditorialSnapshotForUser } from "@/lib/editorial-approval";
@@ -8,7 +9,7 @@ export const runtime = "nodejs";
 
 type Context = { params: Promise<{ id: string }> };
 
-export async function GET(req: NextRequest, ctx: Context) {
+async function handleGET(req: NextRequest, ctx: Context) {
   const requestId = editorialRequestId();
   const user = await getSessionUser(req);
   if (!user) return editorialJson({ ok: false, error: "unauthorized" }, 401, requestId);
@@ -24,3 +25,5 @@ export async function GET(req: NextRequest, ctx: Context) {
     return editorialApiError(error, requestId);
   }
 }
+
+export const GET = withProjectRoute(handleGET);

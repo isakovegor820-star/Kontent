@@ -66,6 +66,33 @@ function successfulFetch(readiness = readyReport()) {
 }
 
 describe("deployment smoke", () => {
+  it.each([false, undefined])("rejects a release with unproven Telegram polling (%s) when required", async (telegramBotReady) => {
+    await expect(runDeploymentSmoke({
+      env: {
+        AURORA_DEPLOYMENT_SMOKE_BASE_URL: "https://aurora.example",
+        AURORA_DEPLOYMENT_SMOKE_PROFILE: "release",
+        AURORA_DEPLOYMENT_SMOKE_REQUIRE_TELEGRAM: "true",
+        AURORA_READINESS_TOKEN: READINESS_TOKEN,
+      },
+      fetchImpl: successfulFetch(readyReport({ status: "degraded", telegramBotReady, mailDeliveryReady: false, passwordRecoveryReady: false })),
+      now: new Date("2026-08-17T12:01:00.000Z"),
+    })).rejects.toMatchObject({ code: "deployment_smoke_telegram_unavailable" });
+  });
+
+  it("reports proven Telegram polling after deployment without requiring configured mail", async () => {
+    await expect(runDeploymentSmoke({
+      env: {
+        AURORA_DEPLOYMENT_SMOKE_BASE_URL: "https://aurora.example",
+        AURORA_DEPLOYMENT_SMOKE_PROFILE: "release",
+        AURORA_DEPLOYMENT_SMOKE_REQUIRE_TELEGRAM: "true",
+        AURORA_READINESS_TOKEN: READINESS_TOKEN,
+      },
+      fetchImpl: successfulFetch(readyReport({ status: "degraded", telegramBotReady: true, mailDeliveryReady: false, passwordRecoveryReady: false })),
+      logger: { log: vi.fn() },
+      now: new Date("2026-08-17T12:01:00.000Z"),
+    })).resolves.toMatchObject({ ok: true, telegramBotReady: true });
+  });
+
   it("verifies full readiness and nonce-bound production HTML", async () => {
     const fetchImpl = successfulFetch();
     const logger = { log: vi.fn() };

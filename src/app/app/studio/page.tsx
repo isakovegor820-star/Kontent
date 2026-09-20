@@ -1,4 +1,7 @@
 "use client";
+import { useProjects } from "@/components/app/project-provider";
+import { useProjectFetch, useProjectCall, useProjectStorageKey } from "@/lib/use-project-transport";
+
 
 import { projectFetch as fetch } from "@/lib/project-fetch";
 
@@ -14,48 +17,49 @@ import {
   CalendarRange,
   Check,
   ChevronDown,
-  CircleStop,
   Clapperboard,
   Copy,
   FileText,
-  ImageIcon,
   ListChecks,
-  LoaderCircle,
   MessageSquareText,
   Plus,
   RefreshCw,
   Sparkles,
-  Timer,
-  Video,
 } from "lucide-react";
 
 import { AppShell } from "@/components/app/shell";
 import { EvidenceCard } from "@/components/app/evidence-card";
 import { Button } from "@/components/ui/button";
 import { Card, Textarea } from "@/components/ui/primitives";
+import { TaskStatus } from "@/components/ui/task-status";
 import {
   MediaGenerator,
   type MediaGeneration,
-  type MediaKind,
 } from "@/components/studio/media-generator";
 import { PostSettingsMenu } from "@/components/studio/post-settings-menu";
 import { requiresBriefConfirmation } from "@/lib/brief-confirmation";
 import { type AiCommand } from "@/lib/ai";
-import { acknowledgeAiTerminal, AiTerminalAckError } from "@/lib/ai-client-idempotency";
-import { aiFailureRecoveryRu, type AiFailureInfo } from "@/lib/ai-client-recovery";
+import { acknowledgeAiTerminal as unscopedAcknowledgeAiTerminal, AiTerminalAckError } from "@/lib/ai-client-idempotency";
+import {
+  AI_TERMINAL_ACK_RECOVERY_RU,
+  aiFailureRecoveryRu,
+  visibleStudioAiErrorRu,
+  type AiFailureInfo,
+} from "@/lib/ai-client-recovery";
 import {
   aiDraftPhaseLabel,
   createAiDraftProjection,
   projectAiDraftEvent,
+  recoverAiDraftText,
 } from "@/lib/ai-draft-projection";
 import type { ConversationTurn } from "@/lib/ai-provider";
 import { finalizeAiClientStream, parseAiStreamBuffer, type AiStreamEvent } from "@/lib/ai-stream";
 import { getAiUsageMetrics } from "@/lib/ai-usage-sync";
 import {
   createDraftClientKey,
-  createServerDraft,
+  createServerDraft as unscopedCreateServerDraft,
   DraftRequestError,
-  getServerDraft,
+  getServerDraft as unscopedGetServerDraft,
 } from "@/lib/draft-client";
 import type { ServerDraft } from "@/lib/draft-types";
 import { buildLibraryAdaptation } from "@/lib/library";
@@ -68,6 +72,7 @@ import {
   monthlyCampaignStudioPrompt,
   parseMonthlyCampaignDetail,
 } from "@/lib/monthly-campaign-client";
+import { studioGrowthMoveGenerationIdentity } from "@/lib/opportunity-studio";
 import { studioReferenceGenerationIdentity } from "@/lib/studio-reference-generation";
 import { readyStudioEngines } from "@/lib/studio-engine-options";
 import {
@@ -77,12 +82,14 @@ import {
   validatePostSettingsConflicts,
   type PostSettings,
 } from "@/lib/post-settings";
-import { pickStudioCommand } from "@/lib/studio-command";
+import { looksLikeStudioEditFollowUp, pickStudioCommand } from "@/lib/studio-command";
 import {
   isStudioGenerationPlaceholder,
+  lastRewritableStudioMessage,
   mergeStudioChatSessions,
   parseStudioChatSession,
   serializeStudioChatSession,
+  shouldSendStudioSessionPageHide,
   stopStudioStreamingMessages,
   studioChatStorageKey,
   type StudioChatGeneration,
@@ -114,10 +121,13 @@ type Gen = StudioChatGeneration & {
   monthlyCampaignId?: number;
   monthlyPlanId?: number;
   monthlyItemId?: number;
+  growthMoveId?: number;
+  opportunityId?: number;
 };
 type AskOptions = {
   cmd?: AiCommand;
   input?: string;
+  history?: ConversationTurn[];
   skipBrief?: boolean;
   requestKey?: string;
   autoOpenComposer?: boolean;
@@ -130,6 +140,8 @@ type AskOptions = {
   monthlyCampaignId?: number;
   monthlyPlanId?: number;
   monthlyItemId?: number;
+  growthMoveId?: number;
+  opportunityId?: number;
   /** Source-bound destination survives reload before the global channel store is ready. */
   channelId?: number | null;
   postSettings?: PostSettings;
@@ -155,6 +167,14 @@ type PendingAudienceQuestionGeneration = {
   requestKey: string;
   resultClientKey: string;
 };
+type PendingGrowthMoveGeneration = {
+  moveId: number;
+  opportunityId: number | null;
+  channelId: number;
+  prompt: string;
+  requestKey: string;
+  resultClientKey: string;
+};
 type MonthlyCampaignStudioContext = {
   campaignId: number;
   planId: number;
@@ -176,8 +196,6 @@ type Quick = {
   draft?: string;
   /** выполнить сразу, дописывать нечего */
   instant?: string;
-  /** открыть настоящий генератор медиа, а не текстовый промпт */
-  mediaKind?: MediaKind;
 };
 
 const QUICK: Quick[] = [
@@ -212,30 +230,11 @@ const QUICK: Quick[] = [
     draft: "Напиши лонгрид про ",
   },
   {
-    id: "image",
-    label: "Картинка",
-    icon: <ImageIcon className={ICON} strokeWidth={2} aria-hidden />,
-    mediaKind: "image",
-  },
-  {
-    id: "video",
-    label: "Создать рилс",
-    icon: <Video className={ICON} strokeWidth={2} aria-hidden />,
-    mediaKind: "video",
-  },
-  {
     id: "rewrite-last",
     label: "Перепиши последнее",
     icon: <RefreshCw className={ICON} strokeWidth={2} aria-hidden />,
   },
 ];
-
-/** Короткая команда после готового ответа означает редактуру, а не новую тему поста. */
-function looksLikeEditFollowUp(text: string): boolean {
-  return /^(сделай|исправь|убери|добавь|замени|оставь|измени|поменяй|перестрой|давай|без|больше|меньше|ещё|слишком)\b/i.test(
-    text.trim(),
-  );
-}
 
 function primaryPublication(text: string): string {
   return text.split(/\n\s*---\s*\n/u)[0].trim();
@@ -254,83 +253,6 @@ function lexicalSimilarity(left: string, right: string): number {
 // Примеры для пустого диалога: показать, что тут вообще можно попросить, вместо голого поля.
 // Нейтральные по нише — конкретика приедет из настроек и разведки, выдумывать её не надо.
 /* ------------------------------------------------------------- СООБЩЕНИЕ */
-
-function formatGenerationTime(elapsedSeconds: number): string {
-  const safeSeconds = Math.max(0, Math.floor(elapsedSeconds));
-  const minutes = Math.floor(safeSeconds / 60);
-  const seconds = safeSeconds % 60;
-  return `${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`;
-}
-
-function GenerationStatus({
-  progressLabel,
-  onStop,
-}: {
-  progressLabel?: string;
-  onStop: () => void;
-}) {
-  const [elapsedSeconds, setElapsedSeconds] = useState(0);
-
-  useEffect(() => {
-    const startedAt = Date.now();
-    const updateElapsed = () => {
-      setElapsedSeconds(Math.floor((Date.now() - startedAt) / 1_000));
-    };
-
-    updateElapsed();
-    const timerId = window.setInterval(updateElapsed, 1_000);
-    return () => window.clearInterval(timerId);
-  }, []);
-
-  const formattedTime = formatGenerationTime(elapsedSeconds);
-
-  return (
-    <div className="mt-3 max-w-[72ch] rounded-md border border-brand/25 bg-info-soft p-4 shadow-sm">
-      <div className="flex items-start gap-3">
-        <span
-          className="grid h-10 w-10 shrink-0 place-items-center rounded-full bg-brand-gradient text-white shadow-glow"
-          aria-hidden
-        >
-          <LoaderCircle className="h-5 w-5 motion-safe:animate-spin" strokeWidth={2} />
-        </span>
-
-        <div className="min-w-0 flex-1">
-          <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
-            <p className="text-[14px] leading-snug font-bold text-text">Генерация идёт</p>
-            <span className="inline-flex items-center gap-1.5 text-[11px] leading-none font-semibold text-info-text">
-              <Timer className="h-3.5 w-3.5" strokeWidth={2} aria-hidden />
-              <span>Прошло</span>
-              <time className="tabular-nums" dateTime={`PT${elapsedSeconds}S`} aria-label={`Прошло времени: ${formattedTime}`}>
-                {formattedTime}
-              </time>
-            </span>
-          </div>
-          <p className="mt-1 text-[12px] leading-relaxed font-medium text-info-text">
-            {progressLabel ?? "Аврора создаёт материал…"}
-          </p>
-        </div>
-      </div>
-
-      <div className="mt-3 flex flex-col items-stretch justify-between gap-3 border-t border-brand/15 pt-3 sm:flex-row sm:items-center">
-        <p className="text-[11px] leading-relaxed text-text-3">
-          Готовые фрагменты появляются в ответе сразу.
-        </p>
-        <Button
-          type="button"
-          variant="danger"
-          size="sm"
-          className="w-full border border-danger-text/20 px-4 shadow-sm sm:w-auto"
-          onClick={onStop}
-          aria-label="Остановить генерацию"
-          title="Остановить генерацию"
-        >
-          <CircleStop className="h-4 w-4" strokeWidth={2} aria-hidden />
-          Остановить
-        </Button>
-      </div>
-    </div>
-  );
-}
 
 function MessageRow({
   msg,
@@ -372,6 +294,13 @@ function MessageRow({
   }
 
   const ready = !msg.streaming && msg.text.trim().length > 0;
+  const visibleErrorMessage = visibleStudioAiErrorRu(msg.errorMessage);
+  let assistantStatus = "Ответ завершён";
+  if (msg.streaming) assistantStatus = "Создаёт текст";
+  else if (visibleErrorMessage) assistantStatus = "Не удалось завершить ответ";
+  else if (msg.retryable && msg.reviewable) assistantStatus = "Текст готов, нужно завершить сохранение";
+  else if (msg.retryable) assistantStatus = "Нужно повторить запрос";
+  else if (msg.reviewable) assistantStatus = "Текст готов";
 
   // ИИ — обычный читаемый текст без ещё одной карточки вокруг карточки.
   return (
@@ -381,11 +310,18 @@ function MessageRow({
           <span
             className={cn(
               "h-1.5 w-1.5 rounded-full",
-              msg.streaming ? "bg-brand" : "bg-success-text",
+              msg.streaming
+                ? "bg-brand"
+                : visibleErrorMessage
+                  ? "bg-danger"
+                  : msg.retryable
+                    ? "bg-fire"
+                    : "bg-success-text",
             )}
             aria-hidden
           />
           Аврора
+          <span className="sr-only"> — {assistantStatus}</span>
         </p>
         {msg.text.trim() && (
           <p className="max-w-[72ch] text-[15px] leading-[1.7] whitespace-pre-wrap text-text">
@@ -399,16 +335,19 @@ function MessageRow({
           </p>
         )}
 
-        {msg.streaming && <GenerationStatus progressLabel={msg.progressLabel} onStop={onStop} />}
+        {msg.streaming && (
+          <TaskStatus className="mt-2" label={msg.progressLabel} onStop={onStop} announce={false} />
+        )}
 
-        {msg.errorMessage && (
+        {visibleErrorMessage && (
           <div role="alert" className="mt-3 max-w-[72ch] rounded-sm border border-danger-text/25 bg-danger-soft px-3 py-2 text-[12px] leading-relaxed text-danger-text">
-            <p>{msg.errorMessage}</p>
+            <p>{visibleErrorMessage}</p>
           </div>
         )}
 
         {msg.statusMessage && (
           <p
+            role="status"
             className="mt-3 max-w-[72ch] rounded-sm border border-line bg-surface-inset px-3 py-2 text-[12px] leading-relaxed text-text-2"
           >
             {msg.statusMessage}
@@ -416,7 +355,7 @@ function MessageRow({
         )}
 
 
-        {!msg.streaming && msg.retryable && (
+        {!msg.streaming && msg.retryable && !msg.reviewable && (
           <div className="mt-2 flex flex-wrap gap-1.5">
             <Button variant="soft" size="sm" onClick={onRetry}>
               <RefreshCw className="h-3.5 w-3.5" strokeWidth={2} aria-hidden />
@@ -812,6 +751,12 @@ function ModelMenu({
 /* --------------------------------------------------------------- ЭКРАН */
 
 function StudioPageInner() {
+  const generatedMediaStorageKey = useProjectStorageKey("aurora:generated-media");
+  const getServerDraft = useProjectCall(unscopedGetServerDraft);
+  const createServerDraft = useProjectCall(unscopedCreateServerDraft);
+  const acknowledgeAiTerminal = useProjectCall(unscopedAcknowledgeAiTerminal);
+  const fetch = useProjectFetch();
+  const { current: selectedProject } = useProjects();
   const router = useRouter();
   const searchParams = useSearchParams();
   const requestedWorkspaceMode: WorkspaceMode | null =
@@ -829,7 +774,6 @@ function StudioPageInner() {
   const [workspaceMode, setWorkspaceMode] = useState<WorkspaceMode>("chat");
   const [chatSessionOwner, setChatSessionOwner] = useState<number | null>(null);
   const [chatPersistenceStatus, setChatPersistenceStatus] = useState<ChatPersistenceStatus>("loading");
-  const [mediaKind, setMediaKind] = useState<MediaKind>("image");
   const [pickedChannelId, setPickedChannelId] = useState<number | null>(() => {
     if (typeof window === "undefined") return null;
     const value = Number(new URLSearchParams(window.location.search).get("channel"));
@@ -844,6 +788,7 @@ function StudioPageInner() {
   const [contextDraft, setContextDraft] = useState<ServerDraft | null>(null);
   const [pendingReferenceGeneration, setPendingReferenceGeneration] = useState<PendingReferenceGeneration | null>(null);
   const [pendingAudienceQuestionGeneration, setPendingAudienceQuestionGeneration] = useState<PendingAudienceQuestionGeneration | null>(null);
+  const [pendingGrowthMoveGeneration, setPendingGrowthMoveGeneration] = useState<PendingGrowthMoveGeneration | null>(null);
   const [postSettingsReady, setPostSettingsReady] = useState(false);
   const [postSettingsSaving, setPostSettingsSaving] = useState(false);
   const [pendingEngineSuggestion, setPendingEngineSuggestion] = useState<EngineInfo | null>(null);
@@ -870,10 +815,12 @@ function StudioPageInner() {
   });
   const startedReferenceDraftsRef = useRef<Set<number>>(new Set());
   const startedAudienceQuestionsRef = useRef<Set<string>>(new Set());
+  const startedGrowthMovesRef = useRef<Set<string>>(new Set());
   const loadedMonthlyItemsRef = useRef<Set<number>>(new Set());
   const monthlyCampaignContextRef = useRef<MonthlyCampaignStudioContext | null>(null);
   const growthMoveIdRef = useRef<number | null>(null);
   const sessionRevisionRef = useRef(0);
+  const sessionServerRevisionKnownRef = useRef(false);
   const sessionSaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const sessionSaveQueueRef = useRef<Promise<void>>(Promise.resolve());
   const sessionPersistenceOwnerRef = useRef<number | null>(null);
@@ -892,13 +839,14 @@ function StudioPageInner() {
     }
   }, [chatSessionOwner, sessionOwner]);
 
-  // История диалога относится к аккаунту и хранится на сервере. localStorage — аварийная
-  // копия, а старый sessionStorage читаем один раз для бесшовной миграции уже созданных чатов.
+  // История и аварийная локальная копия относятся к проекту и пользователю.
+  // Прежняя история аккаунта сохранена сервером в личном проекте.
   useEffect(() => {
     if (!s.authReady || !sessionOwner || chatSessionOwner === sessionOwner) return;
     let cancelled = false;
     sessionPersistenceOwnerRef.current = sessionOwner;
     sessionRevisionRef.current = 0;
+    sessionServerRevisionKnownRef.current = false;
     if (sessionSaveTimerRef.current) clearTimeout(sessionSaveTimerRef.current);
     // eslint-disable-next-line react-hooks/set-state-in-effect -- начало асинхронного восстановления нового аккаунта
     setChatPersistenceStatus("loading");
@@ -924,9 +872,11 @@ function StudioPageInner() {
 
       let localSession = null;
       try {
-        const key = studioChatStorageKey(sessionOwner);
+        const key = studioChatStorageKey(sessionOwner, selectedProject?.id);
         localSession = parseStudioChatSession(localStorage.getItem(key), sessionOwner)
-          ?? parseStudioChatSession(sessionStorage.getItem(key), sessionOwner);
+          ?? parseStudioChatSession(sessionStorage.getItem(key), sessionOwner)
+          ?? (selectedProject?.personal ? parseStudioChatSession(localStorage.getItem(studioChatStorageKey(sessionOwner)), sessionOwner)
+            ?? parseStudioChatSession(sessionStorage.getItem(studioChatStorageKey(sessionOwner)), sessionOwner) : null);
       } catch {
         // В приватном режиме storage может быть запрещён — сервер остаётся источником правды.
       }
@@ -938,6 +888,7 @@ function StudioPageInner() {
         ? mergeStudioChatSessions(remoteSession, localSession)
         : remoteSession ?? localSession;
       sessionRevisionRef.current = revision;
+      sessionServerRevisionKnownRef.current = !serverUnavailable;
       setMessages(restored?.messages ?? []);
       setDraft(restored?.draft ?? "");
       setWorkspaceMode(requestedWorkspaceMode ?? restored?.workspaceMode ?? "chat");
@@ -949,7 +900,7 @@ function StudioPageInner() {
     return () => {
       cancelled = true;
     };
-  }, [chatSessionOwner, requestedWorkspaceMode, s.authReady, sessionOwner]);
+  }, [chatSessionOwner, fetch, requestedWorkspaceMode, s.authReady, selectedProject?.id, selectedProject?.personal, sessionOwner]);
 
   // Локальную копию обновляем сразу, а PostgreSQL — после короткой паузы и строго
   // последовательно. Так streaming не создаёт запрос на каждый токен, но готовый текст
@@ -965,7 +916,7 @@ function StudioPageInner() {
     const serialized = serializeStudioChatSession(sessionOwner, session);
     latestSessionSnapshotRef.current = { owner: sessionOwner, serialized };
     try {
-      const key = studioChatStorageKey(sessionOwner);
+      const key = studioChatStorageKey(sessionOwner, selectedProject?.id);
       localStorage.setItem(key, serialized);
       sessionStorage.removeItem(key);
     } catch {
@@ -994,6 +945,7 @@ function StudioPageInner() {
             if (response.ok && Number.isSafeInteger(body?.revision)) {
               if (sessionPersistenceOwnerRef.current === owner) {
                 sessionRevisionRef.current = Number(body?.revision);
+                sessionServerRevisionKnownRef.current = true;
                 setChatPersistenceStatus("saved");
               }
               return;
@@ -1016,7 +968,7 @@ function StudioPageInner() {
     return () => {
       if (sessionSaveTimerRef.current) clearTimeout(sessionSaveTimerRef.current);
     };
-  }, [chatSessionOwner, draft, messages, sessionOwner, workspaceMode]);
+  }, [chatSessionOwner, draft, fetch, messages, selectedProject?.id, sessionOwner, workspaceMode]);
 
   // Последняя синхронная страховка на случай Fast Refresh, рестарта dev-сервера или
   // перезагрузки браузера. localStorage записывается до ухода страницы; небольшой снимок
@@ -1026,11 +978,15 @@ function StudioPageInner() {
       const snapshot = latestSessionSnapshotRef.current;
       if (!snapshot || snapshot.owner !== sessionPersistenceOwnerRef.current) return;
       try {
-        localStorage.setItem(studioChatStorageKey(snapshot.owner), snapshot.serialized);
+        localStorage.setItem(studioChatStorageKey(snapshot.owner, selectedProject?.id), snapshot.serialized);
       } catch {
         // Серверное сохранение всё равно могло завершиться до закрытия страницы.
       }
-      if (new Blob([snapshot.serialized]).size > 60_000) return;
+      if (new Blob([snapshot.serialized]).size > 60_000 || !shouldSendStudioSessionPageHide({
+        snapshotOwner: snapshot.owner,
+        persistenceOwner: sessionPersistenceOwnerRef.current,
+        serverRevisionKnown: sessionServerRevisionKnownRef.current,
+      })) return;
       void fetch("/api/studio/session", {
         method: "PUT",
         headers: { "content-type": "application/json" },
@@ -1044,7 +1000,7 @@ function StudioPageInner() {
     };
     window.addEventListener("pagehide", persistOnPageHide);
     return () => window.removeEventListener("pagehide", persistOnPageHide);
-  }, []);
+  }, [fetch, selectedProject?.id]);
 
   useEffect(() => () => {
     if (sessionSaveTimerRef.current) clearTimeout(sessionSaveTimerRef.current);
@@ -1198,7 +1154,7 @@ function StudioPageInner() {
         setPendingLibraryReference(null);
       });
     return () => controller.abort();
-  }, [chatSessionOwner, searchParams, sessionOwner]);
+  }, [chatSessionOwner, getServerDraft, searchParams, sessionOwner]);
 
   // A question URL carries only a project-owned id. The server returns the exact
   // editorial prompt and stable request keys created by the explicit "Создать ответ"
@@ -1250,10 +1206,85 @@ function StudioPageInner() {
         });
       });
     return () => controller.abort();
-  }, [chatSessionOwner, searchParams, sessionOwner, showToast]);
+  }, [chatSessionOwner, fetch, searchParams, sessionOwner, showToast]);
 
   useEffect(() => {
     if (chatSessionOwner !== sessionOwner || sessionOwner == null) return;
+    const opportunityId = Number(searchParams.get("opportunity"));
+    if (
+      searchParams.get("intent") !== "create"
+      || !Number.isSafeInteger(opportunityId)
+      || opportunityId <= 0
+    ) return;
+    const controller = new AbortController();
+    void fetch(`/api/opportunities/${opportunityId}/studio`, { cache: "no-store", signal: controller.signal })
+      .then(async (response) => {
+        const body = await response.json().catch(() => null) as {
+          context?: {
+            opportunityId: number;
+            opportunityRevision: number;
+            growthMoveId: number;
+            channelId: number;
+            prompt: string;
+            requestKey: string;
+            resultClientKey: string;
+          };
+          error?: string;
+        } | null;
+        const context = body?.context;
+        if (
+          !response.ok
+          || !context
+          || context.opportunityId !== opportunityId
+          || !Number.isSafeInteger(context.growthMoveId)
+          || context.growthMoveId <= 0
+          || !Number.isSafeInteger(context.channelId)
+          || context.channelId <= 0
+          || typeof context.prompt !== "string"
+          || !context.prompt.trim()
+          || typeof context.requestKey !== "string"
+          || typeof context.resultClientKey !== "string"
+        ) {
+          const reason = body?.error === "opportunity_stale"
+            ? "Этот инфоповод уже устарел. Выбери свежий в ленте."
+            : body?.error === "opportunity_not_actionable"
+              ? "Для этого инфоповода пока нет безопасного сценария создания поста."
+              : "Вернись в Инфоповоды и повтори создание поста.";
+          throw Object.assign(new Error("opportunity_context_load_failed"), { reason });
+        }
+        growthMoveIdRef.current = context.growthMoveId;
+        setPickedChannelId(context.channelId);
+        setWorkspaceMode("chat");
+        setDraft(context.prompt);
+        setPendingGrowthMoveGeneration({
+          moveId: context.growthMoveId,
+          opportunityId: context.opportunityId,
+          channelId: context.channelId,
+          prompt: context.prompt,
+          requestKey: context.requestKey,
+          resultClientKey: context.resultClientKey,
+        });
+      })
+      .catch((error) => {
+        if ((error as Error)?.name === "AbortError") return;
+        showToast({
+          kind: "danger",
+          title: "Не удалось открыть инфоповод",
+          body: typeof (error as { reason?: unknown })?.reason === "string"
+            ? (error as { reason: string }).reason
+            : "Вернись в Инфоповоды и повтори создание поста.",
+        });
+      });
+    return () => controller.abort();
+  }, [chatSessionOwner, fetch, searchParams, sessionOwner, showToast]);
+
+  // Legacy growth links also carry an explicit create intent. They use the move's
+  // project-scoped prompt and stable identity, while opportunity links above get the
+  // richer source-grounded context from their dedicated endpoint.
+  useEffect(() => {
+    if (chatSessionOwner !== sessionOwner || sessionOwner == null) return;
+    const opportunityId = Number(searchParams.get("opportunity"));
+    if (Number.isSafeInteger(opportunityId) && opportunityId > 0) return;
     const moveId = Number(searchParams.get("growthMove"));
     if (
       searchParams.get("intent") !== "create"
@@ -1265,9 +1296,23 @@ function StudioPageInner() {
       .then(async (response) => {
         const body = await response.json().catch(() => null) as { move?: { prompt?: string } } | null;
         if (!response.ok || typeof body?.move?.prompt !== "string") throw new Error("growth_move_load_failed");
+        const channelFromUrl = Number(searchParams.get("channel"));
+        const destinationChannelId = Number.isSafeInteger(channelFromUrl) && channelFromUrl > 0
+          ? channelFromUrl
+          : channelId;
+        if (!destinationChannelId) throw new Error("growth_move_channel_missing");
+        const identity = studioGrowthMoveGenerationIdentity(moveId);
         growthMoveIdRef.current = moveId;
+        setPickedChannelId(destinationChannelId);
         setWorkspaceMode("chat");
         setDraft(body.move.prompt);
+        setPendingGrowthMoveGeneration({
+          moveId,
+          opportunityId: null,
+          channelId: destinationChannelId,
+          prompt: body.move.prompt,
+          ...identity,
+        });
       })
       .catch((error) => {
         if ((error as Error)?.name === "AbortError") return;
@@ -1278,7 +1323,7 @@ function StudioPageInner() {
         });
       });
     return () => controller.abort();
-  }, [chatSessionOwner, searchParams, sessionOwner, showToast]);
+  }, [channelId, chatSessionOwner, fetch, searchParams, sessionOwner, showToast]);
 
   // A monthly topic URL carries only owned ids. The write prompt is built here
   // from the campaign API and left in the input — the user sends it, or not.
@@ -1334,7 +1379,7 @@ function StudioPageInner() {
         });
       });
     return () => controller.abort();
-  }, [chatSessionOwner, searchParams, sessionOwner, showToast]);
+  }, [chatSessionOwner, fetch, searchParams, sessionOwner, showToast]);
 
   // Технические параметры генерации загружаются из базы; голос канала приходит
   // в серверный контекст из единого поканального профиля Авроры.
@@ -1346,7 +1391,7 @@ function StudioPageInner() {
       })
       .catch(() => {})
       .finally(() => setPostSettingsReady(true));
-  }, []);
+  }, [fetch]);
 
   // Чат должен быть ФИКСИРОВАННОЙ коробки: сообщения ездят внутри, поле ввода не двигается.
   // Раньше стояли min-h/max-h — контейнер рос под содержимое и толкал ввод вниз при каждом
@@ -1441,7 +1486,7 @@ function StudioPageInner() {
       })
       .catch(() => setEngineStatusError("Не удалось проверить модели. Проверь соединение и обнови страницу."))
       .finally(() => setEnginesLoading(false));
-  }, []);
+  }, [fetch]);
 
   const pickEngine = async (e: EngineInfo) => {
     if (!e.supported || e.status !== "ready") return;
@@ -1500,7 +1545,8 @@ function StudioPageInner() {
     const generation = genRef.current.get(messageId);
     const generatedMessage = messages.find((message) => message.id === messageId);
     const generationResultId = options?.generationResultId ?? generatedMessage?.generationResultId;
-    if (!generationResultId) {
+    const generationRequestKey = generation?.requestKey;
+    if (!generationResultId && !generationRequestKey) {
       s.toast({
         kind: "danger",
         title: "Текст ещё нельзя открыть в редакторе",
@@ -1512,6 +1558,23 @@ function StudioPageInner() {
     setCreatingPostId(messageId);
     const request = (async () => {
       try {
+        // The model result may already be durable while the short terminal ACK request
+        // was interrupted. Recover that exact result here; never run the model again and
+        // never mint a manual draft from unacknowledged client text.
+        const confirmedGenerationResultId = generationResultId
+          ?? (await acknowledgeAiTerminal(generationRequestKey!)).generationResultId;
+        if (!generationResultId) {
+          setMessages((current) => current.map((message) => message.id === messageId
+            ? {
+                ...message,
+                generationResultId: confirmedGenerationResultId,
+                reviewable: true,
+                interrupted: false,
+                retryable: false,
+                errorMessage: undefined,
+              }
+            : message));
+        }
         const result = await createServerDraft({
           text,
           media: null,
@@ -1520,13 +1583,39 @@ function StudioPageInner() {
           sourceRef: null,
           channelIds: [destinationChannelId],
           aiValidation: null,
-          generationResultId,
+          generationResultId: confirmedGenerationResultId,
           clientKey,
-          growthMoveId: growthMoveIdRef.current,
+          growthMoveId: generation?.growthMoveId ?? growthMoveIdRef.current,
         });
-        if (growthMoveIdRef.current != null) {
+        if (generation?.opportunityId) {
+          window.history.replaceState(
+            window.history.state,
+            "",
+            `/app/studio?mode=chat&channel=${destinationChannelId}`,
+          );
+          try {
+            const stateResponse = await fetch(`/api/opportunities/${generation.opportunityId}/state`, {
+              method: "POST",
+              headers: { "content-type": "application/json" },
+              body: JSON.stringify({ state: "used" }),
+            });
+            if (!stateResponse.ok) throw new Error("opportunity_state_failed");
+          } catch {
+            s.toast({
+              kind: "info",
+              title: "Пост создан, но инфоповод остался в ленте",
+              body: "Черновик сохранён. Статус инфоповода можно обновить вручную в ленте.",
+            });
+          }
+        } else if (generation?.growthMoveId) {
+          window.history.replaceState(
+            window.history.state,
+            "",
+            `/app/studio?mode=chat&channel=${destinationChannelId}`,
+          );
+        }
+        if ((generation?.growthMoveId ?? growthMoveIdRef.current) != null) {
           growthMoveIdRef.current = null;
-          window.history.replaceState(null, "", "/app/studio?mode=chat");
         }
         if (generation?.audienceQuestionId && generation.audienceQuestionVersion) {
           try {
@@ -1587,9 +1676,11 @@ function StudioPageInner() {
         const composerHref = `/app/composer?draft=${result.draft.id}&from=studio${suggestMedia}`;
         if (generation?.autoOpenComposer && generation.referenceDraftId) {
           // Only now is it safe to consume the one-shot intent: the generated text already
-          // has a durable, idempotent draft. A native navigation creates one deterministic
-          // browser-history entry, so Back returns to Studio without starting again.
+          // has a durable, idempotent draft. A document navigation ends the consumed Library
+          // request context and creates one deterministic history entry, so Back returns to
+          // Studio without keeping the one-shot generation or its in-flight requests alive.
           window.history.replaceState(window.history.state, "", `/app/studio?draft=${generation.referenceDraftId}`);
+          // eslint-disable-next-line @next/next/no-location-assign-relative-destination -- this one-shot handoff intentionally resets the consumed document context
           window.location.assign(composerHref);
           return;
         }
@@ -1597,9 +1688,13 @@ function StudioPageInner() {
       } catch (error) {
         s.toast({
           kind: "danger",
-          title: "Пост не создан",
+          title: error instanceof AiTerminalAckError
+            ? "Текст ещё подтверждается"
+            : "Пост не создан",
           body:
-            error instanceof DraftRequestError && error.kind === "offline"
+            error instanceof AiTerminalAckError
+              ? "Готовый текст остался в чате. Нажми «В пост» ещё раз — модель повторно не запустится."
+              : error instanceof DraftRequestError && error.kind === "offline"
               ? "Нет связи с сервером. Текст остался в чате — повтори, когда соединение восстановится."
               : "Черновик не удалось сохранить. Текст остался в чате, можно безопасно повторить.",
         });
@@ -1614,7 +1709,7 @@ function StudioPageInner() {
 
   // Настоящая генерация Д.8: стрим из /api/ai/generate (за ним переходник → Hermes).
   // Сервер подкладывает прошлые посты как образец стиля и считает дневной лимит.
-  const startStream = async (id: string, gen: Gen) => {
+  const startStream = async (id: string, gen: Gen, options?: { showPreviousText?: boolean }) => {
     const requestKey = gen.requestKey ?? crypto.randomUUID();
     if (!gen.requestKey) {
       gen = { ...gen, requestKey };
@@ -1749,7 +1844,7 @@ function StudioPageInner() {
       const dec = new TextDecoder();
       if (res.headers.get("content-type")?.includes("application/x-ndjson")) {
         let buffer = "";
-        let projection = createAiDraftProjection(previousText);
+        let projection = createAiDraftProjection(options?.showPreviousText === false ? "" : previousText);
         let failed = false;
         let validationBlocked = false;
         let validationRequiresReview = false;
@@ -1768,7 +1863,7 @@ function StudioPageInner() {
           if (event.type === "phase") {
             projection = projectAiDraftEvent(projection, event);
             setMsg({
-              progressLabel: aiDraftPhaseLabel(projection.phase),
+              progressLabel: aiDraftPhaseLabel(projection.phase, gen.cmd),
               postable: false,
               requestId: event.requestId,
             });
@@ -1815,7 +1910,7 @@ function StudioPageInner() {
               : null;
             setPendingEngineSuggestion(suggested);
             setMsg({
-              text: previousText,
+              text: recoverAiDraftText(projection, previousText),
               errorMessage: failureText(event),
               progressLabel: undefined,
               requestId: event.requestId,
@@ -1879,14 +1974,19 @@ function StudioPageInner() {
             const ackRequestId = error instanceof AiTerminalAckError ? error.requestId : null;
             setMsg({
               text: completion.text,
-              errorMessage: "Ответ получен, но подтверждение списания не завершилось. Повтори тот же запрос: сохранённый результат вернётся без нового вызова модели.",
+              errorMessage: AI_TERMINAL_ACK_RECOVERY_RU,
+              statusMessage: gen.autoOpenComposer
+                ? "Текст готов, но автоматически открыть редактор не удалось. Нажми «В пост», чтобы завершить сохранение."
+                : "Текст готов. Нажми «В пост», чтобы завершить сохранение.",
               progressLabel: undefined,
               requestId: ackRequestId ?? terminalRequestId,
               streaming: false,
               postable: false,
-              reviewable: false,
+              // The complete result remains a normal working draft. "В пост"
+              // retries only the terminal ACK before creating the protected server draft.
+              reviewable: true,
               requiresReview: false,
-              interrupted: true,
+              interrupted: false,
               retryable: true,
             });
             clearCancel();
@@ -1946,6 +2046,7 @@ function StudioPageInner() {
         streaming: false,
         progressLabel: undefined,
         postable: Boolean(acc.trim()),
+        reviewable: Boolean(acc.trim()),
       });
       clearCancel();
       void s.refreshAiUsage();
@@ -1990,16 +2091,16 @@ function StudioPageInner() {
       return;
     }
 
-    const history: ConversationTurn[] = opts?.autoOpenComposer ? [] : messages
+    const history: ConversationTurn[] = opts?.history ?? (opts?.autoOpenComposer ? [] : messages
       .filter((message) => message.text.trim() && !message.streaming)
       .map((message) => ({
         role: message.role === "ai" ? ("assistant" as const) : ("user" as const),
         content: message.text,
       }))
-      .slice(-8);
+      .slice(-8));
     const hasAnswer = history.some((turn) => turn.role === "assistant");
     const detected = opts?.cmd ?? pickStudioCommand(text);
-    const cmd = !opts?.cmd && detected === "write" && hasAnswer && looksLikeEditFollowUp(text)
+    const cmd = !opts?.cmd && detected === "write" && hasAnswer && looksLikeStudioEditFollowUp(text)
       ? "rewrite"
       : detected;
     const needsConfirmation = requiresBriefConfirmation({
@@ -2038,6 +2139,8 @@ function StudioPageInner() {
       monthlyCampaignId: opts?.monthlyCampaignId ?? monthly?.campaignId,
       monthlyPlanId: opts?.monthlyPlanId ?? monthly?.planId,
       monthlyItemId: opts?.monthlyItemId ?? monthly?.itemId,
+      growthMoveId: opts?.growthMoveId,
+      opportunityId: opts?.opportunityId,
       suggestMedia: opts?.suggestMedia,
     };
     const aiId = uid("m");
@@ -2050,7 +2153,7 @@ function StudioPageInner() {
         id: aiId,
         role: "ai",
         text: "",
-        progressLabel: "Начинаю писать — текст появится сразу…",
+        progressLabel: aiDraftPhaseLabel(null, cmd),
         streaming: true,
         postable: false,
       },
@@ -2124,6 +2227,39 @@ function StudioPageInner() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [channelId, enginesLoading, pendingAudienceQuestionGeneration, postSettingsReady]);
 
+  useEffect(() => {
+    const pending = pendingGrowthMoveGeneration;
+    const identity = pending?.opportunityId
+      ? `opportunity:${pending.opportunityId}`
+      : pending
+        ? `move:${pending.moveId}`
+        : "";
+    if (
+      !pending
+      || !postSettingsReady
+      || enginesLoading
+      || aiUsage?.exhausted
+      || streamRef.current.current
+      || startedGrowthMovesRef.current.has(identity)
+    ) return;
+    startedGrowthMovesRef.current.add(identity);
+    setPendingGrowthMoveGeneration(null);
+    ask(pending.prompt, {
+      cmd: "write",
+      input: pending.prompt,
+      history: [],
+      skipBrief: true,
+      requestKey: pending.requestKey,
+      autoOpenComposer: true,
+      resultClientKey: pending.resultClientKey,
+      channelId: pending.channelId,
+      growthMoveId: pending.moveId,
+      opportunityId: pending.opportunityId ?? undefined,
+    });
+    // `ask` intentionally consumes the trusted context captured by this render.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [aiUsage?.exhausted, enginesLoading, pendingGrowthMoveGeneration, postSettingsReady]);
+
   const stop = () => {
     const stopped = abortStudioStream(streamRef.current);
     if (!stopped) return;
@@ -2147,7 +2283,8 @@ function StudioPageInner() {
         m.id === id
           ? {
               ...m,
-              progressLabel: "Готовлю новый вариант — предыдущий текст остаётся на месте…",
+              text: "",
+              progressLabel: "Готовлю новый вариант…",
               streaming: true,
               postable: false,
               reviewable: false,
@@ -2167,7 +2304,9 @@ function StudioPageInner() {
           : m,
       ),
     );
-    void startStream(id, next);
+    // A previous Russian (or otherwise stale) variant must not remain visible while
+    // a newly configured English variant is being written.
+    void startStream(id, next, { showPreviousText: false });
   };
 
   const retryGeneration = (id: string) => {
@@ -2181,7 +2320,7 @@ function StudioPageInner() {
     setMessages((prev) => prev.map((message) => message.id === id ? {
       ...message,
       streaming: true,
-      progressLabel: "Повторяю тот же запрос — сохранённый текст остаётся на месте…",
+      progressLabel: "Пробую ещё раз…",
       postable: false,
       reviewable: false,
       requiresReview: false,
@@ -2200,10 +2339,11 @@ function StudioPageInner() {
     void startStream(id, gen);
   };
 
-  const improve = () => {
-    ask("Улучшить последний текст", {
+  const improve = (text: string) => {
+    ask("Улучшить выбранный текст", {
       cmd: "rewrite",
-      input: "Отредактируй последний ответ: сделай текст яснее, сильнее и естественнее. Сохрани смысл, подтверждённые факты и требования выбранной площадки.",
+      input: primaryPublication(text),
+      history: [],
       skipBrief: true,
       postSettings: normalizePostSettings({
         ...postSettings,
@@ -2239,16 +2379,8 @@ function StudioPageInner() {
   const onQuick = (q: Quick) => {
     if (busy) return;
 
-    if (q.mediaKind) {
-      setMediaKind(q.mediaKind);
-      setWorkspaceMode("studio");
-      return;
-    }
-
     if (q.id === "rewrite-last") {
-      const last = [...messages]
-        .reverse()
-        .find((m) => m.role === "ai" && m.postable && m.text.trim().length > 0);
+      const last = lastRewritableStudioMessage(messages);
 
       if (!last) {
         s.toast({
@@ -2258,7 +2390,11 @@ function StudioPageInner() {
         });
         return;
       }
-      ask("Перепиши последнее", { cmd: "rewrite", input: last.text });
+      ask("Перепиши последнее", {
+        cmd: "rewrite",
+        input: `Перепиши текст ниже: сохрани смысл и факты, сделай формулировки яснее и естественнее.\n\n${last.text}`,
+        skipBrief: true,
+      });
       return;
     }
 
@@ -2275,7 +2411,7 @@ function StudioPageInner() {
   const useGeneratedMedia = (generation: MediaGeneration) => {
     if (!generation.assetId || !generation.assetUrl) return;
     sessionStorage.setItem(
-      "aurora:generated-media",
+      generatedMediaStorageKey,
       JSON.stringify({
         kind: generation.kind,
         label: generation.kind === "video" ? `Рилс ${generation.seconds ?? 6} сек.` : `Изображение ${generation.aspectRatio}`,
@@ -2304,7 +2440,7 @@ function StudioPageInner() {
     .reverse()
     .find((message) => message.role === "ai");
   const generationAnnouncement = latestAiStatus?.streaming
-    ? latestAiStatus.progressLabel ?? "Генерация продолжается"
+    ? latestAiStatus.progressLabel ?? "Думаю…"
     : latestAiStatus?.statusMessage ?? (latestAiStatus?.reviewable ? "Черновик готов." : "");
   const originalityLimit = postSettings.originalityDepth === "all" ? 200 : Number(postSettings.originalityDepth);
   const similarPosts = pendingBrief && postSettings.showSimilarPosts
@@ -2367,8 +2503,8 @@ function StudioPageInner() {
                       onCopy={() => void copy(message.text)}
                       onRegenerate={() => regenerate(message.id)}
                       onRetry={() => retryGeneration(message.id)}
-                      onImprove={improve}
-                      onShorten={() => ask("Сделай короче")}
+                      onImprove={() => improve(message.text)}
+                      onShorten={() => ask("Сократить выбранный текст", { cmd: "shorten", input: primaryPublication(message.text), history: [], skipBrief: true })}
                       creatingPost={creatingPostId === message.id}
                     />
                   ))}
@@ -2531,7 +2667,7 @@ function StudioPageInner() {
 
           <div
             id="studio-workspace"
-            aria-label="Режим Картинки и видео"
+            aria-label="Режим Изображения"
             ref={attachDesignShell}
             className={cn(
               "mx-auto w-full max-w-[1180px]",
@@ -2539,8 +2675,6 @@ function StudioPageInner() {
             )}
           >
             <MediaGenerator
-              key={mediaKind}
-              initialKind={mediaKind}
               channelId={channelId}
               sourceText={primaryPublication([...messages].reverse().find((message) => message.role === "ai" && message.postable)?.text ?? "")}
               onUse={useGeneratedMedia}

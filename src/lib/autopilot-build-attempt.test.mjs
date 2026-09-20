@@ -194,6 +194,53 @@ describe("Autopilot public serialization", () => {
     expect(attempt).toMatchObject({ readyCount: 4, failedCount: 3, publicationTargetCount: 5 });
   });
 
+  it("keeps the exact automatic repair scope and exposes a no-progress pause", () => {
+    const readyItems = Array.from({ length: 4 }, (_, i) => ({
+      i,
+      topic: `Готовая тема ${i}`,
+      draft: `Готовый пост ${i}.`,
+      scheduledAt: `2026-08-${22 + i}T10:00:00.000Z`,
+      status: "pending",
+      aiReady: true,
+      quality: readyQuality,
+    }));
+    const failedItems = [4, 5, 6].map((i) => ({
+      i,
+      topic: `Проблемная тема ${i}`,
+      draft: "",
+      status: "pending",
+      aiReady: false,
+      buildState: "failed",
+    }));
+
+    const attempt = autopilotBuildAttemptDto({
+      id: 95,
+      status: "partial",
+      expected_post_count: 5,
+      publication_target_count: 5,
+      candidate_count: 7,
+      build_report: {
+        selectedCount: 4,
+        selectionDeficit: 1,
+        recoveryState: "paused_no_progress",
+        autoRecovery: {
+          repairIndexes: [6],
+          noProgressAttempts: 3,
+          maxNoProgressAttempts: 3,
+        },
+      },
+      items: [...readyItems, ...failedItems],
+      created_at: "2026-08-21T10:00:00.000Z",
+    }, 7);
+
+    expect(attempt).toMatchObject({
+      recoveryState: "paused_no_progress",
+      noProgressAttempts: 3,
+      maxNoProgressAttempts: 3,
+      retryableItemIndexes: [6],
+    });
+  });
+
   it("uses the selected publication count instead of reporting a ready reserve as 7 of 7", () => {
     const readyItems = Array.from({ length: 7 }, (_, i) => ({
       i,

@@ -12,17 +12,16 @@ describe("Autopilot ready-plan generation contract", () => {
     expect(source).toContain("assessAutopilotDraft(");
   });
 
-  // Confirm-план принимает безопасные тексты на согласовании, но не получает право публикации.
-  it("delivers reader-ready and human-review posts without enabling blind publication", () => {
+  // План завершается только после автоматической редакторской и фактической проверки.
+  it("delivers only reader-ready posts without enabling blind publication", () => {
     expect(source).not.toContain("AUTOPILOT_QUALITY_REWRITE_ATTEMPTS");
     expect(source).toContain("boundedAutopilotRewriteAttempts(itemQuality.retryLimit)");
     expect(source).toContain("boundedAutopilotRewriteAttempts(quality.retryLimit) - Number(item._rewriteAttempts || 0)");
     expect(source.match(/autopilotDraftsDeliverable\(publicationTargetCount, topics, items\)/g)?.length).toBe(1);
     expect(source).toContain("status = 'partial'");
-    expect(source).toContain("isAutopilotHumanReviewItem,");
-    expect(source.match(/isAutopilotHumanReviewItem\(item\)/g)?.length).toBeGreaterThanOrEqual(2);
+    expect(source).not.toContain("isAutopilotHumanReviewItem");
     expect(source).toMatch(
-      /const variedPairs = items[\s\S]*?isAutopilotReaderReadyItem\(item\) \|\| isAutopilotHumanReviewItem\(item\)/,
+      /const variedPairs = items[\s\S]*?isAutopilotReaderReadyItem\(item\)/,
     );
     expect(source).not.toContain("full\n    ? autopilotBuildComplete(N, topics, items)");
     expect(source).not.toMatch(/full\s*\n?\s*\?\s*autopilotBuildComplete\(N, topics, items\)/);
@@ -65,11 +64,16 @@ describe("Autopilot ready-plan generation contract", () => {
     expect(source.match(/autopilotProviderWaitingItem\(\{/g)?.length).toBeGreaterThanOrEqual(2);
     expect(source).toContain('buildState === "waiting_provider"');
     expect(source).toContain('recoveryState: "waiting_provider"');
+    expect(source.match(/expectedPlan\?\.build_report && typeof expectedPlan\.build_report/g)?.length).toBe(2);
     expect(source).toContain("isRetryableAiCompletionError(error)");
     expect(source).toContain("{ throwOnUnavailable: true, acceptLengthLimitedOutput: true }");
     expect(source).toContain("coalesce(build_report, '{}'::jsonb) || $4::jsonb");
-    expect(source).toContain("process.env.AUTOPILOT_SEMANTIC_ENGINE || DEFAULT_AUTOPILOT_ENGINE");
-    expect(source).toContain('generationEngine === "navy-minimax-m3" ? 2 : 3');
+    expect(source).toContain("engine: process.env.AI_SEMANTIC_ENGINE");
+    expect(source).not.toContain("process.env.AI_SEMANTIC_ENGINE || DEFAULT_AUTOPILOT_ENGINE");
+    expect(source).toContain("env: process.env");
+    expect(source).not.toContain("process.env.AUTOPILOT_SEMANTIC_TIMEOUT_MS");
+    expect(source).not.toContain('fallbackEngines: ["navy-deepseek-flash", "navy-gpt-5-4"]');
+    expect(source).toContain('generationEngine === "navy-deepseek-pro" ? 2 : 3');
   });
 
   it("keeps the settings mutex while requiring a separate human approval", () => {
@@ -105,12 +109,13 @@ describe("Autopilot ready-plan generation contract", () => {
     expect(source.match(/prepareAutopilotDraftForm\(/g)?.length).toBe(6);
   });
 
-  it("держит hard-block внутри сборки, но считает human-review доставляемым", () => {
+  it("держит незавершённую редактуру и hard-block внутри сборки", () => {
     expect(source).toContain('qualityResult.publicationDisposition === "blocked"');
     expect(source).toContain("reviewRequired: needsHumanReview || needsHumanEdit");
     expect(source).toMatch(/needsHumanEdit\s*\?\s*"quality_review"/);
     expect(source).toContain("const deliverablePairs = items");
-    expect(source).toContain("isAutopilotReaderReadyItem(item) || isAutopilotHumanReviewItem(item)");
+    expect(source).not.toContain("isAutopilotReaderReadyItem(item) || isAutopilotHumanReviewItem(item)");
+    expect(source).toContain("selectAutopilotRepairs(durableCandidateItems");
   });
 
   it("не показывает человеку внутренний числовой порог как результат плана", () => {
@@ -142,7 +147,7 @@ describe("Autopilot ready-plan generation contract", () => {
     expect(source).toContain('? "autopilot-continue"');
     expect(source).toContain("ai_call_count = $5");
     expect(source).toContain("clearWorkerAiCallCount(usage.reservationId)");
-    expect(source).toContain("const checkpointDraft = targetedRepairIndexes?.has(i)");
+    expect(source).toContain("const checkpointDraft = checkpointItems[i]?.aiReady === true");
     expect(source).toContain("let candidateRaw = checkpointDraft || await askAI(");
   });
 
@@ -174,9 +179,12 @@ describe("Autopilot ready-plan generation contract", () => {
   });
 
   it("turns an unfinished quality pass into a durable automatic continuation", () => {
-    expect(source).toContain("autopilotAutoRecoveryReport(report");
+    expect(source).toContain("expectedPlan?.build_report && typeof expectedPlan.build_report");
+    expect(source).toContain("...report,");
+    expect(source).toContain("trackProgress: true");
     expect(source).toContain("dispatchAutopilotContinuation({");
     expect(source).toContain("claimAutopilotContinuationJob(job)");
+    expect(source).toContain("in ('auto_repair_running', 'waiting_provider')");
     expect(source).toContain("status = 'partial'");
     expect(source).toContain("last_repair_job_id = $9::uuid");
   });

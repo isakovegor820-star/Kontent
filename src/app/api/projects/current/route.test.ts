@@ -1,5 +1,5 @@
+import { ProjectRequest } from "@/test/project-request";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { NextRequest } from "next/server";
 
 const mocks = vi.hoisted(() => ({
   getSessionUser: vi.fn(),
@@ -37,7 +37,7 @@ import { PATCH, PUT } from "./route";
 import { parseClientProject } from "@/lib/project-client";
 
 function request(body: Record<string, unknown>) {
-  return new NextRequest("http://localhost/api/projects/current", {
+  return new ProjectRequest(12, "http://localhost/api/projects/current", {
     method: "PATCH",
     headers: { "content-type": "application/json", origin: "http://localhost" },
     body: JSON.stringify(body),

@@ -662,44 +662,27 @@ type ErrorRow = {
 };
 
 async function loadErrors(db: Queryable, filters: AdminAuroraAnalyticsFilters) {
-  const product = db.query<ErrorRow>(
-    `/* admin_aurora_errors */
-     ${PRODUCT_SCOPE_SQL}
-     select section_id, feature_id, stage,
-            coalesce(safe_context->>'source', 'ui') as source,
-            error_code, period, count(*) as count,
-            count(distinct user_id) as affected_users,
-            count(distinct project_id) as affected_projects,
-            min(occurred_at) as first_seen_at,
-            max(occurred_at) as last_seen_at,
-            (array_agg(release_key order by occurred_at desc) filter (where release_key is not null))[1] as release_key,
-            (array_agg(request_id order by occurred_at desc) filter (where request_id is not null))[1] as request_id
-       from scoped_events
-      where outcome = 'failure' and error_code is not null
-      group by section_id, feature_id, stage, coalesce(safe_context->>'source', 'ui'), error_code, period
-      order by count(*) desc
-      limit 300`,
-    queryParams(filters, null),
-  );
-  if (!domainFiltersApplied(filters)) return product;
-  const domain = db.query<ErrorRow>(
-    `/* admin_aurora_domain_errors */
-     with domain_errors as (
+  // Product telemetry and durable outcomes describe the same operations. Combine
+  // raw rows before aggregation, preferring correlated telemetry for release data.
+  const includeDomain = domainFiltersApplied(filters);
+  const domainSql = includeDomain ? `
+     /* admin_aurora_domain_errors */
+     , domain_errors as (
        select 'studio'::text as section_id, 'generation'::text as feature_id,
               'failed'::text as stage, 'api'::text as source,
               operation.error_code::text, channel.project_id, operation.user_id,
-              operation.created_at as occurred_at, operation.server_request_id::text as request_id
+              operation.updated_at as occurred_at, operation.server_request_id::text as request_id
          from generation_operations operation
          join channels channel on channel.id = operation.channel_id
         where operation.error_code ~ '^[a-z0-9_]{1,100}$'
        union all
        select 'studio', 'generation', 'failed', 'worker', generation.error_code,
-              generation.project_id, generation.user_id, generation.created_at, generation.request_id::text
+              generation.project_id, generation.user_id, coalesce(generation.completed_at, generation.updated_at), generation.request_id::text
          from media_generations generation
         where generation.status = 'failed' and generation.error_code ~ '^[a-z0-9_]{1,100}$'
        union all
        select 'siteAnalysis', 'analysis', 'failed', 'worker', job.error_code,
-              job.project_id, job.user_id, job.created_at, job.request_id
+              job.project_id, job.user_id, coalesce(job.completed_at, job.updated_at), job.request_id
          from site_analysis_jobs job
         where job.project_id is not null and job.status = 'failed' and job.error_code ~ '^[a-z0-9_]{1,100}$'
        union all
@@ -729,7 +712,7 @@ async function loadErrors(db: Queryable, filters: AdminAuroraAnalyticsFilters) {
               channel.project_id, event.actor_user_id, event.created_at, event.request_id
          from channel_events event join channels channel on channel.id = event.channel_id
         where event.actor_user_id is not null and event.safe_error_code ~ '^[a-z0-9_]{1,100}$'
-     ), periods as (
+     ), domain_periods as (
        select event.*,
               case when event.occurred_at >= $1::timestamptz then 'current' else 'previous' end as period,
               case when event.occurred_at >= $1::timestamptz then $1::timestamptz else $3::timestamptz end as period_start,
@@ -738,8 +721,8 @@ async function loadErrors(db: Queryable, filters: AdminAuroraAnalyticsFilters) {
         where event.project_id is not null and event.user_id is not null
           and event.occurred_at >= $3::timestamptz and event.occurred_at < $2::timestamptz
           and ($5::bigint is null or event.project_id = $5::bigint)
-     ), scoped as (
-       select event.* from periods event join users app_user on app_user.id = event.user_id
+     ), scoped_domain_errors as (
+       select event.* from domain_periods event join users app_user on app_user.id = event.user_id
         where ($6::text = 'all' or exists (
           select 1 from project_members member
            where member.project_id = event.project_id and member.user_id = event.user_id
@@ -749,20 +732,43 @@ async function loadErrors(db: Queryable, filters: AdminAuroraAnalyticsFilters) {
           and ($7::text = 'all'
             or ($7::text = 'new' and app_user.created_at >= event.period_start and app_user.created_at < event.period_end)
             or ($7::text = 'returning' and app_user.created_at < event.period_start))
+     )` : "";
+  return db.query<ErrorRow>(
+    `/* admin_aurora_errors */
+     ${PRODUCT_SCOPE_SQL},
+     observed_errors as (
+       select section_id, feature_id, stage, coalesce(safe_context->>'source', 'ui') as source,
+              error_code, project_id, user_id, occurred_at, request_id::text, release_key, period
+         from scoped_events where outcome = 'failure' and error_code is not null
+     )
+     ${domainSql}, combined_errors as (
+       select * from observed_errors
+       ${includeDomain ? `union all
+       select event.section_id, event.feature_id, event.stage, event.source,
+              event.error_code, event.project_id, event.user_id, event.occurred_at,
+              event.request_id, null::text as release_key, event.period
+         from scoped_domain_errors event
+        where event.request_id is null or not exists (
+          select 1 from observed_errors observed
+           where observed.request_id = event.request_id
+             and observed.section_id = event.section_id
+             and observed.feature_id = event.feature_id
+             and observed.error_code = event.error_code
+             and observed.user_id = event.user_id
+             and observed.project_id = event.project_id
+        )` : ""}
      )
      select section_id, feature_id, stage, source, error_code, period,
             count(*) as count, count(distinct user_id) as affected_users,
             count(distinct project_id) as affected_projects,
             min(occurred_at) as first_seen_at, max(occurred_at) as last_seen_at,
-            null::text as release_key,
+            (array_agg(release_key order by occurred_at desc) filter (where release_key is not null))[1] as release_key,
             (array_agg(request_id order by occurred_at desc) filter (where request_id is not null))[1] as request_id
-       from scoped
+       from combined_errors
       group by section_id, feature_id, stage, source, error_code, period
       order by count(*) desc limit 300`,
-    [filters.from, filters.to, filters.previousFrom, filters.previousTo, filters.projectId, filters.segment, filters.tenure],
+    queryParams(filters, null),
   );
-  const [productResult, domainResult] = await Promise.all([product, domain]);
-  return { ...productResult, rows: [...productResult.rows, ...domainResult.rows] };
 }
 
 type StuckStageRow = {
@@ -1042,11 +1048,11 @@ function errorSource(value: string | null): AuroraAnalyticsErrorGroup["source"] 
 
 function dependencyFor(sectionId: AuroraSectionId, source: string | null, code: string): string | null {
   const dependencies: readonly string[] = AURORA_SECTION_BY_ID[sectionId].dependencies;
+  if (code.includes("ai_") || code.includes("provider")) return dependencies.includes("aurora_ai") ? "aurora_ai" : null;
   if (source === "worker") {
     return ["publication_worker", "site_analysis", "media_generation", "telegram_worker"]
       .find((component) => dependencies.includes(component)) ?? "redis";
   }
-  if (code.includes("ai_") || code.includes("provider")) return dependencies.includes("aurora_ai") ? "aurora_ai" : null;
   if (code.includes("database") || code.includes("postgres")) return "postgresql";
   if (code.includes("queue") || code.includes("redis")) return "redis";
   return dependencies.includes("web_api") ? "web_api" : null;

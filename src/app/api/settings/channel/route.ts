@@ -1,3 +1,4 @@
+import { withProjectRoute } from "@/lib/project-route";
 // Единое сохранение поканального профиля Авроры.
 // Бриф, редакционный стандарт и режим автопилота меняются одной транзакцией:
 // пользователь либо получает целиком новую конфигурацию, либо остаётся на прежней.
@@ -12,6 +13,8 @@ import { ensureSettings, loadBrief, resolveChannel } from "@/lib/autopilot";
 import { hasTrustedMutationOrigin } from "@/lib/request-origin";
 import type { AutopilotSettings } from "@/lib/autopilot";
 import { DEFAULT_AUTOPILOT_ENGINE } from "@/lib/autopilot-config.mjs";
+import { getStatsQueue } from "@/lib/queue";
+import { competitorDiscoveryJobId } from "@/lib/competitor-topic-fit.mjs";
 import {
   ProjectAccessError,
   requireProjectPermission,
@@ -30,7 +33,7 @@ type SettingsBody = {
   };
 };
 
-export async function GET(req: NextRequest) {
+async function handleGET(req: NextRequest) {
   const user = await getSessionUser(req);
   if (!user) return NextResponse.json({ error: "unauthorized" }, { status: 401 });
 
@@ -60,7 +63,7 @@ export async function GET(req: NextRequest) {
   }
 }
 
-export async function POST(req: NextRequest) {
+async function handlePOST(req: NextRequest) {
   if (!hasTrustedMutationOrigin(req)) {
     return NextResponse.json({ ok: false, error: "forbidden_origin" }, { status: 403 });
   }
@@ -192,7 +195,27 @@ export async function POST(req: NextRequest) {
                   planning_months, planning_weeks, news_sources, quick_settings`,
       [projectId, channelId, enabled, mode, postFrequency],
     );
+    await client.query(
+      `delete from competitor_suggestions where channel_id = $1 and status = 'new'`,
+      [channelId],
+    );
     await client.query("commit");
+    try {
+      await getStatsQueue().add(
+        "discover",
+        { userId: user.id, channelId },
+        {
+          jobId: competitorDiscoveryJobId({ userId: user.id, channelId, topic: brief.niche }),
+          removeOnComplete: true,
+          attempts: 2,
+          backoff: { type: "fixed", delay: 15_000 },
+        },
+      );
+    } catch (queueError) {
+      // Транзакция уже подтверждена: ошибка очереди не должна превращать успешное
+      // сохранение настроек в ложный 503. Поиск можно повторить из раздела конкурентов.
+      console.error("[/api/settings/channel] discovery enqueue", queueError);
+    }
     return NextResponse.json({ ok: true, channelId, brief, settings: updated.rows[0] });
   } catch (error) {
     await client.query("rollback").catch(() => undefined);
@@ -204,3 +227,6 @@ export async function POST(req: NextRequest) {
     client.release();
   }
 }
+
+export const GET = withProjectRoute(handleGET);
+export const POST = withProjectRoute(handlePOST);

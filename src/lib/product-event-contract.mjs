@@ -140,7 +140,13 @@ export const AURORA_EVENT_OUTCOMES = Object.freeze([
 
 export const AURORA_PRODUCT_FEATURES = Object.freeze({
   today: Object.freeze({
-    work_item: Object.freeze(["loaded", "task_selected", "task_completed", "task_deferred"]),
+    work_item: Object.freeze([
+      "loaded",
+      "task_selected",
+      "task_completed",
+      "task_deferred",
+      "task_dismissed",
+    ]),
   }),
   calendar: Object.freeze({
     publication: Object.freeze(["loaded", "created", "edited", "rescheduled", "scheduled"]),

@@ -1,4 +1,5 @@
-import { NextRequest, NextResponse } from "next/server";
+import { ProjectRequest } from "@/test/project-request";
+import { NextResponse } from "next/server";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
@@ -22,7 +23,7 @@ vi.mock("@/lib/tracking-service", async (importOriginal) => ({
 import { POST } from "./route";
 
 function request(body: unknown, headers: Record<string, string> = {}) {
-  return new NextRequest("http://localhost/api/tracking/settings/verify", {
+  return new ProjectRequest(99, "http://localhost/api/tracking/settings/verify", {
     method: "POST",
     headers: { origin: "http://localhost", "content-type": "application/json", ...headers },
     body: (typeof body === "string" || body instanceof Uint8Array ? body : JSON.stringify(body)) as BodyInit,
@@ -53,6 +54,13 @@ describe("POST /api/tracking/settings/verify", () => {
     }));
   });
 
+  it("passes script verification with a server-owned application origin", async () => {
+    const response = await POST(request({ expectedVersion: 2, verificationMethod: "script" }));
+    expect(response.status).toBe(200);
+    expect(mocks.verifyProjectTrackingSite).toHaveBeenCalledWith(expect.objectContaining({ verificationMethod: "script", appOrigin: "http://localhost" }));
+    expect((await POST(request({ expectedVersion: 2, verificationMethod: "script", appOrigin: "https://attacker.example" }))).status).toBe(400);
+  });
+
   it("rejects unknown fields, unsupported media and a lying oversized stream", async () => {
     expect((await POST(request({ expectedVersion: 2, projectId: 99 }))).status).toBe(400);
     expect((await POST(request("{}", { "content-type": "text/plain" }))).status).toBe(415);
@@ -69,7 +77,7 @@ describe("POST /api/tracking/settings/verify", () => {
     const stream = new ReadableStream<Uint8Array>({
       pull() { throw new Error("body must not be read"); },
     });
-    const response = await POST(new NextRequest("http://localhost/api/tracking/settings/verify", {
+    const response = await POST(new ProjectRequest(99, "http://localhost/api/tracking/settings/verify", {
       method: "POST",
       headers: { origin: "http://localhost", "content-type": "application/json" },
       body: stream,

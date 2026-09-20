@@ -1,4 +1,5 @@
 import type { ReactNode } from "react";
+import "@fontsource-variable/onest/wght.css";
 import {
   ArrowRight,
   BookOpenCheck,
@@ -6,15 +7,14 @@ import {
   Check,
   ClipboardCheck,
   Clock3,
-  FileCheck2,
-  History,
-  Scale,
   Send,
   Settings2,
   ShieldCheck,
   UsersRound,
 } from "lucide-react";
 import { Logo } from "@/components/brand";
+import { AccessStatusCards } from "./access-status-cards";
+import { EditorCapabilityCards } from "./editor-capability-cards";
 import { HeroProductScene } from "./hero-product-scene";
 import { LandingMobileNav } from "./landing-mobile-nav";
 import styles from "./reference-landing.module.css";
@@ -61,79 +61,48 @@ const features: Feature[] = [
 const steps = [
   {
     icon: <Settings2 aria-hidden="true" />,
+    tag: "Контекст",
     title: "Настройте проект",
     text: "Добавьте данные о практике, аудитории и правилах юридического контента.",
+    result: "Контекст собран",
   },
   {
     icon: <CalendarDays aria-hidden="true" />,
+    tag: "План",
     title: "Соберите контент-план",
     text: "Разложите темы по датам и подготовьте отдельные редактируемые материалы.",
+    result: "План готов",
   },
   {
     icon: <BookOpenCheck aria-hidden="true" />,
+    tag: "Проверка",
     title: "Привяжите доказательства",
     text: "Укажите источник, актуальность и допустимую формулировку для значимых фактов.",
+    result: "Источники связаны",
   },
   {
     icon: <Send aria-hidden="true" />,
+    tag: "Публикация",
     title: "Согласуйте и опубликуйте",
     text: "Подтвердите версию и отправьте её в Telegram. VK доступен после настройки интеграции.",
+    result: "Версия согласована",
   },
 ];
 
-const editorCapabilities: Feature[] = [
-  {
-    icon: <FileCheck2 aria-hidden="true" />,
-    title: "Карточка доказательства",
-    text: "Тип, содержание, источник и дата актуальности хранятся вместе с настройками материала.",
-  },
-  {
-    icon: <Scale aria-hidden="true" />,
-    title: "Юридические источники",
-    text: "Публичные ленты и разрешённые подключения отделены от закрытых и неподтверждённых данных.",
-  },
-  {
-    icon: <History aria-hidden="true" />,
-    title: "История согласования",
-    text: "Комментарии и решения относятся к конкретной версии и не теряются после правок.",
-  },
-];
-
-const accessCards = [
-  {
-    status: "Доступно",
-    title: "Редактор и контент-план",
-    note: "Основной рабочий контур для подготовки юридического контента.",
-    features: ["Черновики и календарь", "Источники и доказательства", "Настройки тона, включая необязательный мат"],
-  },
-  {
-    status: "Работает",
-    title: "Telegram",
-    note: "Подключение канала, расписание и серверная публикация.",
-    features: ["Публикация по расписанию", "Статусы и история операций", "Повторная попытка без дублей"],
-  },
-  {
-    status: "После настройки",
-    title: "ВКонтакте",
-    note: "Доступность зависит от настроенного приложения и тестового сообщества.",
-    features: ["Подключение сообщества", "Проверка разрешений", "Статус готовности внутри проекта"],
-  },
-];
+const processRoutePath =
+  "M 150 74 C 250 22 350 126 450 74 S 650 22 750 74 S 950 126 1050 74";
 
 function SectionHeading({
   id,
-  eyebrow,
   title,
   description,
 }: {
   id: string;
-  eyebrow: string;
   title: string;
   description?: string;
 }) {
   return (
     <div className={styles.sectionHeading}>
-      <p className={styles.eyebrow}>{eyebrow}</p>
       <h2 id={id}>{title}</h2>
       {description ? <p>{description}</p> : null}
     </div>
@@ -177,7 +146,6 @@ export function ReferenceLanding() {
           <div className={styles.heroGlow} aria-hidden="true" />
           <div className={styles.heroInner}>
             <div className={styles.heroCopy}>
-              <p className={styles.eyebrow}>SMM-платформа для юридического контента</p>
               <h1 id="hero-title">Юридический контент с проверкой рисков и доказательств</h1>
               <p className={styles.heroLead}>
                 Планируйте публикации, фиксируйте источники, согласовывайте формулировки
@@ -217,7 +185,6 @@ export function ReferenceLanding() {
           <div className={styles.container}>
             <SectionHeading
               id="features-title"
-              eyebrow="Возможности"
               title="Рабочий контур для юридической редакции"
               description="От темы и доказательств до согласованной версии и контролируемой публикации."
             />
@@ -239,29 +206,78 @@ export function ReferenceLanding() {
           <div className={styles.container}>
             <SectionHeading
               id="how-title"
-              eyebrow="Как это работает"
               title="От идеи до согласованной публикации"
               description="Четыре шага сохраняют смысл, источники и ответственность за финальную версию."
             />
-            <ol className={styles.steps}>
-              {steps.map((step, index) => (
-                <li className={styles.step} key={step.title}>
-                  <div className={styles.stepTop}>
-                    <span className={styles.stepIcon}>{step.icon}</span>
-                    <span className={styles.stepNumber}>0{index + 1}</span>
-                  </div>
-                  <h3>{step.title}</h3>
-                  <p>{step.text}</p>
-                </li>
-              ))}
-            </ol>
+            <div className={styles.processBoard}>
+              <div className={styles.processAtmosphere} aria-hidden="true">
+                <span />
+                <span />
+              </div>
+              <svg
+                className={styles.processRoute}
+                viewBox="0 0 1200 150"
+                preserveAspectRatio="none"
+                aria-hidden="true"
+                focusable="false"
+              >
+                <defs>
+                  <linearGradient id="process-route-gradient" x1="0" y1="0" x2="1" y2="0">
+                    <stop offset="0" stopColor="#7aa2ff" stopOpacity="0" />
+                    <stop offset="0.16" stopColor="#2563ff" stopOpacity="0.72" />
+                    <stop offset="0.52" stopColor="#715cff" stopOpacity="0.72" />
+                    <stop offset="0.82" stopColor="#08a3c7" stopOpacity="0.72" />
+                    <stop offset="1" stopColor="#20a779" stopOpacity="0" />
+                  </linearGradient>
+                  <filter id="process-signal-glow" x="-200%" y="-200%" width="400%" height="400%">
+                    <feGaussianBlur stdDeviation="7" result="blur" />
+                    <feMerge>
+                      <feMergeNode in="blur" />
+                      <feMergeNode in="SourceGraphic" />
+                    </feMerge>
+                  </filter>
+                </defs>
+                <path className={styles.processRouteBase} d={processRoutePath} pathLength="1" />
+                <path className={styles.processRouteFlow} d={processRoutePath} pathLength="1" />
+                <g className={styles.processSignal} filter="url(#process-signal-glow)">
+                  <circle className={styles.processSignalHalo} r="13" />
+                  <circle className={styles.processSignalCore} r="4.5" />
+                  <animateMotion dur="7.2s" repeatCount="indefinite" path={processRoutePath} />
+                </g>
+                <g className={styles.processSignal} filter="url(#process-signal-glow)">
+                  <circle className={styles.processSignalHalo} r="10" />
+                  <circle className={styles.processSignalCore} r="3.5" />
+                  <animateMotion dur="7.2s" begin="-3.6s" repeatCount="indefinite" path={processRoutePath} />
+                </g>
+              </svg>
+              <ol className={styles.steps}>
+                {steps.map((step, index) => (
+                  <li className={styles.step} key={step.title}>
+                    <div className={styles.stepNode} aria-hidden="true">
+                      <span className={styles.stepIcon}>{step.icon}</span>
+                    </div>
+                    <article className={styles.stepCard}>
+                      <div className={styles.stepMeta}>
+                        <span className={styles.stepNumber}>Этап 0{index + 1}</span>
+                        <span className={styles.stepTag}>{step.tag}</span>
+                      </div>
+                      <h3>{step.title}</h3>
+                      <p>{step.text}</p>
+                      <span className={styles.stepResult}>
+                        <Check aria-hidden="true" />
+                        {step.result}
+                      </span>
+                    </article>
+                  </li>
+                ))}
+              </ol>
+            </div>
           </div>
         </section>
 
         <section className={styles.analyticsSection} id="product" aria-labelledby="product-title">
           <div className={`${styles.container} ${styles.analyticsShell}`}>
             <div className={styles.analyticsIntro}>
-              <p className={styles.eyebrow}>Юридический контроль</p>
               <h2 id="product-title">Проверяйте риски и доказательства до публикации</h2>
               <p>
                 Аврора связывает значимые утверждения с источниками, датами актуальности
@@ -279,7 +295,11 @@ export function ReferenceLanding() {
               </a>
             </div>
 
-            <div className={styles.dashboard} aria-label="Демонстрация структуры проверки материала">
+            <div
+              className={styles.dashboard}
+              role="group"
+              aria-label="Демонстрация структуры проверки материала"
+            >
               <p className={styles.dashboardEyebrow}>Пример проверки материала</p>
               <div className={styles.metricGrid}>
                 <article><span>Источник</span><strong>Указан</strong><small>ссылка сохранена</small></article>
@@ -321,9 +341,8 @@ export function ReferenceLanding() {
           </div>
         </section>
 
-        <section className={styles.socialSection} id="integrations" aria-labelledby="integrations-title">
+        <section className={styles.socialSection} id="integrations" aria-label="Интеграции">
           <div className={styles.container}>
-            <p className={styles.eyebrow} id="integrations-title">Статус интеграций</p>
             <div className={styles.socialList}>
               <span>
                 <i className={styles.telegramIcon}>➤</i>
@@ -345,19 +364,10 @@ export function ReferenceLanding() {
           <div className={styles.container}>
             <SectionHeading
               id="evidence-title"
-              eyebrow="Основа продукта"
               title="Что уже есть для юридического редактора"
               description="Три контура, которые формируют проверяемый материал вместо безымянного текста от ИИ."
             />
-            <div className={styles.reviewGrid}>
-              {editorCapabilities.map((capability) => (
-                <article className={`${styles.reviewCard} ${styles.capabilityCard}`} key={capability.title}>
-                  <span className={styles.capabilityIcon}>{capability.icon}</span>
-                  <h3>{capability.title}</h3>
-                  <p>{capability.text}</p>
-                </article>
-              ))}
-            </div>
+            <EditorCapabilityCards />
           </div>
         </section>
 
@@ -365,22 +375,10 @@ export function ReferenceLanding() {
           <div className={styles.container}>
             <SectionHeading
               id="access-title"
-              eyebrow="Доступность"
               title="Фактический статус рабочих контуров"
               description="Доступность каждого контура обозначена прямо и соответствует текущей конфигурации продукта."
             />
-            <div className={`${styles.pricingGrid} ${styles.accessGrid}`}>
-              {accessCards.map((card) => (
-                <article className={`${styles.priceCard} ${styles.accessCard}`} key={card.title}>
-                  <span className={styles.accessStatus}>{card.status}</span>
-                  <h3>{card.title}</h3>
-                  <p className={styles.planNote}>{card.note}</p>
-                  <ul>
-                    {card.features.map((feature) => <li key={feature}><Check aria-hidden="true" />{feature}</li>)}
-                  </ul>
-                </article>
-              ))}
-            </div>
+            <AccessStatusCards />
             <div className={styles.accessAction}>
               <a className={styles.secondaryButton} href="/register">
                 Создать аккаунт

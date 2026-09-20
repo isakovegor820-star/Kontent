@@ -5,7 +5,7 @@ import { resolveProviderLiveWriteBoundary } from "./provider-write-boundary.mjs"
 describe("provider live-write boundary", () => {
   it("allows only providers with an implemented live path", () => {
     expect(resolveProviderLiveWriteBoundary("tg")).toMatchObject({ allowed: true, state: "ready" });
-    expect(resolveProviderLiveWriteBoundary("vk")).toMatchObject({ allowed: true, state: "ready" });
+    expect(resolveProviderLiveWriteBoundary("vk")).toMatchObject({ allowed: false, terminal: true, code: "vk_auth_flow_unverified" });
   });
 
   it("maps TenChat to a terminal non-retryable result with an export alternative", () => {

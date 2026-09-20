@@ -1,4 +1,5 @@
-import { NextRequest, NextResponse } from "next/server";
+import { ProjectRequest } from "@/test/project-request";
+import { NextResponse } from "next/server";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
@@ -37,7 +38,7 @@ import { POST } from "./route";
 afterEach(() => vi.restoreAllMocks());
 
 function multipartRequest(headers: HeadersInit = {}) {
-  return new NextRequest("http://localhost/api/media/assets", {
+  return new ProjectRequest(41, "http://localhost/api/media/assets", {
     method: "POST",
     headers: {
       origin: "http://localhost",

@@ -1,4 +1,6 @@
 "use client";
+import { useProjectCall } from "@/lib/use-project-transport";
+import { projectFetch as fetch } from "@/lib/project-transport";
 
 import { projectFetch as fetch } from "@/lib/project-fetch";
 
@@ -194,7 +196,7 @@ export function projectTeamErrorMessage(code: unknown): string {
   }
 }
 
-async function requestJson(url: string, init?: RequestInit): Promise<{ response: Response; body: ApiBody | null }> {
+async function unscopedRequestJson(url: string, init?: RequestInit): Promise<{ response: Response; body: ApiBody | null }> {
   try {
     const response = await fetch(url, { cache: "no-store", ...init });
     const parsed = await response.json().catch(() => null);
@@ -226,7 +228,8 @@ function invitationDate(invitation: ProjectInvitation): { label: string; value: 
   return { label: invitation.status === "expired" ? "Истекло" : "Действует до", value: invitation.expiresAt };
 }
 
-export function ProjectTeamSection() {
+export function ProjectTeamSection({ showProjectSummary = true }: { showProjectSummary?: boolean } = {}) {
+  const requestJson = useProjectCall(unscopedRequestJson);
   const projects = useProjects();
   const current = projects.current;
   const owner = current?.role === "owner";
@@ -240,11 +243,13 @@ export function ProjectTeamSection() {
 
   const [members, setMembers] = useState<ProjectMember[]>([]);
   const [invitations, setInvitations] = useState<ProjectInvitation[]>([]);
+  const [interactive, setInteractive] = useState(false);
   const [loading, setLoading] = useState(false);
   const [loadError, setLoadError] = useState(false);
   const [savingKey, setSavingKey] = useState<string | null>(null);
   const [feedback, setFeedback] = useState<Feedback>(null);
   const [confirmation, setConfirmation] = useState<Confirmation>(null);
+  const [pendingRole, setPendingRole] = useState<{ member: ProjectMember; role: ClientProjectRole } | null>(null);
 
   const [projectName, setProjectName] = useState("");
   const [projectTimezone, setProjectTimezone] = useState(initialTimezone);
@@ -255,12 +260,26 @@ export function ProjectTeamSection() {
   const [inviteRole, setInviteRole] = useState<InvitationRole>("author");
   const [inviteTtl, setInviteTtl] = useState(7);
   const [inviteEmailError, setInviteEmailError] = useState<string | null>(null);
-  const [inviteUrl, setInviteUrl] = useState("");
+  const [createdInvite, setCreatedInvite] = useState<{ id: number; url: string; email: string } | null>(null);
+  const inviteUrl = createdInvite?.url ?? "";
   const [copied, setCopied] = useState(false);
+  const ownerCount = members.filter((member) => member.role === "owner").length;
 
   const timezoneOptions = useMemo(() => {
     return Array.from(new Set([projectTimezone, ...TIMEZONES])).filter(Boolean);
   }, [projectTimezone]);
+
+  useEffect(() => {
+    // Keep controlled forms inert until React owns their state. Otherwise a fast
+    // pre-hydration edit can remain in the DOM while submit observes an empty state.
+    let cancelled = false;
+    queueMicrotask(() => {
+      if (!cancelled) setInteractive(true);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   const loadTeam = useCallback(async () => {
     const projectId = current?.id;
@@ -288,13 +307,14 @@ export function ProjectTeamSection() {
     } finally {
       if (sequence === requestSequence.current) setLoading(false);
     }
-  }, [current?.id, owner]);
+  }, [current?.id, owner, requestJson]);
 
   useEffect(() => {
     let cancelled = false;
     queueMicrotask(() => {
       if (cancelled) return;
-      setInviteUrl("");
+      setCreatedInvite(null);
+      setPendingRole(null);
       setCopied(false);
       if (!projects.ready || !current) {
         requestSequence.current += 1;
@@ -340,6 +360,7 @@ export function ProjectTeamSection() {
 
   const changeRole = async (member: ProjectMember, role: ClientProjectRole) => {
     if (!current || !owner || role === member.role || savingKey) return;
+    if (member.role === "owner" && ownerCount === 1 && role !== "owner") return;
     setSavingKey(`member-role-${member.userId}`);
     setFeedback(null);
     try {
@@ -389,7 +410,7 @@ export function ProjectTeamSection() {
       }
       setInvitations((items) => [invitation, ...items.filter((item) => item.id !== invitation.id)]);
       setInviteEmail("");
-      setInviteUrl(body.inviteUrl);
+      setCreatedInvite({ id: invitation.id, url: body.inviteUrl, email: invitation.email });
       setCopied(false);
       setFeedback({ kind: "success", text: "Приглашение создано. Скопируй ссылку и передай её лично." });
     } catch (error) {
@@ -443,6 +464,7 @@ export function ProjectTeamSection() {
         setInvitations((items) => items.map((item) => item.id === action.invitation.id
           ? { ...item, status: "revoked", revokedAt: new Date().toISOString() }
           : item));
+        setCreatedInvite((invite) => invite?.id === action.invitation.id ? null : invite);
         setFeedback({ kind: "success", text: "Приглашение отозвано." });
       }
       setConfirmation(null);
@@ -468,21 +490,25 @@ export function ProjectTeamSection() {
       : null;
 
   return (
-    <section aria-labelledby={titleId} className="mb-5 break-inside-avoid">
+    <section
+      aria-labelledby={titleId}
+      className="mb-5 break-inside-avoid"
+      data-project-team-interactive={interactive ? "true" : "false"}
+    >
       <Card className="overflow-hidden">
         <header className="flex items-start gap-3.5 border-b border-line px-5 py-5 sm:px-7">
           <span aria-hidden className="grid h-10 w-10 shrink-0 place-items-center rounded-sm bg-surface-inset text-text-2">
             <Users className="h-5 w-5" strokeWidth={1.75} />
           </span>
           <div className="min-w-0">
-            <h2 id={titleId} className="text-[17px] font-extrabold tracking-tight text-text">Проект и команда</h2>
+            <h2 id={titleId} className="text-[17px] font-extrabold tracking-tight text-text">{showProjectSummary ? "Проект и команда" : "Команда и рабочие пространства"}</h2>
             <p className="mt-1 text-[14px] leading-relaxed text-text-2">
               Создавай рабочие пространства, распределяй роли и выдавай доступ по одноразовой ссылке.
             </p>
           </div>
         </header>
 
-        <div className="space-y-10 px-5 py-6 sm:px-7 sm:py-7" aria-busy={loading || savingKey !== null || undefined}>
+        <div className="space-y-10 px-5 py-6 sm:px-7 sm:py-7" aria-busy={!interactive || loading || savingKey !== null || undefined}>
           {!projects.ready ? (
             <div role="status" className="space-y-2">
               <span className="sr-only">Открываем проект и команду</span>
@@ -502,7 +528,7 @@ export function ProjectTeamSection() {
             <p role="status" className="rounded-sm bg-surface-inset p-4 text-[14px] leading-relaxed text-text-2">
               Текущий проект не выбран. Выбери его в боковом меню или создай новый ниже.
             </p>
-          ) : (
+          ) : showProjectSummary ? (
             <div>
               <h3 className="text-[15px] font-extrabold text-text">Текущий проект</h3>
               <dl className="mt-3 grid gap-4 rounded-sm bg-surface-inset p-4 sm:grid-cols-2">
@@ -520,7 +546,7 @@ export function ProjectTeamSection() {
                 </div>
               </dl>
             </div>
-          )}
+          ) : null}
 
           <div>
             <h3 className="text-[15px] font-extrabold text-text">Создать проект</h3>
@@ -598,7 +624,9 @@ export function ProjectTeamSection() {
                   {members.map((member) => {
                     const label = member.name || member.email || `Участник ${member.userId}`;
                     const roleId = `project-member-role-${member.userId}`;
+                    const soleOwnerHelpId = `project-member-owner-help-${member.userId}`;
                     const busy = savingKey?.includes(`-${member.userId}`) === true;
+                    const soleOwner = member.role === "owner" && ownerCount === 1;
                     return (
                       <li key={member.userId} className="py-4 first:pt-0 last:pb-0">
                         <div className="flex min-w-0 flex-col gap-3 sm:flex-row sm:items-center">
@@ -613,11 +641,13 @@ export function ProjectTeamSection() {
                               <select
                                 id={roleId}
                                 value={member.role}
-                                disabled={Boolean(savingKey)}
+                                disabled={Boolean(savingKey) || soleOwner}
                                 aria-label={`Роль участника ${label}`}
                                 aria-busy={busy || undefined}
+                                aria-describedby={soleOwner ? soleOwnerHelpId : undefined}
+                                title={soleOwner ? "Сначала назначьте второго владельца проекта" : undefined}
                                 className={cn(SELECT_CLASS, "min-[400px]:w-auto")}
-                                onChange={(event) => void changeRole(member, event.currentTarget.value as ClientProjectRole)}
+                                onChange={(event) => setPendingRole({ member, role: event.currentTarget.value as ClientProjectRole })}
                               >
                                 {(Object.keys(ROLE_LABEL) as ClientProjectRole[]).map((role) => (
                                   <option key={role} value={role}>{ROLE_LABEL[role]}</option>
@@ -627,8 +657,10 @@ export function ProjectTeamSection() {
                                 type="button"
                                 variant="danger"
                                 size="sm"
-                                disabled={Boolean(savingKey)}
+                                disabled={Boolean(savingKey) || soleOwner}
                                 aria-label={`Удалить участника ${label}`}
+                                aria-describedby={soleOwner ? soleOwnerHelpId : undefined}
+                                title={soleOwner ? "Сначала назначьте второго владельца проекта" : undefined}
                                 onClick={() => setConfirmation({ kind: "member", member })}
                               >
                                 <Trash2 className="h-4 w-4" aria-hidden />
@@ -639,6 +671,11 @@ export function ProjectTeamSection() {
                             <Badge tone="neutral">{ROLE_LABEL[member.role]}</Badge>
                           )}
                         </div>
+                        {owner && soleOwner ? (
+                          <p id={soleOwnerHelpId} className="mt-2 text-[12px] leading-relaxed text-text-3">
+                            Это единственный владелец. Чтобы изменить его роль или удалить из проекта, сначала назначьте второго владельца.
+                          </p>
+                        ) : null}
                       </li>
                     );
                   })}
@@ -651,7 +688,8 @@ export function ProjectTeamSection() {
             <div>
               <h3 className="text-[15px] font-extrabold text-text">Пригласить участника</h3>
               <p className="mt-1 text-[13px] leading-relaxed text-text-3">
-                Ссылка показывается один раз. Отправь её человеку с указанным адресом.
+                Укажи почту аккаунта участника в Авроре. Чтобы принять приглашение, ему нужно войти
+                или зарегистрироваться именно с этой почтой. Ссылка показывается один раз.
               </p>
               <form noValidate onSubmit={createInvitation} className="mt-4 space-y-4">
                 <Field label="Электронная почта" htmlFor="project-invite-email" required error={inviteEmailError ?? undefined} messageId={emailMessageId}>
@@ -665,7 +703,7 @@ export function ProjectTeamSection() {
                     autoComplete="email"
                     value={inviteEmail}
                     placeholder="name@example.ru"
-                    disabled={savingKey === "invitation-create"}
+                    disabled={!interactive || savingKey === "invitation-create"}
                     aria-invalid={inviteEmailError ? true : undefined}
                     aria-describedby={inviteEmailError ? emailMessageId : undefined}
                     onChange={(event) => {
@@ -680,7 +718,7 @@ export function ProjectTeamSection() {
                       id="project-invite-role"
                       name="inviteRole"
                       value={inviteRole}
-                      disabled={savingKey === "invitation-create"}
+                      disabled={!interactive || savingKey === "invitation-create"}
                       className={SELECT_CLASS}
                       onChange={(event) => setInviteRole(event.currentTarget.value as InvitationRole)}
                     >
@@ -694,7 +732,7 @@ export function ProjectTeamSection() {
                       id="project-invite-ttl"
                       name="inviteTtl"
                       value={inviteTtl}
-                      disabled={savingKey === "invitation-create"}
+                      disabled={!interactive || savingKey === "invitation-create"}
                       className={SELECT_CLASS}
                       onChange={(event) => setInviteTtl(Number(event.currentTarget.value))}
                     >
@@ -706,7 +744,7 @@ export function ProjectTeamSection() {
                     </select>
                   </Field>
                 </div>
-                <Button type="submit" variant="outline" loading={savingKey === "invitation-create"}>
+                <Button type="submit" variant="outline" disabled={!interactive} loading={savingKey === "invitation-create"}>
                   <MailPlus className="h-4 w-4" aria-hidden />
                   Создать приглашение
                 </Button>
@@ -720,6 +758,10 @@ export function ProjectTeamSection() {
                   </p>
                   <p className="mt-1 text-[13px] leading-relaxed text-text-2">
                     Скопируй сейчас: после ухода со страницы восстановить эту ссылку нельзя.
+                  </p>
+                  <p className="mt-2 break-words text-[13px] leading-relaxed text-text-2">
+                    Получатель: <strong>{createdInvite?.email}</strong>. Для принятия ссылки нужно войти
+                    в Аврору с этой почтой. Если открыт другой аккаунт, выбери «Войти в другой аккаунт».
                   </p>
                   <div className="mt-3 flex min-w-0 flex-col gap-2 sm:flex-row">
                     <Input ref={inviteLinkRef} value={inviteUrl} readOnly aria-label="Одноразовая ссылка приглашения" className="min-w-0 font-mono text-[13px]" />
@@ -796,6 +838,7 @@ export function ProjectTeamSection() {
         </div>
       </Card>
 
+      <ConfirmDialog open={pendingRole != null} title="Изменить роль участника?" description={pendingRole ? `${pendingRole.member.name ?? pendingRole.member.email ?? "Участник"}: ${ROLE_LABEL[pendingRole.member.role]} → ${ROLE_LABEL[pendingRole.role]}. Новые права начнут действовать после подтверждения.` : ""} confirmLabel="Сохранить роль" onCancel={() => setPendingRole(null)} onConfirm={() => { if (pendingRole) void changeRole(pendingRole.member, pendingRole.role); setPendingRole(null); }} />
       <ConfirmDialog
         open={Boolean(confirmationCopy)}
         title={confirmationCopy?.title ?? "Подтвердить действие"}

@@ -1,5 +1,5 @@
+import { ProjectRequest } from "@/test/project-request";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { NextRequest } from "next/server";
 
 const mocks = vi.hoisted(() => ({
   getSessionUser: vi.fn(),
@@ -55,7 +55,7 @@ vi.mock("@/lib/growth", () => ({
 import { DELETE, POST } from "./route";
 
 function request(body: Record<string, unknown>, method = "POST") {
-  return new NextRequest("http://localhost/api/autopilot/generate", {
+  return new ProjectRequest(88, "http://localhost/api/autopilot/generate", {
     method,
     headers: { "content-type": "application/json" },
     body: JSON.stringify(body),
@@ -94,6 +94,7 @@ describe("POST /api/autopilot/generate", () => {
     });
     mocks.add.mockResolvedValue({ id: "autopilot-plan-91" });
     mocks.getJob.mockResolvedValue({ remove: mocks.removeJob });
+    mocks.removeJob.mockResolvedValue(undefined);
     mocks.linkGrowthMovePlanInTransaction.mockResolvedValue(undefined);
   });
 
@@ -144,10 +145,19 @@ describe("POST /api/autopilot/generate", () => {
     );
   });
 
-  it("cancels the exact building plan and removes its queued job", async () => {
+  it("pauses the newest active plan without deleting checkpoints and removes every queued retry", async () => {
+    const recoveryJobId = "113229a4-6c97-4ad0-90c9-0dc8d5c598a3";
+    const repairJobId = "213229a4-6c97-4ad0-90c9-0dc8d5c598a3";
     mocks.clientQuery.mockImplementation(async (sql: string) => {
-      if (sql.includes("set status = 'error', rules = 'cancelled'")) {
-        return { rows: [{ id: "91" }], rowCount: 1 };
+      if (sql.includes('"paused_by_user"')) {
+        return {
+          rows: [{
+            id: "91",
+            last_repair_job_id: repairJobId,
+            build_report: { autoRecovery: { jobId: recoveryJobId } },
+          }],
+          rowCount: 1,
+        };
       }
       return { rows: [], rowCount: 1 };
     });
@@ -155,13 +165,41 @@ describe("POST /api/autopilot/generate", () => {
     const response = await DELETE(request({ channelId: 22 }, "DELETE"));
 
     expect(response.status).toBe(200);
-    await expect(response.json()).resolves.toEqual({ ok: true, cancelled: true, planId: "91" });
+    await expect(response.json()).resolves.toEqual({
+      ok: true, paused: true, cancelled: true, planId: "91",
+    });
     expect(mocks.clientQuery).toHaveBeenCalledWith(
-      expect.stringContaining("rules = 'cancelled'"),
+      expect.stringContaining("status in ('building', 'partial')"),
+      [88, 22],
+    );
+    expect(mocks.clientQuery).toHaveBeenCalledWith(
+      expect.stringContaining('"recoveryState":"paused_by_user"'),
       [88, 22],
     );
     expect(mocks.getJob).toHaveBeenCalledWith("autopilot-plan-91");
-    expect(mocks.removeJob).toHaveBeenCalledOnce();
+    expect(mocks.getJob).toHaveBeenCalledWith(`autopilot-repair-88-${repairJobId}`);
+    expect(mocks.getJob).toHaveBeenCalledWith(`autopilot-continue-91-${recoveryJobId}`);
+    expect(mocks.removeJob).toHaveBeenCalledTimes(3);
+  });
+
+  it("uses saved channel controls when a new build does not override them", async () => {
+    const quickSettings = { newsPerWeek: 1, detail: 3, energy: 1, emoji: 0 };
+    mocks.ensureSettings.mockResolvedValue({
+      enabled: true, mode: "confirm", post_frequency: 3, approvals_streak: 0,
+      generation_engine: "navy-gpt-5-4", planning_months: 2, planning_weeks: 7,
+      quick_settings: quickSettings,
+    });
+
+    const response = await POST(request({ channelId: 22 }));
+
+    expect(response.status).toBe(200);
+    expect((await response.json()).publicationTargetCount).toBe(21);
+    expect(mocks.clientQuery).toHaveBeenCalledWith(
+      expect.stringContaining("insert into autopilot_plan"),
+      [88, 4, 22, "navy-gpt-5-4", 3, 21, 30, 2, 7, null, JSON.stringify(quickSettings)],
+    );
+    expect(mocks.add).toHaveBeenCalledWith("autopilot-plan",
+      { projectId: 88, userId: 4, channelId: 22, planId: "91" }, expect.any(Object));
   });
 
   it("does not create a plan for a project A channel while project B is selected", async () => {

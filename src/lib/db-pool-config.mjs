@@ -4,6 +4,7 @@ const DEFAULTS = Object.freeze({
   max: 3,
   connectionTimeoutMillis: 2_000,
   queryTimeoutMillis: 30_000,
+  slowQueryThresholdMillis: 1_000,
   statementTimeoutMillis: 30_000,
   idleInTransactionTimeoutMillis: 15_000,
   idleTimeoutMillis: 10_000,
@@ -51,6 +52,12 @@ export function resolveDatabasePoolConfig(env = process.env) {
       DEFAULTS.queryTimeoutMillis,
       { min: 250, max: 300_000 },
       "database_query_timeout",
+    ),
+    slowQueryThresholdMillis: boundedInteger(
+      env.AURORA_DB_SLOW_QUERY_MS,
+      DEFAULTS.slowQueryThresholdMillis,
+      { min: 10, max: 300_000 },
+      "database_slow_query_threshold",
     ),
     statementTimeoutMillis: boundedInteger(
       env.AURORA_DB_STATEMENT_TIMEOUT_MS,
