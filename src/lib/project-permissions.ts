@@ -85,7 +85,7 @@ export async function requireProjectPermission(
   userId: number,
   projectId: number,
   permission: ProjectPermission,
-  options: { allowProjectSelection?: boolean } = {},
+  options: { allowProjectSelection?: boolean; lock?: boolean; lockProject?: boolean } = {},
 ): Promise<ActiveProjectMembership> {
   const expectedProjectId = await selectedRequestProjectId();
   if (!options.allowProjectSelection && expectedProjectId !== null && expectedProjectId !== projectId) {
@@ -108,10 +108,11 @@ export async function requireSelectedProjectPermission(
   db: Queryable,
   userId: number,
   permission: ProjectPermission,
+  options: { allowProjectSelection?: boolean; lock?: boolean; lockProject?: boolean } = {},
 ): Promise<ActiveProjectMembership> {
   if (!positiveId(userId)) throw new ProjectAccessError("invalid_project_selector");
   const expectedProjectId = await selectedRequestProjectId();
-  if (expectedProjectId !== null) return requireProjectPermission(db, userId, expectedProjectId, permission);
+  if (expectedProjectId !== null) return requireProjectPermission(db, userId, expectedProjectId, permission, options);
   const result = await db.query<{
     project_id: number | string;
     user_id: number | string;

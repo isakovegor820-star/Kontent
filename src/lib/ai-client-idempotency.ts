@@ -35,6 +35,7 @@ export async function acknowledgeAiTerminal(
   options: {
     signal?: AbortSignal;
     fetchImpl?: typeof fetch;
+    retryDelaysMs?: number[];
   } = {},
 ): Promise<{ requestId: string | null; replayed: boolean; generationResultId: number }> {
   if (!/^[A-Za-z0-9:_-]{8,96}$/u.test(key)) throw new TypeError("invalid AI request key");

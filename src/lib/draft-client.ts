@@ -362,6 +362,7 @@ export async function getServerDraft(id: number, signal?: AbortSignal): Promise<
 
 export async function createServerDraft(
   input: DraftCreateInput,
+  signal?: AbortSignal,
 ): Promise<{ draft: ServerDraft; created: boolean }> {
   const response = await request("/api/drafts", {
     method: "POST",

@@ -1,3 +1,4 @@
+import { NextRequest } from "next/server";
 import { ProjectRequest } from "@/test/project-request";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 

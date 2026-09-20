@@ -196,7 +196,7 @@ describe("POST /api/autopilot/generate", () => {
     expect((await response.json()).publicationTargetCount).toBe(21);
     expect(mocks.clientQuery).toHaveBeenCalledWith(
       expect.stringContaining("insert into autopilot_plan"),
-      [88, 4, 22, "navy-gpt-5-4", 3, 21, 30, 2, 7, null, JSON.stringify(quickSettings)],
+      [88, 4, 22, "navy-gpt-5-4", 3, 21, 30, 2, 7, null, JSON.stringify(quickSettings), "continue", null],
     );
     expect(mocks.add).toHaveBeenCalledWith("autopilot-plan",
       { projectId: 88, userId: 4, channelId: 22, planId: "91" }, expect.any(Object));

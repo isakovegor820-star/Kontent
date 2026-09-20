@@ -601,7 +601,7 @@ function outputTokens(p: GenerateParams): number {
   return 900;
 }
 
-export function estimateGenerateTokenBudget(p: GenerateParams) {
+export function estimateGenerateTokenBudget(p: GenerateParams, _engineId?: EngineId) {
   const inputTokens = Math.max(1, Math.ceil(
     messagesFor(p).reduce((sum, message) => sum + message.content.length, 0) / 4,
   ));
@@ -1074,6 +1074,8 @@ async function* streamAnthropic(
 export interface GenerateTextOptions {
   /** null: deadline полностью контролирует вызывающий orchestration layer. */
   requestTimeoutMs?: number | null;
+  /** When false, an empty result does NOT trigger a hidden paid retry. */
+  allowEmptyRetry?: boolean;
 }
 
 async function* streamVisibleContent(

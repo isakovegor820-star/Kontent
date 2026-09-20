@@ -503,3 +503,41 @@ export async function resolveGenerationDraft(
     purpose: validation.status === "passed" ? "publishable" : "needs_review",
   };
 }
+
+/** Authorises a client acknowledgement against the active generation operation. */
+export async function authorizeGenerationAcknowledgement(
+  userId: number,
+  clientKey: string,
+  db: Queryable = getPool(),
+): Promise<boolean> {
+  const row = (await db.query(
+    `select 1 from generation_operations
+      where user_id = $1 and request_key = $2 and status = 'pending_ack'`,
+    [userId, clientKey],
+  )).rowCount;
+  return (row ?? 0) > 0;
+}
+
+/**
+ * Stages the final generation result after the provider responded.
+ * Placeholder until the full implementation from the concurrent branch lands.
+ */
+export async function stageGenerationResult(
+  input: { userId: number; reservationId: number; serverRequestId: string; result: unknown; providerResult?: Record<string, unknown> },
+  db?: Queryable,
+): Promise<GenerationArtifactResult> {
+  throw new GenerationArtifactError("stageGenerationResult: not yet implemented");
+}
+
+/**
+ * Attempts recovery of a pending generation result after a client reconnect.
+ * Placeholder until the full implementation lands.
+ */
+export async function recoverPendingGenerationResult(
+  _userId: number,
+  _clientKey: string,
+  _resultHash?: string,
+  _db?: Queryable,
+): Promise<GenerationArtifactResult | null> {
+  return null;
+}

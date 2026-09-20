@@ -105,6 +105,7 @@ const DEFAULT_FILTERS: Filters = {
 
 const FORMAT_LABELS: Record<LibraryFormat, string> = { text: "Текст", photo: "Фото", video: "Видео" };
 const SORT_LABELS: Record<LibrarySort, string> = {
+  published: "Дата публикации",
   score: "Оценка",
   freshness: "Свежесть",
   views: "Просмотры",
