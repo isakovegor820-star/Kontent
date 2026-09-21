@@ -238,8 +238,10 @@ import {
   autopilotAiTimeouts,
   autopilotFallbackEngines,
   autopilotPresentationVariant,
+  autopilotScheduleStartDay,
   findAutopilotNearDuplicate,
   plannedPostCountForWeeks,
+  normalizeAutopilotScheduleMode,
   presentationVariantPrompt,
 } from "./src/lib/autopilot-config.mjs";
 import {
@@ -6293,7 +6295,7 @@ async function buildAutopilotPlan(
       `select generation_engine, generation_post_frequency, expected_post_count,
               publication_target_count, candidate_count,
               planning_months, planning_weeks, monthly_campaign_plan_id, items, quick_settings,
-              repair_attempt, build_report
+              repair_attempt, build_report, schedule_mode, coverage_until
          from autopilot_plan
         where id = $1 and project_id = $2 and channel_id = $3 and status = 'building'`,
       [expectedPlanId, projectId, channelId],
@@ -6481,9 +6483,18 @@ async function buildAutopilotPlan(
   const full = false;
   const planMood = await userMood(userId); // настроение агента для постов плана
   // Время постов считаем заранее на весь выбранный горизонт: раскладка зависит от их числа.
+  // Месячная сборка всегда «продолжает»: её слоты заданы утверждённым месячным планом.
+  // Legacy-планы без режима трактуются как «продолжить»: молча сносить одобренную неделю
+  // опаснее, чем сдвинуть новый план за конец уже покрытого окна.
+  const scheduleMode = monthlyContext
+    ? "continue"
+    : normalizeAutopilotScheduleMode(expectedPlan?.schedule_mode);
+  const scheduleStartDay = scheduleMode === "replace"
+    ? 1
+    : autopilotScheduleStartDay(expectedPlan?.coverage_until);
   let slots = monthlyContext
     ? monthlyContext.topics.map((item) => item.monthlySchedule.scheduledAt)
-    : periodSlots(N, planWeeks, bestHour);
+    : periodSlots(N, planWeeks, bestHour, scheduleStartDay);
   let checkpointItems = Array.isArray(expectedPlan?.items) ? expectedPlan.items : [];
   const hasCheckpointedTopics = expectedPlanId != null &&
     checkpointItems.length === N &&
@@ -7174,7 +7185,7 @@ async function buildAutopilotPlan(
     // Candidate slots belong to the larger quality reserve (7 requested publications become
     // 10 candidates). Keeping those timestamps after selection can put seven winners into
     // five days. Rebuild the publication schedule only after the final seven are known.
-    const publicationSlots = periodSlots(publicationTargetCount, planWeeks, bestHour);
+    const publicationSlots = periodSlots(publicationTargetCount, planWeeks, bestHour, scheduleStartDay);
     selectedPairs.forEach((pair, index) => {
       pair.item.scheduledAt = publicationSlots[index];
     });
@@ -7354,15 +7365,16 @@ async function buildAutopilotPlan(
               generation_engine, generation_post_frequency, expected_post_count,
               publication_target_count, candidate_count, candidate_items,
               planning_months, planning_weeks, monthly_campaign_plan_id, quick_settings,
-              build_report, repair_strategy, terminal_outcome, ai_call_count)
+              build_report, repair_strategy, terminal_outcome, ai_call_count,
+              schedule_mode, coverage_until)
            values ($1, $2, $3, $4, $5::jsonb, $6, 'partial', $7, $8, $9, $9, $10,
-                   $5::jsonb, $11, $12, $13, $14::jsonb, $15::jsonb, $16, 'partial', $17)
+                   $5::jsonb, $11, $12, $13, $14::jsonb, $15::jsonb, $16, 'partial', $17, $18, $19)
            returning id`,
           [
             projectId,
             userId,
             channelId,
-            monthlyContext?.topics[0]?.monthlySchedule.localDate || mskDatePlus(1),
+            monthlyContext?.topics[0]?.monthlySchedule.localDate || mskDatePlus(scheduleStartDay),
             JSON.stringify(durableCandidateItems),
             rule,
             generationEngine,
@@ -7376,6 +7388,8 @@ async function buildAutopilotPlan(
             JSON.stringify(report),
             report.primaryFix,
             aiCallCount,
+            scheduleMode,
+            expectedPlan?.coverage_until ?? null,
           ],
         );
         partialPlanId = Number(saved.rows[0].id);
@@ -7555,13 +7569,15 @@ async function buildAutopilotPlan(
             [projectId, channelId, expectedPlanId],
           )
         ).rows.map((row) => Number(row.id));
-    const previousPlans = (
-      await tx.query(
-        `select items from autopilot_plan
-          where project_id = $1 and channel_id = $2 and status in ('pending', 'approved')`,
-        [projectId, channelId],
-      )
-    ).rows;
+    const previousPlans = scheduleMode === "replace"
+      ? (
+          await tx.query(
+            `select items from autopilot_plan
+              where project_id = $1 and channel_id = $2 and status in ('pending', 'approved')`,
+            [projectId, channelId],
+          )
+        ).rows
+      : [];
     previousPostIds = previousPlans
       .flatMap((plan) => Array.isArray(plan.items) ? plan.items : [])
       .map((item) => Number(item.postId))
@@ -7640,6 +7656,7 @@ async function buildAutopilotPlan(
           set status = 'done', revision = revision + 1
         where plan.project_id = $1 and plan.channel_id = $2 and plan.status <> 'done'
           and plan.status <> 'approving'
+          and plan.status <> 'building'
           and exists (
             select 1 from monthly_campaign_items monthly_item
              where monthly_item.project_id = plan.project_id
@@ -7647,30 +7664,43 @@ async function buildAutopilotPlan(
           )`,
       [projectId, channelId],
     );
-    await tx.query(
-      `delete from autopilot_plan plan
-        where plan.project_id = $1 and plan.channel_id = $2 and plan.status <> 'approving'
-          and not exists (
-            select 1 from monthly_campaign_items monthly_item
-             where monthly_item.project_id = plan.project_id
-               and monthly_item.weekly_autopilot_plan_id = plan.id
-          )`,
-      [projectId, channelId],
-    );
+    if (scheduleMode === "replace") {
+      await tx.query(
+        `delete from autopilot_plan plan
+          where plan.project_id = $1 and plan.channel_id = $2 and plan.status <> 'approving'
+            and plan.status <> 'building'
+            and not exists (
+              select 1 from monthly_campaign_items monthly_item
+               where monthly_item.project_id = plan.project_id
+                 and monthly_item.weekly_autopilot_plan_id = plan.id
+            )`,
+        [projectId, channelId],
+      );
+    } else {
+      // «Продолжить»: ничего не удаляем. Старые pending/approved-планы остаются архивом
+      // канала: их одобренные посты стоят в календаре и публикуются своим чередом.
+      await tx.query(
+        `update autopilot_plan plan
+            set status = 'done', revision = revision + 1
+          where plan.project_id = $1 and plan.channel_id = $2
+            and plan.status in ('pending', 'approved')`,
+        [projectId, channelId],
+      );
+    }
     ins = await tx.query(
       `insert into autopilot_plan
          (project_id, user_id, channel_id, week_start, items, rules, status, generation_engine,
           generation_post_frequency, expected_post_count, publication_target_count,
           candidate_count, candidate_items, planning_months, planning_weeks,
           monthly_campaign_plan_id, quick_settings, build_report, repair_strategy,
-          terminal_outcome, ai_call_count)
+          terminal_outcome, ai_call_count, schedule_mode, coverage_until)
        values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $10, $11, $12::jsonb,
-               $13, $14, $15, $16::jsonb, $17::jsonb, null, 'complete', $18) returning id`,
+               $13, $14, $15, $16::jsonb, $17::jsonb, null, 'complete', $18, $19, $20) returning id`,
       [
         projectId,
         userId,
         channelId,
-        monthlyContext?.topics[0]?.monthlySchedule.localDate || mskDatePlus(1),
+        monthlyContext?.topics[0]?.monthlySchedule.localDate || mskDatePlus(scheduleStartDay),
         JSON.stringify(items),
         rule,
         planStatus,
@@ -7685,6 +7715,8 @@ async function buildAutopilotPlan(
         JSON.stringify(quickSettings),
         JSON.stringify(selectionReport),
         aiCallCount,
+        scheduleMode,
+        expectedPlan?.coverage_until ?? null,
       ],
     );
     if (linkedGrowthMoveIds.length) {

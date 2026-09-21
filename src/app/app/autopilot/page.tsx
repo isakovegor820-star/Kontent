@@ -35,6 +35,7 @@ import { AppShell } from "@/components/app/shell";
 import { EvidenceCard } from "@/components/app/evidence-card";
 import { Button, buttonClassName } from "@/components/ui/button";
 import { ConfirmDialog } from "@/components/ui/confirm-dialog";
+import { ScheduleConflictDialog, type ScheduleCoverage } from "@/components/app/autopilot-schedule-conflict-dialog";
 import { Badge, Card, EmptyState } from "@/components/ui/primitives";
 import { useStore } from "@/lib/store";
 import { RUBRICS, type Brief } from "@/lib/brief";
@@ -204,6 +205,7 @@ interface State {
   brief: Brief | null;
   briefReady: boolean;
   channelId: number | null;
+  scheduleCoverage: { count: number; until: string | null } | null;
 }
 
 interface OverviewPostStat {
@@ -1084,6 +1086,7 @@ export default function AutopilotPage() {
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [scheduleConflict, setScheduleConflict] = useState<ScheduleCoverage | null>(null);
   const [autopilotToggleBusy, setAutopilotToggleBusy] = useState(false);
   const [expanded, setExpanded] = useState<number | null>(null); // какая карточка раскрыта целиком
   const [reviewedIndexes, setReviewedIndexes] = useState<Set<number>>(() => new Set());
@@ -1304,7 +1307,7 @@ export default function AutopilotPage() {
     };
   }, [building, data?.buildAttempt?.nextRetryAt, data?.buildAttempt?.recoveryState, load]);
 
-  const generate = async () => {
+  const generate = async (scheduleMode?: "continue" | "replace") => {
     if (busy) return;
     setBusy(true);
     try {
@@ -1324,6 +1327,7 @@ export default function AutopilotPage() {
           planningWeeks,
           quickSettings,
           growthMoveId,
+          ...(scheduleMode ? { scheduleMode } : {}),
         }),
       });
       const d = (await r.json().catch(() => null)) as {
@@ -1331,8 +1335,10 @@ export default function AutopilotPage() {
         error?: string;
         publicationTargetCount?: number;
         candidateCount?: number;
+        coverage?: { count?: number; until?: string | null };
       } | null;
       if (d?.ok) {
+        setScheduleConflict(null);
         const publicationCount = Number(d.publicationTargetCount) ||
           plannedPostCountForWeeks(data?.settings?.post_frequency ?? 5, planningWeeks);
         const candidateCount = Number(d.candidateCount) || autopilotCandidateCount(publicationCount);
@@ -1344,6 +1350,14 @@ export default function AutopilotPage() {
         });
         await load();
       } else {
+        // В календаре стоит одобренная неделя, а режим не выбран — спрашиваем, а не сносим.
+        if (r.status === 409 && d?.error === "schedule_exists") {
+          setScheduleConflict({
+            count: Number(d.coverage?.count) || 0,
+            until: d.coverage?.until ?? null,
+          });
+          return;
+        }
         const why: Record<string, string> = {
           no_channel: "Сначала подключи Telegram-канал.",
           no_brief: "Сначала настрой автопилот — без этого он не знает, о чём твой канал.",
@@ -1352,6 +1366,7 @@ export default function AutopilotPage() {
           bad_engine: "Выбери доступную модель и повтори.",
           bad_horizon: "Выбери период от 1 до 12 недель.",
           engine_unavailable: "Для выбранной модели не настроен API-ключ Navy.",
+          bad_schedule_mode: "Выбери, куда ставить новый план, и повтори.",
         };
         s.toast({
           kind: "danger",
@@ -2141,6 +2156,15 @@ export default function AutopilotPage() {
           void cancelBuild();
         }}
         onCancel={() => setCancelBuildConfirmation(false)}
+      />
+
+      <ScheduleConflictDialog
+        open={Boolean(scheduleConflict)}
+        coverage={scheduleConflict}
+        busy={busy}
+        onContinue={() => void generate("continue")}
+        onReplace={() => void generate("replace")}
+        onClose={() => setScheduleConflict(null)}
       />
 
       {/* Состояние новой сборки не заменяет пригодный план. */}

@@ -6665,3 +6665,8 @@ create table if not exists opportunity_states (
   constraint opportunity_states_snapshot_scope_fk foreign key (opportunity_snapshot_id,project_id,channel_id) references opportunity_snapshots(id,project_id,channel_id) on delete cascade
 );
 create index if not exists opportunity_states_user_state_idx on opportunity_states (user_id,project_id,channel_id,state,updated_at desc);
+
+alter table autopilot_plan         add column if not exists schedule_mode text;
+alter table autopilot_plan         add column if not exists coverage_until timestamptz;
+alter table autopilot_plan drop constraint if exists autopilot_plan_schedule_mode_check;
+alter table autopilot_plan add constraint autopilot_plan_schedule_mode_check check (schedule_mode is null or schedule_mode in ('continue', 'replace'));

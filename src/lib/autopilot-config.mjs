@@ -135,6 +135,40 @@ export function planCountWasCapped(postFrequency, months) {
   return frequency * planningWeeks(months) > MAX_AUTOPILOT_PLAN_POSTS;
 }
 
+/**
+ * Режим расписания новой сборки. Пока план не выбран явно, считаем «продолжить»:
+ * молча отменять уже одобренные посты опаснее, чем сдвинуть новый план на позже.
+ */
+export function normalizeAutopilotScheduleMode(value) {
+  return String(value || "") === "replace" ? "replace" : "continue";
+}
+
+const MSK_OFFSET_MS = 3 * 3_600_000; // Europe/Moscow стабилен: +03:00, DST отменён.
+
+function mskDayNumber(ms) {
+  return Math.floor((ms + MSK_OFFSET_MS) / 86_400_000);
+}
+
+/**
+ * На какой день горизонта (1 = завтра) начинать раскладку, чтобы новый план не лёг
+ * поверх уже запланированных публикаций. Пустое/истёкшее покрытие даёт 1 — прежнее поведение.
+ */
+export function autopilotScheduleStartDay(coverageUntil, nowMs = Date.now()) {
+  const until = Date.parse(String(coverageUntil || ""));
+  if (!Number.isFinite(until)) return 1;
+  return Math.max(1, mskDayNumber(until) - mskDayNumber(nowMs) + 1);
+}
+
+/**
+ * Сколько дней нового плана реально останутся в горизонте после сдвига старта.
+ * Если покрытие съедает весь горизонт, план уедет за его границы — это честно
+ * показывает интерфейсу, что слоты встанут позже выбранного срока.
+ */
+export function autopilotEffectiveScheduleDays(weeks, startDay) {
+  const days = Math.max(1, Math.round(Number(weeks) || 1) * 7);
+  return Math.max(0, days - Math.max(1, Math.round(Number(startDay) || 1)) + 1);
+}
+
 const STOP_WORDS = new Set([
   "без", "был", "была", "были", "быть", "вам", "вас", "ваш", "ведь", "весь",
   "для", "его", "если", "есть", "еще", "или", "как", "когда", "который", "лишь",
