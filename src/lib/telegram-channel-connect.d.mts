@@ -20,20 +20,17 @@ export interface TelegramChannelMembership {
 export interface TelegramChannelConnectionClient {
   query(sql: string, values?: readonly unknown[]): Promise<{
     rows: Array<Record<string, unknown>>;
-    rowCount?: number;
+    rowCount?: number | null;
   }>;
   release(): void;
 }
 
 export interface TelegramChannelConnectionPool {
   connect(): Promise<TelegramChannelConnectionClient>;
-  query?(sql: string, values?: readonly unknown[]): Promise<{ rows: Array<Record<string, unknown>> }>;
 }
 
 export type TelegramChannelConnectionResult =
   | { state: "access_denied" }
-  | { state: "proof_required" }
-  | { state: "proof_invalid" }
   | { state: "taken" }
   | {
       state: "connected" | "reconnected" | "already_connected";
@@ -54,9 +51,6 @@ export function saveVerifiedTelegramChannel(
   input: {
     userId: number;
     projectId: number;
-    actorId: number;
-    proofId: string;
-    eventId?: number;
     chat: TelegramChannelChat;
     requestId?: string;
   },
@@ -80,11 +74,9 @@ export function markTelegramChannelUnavailable(
     }
 >;
 
-export function createTelegramChannelProof(pool: TelegramChannelConnectionPool, input: {
-  userId: number; projectId: number; source: "web" | "telegram"; chatId?: number;
-}): Promise<{ state: "telegram_identity_required" | "connection_pending_other_project" | "access_denied" } | {
-  state: "ready"; proofId: string; actorId: number; projectId: number;
-}>;
-export function pendingTelegramChannelProof(pool: TelegramChannelConnectionPool, input: {
-  actorId: number; eventDate: number;
-}): Promise<{ proof_id: string; user_id: number; project_id: number; actor_id: number } | null>;
+/** Explicit project confirmation after Telegram proves both administrator identities. */
+export function confirmTelegramChannelProject(
+  pool: TelegramChannelConnectionPool & Pick<TelegramChannelConnectionClient, "query">,
+  input: { userId: number; projectId: number; actorId: number; botId: number; chatId: number; requestId?: string },
+  api: (method: string, payload: { chat_id: number; user_id?: number }) => Promise<{ ok: boolean; result?: Record<string, unknown> }>,
+): Promise<TelegramChannelConnectionResult | { state: "telegram_access_denied" }>;

@@ -1,5 +1,5 @@
-import { ProjectAccessError } from "@/lib/project-permissions";
-import { withResearchProject, researchChannel } from "@/lib/research-project-access";
+import { requireSelectedProjectPermission } from "@/lib/project-permissions";
+import { withProjectRoute } from "@/lib/project-route";
 // Действия над уже проверенным результатом радара. Клиент передаёт только id; URL,
 // handle и текст всегда перечитываются из user-scoped строки, поэтому подменить источник
 // или сохранить чужую находку нельзя.
@@ -7,6 +7,7 @@ import { withResearchProject, researchChannel } from "@/lib/research-project-acc
 import { readJsonBodyValue } from "@/lib/bounded-request-body";
 import { NextRequest, NextResponse } from "next/server";
 
+import { resolveChannel } from "@/lib/autopilot";
 import { MAX_COMPETITORS } from "@/lib/competitors";
 import { getPool } from "@/lib/db";
 import { getStatsQueue } from "@/lib/queue";
@@ -19,7 +20,7 @@ function json(body: Record<string, unknown>, status = 200) {
   return NextResponse.json(body, { status, headers: { "cache-control": "no-store" } });
 }
 
-export async function POST(
+async function handlePOST(
   req: NextRequest,
   ctx: { params: Promise<{ id: string }> },
 ) {
@@ -42,10 +43,11 @@ export async function POST(
   }
 
   const wantedChannel = Number(body.channelId) || null;
+  const channelId = await resolveChannel(user.id, wantedChannel);
+  if (!channelId) return json({ error: "no_channel" }, 422);
+  const pool = getPool();
   try {
-    return await withResearchProject(getPool(), user.id, "content.create", async (pool, projectId, afterCommit) => {
-    const channelId = await researchChannel(pool, projectId, wantedChannel, true);
-    if (!channelId) return json({ error: "no_channel" }, 422);
+    const { projectId } = await requireSelectedProjectPermission(pool, user.id, "content.create");
     const result = (
       await pool.query<{
         id: string;
@@ -63,8 +65,8 @@ export async function POST(
         `select result.id, result.result_type, result.handle, result.title, result.description,
                 result.subscribers, result.text, result.url, result.reason, result.raw_data, run.query
            from radar_search_results result
-           join radar_search_runs run on run.id = result.run_id and run.user_id = $2
-          where result.id = $1 and result.user_id = $2 and run.project_id = $3
+           join radar_search_runs run on run.id = result.run_id and run.user_id = $2 and run.project_id = $3
+          where result.id = $1 and result.user_id = $2
             and result.verification_status = 'verified'`,
         [resultId, user.id, projectId],
       )
@@ -77,7 +79,7 @@ export async function POST(
       }
       const count = (
         await pool.query<{ n: number }>(
-          `select count(*)::int as n from competitors where channel_id = $1`,
+          `select count(*)::int as n from competitors where channel_id = $1 and network = 'tg'`,
           [channelId],
         )
       ).rows[0].n;
@@ -93,19 +95,18 @@ export async function POST(
 
       const inserted = await pool.query<{ id: string }>(
         `insert into competitors
-           (user_id, collection_requested_by_user_id, channel_id, network, handle, title, subscribers, status, auto_added)
-         values ($1, $1, $2, 'tg', $3, $4, $5, 'pending', false)
+           (user_id, channel_id, network, handle, title, subscribers, status, auto_added)
+         values ($1, $2, 'tg', $3, $4, $5, 'pending', false)
          on conflict (channel_id, network, handle) do nothing
          returning id`,
         [user.id, channelId, result.handle, result.title, result.subscribers],
       );
       const competitorId = Number(inserted.rows[0]?.id);
-      afterCommit(async (pool) => {
       if (competitorId) {
         try {
           await getStatsQueue().add(
             "competitor",
-            { id: competitorId, userId: user.id, projectId },
+            { id: competitorId },
             { removeOnComplete: true, attempts: 2, backoff: { type: "fixed", delay: 15_000 } },
           );
         } catch (error) {
@@ -113,7 +114,6 @@ export async function POST(
           throw error;
         }
       }
-      });
       return json({ ok: true, id: competitorId, handle: result.handle });
     }
 
@@ -153,10 +153,10 @@ export async function POST(
       ],
     );
     return json({ ok: true, id: Number(saved.rows[0]?.id), saved: true });
-    });
   } catch (error) {
-    if (error instanceof ProjectAccessError) return json({ error: "forbidden" }, 403);
     console.error("[/api/radar/results/:id] POST", error);
     return json({ error: "action_unavailable" }, 503);
   }
 }
+
+export const POST = withProjectRoute(handlePOST);

@@ -3,13 +3,17 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 const fixture = vi.hoisted(() => ({
   workers: 1, failed: 0, paused: false,
   completedAt: null as number | null,
+  providers: [] as { engine: string; state: string; lastOutcome: string; updatedAt: string; lastFailureCode: string }[],
   query: vi.fn(),
   poolSnapshot: { waiting: 0, acquireTimeouts: 4, acquireErrors: 4, recentAcquireErrors: 0 },
 }));
 vi.mock("bullmq", () => ({ Queue: class {
+  keys = { delayed: "test-delayed" };
+  client = Promise.resolve({ zrange: async () => [] });
   on() { return this; }
   async getJobCounts() { return { wait: 0, active: 0, delayed: 0, completed: 1, failed: fixture.failed, prioritized: 0, paused: 0, "waiting-children": 0 }; }
-  async getWorkersCount() { return fixture.workers; }
+  async waitUntilReady() {}
+  async getWorkers() { return Array.from({ length: fixture.workers }, () => ({ db: "15" })); }
   async getJobSchedulers() { return []; }
   async isPaused() { return fixture.paused; }
   async getJobs(types: string[]) { return types.includes("completed") && fixture.completedAt ? [{ finishedOn: fixture.completedAt, timestamp: fixture.completedAt - 1000 }] : []; }
@@ -32,7 +36,7 @@ vi.mock("./readiness-probes", () => ({
   probeTrackingSecretsConfiguration: () => "up",
   probeUploadIngressConfiguration: () => "up",
 }));
-vi.mock("./ai-provider-health", () => ({ aiProviderHealthSnapshot: () => [] }));
+vi.mock("./ai-provider-health", () => ({ aiProviderHealthSnapshot: () => fixture.providers }));
 
 import { loadAdminSystemDiagnostics, probeAdminQueues, runDiagnosticDefinitions } from "./admin-system-diagnostics";
 
@@ -41,8 +45,11 @@ beforeEach(() => {
   vi.stubEnv("DATABASE_URL", "postgresql://localhost/aurora_system_test");
   vi.stubEnv("TG_BOT_TOKEN", "");
   fixture.workers = 1; fixture.failed = 0; fixture.paused = false; fixture.completedAt = null;
+  fixture.providers = [];
   fixture.query.mockImplementation(async (sql: string) => {
     if (sql.includes("from password_reset_outbox")) return { rows: [{ sent: 1, failed: 0, pending: 0, overdue: 0, last_success_at: "2020-01-01T00:00:00.000Z" }] };
+    if (sql.includes("from ai_provider_attempts")) return { rows: [{ provider: "local", model: "fixture", successes: 1, failures: 0, recent_successes: 1, recent_failures: 0, average_latency_ms: 100, last_success_at: new Date(Date.now()-60_000).toISOString(), last_failure_at: null, first_failure_at: null, last_error_code: null }] };
+    if (sql.includes("from ai_usage")) return { rows: [{ today: 0, period: 0, timezone: "UTC" }] };
     return { rows: [] };
   });
 });
@@ -87,6 +94,13 @@ describe("system monitoring integrity regressions", () => {
   it("does not treat an unused Telegram bot as a broken integration", async () => {
     const report = await loadAdminSystemDiagnostics();
     expect(report.components.find(c => c.id === "telegram_worker")?.state).toBe("not_used");
+  });
+  it("does not let a closed circuit hide a fresh failed provider probe, and recovers on success", async () => {
+    fixture.providers = [{ engine: "local", state: "closed", lastOutcome: "failure", updatedAt: new Date().toISOString(), lastFailureCode: "readiness_probe_failed" }];
+    const failed = (await loadAdminSystemDiagnostics()).components.find(c => c.id === "aurora_ai");
+    expect(failed).toMatchObject({ state: "degraded", safeErrorCode: "readiness_probe_failed" });
+    fixture.providers[0].lastOutcome = "success";
+    expect((await loadAdminSystemDiagnostics()).components.find(c => c.id === "aurora_ai")?.state).toBe("healthy");
   });
   it("returns partial evidence when one probe never settles", async () => {
     vi.useFakeTimers();

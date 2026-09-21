@@ -2,8 +2,6 @@
 import { useProjectFetch } from "@/lib/use-project-transport";
 
 
-import { projectFetch as fetch } from "@/lib/project-fetch";
-
 import Link from "next/link";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { CheckCircle2, CircleAlert, Link2, MousePointerClick, RefreshCw, Send } from "lucide-react";

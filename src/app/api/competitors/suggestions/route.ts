@@ -1,5 +1,5 @@
-import { ProjectAccessError } from "@/lib/project-permissions";
-import { withResearchProject, researchChannel } from "@/lib/research-project-access";
+import { requireSelectedProjectPermission } from "@/lib/project-permissions";
+import { withProjectRoute } from "@/lib/project-route";
 // Д.6+ — находки агента: «похоже, это твои соседи».
 //
 // Платформа НЕ добавляет их сама. Она приносит проверенный список с обоснованием — кто
@@ -11,8 +11,13 @@ import { NextRequest, NextResponse } from "next/server";
 import { getPool } from "@/lib/db";
 import { getSessionUser } from "@/lib/session";
 import { getStatsQueue } from "@/lib/queue";
+import { resolveChannel } from "@/lib/autopilot";
 import { MAX_COMPETITORS } from "@/lib/competitors";
 import { hasTrustedMutationOrigin } from "@/lib/request-origin";
+import {
+  competitorDiscoveryJobId,
+  confirmedDiscoveryTopic,
+} from "@/lib/competitor-topic-fit.mjs";
 
 export const runtime = "nodejs";
 
@@ -31,17 +36,23 @@ interface Row {
   on_topic: boolean | null;
 }
 
-export async function GET(req: NextRequest) {
+async function handleGET(req: NextRequest) {
   const user = await getSessionUser(req);
   if (!user) return NextResponse.json({ suggestions: [] });
 
   try {
-    return await withResearchProject(getPool(), user.id, "project.read", async (pool, projectId) => {
-    const channelId = await researchChannel(pool, projectId, Number(req.nextUrl.searchParams.get("channel")) || null);
+    const pool = getPool();
+    const channelId = await resolveChannel(user.id, Number(req.nextUrl.searchParams.get("channel")) || null);
     if (!channelId) return NextResponse.json({ suggestions: [], seeds: 0 });
-    // on_topic = false — ИИ сверил посты кандидата с брифом и сказал «другая тема». Не
-    // показываем: именно так сюда приезжали PR-агентство и софтверный блог — на них просто
-    // кто-то сослался. null — движка не было, судить было некому: показываем, но честно помечаем.
+    const brief = (
+      await pool.query<{ niche: string | null; ready: boolean }>(
+        `select niche, ready from content_brief where channel_id = $1`,
+        [channelId],
+      )
+    ).rows[0];
+    const topic = confirmedDiscoveryTopic(brief) || null;
+    // Fail closed: null означает, что тему никто не подтвердил. Такой канал нельзя показывать
+    // как рекомендацию — общий справочник содержит источники из всех ниш.
     const rows = (
       await pool.query<Row>(
         // to_jsonb делает чтение обратно совместимым во время rolling deploy: если новая
@@ -58,8 +69,8 @@ export async function GET(req: NextRequest) {
                 s.sources,
                 s.on_topic
            from competitor_suggestions s
-          where s.channel_id = $1 and s.status = 'new' and s.on_topic is distinct from false
-          order by s.on_topic desc nulls last, s.mentioned_by desc, s.subscribers desc nulls last
+          where s.channel_id = $1 and s.status = 'new' and s.on_topic = true
+          order by s.mentioned_by desc, s.subscribers desc nulls last
           limit 24`,
         [channelId],
       )
@@ -69,7 +80,8 @@ export async function GET(req: NextRequest) {
     const seeds = (
       await pool.query<{ n: number }>(
         `select (
-           (select count(*) from competitors where channel_id = $1 and network = 'tg')
+           (select count(*) from competitors
+             where channel_id = $1 and network = 'tg' and is_active)
            + (select count(*) from channels where id = $1 and handle is not null)
          )::int as n`,
         [channelId],
@@ -96,10 +108,9 @@ export async function GET(req: NextRequest) {
       })),
       seeds,
       channelId,
-    });
+      topic,
     });
   } catch (err) {
-    if (err instanceof ProjectAccessError) return NextResponse.json({ error: "forbidden" }, { status: 403 });
     console.error("[/api/competitors/suggestions]", err);
     return NextResponse.json(
       { suggestions: [], seeds: 0, error: "suggestions_unavailable" },
@@ -109,46 +120,53 @@ export async function GET(req: NextRequest) {
 }
 
 /** Запустить поиск сейчас. Сам поиск делает воркер — он ходит наружу, не роут. */
-export async function POST(req: NextRequest) {
+async function handlePOST(req: NextRequest) {
   if (!hasTrustedMutationOrigin(req)) {
     return NextResponse.json({ ok: false, error: "forbidden_origin" }, { status: 403 });
   }
   const user = await getSessionUser(req);
   if (!user) return NextResponse.json({ ok: false, error: "unauthorized" }, { status: 401 });
+  await requireSelectedProjectPermission(getPool(), user.id, "content.create");
 
   try {
-    return await withResearchProject(getPool(), user.id, "content.create", async (pool, projectId, afterCommit) => {
     // Ищем соседей тому каналу, который человек сейчас смотрит.
-    const channelId = await researchChannel(pool, projectId, Number(req.nextUrl.searchParams.get("channel")) || null);
+    const channelId = await resolveChannel(user.id, Number(req.nextUrl.searchParams.get("channel")) || null);
     if (!channelId) return NextResponse.json({ ok: false, error: "no_channel" }, { status: 422 });
-    afterCommit(async () => {
+    const brief = (
+      await getPool().query<{ niche: string | null; ready: boolean }>(
+        `select niche, ready from content_brief where channel_id = $1`,
+        [channelId],
+      )
+    ).rows[0];
+    const topic = confirmedDiscoveryTopic(brief);
+    if (!topic) {
+      return NextResponse.json({ ok: false, error: "topic_required" }, { status: 409 });
+    }
     await getStatsQueue().add(
       "discover",
-      { userId: user.id, channelId, projectId },
+      { userId: user.id, channelId },
       {
-        jobId: `discover-${user.id}-${channelId}`,
+        jobId: competitorDiscoveryJobId({ userId: user.id, channelId, topic }),
         removeOnComplete: true,
         attempts: 2,
         backoff: { type: "fixed", delay: 15000 },
       },
     );
-    });
     return NextResponse.json({ ok: true });
-    });
   } catch (err) {
-    if (err instanceof ProjectAccessError) return NextResponse.json({ error: "forbidden" }, { status: 403 });
     console.error("[/api/competitors/suggestions] POST", err);
     return NextResponse.json({ ok: false, error: "server" }, { status: 500 });
   }
 }
 
 /** Принять находку (добавить в конкуренты) или отклонить. */
-export async function PATCH(req: NextRequest) {
+async function handlePATCH(req: NextRequest) {
   if (!hasTrustedMutationOrigin(req)) {
     return NextResponse.json({ ok: false, error: "forbidden_origin" }, { status: 403 });
   }
   const user = await getSessionUser(req);
   if (!user) return NextResponse.json({ ok: false, error: "unauthorized" }, { status: 401 });
+  await requireSelectedProjectPermission(getPool(), user.id, "content.create");
 
   let body: { id?: unknown; action?: unknown };
   try {
@@ -163,7 +181,7 @@ export async function PATCH(req: NextRequest) {
   }
 
   try {
-    return await withResearchProject(getPool(), user.id, "content.edit", async (pool, projectId, afterCommit) => {
+    const pool = getPool();
     const sug = (
       await pool.query<{ handle: string; channel_id: number }>(
         `select handle, channel_id from competitor_suggestions
@@ -175,7 +193,7 @@ export async function PATCH(req: NextRequest) {
     // Находка принадлежит каналу проекта, а не человеку, который первым запустил
     // поиск. Любой текущий участник того же выбранного проекта должен иметь
     // возможность принять её; чужой канал по-прежнему отсекает серверный scope.
-    const channelId = await researchChannel(pool, projectId, Number(sug.channel_id), true);
+    const channelId = await resolveChannel(user.id, Number(sug.channel_id));
     if (channelId !== Number(sug.channel_id)) {
       return NextResponse.json({ ok: false, error: "not_found" }, { status: 404 });
     }
@@ -192,7 +210,7 @@ export async function PATCH(req: NextRequest) {
     // Тот же лимит, что и при ручном добавлении: находки не должны его обходить.
     const cnt = (
       await pool.query<{ n: number }>(
-        `select count(*)::int as n from competitors where channel_id = $1`,
+        `select count(*)::int as n from competitors where channel_id = $1 and network = 'tg'`,
         [sug.channel_id],
       )
     ).rows[0].n;
@@ -202,8 +220,8 @@ export async function PATCH(req: NextRequest) {
 
     // Канал берём из самой находки: её нашли и признали «своей темой» для конкретного канала.
     const ins = await pool.query<{ id: number }>(
-      `insert into competitors (user_id, collection_requested_by_user_id, channel_id, network, handle, status)
-       values ($1, $1, $2, 'tg', $3, 'pending')
+      `insert into competitors (user_id, channel_id, network, handle, status)
+       values ($1, $2, 'tg', $3, 'pending')
        on conflict (channel_id, network, handle) do nothing
        returning id`,
       [user.id, sug.channel_id, sug.handle],
@@ -215,20 +233,20 @@ export async function PATCH(req: NextRequest) {
     );
 
     // Собираем досье сразу — иначе карточка висела бы пустой до следующего цикла.
-    afterCommit(async () => {
     if (ins.rows[0]) {
       await getStatsQueue().add(
         "competitor",
-        { id: ins.rows[0].id, userId: user.id, projectId },
+        { id: ins.rows[0].id },
         { removeOnComplete: true, attempts: 2, backoff: { type: "fixed", delay: 15000 } },
       );
     }
-    });
     return NextResponse.json({ ok: true, handle: sug.handle });
-    });
   } catch (err) {
-    if (err instanceof ProjectAccessError) return NextResponse.json({ error: "forbidden" }, { status: 403 });
     console.error("[/api/competitors/suggestions] PATCH", err);
     return NextResponse.json({ ok: false, error: "server" }, { status: 500 });
   }
 }
+
+export const GET = withProjectRoute(handleGET);
+export const POST = withProjectRoute(handlePOST);
+export const PATCH = withProjectRoute(handlePATCH);

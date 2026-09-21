@@ -1,6 +1,7 @@
 "use client";
+import { useCalendarData } from "@/lib/use-calendar-data";
+import { useProjectFetch, useProjectCall } from "@/lib/use-project-transport";
 
-import { projectFetch as fetch } from "@/lib/project-fetch";
 
 // А4. Календарь — ГЛАВНЫЙ экран платформы (ТЗ 5.3, Приложение А).
 // Одно главное действие: создать пост кликом в день. Публикует сервер.
@@ -9,6 +10,7 @@ import {
   useCallback,
   useEffect,
   useId,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -58,12 +60,10 @@ import {
 } from "@/components/ui/primitives";
 import {
   claimUnownedLegacyDraft,
-  draftRequestDiagnostic,
   DraftRequestError,
   isRecoverableLegacyDraft,
   isUnownedLegacyDraftCandidate,
-  listServerDrafts,
-  rescheduleServerDraft,
+  rescheduleServerDraft as unscopedRescheduleServerDraft,
 } from "@/lib/draft-client";
 import type { ServerDraft } from "@/lib/draft-types";
 import {
@@ -73,6 +73,8 @@ import {
   calendarRecordStatus,
 } from "@/lib/calendar-team-filters";
 import type { ClientProjectRole } from "@/lib/project-client";
+import { rescheduleAutopilotCalendarPost } from "@/lib/calendar-autopilot-reschedule";
+import { projectTransportSnapshot } from "@/lib/project-transport";
 import {
   resolveCalendarDayMove,
   withOptimisticCalendarSchedule,
@@ -95,11 +97,10 @@ import {
   calendarDateKey,
   calendarDateKeyForInstant,
   calendarDayForInstant,
-  calendarInstantRange,
 } from "@/lib/calendar-timezone";
 import { useStore } from "@/lib/store";
-import { reschedulePublication } from "@/lib/publication-lifecycle-client";
-import type { Network, Post, RealPost, User } from "@/lib/types";
+import { reschedulePublication as unscopedReschedulePublication } from "@/lib/publication-lifecycle-client";
+import type { Network, Post, RealPost } from "@/lib/types";
 import { ScheduleValidationError } from "@/lib/timezone-schedule";
 import {
   addDays,
@@ -133,6 +134,8 @@ type CalendarPost = Post & {
   publicationOperationId?: number;
   operationStatus?: string;
   operationScheduleRevision?: number;
+  postScheduleRevision?: number;
+  autopilotCanReschedule?: boolean;
   scheduleTimezone?: string;
   scheduledOffset?: string | null;
   scheduleDisambiguation?: "reject" | "earlier" | "later";
@@ -273,6 +276,8 @@ function realToPost(rp: RealPost): CalendarPost {
     publicationOperationId: rp.publication_operation_id ?? undefined,
     operationStatus: rp.publication_operation_status ?? undefined,
     operationScheduleRevision: rp.operation_schedule_revision ?? undefined,
+    postScheduleRevision: rp.schedule_revision,
+    autopilotCanReschedule: rp.autopilot_can_reschedule,
     scheduleTimezone: rp.scheduled_timezone ?? undefined,
     scheduledOffset: rp.scheduled_offset,
     scheduleDisambiguation: rp.scheduled_disambiguation ?? undefined,
@@ -472,10 +477,18 @@ function PostCard({
   }, []);
 
   const pointerDragRef = useRef<ReturnType<typeof createCalendarLongPressDrag> | null>(null);
+  const dragCallbacksRef = useRef({ canMove, post, onPointerDragStart, onPointerDragMove, onPointerDragEnd, onPointerDragCancel });
+
+  useLayoutEffect(() => {
+    dragCallbacksRef.current = { canMove, post, onPointerDragStart, onPointerDragMove, onPointerDragEnd, onPointerDragCancel };
+  }, [canMove, post, onPointerDragStart, onPointerDragMove, onPointerDragEnd, onPointerDragCancel]);
 
   useEffect(() => {
+    // A refresh or toast changes props while the pointer is held. Keep the gesture
+    // alive and read the latest committed card and callbacks when it moves/drops.
     const pointerDrag = createCalendarLongPressDrag({
       onActivate: (point) => {
+        const { canMove, post, onPointerDragStart } = dragCallbacksRef.current;
         const rect = dragRectRef.current;
         if (!canMove || !rect || onPointerDragStart?.(post, { point, rect }) !== true) {
           return false;
@@ -483,14 +496,19 @@ function PostCard({
         if (activePointerTypeRef.current !== "mouse") lockTouchScroll();
         return true;
       },
-      onMove: (point) => onPointerDragMove?.(post, point),
+      onMove: (point) => {
+        const { post, onPointerDragMove } = dragCallbacksRef.current;
+        onPointerDragMove?.(post, point);
+      },
       onDrop: (point) => {
+        const { post, onPointerDragEnd } = dragCallbacksRef.current;
         unlockTouchScroll();
         onPointerDragEnd?.(post, point);
       },
       onCancel: () => {
+        suppressOpenUntilRef.current = Date.now() + 700;
         unlockTouchScroll();
-        onPointerDragCancel?.();
+        dragCallbacksRef.current.onPointerDragCancel?.();
       },
     }, { mouseActivation: "threshold" });
     pointerDragRef.current = pointerDrag;
@@ -500,21 +518,12 @@ function PostCard({
       if (pointerDragRef.current === pointerDrag) pointerDragRef.current = null;
       unlockTouchScroll();
     };
-  }, [
-    canMove,
-    lockTouchScroll,
-    onPointerDragCancel,
-    onPointerDragEnd,
-    onPointerDragMove,
-    onPointerDragStart,
-    post,
-    unlockTouchScroll,
-  ]);
+  }, [lockTouchScroll, unlockTouchScroll]);
 
   useEffect(() => {
     const pointerDrag = pointerDragRef.current;
-    if (!dragging && pointerDrag?.isActive()) pointerDrag.cancel();
-  }, [dragging]);
+    if ((!dragging || !canMove || moving) && pointerDrag?.isActive()) pointerDrag.cancel();
+  }, [canMove, dragging, moving]);
 
   const pointerPoint = (event: ReactPointerEvent<HTMLElement>): CalendarDragPoint => ({
     clientX: event.clientX,
@@ -669,7 +678,7 @@ function PostCard({
               />
             )}
             <span className="nums text-[13px] font-bold text-text">
-              {fmtTime(post.scheduledAt, post.scheduleTimezone ?? calendarTimezone)}
+              {fmtTime(post.scheduledAt, calendarTimezone)}
             </span>
           </span>
           <span className="ml-auto flex max-w-full flex-wrap items-center justify-end gap-1">
@@ -868,7 +877,7 @@ function CalendarDragOverlay({
         >
           <div className="flex min-w-0 items-center justify-between gap-2">
             <span className="nums text-[13px] font-bold text-text">
-              {fmtTime(post.scheduledAt, post.scheduleTimezone ?? calendarTimezone)}
+              {fmtTime(post.scheduledAt, calendarTimezone)}
             </span>
             <span className="flex items-center gap-1 text-brand">
               <NetworkChips networks={post.networks} />
@@ -1001,7 +1010,7 @@ function CalendarMoveDialog({
             <p id={descriptionId} className="mt-1.5 text-pretty text-sm leading-relaxed text-text-2">
               Выберите другой день. Время {fmtTime(
                 post.scheduledAt,
-                post.scheduleTimezone ?? calendarTimezone,
+                calendarTimezone,
               )} сохранится.
             </p>
           </div>
@@ -1026,7 +1035,7 @@ function CalendarMoveDialog({
             const allowed = canDropOn(post, day);
             const currentDay = calendarDateKeyForInstant(
               post.scheduledAt,
-              post.scheduleTimezone ?? calendarTimezone,
+              calendarTimezone,
             ) === dayKey(day);
             return (
               <button
@@ -1286,7 +1295,7 @@ function MonthCell({
           >
             <span className={cn("h-1.5 w-1.5 shrink-0 rounded-full", dot(p))} />
             <span className="nums shrink-0 text-[13px] font-semibold text-text">
-              {fmtTime(p.scheduledAt, p.scheduleTimezone ?? calendarTimezone)}
+              {fmtTime(p.scheduledAt, calendarTimezone)}
             </span>
             <span className="truncate text-[13px] text-text-2">{p.text}</span>
           </span>
@@ -1352,14 +1361,14 @@ function WeekSummary({ posts }: { posts: DatedPost[] }) {
         {items.map((item) => {
           const Icon = item.icon;
           return (
-            <div key={item.label} className="flex min-w-0 items-start gap-3">
-              <span className={cn("mt-0.5 flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-surface-inset", item.tone)}>
-                <Icon className="h-[18px] w-[18px]" strokeWidth={2} aria-hidden />
-              </span>
-              <div className="flex min-w-0 flex-col">
-                <dt className="order-2 mt-1.5 text-[13px] leading-snug text-text-3">{item.label}</dt>
-                <dd className="nums order-1 text-xl font-extrabold leading-none text-text tabular-nums">{item.value}</dd>
-              </div>
+            <div key={item.label} className="grid min-w-0 grid-cols-[2.25rem_1fr] grid-rows-[auto_auto] gap-x-3">
+              <dt className="col-start-2 row-start-2 mt-1.5 text-[13px] leading-snug text-text-3">{item.label}</dt>
+              <dd className="contents">
+                <span className={cn("col-start-1 row-span-2 row-start-1 mt-0.5 flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-surface-inset", item.tone)} aria-hidden="true">
+                  <Icon className="h-[18px] w-[18px]" strokeWidth={2} />
+                </span>
+                <span className="nums col-start-2 row-start-1 text-xl font-extrabold leading-none text-text tabular-nums">{item.value}</span>
+              </dd>
             </div>
           );
         })}
@@ -1414,7 +1423,7 @@ function UpcomingPublications({
               >
                 <span className="text-[12px] font-semibold text-text-3">{fmtDate(post.scheduledAt)}</span>
                 <span className="nums text-[13px] font-bold text-text tabular-nums">
-                  {fmtTime(post.scheduledAt, post.scheduleTimezone ?? calendarTimezone)}
+                  {fmtTime(post.scheduledAt, calendarTimezone)}
                 </span>
                 <span className="truncate text-[13px] text-text-2">{post.text}</span>
                 <Badge tone={calendarStatusTone(calendarRecordStatus(post))} className="col-start-3 justify-self-start sm:col-auto">
@@ -1454,6 +1463,9 @@ function CalendarTip() {
 /* --------------------------------------------------------------- ЭКРАН */
 
 export default function CalendarPage() {
+  const rescheduleServerDraft = useProjectCall(unscopedRescheduleServerDraft);
+  const reschedulePublication = useProjectCall(unscopedReschedulePublication);
+  const fetch = useProjectFetch();
   const router = useRouter();
   const s = useStore();
   const projects = useProjects();
@@ -1471,10 +1483,6 @@ export default function CalendarPage() {
     new Date().toISOString(),
     calendarTimezone,
   ));
-  const [serverDrafts, setServerDrafts] = useState<ServerDraft[]>([]);
-  const [draftOwner, setDraftOwner] = useState<User | null>(null);
-  const [draftsReady, setDraftsReady] = useState(false);
-  const [draftsError, setDraftsError] = useState(false);
   const [draggedPostId, setDraggedPostId] = useState<string | null>(null);
   const [dragPreview, setDragPreview] = useState<CalendarDragPreview | null>(null);
   const [dragOverDay, setDragOverDay] = useState<string | null>(null);
@@ -1496,92 +1504,10 @@ export default function CalendarPage() {
   const focusedPostRef = useRef<string | null>(null);
   const anchoredProjectRef = useRef<string | null>(null);
 
-  const hasUser = Boolean(s.user);
   useEffect(() => {
     const timer = window.setInterval(() => setCalendarClock(Date.now()), 60_000);
     return () => window.clearInterval(timer);
   }, []);
-  const refreshDrafts = useCallback(async (owner: User, signal?: AbortSignal) => {
-    try {
-      const drafts = await listServerDrafts(signal);
-      if (signal?.aborted) return;
-      setServerDrafts(drafts);
-      setDraftOwner(owner);
-      setDraftsError(false);
-    } catch (error) {
-      if (signal?.aborted) return;
-      setDraftOwner(owner);
-      setDraftsError(true);
-      if (!(error instanceof DraftRequestError && error.kind === "offline")) {
-        console.error(`[/app/calendar drafts] ${draftRequestDiagnostic(error)}`);
-      }
-    } finally {
-      if (!signal?.aborted) setDraftsReady(true);
-    }
-  }, []);
-
-  useEffect(() => {
-    if (!s.authReady || !s.user) return;
-    const controller = new AbortController();
-    // eslint-disable-next-line react-hooks/set-state-in-effect -- первичная синхронизация с серверным API
-    void refreshDrafts(s.user, controller.signal);
-    const onFocus = () => void refreshDrafts(s.user as User);
-    window.addEventListener("focus", onFocus);
-    return () => {
-      controller.abort();
-      window.removeEventListener("focus", onFocus);
-    };
-  }, [hasUser, refreshDrafts, s.authReady, s.user]);
-
-  useEffect(() => {
-    if (!s.ready || focusedPostRef.current) return;
-    const match = window.location.hash.match(/^#calendar-real-(\d+)$/u);
-    if (!match) return;
-    const post = s.realPosts.find((candidate) => candidate.id === Number(match[1]));
-    if (!post?.scheduled_at) return;
-    focusedPostRef.current = `calendar-real-${post.id}`;
-    // eslint-disable-next-line react-hooks/set-state-in-effect -- focused deep link selects its exact week
-    setAnchor(calendarDayForInstant(
-      post.scheduled_at,
-      post.scheduled_timezone ?? calendarTimezone,
-    ));
-    setView("week");
-    requestAnimationFrame(() => requestAnimationFrame(() => {
-      const element = document.getElementById(focusedPostRef.current ?? "");
-      element?.focus({ preventScroll: true });
-      element?.scrollIntoView({ behavior: "smooth", block: "center" });
-    }));
-  }, [calendarTimezone, s.ready, s.realPosts]);
-
-  // A same-document hash change must resolve outside the loaded week too.
-  useEffect(() => {
-    if (!currentProjectId || !s.authReady || !s.user) return;
-    let controller: AbortController | undefined;
-    const resolveLink = () => {
-      controller?.abort();
-      const match = window.location.hash.match(/^#calendar-real-(\d+)$/u);
-      if (!match) return;
-      if (focusedPostRef.current !== `calendar-real-${match[1]}`) focusedPostRef.current = null;
-      const request = new AbortController();
-      controller = request;
-      void fetch(`/api/posts?id=${match[1]}`, { cache: "no-store", signal: request.signal })
-        .then(async (response) => {
-          if (!response.ok) return;
-          const body = await response.json();
-          const post = body.posts?.find((candidate: { id: number }) => candidate.id === Number(match[1]));
-          if (request.signal.aborted || !post?.scheduled_at || body.projectId !== Number(currentProjectId)) return;
-          setAnchor(calendarDayForInstant(post.scheduled_at, calendarTimezone));
-          setView("week");
-        }).catch(() => { /* regular calendar request retains its visible failure state */ });
-    };
-    resolveLink();
-    window.addEventListener("hashchange", resolveLink);
-    return () => {
-      controller?.abort();
-      window.removeEventListener("hashchange", resolveLink);
-    };
-  }, [calendarTimezone, currentProjectId, s.authReady, s.user]);
-
   // Полночь сегодняшнего дня. Считается на клиенте — до s.ready ничего датозависимого не рисуем
   const today = useMemo(
     () => calendarDayForInstant(new Date(calendarClock).toISOString(), calendarTimezone),
@@ -1615,14 +1541,41 @@ export default function CalendarPage() {
     return Array.from({ length: weeks * 7 }, (_, i) => addDays(gridStart, i));
   }, [anchor]);
 
-  const setPostsRange = s.setRealPostsRange;
-  const visiblePostsRange = useMemo(() => {
-    if (view === "list") return null;
-    const days = view === "month" ? monthCells : weekDays;
-    return calendarInstantRange(days[0], addDays(days[days.length - 1], 1), calendarTimezone);
-  }, [calendarTimezone, monthCells, view, weekDays]);
-  useEffect(() => { setPostsRange(visiblePostsRange); }, [setPostsRange, visiblePostsRange]);
-  useEffect(() => () => { setPostsRange(null); }, [setPostsRange]);
+  const visibleDays = view === "month" ? monthCells : weekDays;
+  const calendarData = useCalendarData(
+    s.ready ? currentProjectId : undefined,
+    calendarTimezone,
+    dayKey(visibleDays[0]),
+    dayKey(addDays(visibleDays[visibleDays.length - 1], 1)),
+    s.realPosts,
+  );
+  const serverDrafts = calendarData.drafts;
+  const draftsError = calendarData.error;
+  const draftsReadyForUser = calendarData.ready;
+  const { refresh: refreshDrafts, updateDraft, updatePost } = calendarData;
+
+  useEffect(() => {
+    if (!s.ready || focusedPostRef.current) return;
+    const match = window.location.hash.match(/^#calendar-real-(\d+)$/u);
+    if (!match) return;
+    const controller = new AbortController();
+    void fetch(`/api/posts?id=${match[1]}`, { signal: controller.signal }).then(async response => {
+      if (!response.ok) throw new Error("calendar_post_unavailable");
+      const body = await response.json() as { posts: RealPost[] };
+      const post = body.posts[0];
+      if (controller.signal.aborted || !post?.scheduled_at) return;
+      focusedPostRef.current = `calendar-real-${post.id}`;
+      setAnchor(calendarDayForInstant(post.scheduled_at, calendarTimezone));
+      setView("week");
+    }).catch(() => {});
+    return () => controller.abort();
+  }, [calendarTimezone, fetch, s.ready]);
+  useEffect(() => {
+    if (!calendarData.ready || !focusedPostRef.current) return;
+    const element = document.getElementById(focusedPostRef.current);
+    element?.focus({ preventScroll: true });
+    element?.scrollIntoView({ behavior: "smooth", block: "center" });
+  }, [calendarData.ready, calendarData.posts]);
 
   /* ------------------------------------------------- ФИЛЬТР ПО КАНАЛАМ */
   // Фильтр — по АККАУНТУ, а не по сети: пять Telegram-каналов это одна сеть,
@@ -1672,7 +1625,7 @@ export default function CalendarPage() {
         if (!controller.signal.aborted) setSuggestionFeed(null);
       });
     return () => controller.abort();
-  }, [s.user, suggestionChannel]);
+  }, [fetch, s.user, suggestionChannel]);
 
   const toggleChannel = useCallback((id: number) => {
     setHidden((prev) => {
@@ -1683,13 +1636,12 @@ export default function CalendarPage() {
     });
   }, []);
 
-  const draftsReadyForUser = draftsReady && draftOwner === s.user;
   const serverDraftPosts = useMemo(
-    () => (draftOwner === s.user ? serverDrafts.map(serverDraftToPost) : []),
-    [draftOwner, s.user, serverDrafts],
+    () => serverDrafts.filter((draft) => !draft.client_key?.startsWith("autopilot-item:")).map(serverDraftToPost),
+    [serverDrafts],
   );
 
-  const realCalendarPosts = useMemo(() => s.realPosts.map(realToPost), [s.realPosts]);
+  const realCalendarPosts = useMemo(() => calendarData.posts.map(realToPost), [calendarData.posts]);
   const allCalendarPosts = useMemo<CalendarPost[]>(
     () => collapsePublishedDraftDuplicates([
       ...realCalendarPosts,
@@ -1721,11 +1673,6 @@ export default function CalendarPage() {
     }),
     [authorFilter, statusFilter],
   );
-  const filteredServerDraftPosts = useMemo(
-    () => serverDraftPosts.filter(matchesTeamFilters),
-    [matchesTeamFilters, serverDraftPosts],
-  );
-
   // В авторизованном календаре основной источник только серверный. Демо/localStorage
   // не смешиваются с публикациями и черновиками аккаунта.
   const gridPosts = useMemo(() => {
@@ -1749,6 +1696,10 @@ export default function CalendarPage() {
     if (post.serverDraftId != null && post.publicationOperationId == null) {
       const draft = serverDrafts.find((candidate) => candidate.id === post.serverDraftId);
       return canEdit && post.draftVersion != null && draft?.purpose !== "source_context";
+    }
+    if (post.publicationOperationId == null && post.origin === "autopilot") {
+      return canPublish && post.status === "scheduled" && post.autopilotCanReschedule === true
+        && Number.isSafeInteger(post.postScheduleRevision) && Number(post.postScheduleRevision) > 0;
     }
     return canPublish
       && post.status === "scheduled"
@@ -1783,6 +1734,10 @@ export default function CalendarPage() {
     if (post.status === "published") return "Опубликованный пост является историей и не переносится.";
     if (post.status === "publishing") return "Публикация уже отправляется и временно не переносится.";
     if (post.status !== "scheduled") return "Публикацию с этим статусом нельзя переносить между днями.";
+    if (post.origin === "autopilot" && post.publicationOperationId == null && !post.autopilotCanReschedule) {
+      return "Перенос недоступен: нет действующей связи с планом автопилота или отправка уже началась.";
+    }
+    if (post.origin === "autopilot" && post.autopilotCanReschedule && post.postScheduleRevision != null) return undefined;
     if (
       post.publicationOperationId == null
       || post.operationScheduleRevision == null
@@ -1818,7 +1773,7 @@ export default function CalendarPage() {
       if (!isOnGrid(p)) continue;
       const key = calendarDateKeyForInstant(
         p.scheduledAt,
-        p.scheduleTimezone ?? calendarTimezone,
+        calendarTimezone,
       );
       const list = map.get(key);
       if (list) list.push(p);
@@ -1835,8 +1790,8 @@ export default function CalendarPage() {
   // Основная очередь теперь только серверная. Старый глобальный localStorage ниже показан
   // отдельно как recovery-копии: он не привязан к пользователю и потому не импортируется сам.
   const queue = useMemo(
-    () => filteredServerDraftPosts.filter((post) => !post.scheduledAt),
-    [filteredServerDraftPosts],
+    () => gridPosts.filter((post) => !post.scheduledAt),
+    [gridPosts],
   );
   const localRecovery = useMemo(
     () => (s.user ? s.posts.filter((post) => isRecoverableLegacyDraft(post, s.user!.id)) : []),
@@ -1855,12 +1810,12 @@ export default function CalendarPage() {
     () => displayedGridPosts
       .filter((post): post is DatedPost => (
         isOnGrid(post)
-        && new Date(post.scheduledAt).getTime() >= today.getTime()
+        && new Date(post.scheduledAt).getTime() >= calendarClock
         && !["published", "missing", "deleted_external", "cancelled", "failed"].includes(post.status)
       ))
       .sort((a, b) => new Date(a.scheduledAt).getTime() - new Date(b.scheduledAt).getTime())
       .slice(0, 3),
-    [displayedGridPosts, today],
+    [displayedGridPosts, calendarClock],
   );
 
   const isCurrentPeriod =
@@ -1925,7 +1880,7 @@ export default function CalendarPage() {
           : post.status === "published_unverified"
             ? "Сеть могла принять публикацию, но не вернула подтверждение. Автоматический повтор остановлен, чтобы не создать дубль; Аврора сверяет внешний канал."
           : post.scheduledAt
-            ? `${fmtDateTime(post.scheduledAt, post.scheduleTimezone ?? calendarTimezone)}. Публикует сервер.`
+            ? `${fmtDateTime(post.scheduledAt, calendarTimezone)}. Публикует сервер.`
             : "",
     });
   };
@@ -1962,29 +1917,28 @@ export default function CalendarPage() {
       || !canManageCalendarMove(post)
       || calendarDateKeyForInstant(
         post.scheduledAt,
-        post.scheduleTimezone ?? calendarTimezone,
+        calendarTimezone,
       ) === dayKey(targetDay)
     ) return;
 
     movingPostRef.current = post.id;
     setMovingPostId(post.id);
+    const requestScope = projectTransportSnapshot();
+    let queuePending: boolean | null = false;
     try {
       const draft = post.serverDraftId == null || post.publicationOperationId != null
         ? null
         : serverDrafts.find((candidate) => candidate.id === post.serverDraftId) ?? null;
-      const timezone = draft?.scheduled_timezone
-        ?? post.scheduleTimezone
-        ?? currentProjectTimezone
-        ?? Intl.DateTimeFormat().resolvedOptions().timeZone
-        ?? "UTC";
+      const timezone = calendarTimezone;
+      const sameTimezone = (draft?.scheduled_timezone ?? post.scheduleTimezone) === timezone;
       const moved = resolveCalendarDayMove({
         scheduledAt: post.scheduledAt,
         targetDay,
         timezone,
-        disambiguation: draft?.scheduled_disambiguation ?? post.scheduleDisambiguation,
-        offset: draft?.scheduled_offset ?? post.scheduledOffset,
+        disambiguation: sameTimezone ? draft?.scheduled_disambiguation ?? post.scheduleDisambiguation : null,
+        offset: sameTimezone ? draft?.scheduled_offset ?? post.scheduledOffset : null,
       });
-      if (new Date(moved.scheduledAt).getTime() <= Date.now() + 30_000) {
+      if (new Date(moved.scheduledAt).getTime() <= Date.now() + 60_000) {
         throw new ScheduleValidationError("past_time");
       }
 
@@ -2006,9 +1960,7 @@ export default function CalendarPage() {
                 offset: moved.offset,
               },
             });
-            setServerDrafts((current) => current.map((candidate) => (
-              candidate.id === updated.id ? updated : candidate
-            )));
+            updateDraft(updated);
             return true;
           }
           if (
@@ -2030,11 +1982,58 @@ export default function CalendarPage() {
             });
             if (!result.ok) {
               publicationFailure(result.error);
-              await s.refreshReal();
+              await refreshDrafts();
               return false;
             }
-            await s.refreshReal();
+            if (projectTransportSnapshot() !== requestScope) return false;
+            if (result.scheduledAt && result.scheduleRevision != null && result.operationStatus) {
+              // The calendar owns its range data. Refreshing the shared store merely
+              // starts another read; acknowledge every destination before unlocking drag.
+              for (const related of realCalendarPosts) {
+                if (related.publicationOperationId !== post.publicationOperationId) continue;
+                updatePost({
+                  id: realId(related.id),
+                  scheduled_at: result.scheduledAt,
+                  schedule_revision: result.scheduleRevision,
+                  operation_schedule_revision: result.scheduleRevision,
+                  publication_operation_status: result.operationStatus,
+                  scheduled_timezone: moved.timezone,
+                  scheduled_offset: moved.offset,
+                  scheduled_disambiguation: moved.disambiguation,
+                });
+              }
+            } else {
+              await refreshDrafts();
+            }
+            void s.refreshReal().catch(() => undefined);
             return true;
+          }
+          if (post.origin === "autopilot" && post.postScheduleRevision != null) {
+            const result = await rescheduleAutopilotCalendarPost(fetch, {
+              postId: realId(post.id), scheduleRevision: post.postScheduleRevision, ...moved,
+            });
+            if (projectTransportSnapshot() !== requestScope) return false;
+            if (result.kind === "saved") {
+              updatePost(result.post);
+              queuePending = result.queuePending;
+              // Other screens read the shared publication store. A refresh failure must
+              // not turn an acknowledged move into a reported rollback.
+              void s.refreshReal().catch(() => undefined);
+              return true;
+            }
+            if (result.kind === "rejected" && result.post) updatePost(result.post);
+            const uncertain = result.kind === "unconfirmed";
+            const body = uncertain
+              ? "Не удалось подтвердить новую дату. Обновите календарь после восстановления связи; перенос мог сохраниться."
+              : result.error === "past"
+                ? "Выберите время не раньше чем через минуту."
+                : result.error === "access_denied"
+                  ? "Для переноса нужно право публикации в этом проекте."
+                  : "Пост или его план изменился либо отправка уже началась. Обновляем календарь — проверьте актуальную дату.";
+            setMoveAnnouncement(body);
+            s.toast({ kind: uncertain ? "info" : "danger", title: uncertain ? "Проверяем дату публикации" : "Перенос не подтверждён", body });
+            await refreshDrafts();
+            return false;
           }
           throw new Error("calendar_move_not_supported");
         },
@@ -2047,11 +2046,11 @@ export default function CalendarPage() {
       });
       if (!persisted) return;
 
-      const successBody = `${fmtDateTime(moved.scheduledAt, moved.timezone)}. Время публикации сохранено.`;
+      const successBody = `${fmtDateTime(moved.scheduledAt, moved.timezone)}. Время публикации сохранено.${queuePending ? " Очередь отправки временно недоступна; постановка повторится автоматически." : ""}`;
       setMoveAnnouncement(
         `Публикация перенесена на ${moved.localDate}, ${moved.localTime}.`,
       );
-      s.toast({ kind: "success", title: "Публикация перенесена", body: successBody });
+      s.toast({ kind: queuePending ? "info" : "success", title: "Публикация перенесена", body: successBody });
     } catch (error) {
       const scheduleError = error instanceof ScheduleValidationError ? error.code : null;
       const conflict = error instanceof DraftRequestError && error.kind === "conflict";
@@ -2074,25 +2073,18 @@ export default function CalendarPage() {
               : "Сервер не подтвердил новую дату. Публикация осталась на прежнем месте.";
       setMoveAnnouncement(`${title}. ${body}`);
       s.toast({ kind: "danger", title, body });
-      if (post.serverDraftId != null && s.user) await refreshDrafts(s.user);
+      if (post.serverDraftId != null && s.user) await refreshDrafts();
     } finally {
       movingPostRef.current = null;
       setMovingPostId(null);
       setDraggedPostId(null);
       setDragOverDay(null);
     }
-  }, [
-    canManageCalendarMove,
-    calendarTimezone,
-    currentProjectTimezone,
-    publicationFailure,
-    refreshDrafts,
-    s,
-    serverDrafts,
-  ]);
+  }, [updateDraft, updatePost, fetch, canManageCalendarMove, calendarTimezone, serverDrafts, realCalendarPosts, s, rescheduleServerDraft, reschedulePublication, publicationFailure, refreshDrafts]);
 
   const canDropPostOn = useCallback((post: DatedPost, day: Date) => {
-    const timezone = post.scheduleTimezone ?? currentProjectTimezone ?? calendarTimezone;
+    const timezone = calendarTimezone;
+    const sameTimezone = post.scheduleTimezone === timezone;
     if (
       day.getTime() < today.getTime()
       || calendarDateKeyForInstant(post.scheduledAt, timezone) === dayKey(day)
@@ -2102,14 +2094,14 @@ export default function CalendarPage() {
         scheduledAt: post.scheduledAt,
         targetDay: day,
         timezone,
-        disambiguation: post.scheduleDisambiguation,
-        offset: post.scheduledOffset,
+        disambiguation: sameTimezone ? post.scheduleDisambiguation : null,
+        offset: sameTimezone ? post.scheduledOffset : null,
       });
-      return new Date(moved.scheduledAt).getTime() > Date.now() + 30_000;
+      return new Date(moved.scheduledAt).getTime() > Date.now() + 60_000;
     } catch {
       return false;
     }
-  }, [calendarTimezone, currentProjectTimezone, today]);
+  }, [calendarTimezone, today]);
 
   const canDropDraggedPostOn = useCallback((day: Date) => Boolean(
     draggedPost
@@ -2265,6 +2257,7 @@ export default function CalendarPage() {
     trends: suggestionFeed?.items,
   });
   const calendarPartiallyStale = s.realError || draftsError;
+  const calendarUnavailable = calendarData.error && calendarData.posts.length === 0 && serverDrafts.length === 0;
 
   return (
     <AppShell
@@ -2296,19 +2289,18 @@ export default function CalendarPage() {
       <div className="flex flex-col gap-8">
         {/* ------------------------------------------------------- СЕТКА */}
         <div className="min-w-0">
-          <p role="status" className="mb-3 text-[13px] text-muted">{!s.realReady ? "Загружаем расписание…" : ""}</p>
           {s.ready && calendarPartiallyStale && (
             <div className="mb-4 flex flex-wrap items-center gap-3 rounded-sm bg-fire-soft p-3 text-fire-text" role="status">
               <AlertTriangle className="h-4 w-4 shrink-0" aria-hidden />
               <p className="min-w-0 flex-1 text-pretty text-[13px] leading-relaxed font-medium">
-                Не все данные календаря обновились. Уже загруженные карточки сохранены; повторите синхронизацию, когда соединение восстановится.
+                Календарь загружен не полностью. Полнота карточек и счётчиков не подтверждена; повторите загрузку. Ранее загруженные данные этого периода сохранены.
               </p>
               <Button
                 variant="ghost"
                 size="sm"
                 onClick={() => {
                   void s.refreshReal();
-                  if (s.user) void refreshDrafts(s.user);
+                  if (s.user) void refreshDrafts();
                 }}
               >
                 <RotateCw className="h-3.5 w-3.5" aria-hidden />
@@ -2316,7 +2308,7 @@ export default function CalendarPage() {
               </Button>
             </div>
           )}
-          {!s.ready ? (
+          {!s.ready || (!calendarData.ready && !calendarData.error) ? (
             <div className="flex flex-col gap-4">
               <div className="flex items-center justify-between gap-3">
                 <div className="skeleton h-9 w-56" />
@@ -2534,7 +2526,11 @@ export default function CalendarPage() {
                 animate={{ opacity: 1, x: 0 }}
                 transition={{ duration: 0.22, ease: EASE_SOFT }}
               >
-                {view === "week" ? (
+                {calendarUnavailable ? (
+                  <div role="alert" className="rounded-sm bg-danger-soft p-5 text-danger-text">
+                    Период не удалось загрузить полностью. Число публикаций пока неизвестно. Нажмите «Обновить календарь», чтобы повторить.
+                  </div>
+                ) : view === "week" ? (
                   <div
                     ref={weekScrollerRef}
                     data-calendar-week-scroller
@@ -2640,7 +2636,7 @@ export default function CalendarPage() {
                                     className="grid min-h-11 w-full grid-cols-[auto_minmax(0,1fr)] items-center gap-3 px-4 py-3 text-left transition-colors duration-150 hover:bg-surface-inset focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-brand motion-reduce:transition-none sm:grid-cols-[auto_auto_minmax(0,1fr)_auto]"
                                   >
                                     <span className="nums text-[13px] font-bold text-text tabular-nums">
-                                      {fmtTime(post.scheduledAt, post.scheduleTimezone ?? calendarTimezone)}
+                                      {fmtTime(post.scheduledAt, calendarTimezone)}
                                     </span>
                                     <Badge tone={calendarStatusTone(calendarRecordStatus(post))} className="hidden sm:inline-flex">
                                       {CALENDAR_STATUS_LABEL[calendarRecordStatus(post)] ?? calendarRecordStatus(post)}
@@ -2662,9 +2658,9 @@ export default function CalendarPage() {
           )}
         </div>
 
-        {s.ready && view !== "month" && <WeekSummary posts={weekPosts} />}
+        {s.ready && calendarData.ready && !calendarUnavailable && view !== "month" && <WeekSummary posts={weekPosts} />}
 
-        {s.ready && (
+        {s.ready && calendarData.ready && !calendarUnavailable && (
           <div className="grid gap-4 lg:grid-cols-[minmax(0,1.65fr)_minmax(17rem,0.75fr)]">
             <UpcomingPublications
               posts={upcomingPosts}
@@ -2719,7 +2715,7 @@ export default function CalendarPage() {
                       variant="ghost"
                       size="sm"
                       className="mt-2"
-                      onClick={() => s.user && void refreshDrafts(s.user)}
+                      onClick={() => s.user && void refreshDrafts()}
                     >
                       <RotateCw className="h-3.5 w-3.5" strokeWidth={2} aria-hidden />
                       Повторить

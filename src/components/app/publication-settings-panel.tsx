@@ -2,8 +2,6 @@
 import { useProjectFetch } from "@/lib/use-project-transport";
 
 
-import { projectFetch as fetch } from "@/lib/project-fetch";
-
 import { useEffect, useId, useMemo, useState } from "react";
 import { CalendarClock, MessageSquareText, Pin, RotateCcw } from "lucide-react";
 

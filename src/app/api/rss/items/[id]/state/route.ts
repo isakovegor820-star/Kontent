@@ -41,7 +41,7 @@ async function handlePOST(req: NextRequest, { params }: Context) {
       `select i.id
          from rss_items i
          join rss_feeds f on f.id = i.feed_id
-         join channels c on c.id = f.channel_id and c.project_id=f.project_id
+         join channels c on c.id = f.channel_id
         where i.id = $1
           and f.source_kind = 'legal_opportunity'
           and c.project_id = $2`,

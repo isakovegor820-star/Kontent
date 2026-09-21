@@ -1,4 +1,6 @@
-import { projectFetch as fetch } from "@/lib/project-fetch";
+import { collectCalendarPages } from "./calendar-pages";
+import type { CalendarSelection } from "./calendar-query";
+import { projectFetch as fetch, guardProjectCall } from "./project-transport";
 import type {
   DraftCreateInput,
   DraftRecoveryInput,
@@ -349,11 +351,15 @@ export function reusableAcknowledgedDraft(input: {
     : null;
 }
 
-export async function listServerDrafts(signal?: AbortSignal): Promise<ServerDraft[]> {
-  const response = await request("/api/drafts", { cache: "no-store", signal });
-  const body = await jsonOrNull<{ drafts?: ServerDraft[] } & ErrorBody>(response);
-  if (response.ok) return body?.drafts ?? [];
-  throw new DraftRequestError("failed", response.status, body?.error ?? "server");
+export async function listServerDrafts(signal?: AbortSignal, selection?: CalendarSelection): Promise<ServerDraft[]> {
+  try {
+    const drafts = await collectCalendarPages<ServerDraft>("/api/drafts", { signal, selection });
+    return drafts.sort((a, b) => Date.parse(b.updated_at) - Date.parse(a.updated_at) || b.id - a.id);
+  }
+  catch (error) {
+    if (error instanceof DOMException && error.name === "AbortError") throw error;
+    throw new DraftRequestError("failed", 503, error instanceof Error ? error.message : "server");
+  }
 }
 
 export async function getServerDraft(id: number, signal?: AbortSignal): Promise<ServerDraft> {
@@ -362,11 +368,13 @@ export async function getServerDraft(id: number, signal?: AbortSignal): Promise<
 
 export async function createServerDraft(
   input: DraftCreateInput,
+  signal?: AbortSignal,
 ): Promise<{ draft: ServerDraft; created: boolean }> {
   const response = await request("/api/drafts", {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify(input),
+    signal,
   });
   const body = await jsonOrNull<{ draft?: ServerDraft; created?: boolean } & ErrorBody>(response);
   if (response.ok && body?.draft) return { draft: body.draft, created: body.created === true };
@@ -470,6 +478,7 @@ export async function deleteDraftAfterAck(
   onAcknowledged: (id: number) => void,
   remove: (id: number, version: number) => Promise<void> = deleteServerDraft,
 ): Promise<void> {
+  const acknowledge = guardProjectCall(async (draftId: number) => { onAcknowledged(draftId); });
   await remove(id, version);
-  onAcknowledged(id);
+  await acknowledge(id);
 }

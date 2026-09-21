@@ -1,4 +1,4 @@
-import { beginAiSpendAttempt } from "./ai-spend-ledger.mjs";
+import { providerOutputTokens } from "./ai-provider-budget.mjs";
 import {
   configuredAiFallbacks,
   configuredServiceEngine,
@@ -159,7 +159,7 @@ async function providerError(runtime, response) {
   );
 }
 
-async function oneCompletion(request, runtime, { fetchImpl, signal, timeoutMs, onUsage }) {
+async function oneCompletion(request, runtime, { fetchImpl, signal, timeoutMs }) {
   if (!runtime.supported || !runtime.protocol) {
     throw new AiCompletionError(runtime.id, "engine_unsupported", 503);
   }
@@ -200,15 +200,14 @@ async function oneCompletion(request, runtime, { fetchImpl, signal, timeoutMs, o
         }),
       });
     } else if (runtime.protocol === "openai") {
-      // Every Navy model on this endpoint can spend output tokens on hidden reasoning before
-      // it emits anything visible, and only DeepSeek accepts `reasoning_effort: "none"`.
-      // MiniMax and Qwen therefore used to burn a 1_200-token budget on reasoning and return
-      // an empty `content`, which this service reports as `empty_generation`. Autopilot saw
-      // that on every draft until each engine's circuit opened and the whole fleet answered
-      // `provider_unavailable`. One budget for the whole endpoint keeps room for both phases.
-      const providerMaxTokens = runtime.id.startsWith("navy-")
-        ? Math.max(3_000, maxTokens)
-        : maxTokens;
+      // Navy models can spend output tokens on hidden reasoning before they emit anything
+      // visible. Keep one larger provider budget for that endpoint and disable hidden
+      // reasoning only for models whose API contract supports it. Product-slot ids are
+      // durable, so request behavior must follow the provider model currently behind a slot.
+      const providerMaxTokens = providerOutputTokens(runtime.id, maxTokens);
+      const noReasoning = runtime.model.startsWith("deepseek-")
+        || runtime.model === "gpt-5.6-terra"
+        || runtime.model === "gpt-5.6-sol";
       response = await fetchImpl(`${runtime.baseUrl}/chat/completions`, {
         method: "POST",
         headers: { "content-type": "application/json", authorization: `Bearer ${runtime.key}`, ...correlationHeaders },
@@ -217,10 +216,7 @@ async function oneCompletion(request, runtime, { fetchImpl, signal, timeoutMs, o
           model: runtime.model,
           temperature,
           max_tokens: providerMaxTokens,
-          // Reasoning-capable Navy models can spend a small output budget before producing
-          // visible content. The larger provider cap above gives them room for both phases;
-          // DeepSeek also supports disabling hidden reasoning for this background path.
-          ...(runtime.id.startsWith("navy-deepseek") ? { reasoning_effort: "none" } : {}),
+          ...(noReasoning ? { reasoning_effort: "none" } : {}),
           messages,
         }),
       });
@@ -252,10 +248,6 @@ async function oneCompletion(request, runtime, { fetchImpl, signal, timeoutMs, o
     throw new AiCompletionError(runtime.id, "stream_truncated", 502);
   }
 
-  const reportedUsage = runtime.protocol === "anthropic"
-    ? { inputTokens: body.usage?.input_tokens, outputTokens: body.usage?.output_tokens }
-    : { inputTokens: body.usage?.prompt_tokens, outputTokens: body.usage?.completion_tokens };
-  if (Number.isSafeInteger(reportedUsage.inputTokens) && Number.isSafeInteger(reportedUsage.outputTokens)) onUsage?.(reportedUsage);
   let text = "";
   let terminal = false;
   let stoppedAtTokenLimit = false;
@@ -377,30 +369,14 @@ export async function completeAiText(request, options = {}) {
     telemetry({ type: "attempt", engine, attempt: attempts, outcome: "started" });
     try {
       const remainingMs = Math.max(100, overallTimeoutMs - (now() - started));
-      const run = async () => {
-        // Configuration rejection precedes the paid boundary and must not reserve money.
-        if (!runtime.supported || !runtime.protocol || !runtime.configured) {
-          return oneCompletion(request, runtime, { fetchImpl, signal, timeoutMs });
-        }
-        const maxTokens = bounded(request.maxTokens, 700, 1, 12_000);
-        const spend = await beginAiSpendAttempt({
-          provider: runtime.id,
-          model: runtime.model,
-          inputTokens: Buffer.byteLength(JSON.stringify(request.messages || [request.system || "", request.user || ""]), "utf8") + 1024,
-          outputTokens: runtime.id.startsWith("navy-") ? Math.max(3000, maxTokens) : maxTokens,
-        }, { env, ...(options.spendScope ? { scope: options.spendScope } : {}) });
-        let usage = null;
-        let succeeded = false;
-        try {
-          const result = await oneCompletion(request, runtime, {
-            fetchImpl, signal,
-            timeoutMs: Math.min(runtime.protocol === "ollama" ? localTimeoutMs : timeoutMs, remainingMs),
-            onUsage: (value) => { usage = value; },
-          });
-          succeeded = true;
-          return result;
-        } finally { await spend.finish({ outcome: succeeded ? "succeeded" : "unknown", usage }); }
-      };
+      const run = () => oneCompletion(request, runtime, {
+        fetchImpl,
+        signal,
+        timeoutMs: Math.min(
+          runtime.protocol === "ollama" ? localTimeoutMs : timeoutMs,
+          remainingMs,
+        ),
+      });
       const text = runtime.protocol === "ollama"
         ? await serializedLocalCompletion(runtime, run, signal)
         : await run();

@@ -133,7 +133,7 @@ function QueueTable({ queues }: { queues: readonly AdminQueueSnapshot[] }) {
   if (queues.length === 0) return null;
   return (
     <div className="mt-6">
-      <h4 className="text-text">Очереди</h4>
+      <h3 className="text-text">Очереди</h3>
       <p className="type-caption mt-2 max-w-2xl text-text-2">Счётчики показывают записи, сохранённые BullMQ сейчас. Завершённые и неуспешные задачи — история с ограниченным хранением, без фиксированного периода. Consumer без свежего выполнения не подтверждает исправность. Возраст ожидания — по выборке до 100 задач каждого состояния; будущие отложенные задачи исключены.</p>
       <div className="mt-3 overflow-x-auto rounded-sm border border-line" role="region" aria-label="Состояние очередей" tabIndex={0}>
         <table className="w-full min-w-[780px] text-start">
@@ -163,7 +163,7 @@ function QueueTable({ queues }: { queues: readonly AdminQueueSnapshot[] }) {
                 <td className="nums px-4 py-3 text-text-2">{queue.prioritized ?? "—"} / {queue.waitingChildren ?? "—"}</td>
                 <td className="nums px-4 py-3 text-text-2">{queue.completed ?? "—"}</td>
                 <td className="nums px-4 py-3 text-text-2">{queue.failed ?? "—"}</td>
-                <td className="px-4 py-3 text-text-2">{duration(queue.oldestJobAgeMs)}<p className="type-caption">Выборка: {queue.sampledJobs ?? "—"}</p></td>
+                <td className="px-4 py-3 text-text-2">{duration(queue.oldestJobAgeMs)}<p className="type-caption">Выборка: {queue.sampledJobs ?? "—"}</p>{queue.unmeasuredWaitingJobs ? <p className="type-caption">У {queue.unmeasuredWaitingJobs} повторных задач нет точного времени начала ожидания.</p> : null}</td>
               </tr>
             ))}
           </tbody>
@@ -181,7 +181,7 @@ function ProviderTables({ component }: { component: AdminDiagnosticComponent }) 
     <div className="mt-6 grid gap-4 xl:grid-cols-2">
       {providers.length > 0 ? (
         <div className="rounded-sm border border-line p-4">
-          <h4 className="text-text">Защита от повторных ошибок</h4>
+          <h3 className="text-text">Защита от повторных ошибок</h3>
           <p className="type-caption mt-2 text-text-2">Только текущий web-процесс, счётчики с его запуска.</p>
           <ul className="mt-3 space-y-3">
             {providers.map((item, index) => {
@@ -201,7 +201,7 @@ function ProviderTables({ component }: { component: AdminDiagnosticComponent }) 
       ) : null}
       {activeModels.length > 0 ? (
         <div className="rounded-sm border border-line p-4">
-          <h4 className="text-text">История AI-маршрутов за 30 дней</h4>
+          <h3 className="text-text">История AI-маршрутов за 30 дней</h3>
           <ul className="mt-3 space-y-3">
             {activeModels.map((item, index) => {
               const model = item as Record<string, unknown>;
@@ -234,7 +234,7 @@ function ComponentDetails({ component }: { component: AdminDiagnosticComponent }
       <div className="flex flex-col gap-4 border-b border-line pb-5 sm:flex-row sm:items-start sm:justify-between">
         <div>
           <DiagnosticStatus state={component.state} />
-          <h3 id="system-detail-title" className="mt-3 text-text">{component.label}</h3>
+          <h2 id="system-detail-title" className="mt-3 text-text">{component.label}</h2>
           <p className="type-secondary mt-2 text-text-2">{SYSTEM_DESCRIPTION[component.id] || component.description}</p>
         </div>
         <div className="type-caption shrink-0 text-text-3 sm:text-end">
@@ -243,7 +243,7 @@ function ComponentDetails({ component }: { component: AdminDiagnosticComponent }
         </div>
       </div>
 
-      {component.state !== "healthy" && component.state !== "configured" && component.state !== "not_used" ? <p className="type-secondary mt-5 rounded-sm border border-fire/25 bg-fire-soft p-4 text-text-2">{(component.state === "unavailable" || component.state === "stale") ? "Диагностика не завершилась. Этот снимок не подтверждает работоспособность сервиса. Повторите проверку кнопкой «Обновить»; если ошибка остаётся, передайте код диагностики ответственному за инфраструктуру." : component.id === "publication_worker" ? "Отправка новых публикаций может быть задержана. Проверьте очередь; повторная постановка поста в очередь не запустит остановленный обработчик. После восстановления сервиса обновите проверку." : "Успешная работа сервиса не подтверждена. Проверьте сведения ниже и обновите проверку после устранения причины."}</p> : null}
+      {component.state !== "healthy" && component.state !== "configured" && component.state !== "not_used" ? <p className="type-secondary mt-5 rounded-sm border border-fire/25 bg-fire-soft p-4 text-text-2">{component.state === "stale" ? "Срок действия проверки истёк. Снимок сохранён для сравнения; обновите данные, чтобы узнать текущее состояние." : component.state === "unavailable" ? "Диагностика не завершилась. Этот снимок не подтверждает работоспособность сервиса. Повторите проверку кнопкой «Обновить»; если ошибка остаётся, передайте код диагностики ответственному за инфраструктуру." : component.id === "publication_worker" ? "Отправка новых публикаций может быть задержана. Проверьте очередь и проблемные публикации. При неподтверждённой доставке сначала сверьте результат у провайдера: повторная отправка может создать дубликат." : "Успешная работа сервиса не подтверждена. Проверьте сведения ниже и обновите проверку после устранения причины."}</p> : null}
       {component.scope ? <p className="type-secondary mt-4 max-w-2xl text-text-2">{component.scope}</p> : null}
       <div className="mt-5 grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
         {component.evidence.map((item, index) => (
@@ -268,7 +268,7 @@ function ComponentDetails({ component }: { component: AdminDiagnosticComponent }
 
       {primitiveMetrics.length > 0 ? (
         <div className="mt-6">
-          <h4 className="text-text">Метрики</h4>
+          <h3 className="text-text">Метрики</h3>
           <dl className="mt-3 grid gap-x-6 gap-y-3 rounded-sm border border-line p-4 sm:grid-cols-2 xl:grid-cols-3">
             {primitiveMetrics.map(([key, value]) => (
               <div key={key} className="flex items-baseline justify-between gap-4 border-b border-line/70 pb-2">
@@ -282,7 +282,7 @@ function ComponentDetails({ component }: { component: AdminDiagnosticComponent }
 
       {reasons.length > 0 ? (
         <div className="mt-6 rounded-sm border border-fire/20 bg-fire-soft p-4">
-          <h4 className="text-text">Несовпадения схемы</h4>
+          <h3 className="text-text">Несовпадения схемы</h3>
           <ul className="mt-3 space-y-1 font-mono text-sm text-fire-text">
             {reasons.map((reason, index) => <li key={`${String(reason)}-${index}`}>{String(reason)}</li>)}
           </ul>
@@ -291,13 +291,13 @@ function ComponentDetails({ component }: { component: AdminDiagnosticComponent }
 
       <ProviderTables component={component} />
       {component.history ? <section className="mt-6" aria-labelledby="system-error-history">
-        <h4 id="system-error-history" className="text-text">История ошибок публикаций за 24 часа</h4>
+        <h3 id="system-error-history" className="text-text">История ошибок публикаций за 24 часа</h3>
         <p className="type-caption mt-2 max-w-2xl text-text-2">События сохраняются после восстановления. Количество событий включает повторы; оно не равно числу уникальных публикаций. Отсутствие событий не подтверждает исправность.</p>
         {component.history.length ? <ul className="mt-3 space-y-3">{component.history.map(item => <li key={item.code} className="rounded-sm bg-surface-inset p-4">
           <CopyValue value={item.code} label="код исторической ошибки" />
           <p className="type-secondary mt-2 text-text">Событий: {item.count} · Записей, требующих внимания сейчас: {item.affectedRecords}</p>
           <p className="type-caption mt-1 text-text-2">Первое в периоде: {formatEvidence("Дата", item.firstSeenAt)} · Последнее: {formatEvidence("Дата", item.lastSeenAt)}</p>
-          <p className="type-caption mt-1 text-text-2">{item.affectedRecords ? "Проверьте текущее состояние публикаций по идентификаторам ниже." : "Записи с этим кодом сейчас не требуют внимания; событие осталось в истории."}</p>
+          <p className="type-caption mt-1 text-text-2">{item.affectedRecords ? "Проверьте текущее состояние публикаций по идентификаторам ниже." : "В связанных записях не найдены состояния отказа, повтора или неподтверждённой доставки. Само событие не доказывает текущий сбой."}</p>
           {item.examples.length ? <p className="type-caption mt-2 break-words font-mono text-text-2">{item.examples.join(", ")}</p> : null}
         </li>)}</ul> : <p className="type-secondary mt-3 text-text-2">Записанных событий ошибок за этот период нет.</p>}
       </section> : null}
@@ -305,7 +305,7 @@ function ComponentDetails({ component }: { component: AdminDiagnosticComponent }
 
       {component.affectedSections && component.affectedSections.length > 0 ? (
         <div className="mt-6">
-          <h4 className="text-text">Затронутые разделы</h4>
+          <h3 className="text-text">Затронутые разделы</h3>
           <div className="mt-3 flex flex-wrap gap-2">
             {component.affectedSections.map((section) => (
               <Link prefetch={false} key={section} href={`/admin?analyticsSection=${section}#aurora-analytics`} className={buttonClassName({ variant: "secondary", size: "sm" })}>
@@ -343,8 +343,8 @@ export function AdminSystemCenter() {
     const state = diagnosticDisplayState(component, now, Boolean(error));
     const invalid = state !== component.state && (state === "stale" || state === "unavailable");
     return { ...component, state, queues: invalid ? component.queues?.map(queue => ({ ...queue, state })) : component.queues,
-      metrics: invalid && component.metrics ? { ...component.metrics, activeModels: Array.isArray(component.metrics.activeModels)
-        ? component.metrics.activeModels.map(model => ({ ...(model as Record<string, unknown>), state })) : undefined } : component.metrics };
+      metrics: invalid && Array.isArray(component.metrics?.activeModels) ? { ...component.metrics,
+        activeModels: component.metrics.activeModels.map(model => ({ ...(model as Record<string, unknown>), state })) } : component.metrics };
   }) ?? [], [data, now, error]);
   const stale = displayed.some(component => component.state === "stale");
   const [autoRefresh, setAutoRefresh] = useState<AutoRefresh>(0);
@@ -453,15 +453,16 @@ export function AdminSystemCenter() {
         <div className="flex flex-col gap-5 xl:flex-row xl:items-start xl:justify-between">
           <div>
             <DiagnosticStatus state={error ? "unavailable" : stale ? "stale" : data.state} />
-            <h3 id="system-platform-state" className="mt-3 text-text">
+            <h2 id="system-platform-state" className="mt-3 text-text">
               {stale || error ? "Состояние требует новой проверки" : data.state === "healthy" ? "Платформа подтверждена"
                 : data.state === "down" ? "Есть критические зависимости" : data.state === "unobserved" ? "Исправность подтверждена не полностью" : "Обнаружены отклонения"}
-            </h3>
+            </h2>
             <div className="mt-3 flex flex-wrap gap-x-5 gap-y-2 text-text-2">
               <span className="type-secondary">Исправно: <strong className="nums text-text">{displayed.filter(component => component.state === "healthy").length}</strong></span>
               <span className="type-secondary" title="Проверена только конфигурация">Настроено: <strong className="nums text-text">{displayed.filter(component => component.state === "configured").length}</strong></span>
               <span className="type-secondary">Предупреждения: <strong className="nums text-text">{displayed.filter(component => ["degraded", "unobserved", "not_configured", "unavailable", "stale"].includes(component.state)).length}</strong></span>
               <span className="type-secondary">Критические: <strong className="nums text-text">{displayed.filter(component => ["down", "conflict"].includes(component.state)).length}</strong></span>
+              <span className="type-secondary">Не используется: <strong className="nums text-text">{displayed.filter(component => component.state === "not_used").length}</strong></span>
             </div>
             <div className="mt-3"><SnapshotNote checkedAt={data.checkedAt} failed={Boolean(error)} busy={refreshing} onRefresh={requestRefresh} /></div>
             <p className="type-caption mt-1 text-text-3">
@@ -506,7 +507,7 @@ export function AdminSystemCenter() {
         const components = displayed.filter((component) => component.group === group.id);
         return (
           <section key={group.id} className="mt-8" aria-labelledby={`system-group-${group.id}`}>
-            <h3 id={`system-group-${group.id}`} className="text-text">{group.label}</h3>
+            <h2 id={`system-group-${group.id}`} className="text-text">{group.label}</h2>
             <div className="mt-4 grid gap-4 sm:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4">
               {components.map((component) => {
                 const Icon = ICONS[component.id] ?? Server;
@@ -527,7 +528,7 @@ export function AdminSystemCenter() {
                       <Icon className="h-6 w-6 text-brand" strokeWidth={1.8} aria-hidden />
                       <DiagnosticStatus state={component.state} />
                     </div>
-                    <h4 className="mt-4 text-text">{component.label}</h4>
+                    <h3 className="mt-4 text-text">{component.label}</h3>
                     <p className="type-caption mt-2 text-text-2">Проверка: {formatEvidence("Дата", component.checkedAt)}</p>
                     <p className="type-caption mt-1 text-text-3">{SYSTEM_DESCRIPTION[component.id] || component.description}</p>
                     <p className="type-caption mt-3 text-text-3">

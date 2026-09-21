@@ -17,7 +17,6 @@ import {
 import { plannedPostCountForWeeks } from "@/lib/autopilot-config.mjs";
 import { isAutopilotHumanReviewItem } from "@/lib/autopilot-approval.mjs";
 import { ProjectAccessError, requireSelectedProjectPermission } from "@/lib/project-permissions";
-import { computeAutopilotScheduleCoverage } from "@/lib/autopilot-schedule-coverage.mjs";
 import { sanitizeAutopilotPublicText } from "@/lib/autopilot-publication.mjs";
 import { normalizeAutopilotQuickSettings } from "@/lib/autopilot-style.mjs";
 import {
@@ -36,7 +35,6 @@ const empty = {
   brief: null,
   channels: [],
   channelId: null,
-  scheduleCoverage: null as null | { count: number; until: string | null },
 };
 
 function errorReasonForPlan(plan: Record<string, unknown> | null) {
@@ -78,11 +76,6 @@ async function handleGET(req: NextRequest) {
     if (!channelId) return NextResponse.json({ ...empty, channels }, { status: wanted ? 404 : 200 });
 
     const settings = await ensureSettings(scope, channelId);
-    // Покрытие уже запланированных постов: страница показывает выбор «продолжить или
-    // заменить» до запуска сборки. Сбой этого запроса не должен ронять всю страницу.
-    const scheduleCoverage = await computeAutopilotScheduleCoverage(
-      pool, membership.projectId, channelId,
-    ).catch(() => ({ count: 0, until: null }));
     const plans = (
         await pool.query(
           `with scoped as (
@@ -229,7 +222,6 @@ async function handleGET(req: NextRequest) {
       briefReady: brief.ready && briefComplete(brief),
       channels,
       channelId,
-      scheduleCoverage: scheduleCoverage.count > 0 ? scheduleCoverage : null,
     });
   } catch (err) {
     if (err instanceof ProjectAccessError) {

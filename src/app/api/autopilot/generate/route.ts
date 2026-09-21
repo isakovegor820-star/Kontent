@@ -17,16 +17,13 @@ import {
   AUTOPILOT_JOB_ATTEMPTS,
   AUTOPILOT_JOB_BACKOFF_MS,
   DEFAULT_AUTOPILOT_ENGINE,
-  autopilotScheduleStartDay,
   isAutopilotEngine,
   isAutopilotPlanningWeeks,
-  normalizeAutopilotScheduleMode,
   plannedPostCountForWeeks,
 } from "@/lib/autopilot-config.mjs";
 import { resolveAiEngineRuntime } from "@/lib/ai-engine-policy.mjs";
 import { ProjectAccessError, requireSelectedProjectPermission } from "@/lib/project-permissions";
 import { selectAutopilotNewsSources } from "@/lib/autopilot-source-selection";
-import { computeAutopilotScheduleCoverage } from "@/lib/autopilot-schedule-coverage.mjs";
 import { normalizeAutopilotQuickSettings } from "@/lib/autopilot-style.mjs";
 import { autopilotCandidateCount } from "@/lib/autopilot-candidate-selection.mjs";
 import { GrowthArtifactLinkError, linkGrowthMovePlanInTransaction } from "@/lib/growth";
@@ -53,15 +50,7 @@ async function handlePOST(req: NextRequest) {
       monthlyCampaignPlanId?: unknown;
       quickSettings?: unknown;
       growthMoveId?: unknown;
-      scheduleMode?: unknown;
     };
-    if (
-      body.scheduleMode != null
-      && body.scheduleMode !== "continue"
-      && body.scheduleMode !== "replace"
-    ) {
-      return NextResponse.json({ ok: false, error: "bad_schedule_mode" }, { status: 422 });
-    }
     const channelId = await resolveChannel(scope, body.channelId ?? null);
     if (!channelId) {
       return NextResponse.json({ ok: false, error: "no_channel" }, { status: 422 });
@@ -154,27 +143,6 @@ async function handlePOST(req: NextRequest) {
     if (!engineRuntime.supported || !engineRuntime.configured) {
       return NextResponse.json({ ok: false, error: "engine_unavailable" }, { status: 422 });
     }
-    // Новый план поверх уже запланированных постов больше не «сносит» старую неделю молча.
-    // Пользователь выбирает явно: продолжить после покрытия или заменить запланированные.
-    // Месячная сборка всегда продолжается: её слоты заданы утверждённым месячным планом.
-    const scheduleCoverage = await computeAutopilotScheduleCoverage(pool, projectId, channelId);
-    let scheduleMode: "continue" | "replace";
-    if (monthlyCampaignPlanId != null) {
-      scheduleMode = "continue";
-    } else if (scheduleCoverage.count > 0 && body.scheduleMode == null) {
-      return NextResponse.json(
-        {
-          ok: false,
-          error: "schedule_exists",
-          coverage: scheduleCoverage,
-          startDay: autopilotScheduleStartDay(scheduleCoverage.until),
-        },
-        { status: 409 },
-      );
-    } else {
-      scheduleMode = normalizeAutopilotScheduleMode(body.scheduleMode);
-    }
-    const coverageUntil = scheduleCoverage.until;
     const autopilotQueue = getAutopilotQueue();
 
     // Next.js only enqueues this work; worker.mjs executes it. Previously we returned `ok`
@@ -236,8 +204,7 @@ async function handlePOST(req: NextRequest) {
           `select id, created_at, build_activity_at, items, generation_engine,
                   generation_post_frequency, expected_post_count, publication_target_count,
                   candidate_count, planning_months,
-                  planning_weeks, monthly_campaign_plan_id, quick_settings,
-                  schedule_mode, coverage_until
+                  planning_weeks, monthly_campaign_plan_id, quick_settings
              from autopilot_plan
             where project_id = $1 and channel_id = $2 and status = 'building'
             order by created_at desc limit 1`,
@@ -254,9 +221,6 @@ async function handlePOST(req: NextRequest) {
           && Number(current.candidate_count || current.expected_post_count) === candidateCount
           && Number(current.planning_months) === planningMonths
           && Number(current.planning_weeks) === planningWeeks
-          && String(current.schedule_mode || "continue") === scheduleMode
-          && String(current.coverage_until ? new Date(current.coverage_until).toISOString() : "")
-            === String(coverageUntil ?? "")
           && JSON.stringify(normalizeAutopilotQuickSettings(current.quick_settings)) === JSON.stringify(quickSettings)
           && !isAutopilotBuildStale(
             current.build_activity_at
@@ -304,15 +268,14 @@ async function handlePOST(req: NextRequest) {
               (project_id, user_id, channel_id, week_start, status, generation_engine,
               generation_post_frequency, expected_post_count, publication_target_count,
               candidate_count, planning_months, planning_weeks, monthly_campaign_plan_id,
-              quick_settings, build_report, build_activity_at, schedule_mode, coverage_until)
+              quick_settings, build_report, build_activity_at)
              values ($1, $2, $3, current_date, 'building', $4, $5, $6, $6, $7,
-                     $8, $9, $10, $11::jsonb, '{"requestedBy":"human"}'::jsonb, now(), $12, $13)
+                     $8, $9, $10, $11::jsonb, '{"requestedBy":"human"}'::jsonb, now())
              returning id`,
           [
             projectId, user.id, channelId, generationEngine, generationPostFrequency,
             publicationTargetCount, candidateCount, planningMonths, planningWeeks, monthlyCampaignPlanId,
-            JSON.stringify(quickSettings), scheduleMode,
-            coverageUntil ? new Date(coverageUntil) : null,
+            JSON.stringify(quickSettings),
           ],
         );
         planId = String(inserted.rows[0].id);

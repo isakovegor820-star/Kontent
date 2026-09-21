@@ -1,21 +1,21 @@
 "use client";
+import { useProjectFetch } from "@/lib/use-project-transport";
 
-import { projectNativeUrl } from "@/lib/project-native-url";
-
-import { projectFetch as fetch } from "@/lib/project-fetch";
 
 // А10. Автопилот (ТЗ 5.6, Д.9). ИИ собирает план недели по аналитике (Д.5) и залётам (Д.7),
 // в стиле пользователя. Одобрил — посты уходят в ту же очередь публикации (Д.3). Настоящие
 // данные, никаких фейков: нет движка/аналитики — честно помечаем.
 
-import { useCallback, useEffect, useId, useRef, useState, type CSSProperties } from "react";
+import { useCallback, useEffect, useRef, useState, type CSSProperties } from "react";
 import Image from "next/image";
 import Link from "next/link";
+import { useRouter } from "next/navigation";
+import { useProjects } from "@/components/app/project-provider";
+import { AutopilotCalendar, type AutopilotCalendarItem } from "@/components/app/autopilot-calendar";
 import { useReducedMotion } from "motion/react";
 import {
   AlertTriangle,
   BarChart3,
-  CalendarDays,
   Check,
   ChevronDown,
   Clock,
@@ -30,7 +30,6 @@ import {
   Settings2,
   Sparkles,
   Wand2,
-  X,
 } from "lucide-react";
 import { AppShell } from "@/components/app/shell";
 import { EvidenceCard } from "@/components/app/evidence-card";
@@ -103,6 +102,9 @@ interface PlanItem {
   reviewReason?: string;
   postId?: number;
   draftId?: number;
+  editorVersion?: number;
+  media?: unknown;
+  formatting?: import("@/lib/rich-text.mjs").RichTextEntity[];
 }
 interface Settings {
   enabled: boolean;
@@ -168,12 +170,16 @@ interface BuildAttempt {
     | "auto_retry_scheduled"
     | "auto_repair_running"
     | "paused"
+    | "paused_no_progress"
+    | "paused_by_user"
     | "waiting_quota"
     | "manual_repair"
     | null;
   providerFailureCode: string | null;
   attemptNumber: number;
   maxAttempts: number;
+  noProgressAttempts: number;
+  maxNoProgressAttempts: number;
   nextRetryAt: string | null;
   retryableItemIndexes: number[];
   readerReadyItems: PlanItem[];
@@ -198,8 +204,6 @@ interface State {
   brief: Brief | null;
   briefReady: boolean;
   channelId: number | null;
-  // Покрытие уже запланированных постов автопилота: «сколько» и «до какого числа».
-  scheduleCoverage: { count: number; until: string | null } | null;
 }
 
 interface OverviewPostStat {
@@ -212,16 +216,6 @@ interface OverviewPostStat {
 interface OverviewStats {
   posts?: OverviewPostStat[];
   available?: { views?: boolean; reactions?: boolean; reach?: boolean };
-}
-
-type OverviewScheduleState = "review" | "scheduled" | "published" | "attention";
-
-interface OverviewScheduleItem {
-  id: string;
-  scheduledAt: string;
-  title: string;
-  state: OverviewScheduleState;
-  planIndex?: number;
 }
 
 const MSK = "Europe/Moscow";
@@ -253,7 +247,6 @@ const mondayDateKey = (value: string | Date) => {
   return shiftDateKey(key, 1 - weekday);
 };
 
-const dateForKey = (key: string) => new Date(`${key}T12:00:00Z`);
 
 const realPostMediaUrl = (media: unknown): string | null => {
   if (!media || typeof media !== "object") return null;
@@ -358,6 +351,7 @@ function AutopilotHero({
   busy,
   blocked,
   onToggle,
+  children,
 }: {
   enabled: boolean;
   building: boolean;
@@ -367,16 +361,15 @@ function AutopilotHero({
   busy: boolean;
   blocked: boolean;
   onToggle: () => void;
+  children?: React.ReactNode;
 }) {
   const status = enabled ? "Автопилот активен" : "Автопилот на паузе";
   const title = building
     ? "Контент-план собирается"
     : enabled && pendingCount > 0
       ? "План ждёт твоей проверки"
-      : enabled && hasPlan && mode === "full"
-        ? "Контент создаётся и публикуется"
-        : enabled && hasPlan
-          ? "Публикации стоят в расписании"
+      : enabled && hasPlan
+        ? "Публикации стоят в расписании"
       : enabled
         ? "Автопилот готов к работе"
         : "Новые планы приостановлены";
@@ -394,47 +387,38 @@ function AutopilotHero({
     <Card
       as="section"
       aria-labelledby="autopilot-hero-title"
-      className="relative overflow-hidden bg-info-soft p-0 ring-1 ring-brand/10"
+      className="overflow-hidden p-0"
     >
-      <div className="relative z-10 flex min-h-[14.75rem] max-w-[48rem] flex-col items-start justify-center p-5 sm:p-7 lg:p-8">
-        <Badge tone={enabled ? "success" : "neutral"} className="gap-1.5 px-3 py-1.5">
-          {status}
-          <span className={cn("h-1.5 w-1.5 rounded-full", enabled ? "bg-success" : "bg-text-3")} aria-hidden />
-        </Badge>
+      <div className="p-5 sm:p-7 lg:p-8">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <Badge tone={enabled ? "success" : "neutral"} className="gap-1.5 px-3 py-1.5">
+            {status}
+            <span className={cn("h-1.5 w-1.5 rounded-full", enabled ? "bg-success" : "bg-text-3")} aria-hidden />
+          </Badge>
+          <Button
+            type="button"
+            variant="ghost"
+            size="sm"
+            onClick={onToggle}
+            loading={busy}
+            disabled={busy || blocked}
+          >
+            {enabled ? (
+              <Pause className="h-[18px] w-[18px]" strokeWidth={2} aria-hidden />
+            ) : (
+              <Play className="h-[18px] w-[18px]" strokeWidth={2} aria-hidden />
+            )}
+            {enabled ? "Приостановить" : "Включить автопилот"}
+          </Button>
+        </div>
         <h2 id="autopilot-hero-title" className="mt-5 text-balance text-[22px] font-extrabold leading-tight tracking-tight text-text sm:text-[25px]">
           {title}
         </h2>
-        <p className="mt-2 max-w-[60ch] text-pretty text-[14px] leading-relaxed text-text-2">
+        <p className="mt-3 max-w-[60ch] text-pretty text-[14px] leading-relaxed text-text-2">
           {description}
         </p>
-        <Button
-          type="button"
-          variant="outline"
-          size="md"
-          onClick={onToggle}
-          loading={busy}
-          disabled={busy || blocked}
-          className="mt-6 bg-surface/85"
-        >
-          {enabled ? (
-            <Pause className="h-[18px] w-[18px]" strokeWidth={2} aria-hidden />
-          ) : (
-            <Play className="h-[18px] w-[18px]" strokeWidth={2} aria-hidden />
-          )}
-          {enabled ? "Приостановить" : "Включить автопилот"}
-        </Button>
       </div>
-
-      <div className="pointer-events-none absolute inset-y-0 right-0 hidden w-[42%] overflow-hidden sm:block" aria-hidden>
-        <div className="absolute top-2 right-3 h-52 w-52 rounded-full bg-brand/10 blur-2xl" />
-        <div className="absolute top-9 right-[18%] grid h-32 w-32 rotate-12 place-items-center rounded-full bg-surface/70 shadow-card ring-1 ring-white/50 backdrop-blur-md lg:h-36 lg:w-36">
-          <Rocket className="h-20 w-20 -translate-y-1 text-brand drop-shadow-[0_14px_18px_color-mix(in_oklch,var(--brand-1)_24%,transparent)] lg:h-24 lg:w-24" strokeWidth={1.55} />
-        </div>
-        <div className="absolute right-[-4rem] bottom-[-5rem] h-40 w-[30rem] rounded-[50%] bg-surface shadow-soft" />
-        <div className="absolute right-[18rem] bottom-[-3rem] h-28 w-28 rounded-full bg-surface" />
-        <div className="absolute right-[10rem] bottom-[-2rem] h-36 w-36 rounded-full bg-surface" />
-        <div className="absolute right-[2rem] bottom-[-3rem] h-32 w-32 rounded-full bg-surface" />
-      </div>
+      {children}
     </Card>
   );
 }
@@ -475,105 +459,6 @@ function OverviewMetricCard({
   );
 }
 
-interface OverviewScheduleDay {
-  key: string;
-  weekday: string;
-  date: number;
-  items: OverviewScheduleItem[];
-}
-
-function WeekSchedule({
-  days,
-  onSelectPlanItem,
-}: {
-  days: OverviewScheduleDay[];
-  onSelectPlanItem: (index: number) => void;
-}) {
-  return (
-    <Card as="section" className="overflow-hidden p-0" aria-labelledby="autopilot-schedule-title">
-      <div className="p-4 pb-0 sm:p-5 sm:pb-0">
-        <h2 id="autopilot-schedule-title" className="text-[17px] font-extrabold tracking-tight text-text">
-          Расписание публикаций
-        </h2>
-      </div>
-      <div className="mt-4 overflow-x-auto overscroll-x-contain px-4 pb-2 sm:px-5">
-        <div className="grid min-w-[54rem] grid-cols-7 lg:min-w-0">
-          {days.map((day, index) => {
-            return (
-              <div key={day.key} className={cn("min-w-0 px-3 py-1 first:pl-0 last:pr-0", index > 0 && "border-l border-line")}>
-                <p className="text-[13px] font-bold capitalize text-text-2">
-                  {day.weekday} <span className="nums ml-1 text-text-3 tabular-nums">{day.date}</span>
-                </p>
-                {day.items.length > 0 ? (
-                  <div className="mt-4 min-h-[6.75rem] space-y-3">
-                    {day.items.map((item) => {
-                      const status = item.state === "published"
-                        ? "Опубликовано"
-                        : item.state === "scheduled"
-                          ? "В календаре"
-                          : item.state === "attention"
-                            ? "Нужно проверить"
-                            : "Ждёт тебя";
-                      const content = (
-                        <>
-                          <span className="nums block text-[13px] font-extrabold text-text tabular-nums">
-                            {fmtTimeMsk(item.scheduledAt)}
-                          </span>
-                          <span className="mt-1 line-clamp-2 block text-[13px] leading-snug text-text-2">
-                            {item.title}
-                          </span>
-                          <span className={cn(
-                            "mt-2 flex items-center gap-1.5 text-[12px] font-semibold",
-                            item.state === "published" && "text-success-text",
-                            item.state === "attention" && "text-danger-text",
-                            (item.state === "scheduled" || item.state === "review") && "text-brand",
-                          )}>
-                            <span className={cn(
-                              "h-1.5 w-1.5 shrink-0 rounded-full",
-                              item.state === "published" && "bg-success",
-                              item.state === "attention" && "bg-danger",
-                              (item.state === "scheduled" || item.state === "review") && "bg-brand",
-                            )} aria-hidden />
-                            {status}
-                          </span>
-                        </>
-                      );
-                      return item.planIndex == null ? (
-                        <div key={item.id}>{content}</div>
-                      ) : (
-                        <button
-                          key={item.id}
-                          type="button"
-                          onClick={() => onSelectPlanItem(item.planIndex!)}
-                          className="-m-2 block w-[calc(100%+1rem)] rounded-sm p-2 text-left transition-colors hover:bg-surface-inset focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand motion-reduce:transition-none"
-                          aria-label={`Открыть пост, который ждёт проверки: ${item.title}`}
-                        >
-                          {content}
-                        </button>
-                      );
-                    })}
-                  </div>
-                ) : (
-                  <div className="mt-5 min-h-[6.75rem]">
-                    <p className="text-[13px] text-text-3">—</p>
-                    <p className="mt-1 text-[13px] text-text-3">{index >= 5 ? "Выходной" : "Нет публикаций"}</p>
-                  </div>
-                )}
-              </div>
-            );
-          })}
-        </div>
-      </div>
-      <div className="p-4 pt-2 sm:p-5 sm:pt-3">
-        <Link href="/app/calendar" className={buttonClassName({ variant: "outline", size: "sm" })}>
-          <CalendarDays className="h-4 w-4" strokeWidth={2} aria-hidden />
-          Смотреть полный календарь
-        </Link>
-      </div>
-    </Card>
-  );
-}
-
 function RecentPublicationCard({ post }: { post: RealPost }) {
   const mediaUrl = realPostMediaUrl(post.media);
   const href = realPostUrl(post);
@@ -593,7 +478,7 @@ function RecentPublicationCard({ post }: { post: RealPost }) {
         </div>
         {mediaUrl ? (
           <Image
-            src={projectNativeUrl(mediaUrl)}
+            src={mediaUrl}
             alt=""
             width={80}
             height={80}
@@ -757,290 +642,242 @@ function quickSettingsSummary(settings: AutopilotQuickSettings) {
   return `${settings.newsPerWeek} ${plural(settings.newsPerWeek, "новость", "новости", "новостей")} в неделю · ${detail} · ${energy} · ${emoji}`;
 }
 
-function QuickSettingsDialog({
-  open,
+function QuickChoice({
+  id,
+  label,
+  hint,
+  value,
+  options,
+  disabled,
+  onChange,
+}: {
+  id: string;
+  label: string;
+  hint: string;
+  value: number;
+  options: readonly { value: number; label: string }[];
+  disabled: boolean;
+  onChange: (value: number) => void;
+}) {
+  return (
+    <fieldset disabled={disabled} aria-describedby={`${id}-hint`} className="min-w-0">
+      <legend className="text-[13px] font-semibold text-text">{label}</legend>
+      <div className="mt-3 flex flex-wrap gap-2">
+        {options.map((option) => (
+          <button
+            key={option.value}
+            type="button"
+            aria-pressed={value === option.value}
+            disabled={disabled}
+            onClick={() => onChange(option.value)}
+            className={cn(
+              "min-h-11 flex-1 rounded-sm border px-3 py-2 text-[13px] font-semibold transition-colors motion-reduce:transition-none disabled:cursor-not-allowed disabled:opacity-60",
+              value === option.value
+                ? "border-brand/50 bg-info-soft text-brand"
+                : "border-line bg-surface text-text-2 enabled:hover:border-line-strong enabled:hover:bg-surface-inset",
+            )}
+          >
+            {option.label}
+          </button>
+        ))}
+      </div>
+      <p id={`${id}-hint`} className="mt-2.5 text-[12px] leading-relaxed text-text-3">{hint}</p>
+    </fieldset>
+  );
+}
+
+function PlanSettingsPanel({
   settings,
+  postFrequency,
   planningWeeks,
   planningSummary,
   disabled,
   saving,
+  dirty,
   saveError,
-  channelId,
+  building,
+  hasUsablePlan,
   onChange,
   onPlanningWeeksChange,
   onSave,
-  onClose,
+  onBuild,
 }: {
-  open: boolean;
   settings: AutopilotQuickSettings;
+  postFrequency: number;
   planningWeeks: number;
   planningSummary: string;
   disabled: boolean;
   saving: boolean;
+  dirty: boolean;
   saveError: string | null;
-  channelId: number | null;
+  building: boolean;
+  hasUsablePlan: boolean;
   onChange: (settings: AutopilotQuickSettings) => void;
   onPlanningWeeksChange: (weeks: number) => void;
   onSave: () => void;
-  onClose: () => void;
+  onBuild: () => void;
 }) {
-  const dialogRef = useRef<HTMLDialogElement>(null);
-  const openerRef = useRef<HTMLElement | null>(null);
-  const titleId = useId();
-  const descriptionId = useId();
-
-  useEffect(() => {
-    const dialog = dialogRef.current;
-    if (!dialog) return;
-    if (open && !dialog.open) {
-      openerRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
-      dialog.showModal();
-    }
-    if (!open && dialog.open) dialog.close();
-  }, [open]);
-
-  const restoreOpenerFocus = () => {
-    const opener = openerRef.current;
-    if (!opener?.isConnected) return;
-    requestAnimationFrame(() => opener.focus());
+  const [expanded, setExpanded] = useState(false);
+  const settingsTrigger = useRef<HTMLButtonElement>(null);
+  const plannedCount = plannedPostCountForWeeks(postFrequency, planningWeeks);
+  const closeSettings = () => {
+    setExpanded(false);
+    settingsTrigger.current?.focus();
   };
 
   return (
-    <dialog
-      ref={dialogRef}
-      aria-labelledby={titleId}
-      aria-describedby={descriptionId}
+    <section
+      aria-labelledby="autopilot-plan-settings-title"
+      aria-describedby="autopilot-plan-settings-summary"
       aria-busy={disabled || saving || undefined}
       onKeyDown={(event) => {
-        if (event.key !== "Escape") return;
-        event.preventDefault();
-        if (saving) return;
-        onClose();
+        if (event.key === "Escape" && expanded && !event.defaultPrevented) {
+          event.preventDefault();
+          closeSettings();
+        }
       }}
-      onClose={() => {
-        onClose();
-        restoreOpenerFocus();
-      }}
-      className="m-auto max-h-[calc(100dvh-2rem)] w-[min(680px,calc(100%-2rem))] overflow-y-auto rounded-lg border border-line bg-surface p-0 text-text shadow-card backdrop:bg-black/45"
+      className="border-t border-line bg-surface p-5 sm:p-7 lg:p-8"
     >
-      <div className="p-4 sm:p-5">
-        <div className="flex items-start justify-between gap-4">
-          <div className="min-w-0">
-            <h2 id={titleId} className="text-balance text-[18px] font-bold leading-tight text-text">
-              Параметры следующего плана
-            </h2>
-            <p id={descriptionId} className="mt-1 max-w-[60ch] text-pretty text-[13px] leading-relaxed text-text-3">
-              Сохрани параметры один раз — их использует и ручная, и автоматическая сборка. Правила канала останутся без изменений.
-            </p>
-          </div>
-          <Button
-            type="button"
-            variant="ghost"
-            size="icon"
-            aria-label="Закрыть настройки постов"
-            onClick={onClose}
-            disabled={saving}
-            className="shrink-0"
-          >
-            <X className="h-4 w-4" aria-hidden />
-          </Button>
-        </div>
-
-        <div className="mt-5 max-w-sm">
-          <label htmlFor="autopilot-horizon" className="text-[13px] font-semibold text-text">
-            Период
-          </label>
-          <select
-            id="autopilot-horizon"
-            value={planningWeeks}
-            onChange={(event) => onPlanningWeeksChange(Number(event.target.value))}
-            disabled={disabled || saving}
-            aria-describedby="autopilot-horizon-summary"
-            className="mt-2 h-11 w-full rounded-md border border-line bg-surface px-3 text-base font-semibold text-text outline-none transition-colors focus-visible:border-brand focus-visible:ring-2 focus-visible:ring-brand/20 disabled:cursor-not-allowed disabled:opacity-60 sm:text-[14px]"
-          >
-            {Array.from(
-              { length: MAX_AUTOPILOT_PLANNING_WEEKS - MIN_AUTOPILOT_PLANNING_WEEKS + 1 },
-              (_, index) => index + MIN_AUTOPILOT_PLANNING_WEEKS,
-            ).map((weeks) => (
-              <option key={weeks} value={weeks}>
-                {weeks} {plural(weeks, "неделя", "недели", "недель")}
-              </option>
-            ))}
-          </select>
-          <p id="autopilot-horizon-summary" className="mt-1.5 text-[12px] leading-snug text-text-3" aria-live="polite">
-            {planningSummary}
+      <div className="flex flex-wrap items-start justify-between gap-4 sm:gap-6">
+        <div className="min-w-0">
+          <h2 id="autopilot-plan-settings-title" className="text-balance text-[18px] font-extrabold leading-tight text-text">
+            Параметры следующего плана
+          </h2>
+          <p className="mt-2 text-[14px] text-text-2">
+            {planningWeeks} {plural(planningWeeks, "неделя", "недели", "недель")} · {plannedCount} {plural(plannedCount, "публикация", "публикации", "публикаций")}
           </p>
         </div>
+        <Button
+          ref={settingsTrigger}
+          type="button"
+          variant="secondary"
+          size="sm"
+          aria-expanded={expanded}
+          aria-controls="autopilot-plan-settings-fields"
+          onClick={() => setExpanded((current) => !current)}
+        >
+          <Settings2 className="h-4 w-4" strokeWidth={2} aria-hidden />
+          {expanded ? "Свернуть настройки" : "Настройки"}
+          <ChevronDown className={cn("h-4 w-4 transition-transform motion-reduce:transition-none", expanded && "rotate-180")} strokeWidth={2} aria-hidden />
+        </Button>
+      </div>
+      <p id="autopilot-plan-settings-summary" className="mt-3 max-w-[85ch] text-pretty text-[13px] leading-relaxed text-text-3">
+        {quickSettingsSummary({ ...settings, newsPerWeek: Math.min(settings.newsPerWeek, postFrequency) })}
+      </p>
 
-        <fieldset disabled={disabled || saving} className="mt-6">
-          <legend className="text-[14px] font-bold text-text">Настроить посты</legend>
-          <p className="mt-1 text-[12px] leading-snug text-text-3">
-            {quickSettingsSummary(settings)}
+      <div id="autopilot-plan-settings-fields" hidden={!expanded}>
+        <div className="mt-7 border-t border-line pt-7">
+          <p className="max-w-[68ch] text-[13px] leading-relaxed text-text-3">
+            Эти параметры использует и ручная, и автоматическая сборка. Сборка запомнит текущие значения.
           </p>
-          <div className="mt-4 grid gap-x-6 gap-y-5 sm:grid-cols-2">
+          <div className="mt-6 grid gap-7 md:grid-cols-2 lg:gap-10">
+            <div>
+              <label htmlFor="autopilot-horizon" className="text-[13px] font-semibold text-text">
+                Период
+              </label>
+              <select
+                id="autopilot-horizon"
+                value={planningWeeks}
+                onChange={(event) => onPlanningWeeksChange(Number(event.target.value))}
+                disabled={disabled || saving}
+                aria-describedby="autopilot-horizon-summary"
+                className="mt-3 h-11 w-full rounded-md border border-line bg-surface px-3 text-base font-semibold text-text outline-none transition-colors focus-visible:border-brand focus-visible:ring-2 focus-visible:ring-brand/20 disabled:cursor-not-allowed disabled:opacity-60 sm:text-[14px]"
+              >
+                {Array.from(
+                  { length: MAX_AUTOPILOT_PLANNING_WEEKS - MIN_AUTOPILOT_PLANNING_WEEKS + 1 },
+                  (_, index) => index + MIN_AUTOPILOT_PLANNING_WEEKS,
+                ).map((weeks) => (
+                  <option key={weeks} value={weeks}>
+                    {weeks} {plural(weeks, "неделя", "недели", "недель")}
+                  </option>
+                ))}
+              </select>
+              <p id="autopilot-horizon-summary" className="mt-2.5 text-[12px] leading-relaxed text-text-3" aria-live="polite">
+                {planningSummary}
+              </p>
+            </div>
             <QuickRange
               id="autopilot-news"
               label="Свежие события"
               hint="Остальные посты — полезные разборы и идеи по теме канала."
               min={0}
-              max={7}
-              value={settings.newsPerWeek}
-              valueLabel={`${settings.newsPerWeek} из 7`}
+              max={postFrequency}
+              value={Math.min(settings.newsPerWeek, postFrequency)}
+              valueLabel={`${Math.min(settings.newsPerWeek, postFrequency)} из ${postFrequency}`}
               disabled={disabled || saving}
               onChange={(newsPerWeek) => onChange({ ...settings, newsPerWeek })}
             />
-            <QuickRange
+          </div>
+        </div>
+
+        <fieldset disabled={disabled || saving} className="mt-8 min-w-0">
+          <legend className="text-[14px] font-semibold text-text">Настроить посты</legend>
+          <div className="mt-5 grid grid-cols-[repeat(auto-fit,minmax(min(100%,23rem),1fr))] gap-7 lg:gap-10">
+            <QuickChoice
               id="autopilot-detail"
               label="Желаемый объём"
-              hint="Ориентир для текста, а не жёсткий лимит."
-              min={1}
-              max={3}
+              hint="Аврора доведёт текст до выбранного диапазона и не оборвёт мысль."
               value={settings.detail}
-              valueLabel={settings.detail === 1 ? "коротко" : settings.detail === 3 ? "подробно" : "оптимально"}
+              options={[{ value: 1, label: "Коротко" }, { value: 2, label: "Оптимально" }, { value: 3, label: "Подробно" }]}
               disabled={disabled || saving}
               onChange={(detail) => onChange({ ...settings, detail })}
             />
-            <QuickRange
+            <QuickChoice
               id="autopilot-energy"
               label="Подача"
               hint="Без канцелярита, редакторских комментариев и кликбейта."
-              min={1}
-              max={3}
               value={settings.energy}
-              valueLabel={settings.energy === 1 ? "спокойно" : settings.energy === 3 ? "живо" : "разговорно"}
+              options={[{ value: 1, label: "Спокойно" }, { value: 2, label: "Разговорно" }, { value: 3, label: "Живо" }]}
               disabled={disabled || saving}
               onChange={(energy) => onChange({ ...settings, energy })}
             />
-            <QuickRange
+            <QuickChoice
               id="autopilot-emoji"
               label="Эмодзи"
-              hint="Эмодзи помогают чтению, но не заменяют смысл."
-              min={0}
-              max={2}
+              hint="Количество и набор будут меняться от поста к посту."
               value={settings.emoji}
-              valueLabel={settings.emoji === 0 ? "без эмодзи" : settings.emoji === 2 ? "заметно" : "умеренно"}
+              options={[{ value: 0, label: "Без эмодзи" }, { value: 1, label: "Умеренно" }, { value: 2, label: "Заметно" }]}
               disabled={disabled || saving}
               onChange={(emoji) => onChange({ ...settings, emoji })}
             />
           </div>
         </fieldset>
+      </div>
 
-        <p className="mt-4 min-h-5 text-[13px] leading-relaxed text-danger-text" role="status" aria-live="polite">
+      {saveError && (
+        <p className="mt-5 text-[13px] leading-relaxed text-danger-text" role="alert">
           {saveError}
         </p>
+      )}
 
-        <div className="mt-6 flex flex-col-reverse gap-2 border-t border-line pt-4 sm:flex-row sm:items-center sm:justify-between">
-          <Link
-            href={`/app/settings${channelId ? `?channel=${channelId}` : ""}`}
-            className={buttonClassName({ variant: "ghost", size: "sm", className: "justify-center sm:justify-start" })}
-          >
-            Настройки канала
-          </Link>
-          <Button type="button" variant="brand" onClick={onSave} loading={saving} disabled={disabled}>
-            Сохранить параметры
-          </Button>
-        </div>
-      </div>
-    </dialog>
-  );
-}
-
-interface ScheduleCoverage {
-  count: number;
-  until: string | null;
-}
-
-function scheduleConflictDescription(coverage: ScheduleCoverage | null): string {
-  const count = Number(coverage?.count) || 0;
-  const until = coverage?.until
-    ? new Date(coverage.until).toLocaleDateString("ru-RU", { timeZone: MSK, day: "numeric", month: "long" })
-    : null;
-  return `В календаре уже стоит ${count} ${plural(count, "пост", "поста", "постов")}`
-    + (until ? ` — они запланированы до ${until}.` : ".")
-    + " Реши, что делать с новым планом: он не должен незаметно заменить уже одобренное.";
-}
-
-// Выбор судьбы уже запланированных постов перед новой сборкой. Раньше любой новый
-// план молча сносил старую неделю — этот диалог закрывает гонку до того, как случится.
-function ScheduleConflictDialog({
-  open,
-  coverage,
-  busy,
-  onContinue,
-  onReplace,
-  onClose,
-}: {
-  open: boolean;
-  coverage: ScheduleCoverage | null;
-  busy: boolean;
-  onContinue: () => void;
-  onReplace: () => void;
-  onClose: () => void;
-}) {
-  const dialogRef = useRef<HTMLDialogElement>(null);
-  const titleId = useId();
-  const descriptionId = useId();
-
-  useEffect(() => {
-    const dialog = dialogRef.current;
-    if (!dialog) return;
-    if (open && !dialog.open) dialog.showModal();
-    if (!open && dialog.open) dialog.close();
-  }, [open]);
-
-  return (
-    <dialog
-      ref={dialogRef}
-      aria-labelledby={titleId}
-      aria-describedby={descriptionId}
-      onKeyDown={(event) => {
-        if (event.key !== "Escape") return;
-        event.preventDefault();
-        if (!busy) onClose();
-      }}
-      onClose={() => {
-        if (!busy) onClose();
-      }}
-      className="m-auto w-[min(560px,calc(100%-2rem))] rounded-lg border border-line bg-surface p-0 text-text shadow-card backdrop:bg-black/45"
-    >
-      <div className="p-4 sm:p-5">
-        <h2 id={titleId} className="text-balance text-[18px] font-bold leading-tight text-text">
-          В календаре уже есть посты автопилота
-        </h2>
-        <p id={descriptionId} className="mt-1 text-pretty text-[13px] leading-relaxed text-text-3">
-          {scheduleConflictDescription(coverage)}
+      <div className="mt-7 flex flex-wrap items-center justify-between gap-4 border-t border-line pt-5">
+        <p className="text-[12px] text-text-3" role="status">
+          {saving ? "Сохраняем параметры…" : dirty ? "Есть несохранённые изменения" : "Параметры сохранены"}
         </p>
-        <div className="mt-5 grid gap-2 sm:grid-cols-2">
-          <button
-            type="button"
-            disabled={busy}
-            onClick={onContinue}
-            className="rounded-lg border border-line bg-surface-inset p-4 text-left transition-colors hover:border-brand disabled:cursor-not-allowed disabled:opacity-60"
-          >
-            <span className="block text-[14px] font-bold text-text">Продолжить после запланированных</span>
-            <span className="mt-1 block text-[12px] leading-relaxed text-text-3">
-              Текущие посты останутся в календаре, новый план встанет после их конца.
-            </span>
-          </button>
-          <button
-            type="button"
-            disabled={busy}
-            onClick={onReplace}
-            className="rounded-lg border border-line p-4 text-left transition-colors hover:border-danger disabled:cursor-not-allowed disabled:opacity-60"
-          >
-            <span className="block text-[14px] font-bold text-danger-text">Заменить запланированные</span>
-            <span className="mt-1 block text-[12px] leading-relaxed text-text-3">
-              Ещё не вышедшие посты будут отменены, новый план начнётся со завтра.
-            </span>
-          </button>
-        </div>
-        <div className="mt-5 flex justify-end border-t border-line pt-4">
-          <Button type="button" variant="ghost" size="sm" onClick={onClose} disabled={busy}>
-            Отмена
+        <div className="flex w-full flex-col gap-2 sm:w-auto sm:flex-row sm:flex-wrap sm:items-center">
+          {expanded && (
+            <Button type="button" variant="ghost" onClick={closeSettings}>
+              Свернуть
+            </Button>
+          )}
+          {(expanded || dirty || saving) && (
+            <Button
+              type="button"
+              variant="secondary"
+              onClick={onSave}
+              loading={saving}
+              disabled={disabled || !dirty}
+            >
+              Сохранить параметры
+            </Button>
+          )}
+          <Button type="button" variant="primary" onClick={onBuild} disabled={disabled || saving}>
+            <Play className="h-[18px] w-[18px]" strokeWidth={2} aria-hidden />
+            {building ? "План собирается" : hasUsablePlan ? "Собрать новый план" : "Собрать план"}
           </Button>
         </div>
       </div>
-    </dialog>
+    </section>
   );
 }
 
@@ -1063,18 +900,37 @@ function BuildAttemptPanel({
 }) {
   const readyCount = Math.min(attempt.readyCount, attempt.publicationTargetCount);
   const remaining = Math.max(0, attempt.publicationTargetCount - readyCount);
-  const automaticRecovery = ["auto_retry_scheduled", "auto_repair_running"].includes(
-    String(attempt.recoveryState || ""),
-  );
+  const scheduledRecovery = attempt.recoveryState === "auto_retry_scheduled";
+  const activeAutomaticRecovery = attempt.recoveryState === "auto_repair_running";
+  const automaticRecovery = scheduledRecovery || activeAutomaticRecovery;
   const waitingForQuota = attempt.recoveryState === "waiting_quota";
-  const pausedRecovery = attempt.recoveryState === "paused";
+  const pausedWithAutopilot = attempt.recoveryState === "paused";
+  const pausedForNoProgress = attempt.recoveryState === "paused_no_progress";
+  const pausedByUser = attempt.recoveryState === "paused_by_user";
   const terminal = attempt.status !== "building" && !automaticRecovery && !waitingForQuota;
   const canContinue = attempt.retryableItemIndexes.length > 0 &&
-    !automaticRecovery && !waitingForQuota && !pausedRecovery;
+    !automaticRecovery && !waitingForQuota && !pausedWithAutopilot;
   const waitingForProvider = attempt.status === "building" && attempt.recoveryState === "waiting_provider";
-  const title = automaticRecovery
-    ? `Аврора добирает план: ${readyCount} из ${attempt.publicationTargetCount}`
-    : waitingForQuota || pausedRecovery
+  const activelyWorking = attempt.status === "building" || activeAutomaticRecovery || waitingForProvider;
+  const canPause = activelyWorking || scheduledRecovery || waitingForQuota;
+  const nextRetryLabel = attempt.nextRetryAt
+    ? `${fmtTimeMsk(attempt.nextRetryAt)} МСК`
+    : null;
+  const attemptMeta = [
+    attempt.attemptNumber > 0 ? `Попытка ${attempt.attemptNumber}` : null,
+    attempt.maxNoProgressAttempts > 0 && attempt.noProgressAttempts > 0
+      ? `без прогресса: ${attempt.noProgressAttempts} из ${attempt.maxNoProgressAttempts}`
+      : null,
+  ].filter(Boolean).join(" · ");
+  const title = scheduledRecovery
+    ? `Сохранено ${readyCount} из ${attempt.publicationTargetCount} — повтор запланирован`
+    : activeAutomaticRecovery
+      ? `Аврора добирает план: ${readyCount} из ${attempt.publicationTargetCount}`
+      : pausedForNoProgress
+        ? `Автоповторы приостановлены: готово ${readyCount} из ${attempt.publicationTargetCount}`
+        : pausedByUser
+          ? `Сборка приостановлена: готово ${readyCount} из ${attempt.publicationTargetCount}`
+          : waitingForQuota || pausedWithAutopilot
       ? `Сохранено ${readyCount} из ${attempt.publicationTargetCount}`
       : waitingForProvider
         ? "ИИ временно не ответил"
@@ -1083,11 +939,17 @@ function BuildAttemptPanel({
           : attempt.status === "partial"
             ? "Нужно дополнить план"
             : "Сборка остановилась";
-  const description = automaticRecovery
-    ? `Готовые тексты сохранены. Недостающие ${remaining} ${plural(remaining, "пост", "поста", "постов")} Аврора переписывает и проверяет сама.`
+  const description = scheduledRecovery
+    ? `Готовые тексты сохранены. ${nextRetryLabel ? `Следующая попытка — ${nextRetryLabel}. ` : ""}Аврора проверит только ${attempt.retryableItemIndexes.length || remaining} ${plural(attempt.retryableItemIndexes.length || remaining, "недостающий кандидат", "недостающих кандидата", "недостающих кандидатов")}.`
+    : activeAutomaticRecovery
+      ? `Готовые тексты сохранены. Аврора переписывает и проверяет только недостающие ${remaining} ${plural(remaining, "пост", "поста", "постов")}.`
+      : pausedForNoProgress
+        ? `Последние ${attempt.maxNoProgressAttempts || attempt.noProgressAttempts} ${plural(attempt.maxNoProgressAttempts || attempt.noProgressAttempts, "попытка", "попытки", "попыток")} не добавили готовых постов. Ничего не удалено: можно уточнить источники или продолжить сборку вручную.`
+        : pausedByUser
+          ? "Готовые тексты и черновики сохранены. Продолжить можно с того же места."
     : waitingForQuota
       ? "Готовые тексты сохранены. Добор продолжится автоматически после обновления дневного лимита."
-      : pausedRecovery
+      : pausedWithAutopilot
         ? "Готовые тексты сохранены. Включи Автопилот — он сам доберёт недостающие публикации."
         : waitingForProvider
           ? readyCount > 0
@@ -1124,21 +986,26 @@ function BuildAttemptPanel({
       role={terminal ? "alert" : "status"}
       aria-live={terminal ? "assertive" : "polite"}
       aria-atomic="true"
-      aria-busy={attempt.status === "building" || automaticRecovery || waitingForQuota || undefined}
+      aria-busy={activelyWorking || undefined}
     >
       <div className="flex min-w-0 items-start gap-3">
-        {attempt.status === "building" || automaticRecovery || waitingForQuota ? (
+        {activelyWorking ? (
           <Loader2
             className={cn("mt-0.5 h-5 w-5 shrink-0 text-brand", autopilotBuildSpinnerClass(reducedMotion))}
             aria-hidden
           />
+        ) : scheduledRecovery || waitingForQuota ? (
+          <Clock className="mt-0.5 h-5 w-5 shrink-0 text-brand" aria-hidden />
+        ) : pausedForNoProgress || pausedByUser || pausedWithAutopilot ? (
+          <Pause className="mt-0.5 h-5 w-5 shrink-0 text-brand" aria-hidden />
         ) : (
           <AlertTriangle className="mt-0.5 h-5 w-5 shrink-0 text-brand" aria-hidden />
         )}
         <div className="min-w-0 flex-1">
           <p className="text-[15px] font-semibold leading-snug text-text tabular-nums">{title}</p>
           <p className="mt-1 text-[13px] leading-relaxed text-text-3">{description}</p>
-          {attempt.causes.length > 0 && attempt.status !== "building" && (
+          {attemptMeta ? <p className="mt-2 text-[12px] tabular-nums text-text-3">{attemptMeta}</p> : null}
+          {attempt.causes.length > 0 && !activelyWorking ? (
             <ul className="mt-3 space-y-2" aria-label="Причины незавершённой сборки">
               {attempt.causes.map((cause) => (
                 <li key={cause.code} className="rounded-md border border-line bg-surface-inset px-3 py-2">
@@ -1149,21 +1016,22 @@ function BuildAttemptPanel({
                 </li>
               ))}
             </ul>
-          )}
+          ) : null}
           <div className="mt-4 flex flex-col gap-2 sm:flex-row sm:flex-wrap">
-            {automaticRecovery || waitingForQuota ? (
-              <p className="text-[12px] font-medium text-brand" role="status">
-                Можно закрыть страницу — работа продолжится в фоне.
-              </p>
-            ) : pausedRecovery ? (
+            {canPause ? (
+              <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+                <p className="text-[12px] font-medium text-brand" role="status">
+                  Можно закрыть страницу — состояние сохранено.
+                </p>
+                <Button variant="secondary" size="sm" onClick={onCancel} loading={busy} disabled={busy}>
+                  <Pause className="h-4 w-4" aria-hidden />
+                  Приостановить сборку
+                </Button>
+              </div>
+            ) : pausedWithAutopilot ? (
               <p className="text-[12px] font-medium text-text-3">
                 Возобнови Автопилот в верхнем блоке — отдельный повтор не нужен.
               </p>
-            ) : attempt.status === "building" ? (
-              <Button variant="secondary" size="sm" onClick={onCancel} loading={busy} disabled={busy}>
-                <X className="h-4 w-4" aria-hidden />
-                Остановить сборку
-              </Button>
             ) : attempt.primaryFix === "add_knowledge" ? (
               <Link href={`/app/knowledge${channelId ? `?channel=${channelId}` : ""}`} className={commonLinkClass}>
                 Добавить материалы
@@ -1202,7 +1070,12 @@ function BuildAttemptPanel({
 }
 
 export default function AutopilotPage() {
+  const fetch = useProjectFetch();
   const s = useStore();
+  const router = useRouter();
+  const projects = useProjects();
+  const canPublish = ["owner", "publisher"].includes(projects.current?.role ?? "");
+  const canEdit = projects.current?.role != null && projects.current.role !== "publisher";
   const reduce = useReducedMotion();
   const [data, setData] = useState<State | null>(null);
   const [overviewStats, setOverviewStats] = useState<OverviewStats | null>(null);
@@ -1212,11 +1085,8 @@ export default function AutopilotPage() {
   const [loadError, setLoadError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [autopilotToggleBusy, setAutopilotToggleBusy] = useState(false);
-  const [editingIndex, setEditingIndex] = useState<number | null>(null);
-  const [editingText, setEditingText] = useState("");
   const [expanded, setExpanded] = useState<number | null>(null); // какая карточка раскрыта целиком
   const [reviewedIndexes, setReviewedIndexes] = useState<Set<number>>(() => new Set());
-  const [quickSettingsOpen, setQuickSettingsOpen] = useState(false);
   const [planSettingsSaving, setPlanSettingsSaving] = useState(false);
   const [planSettingsError, setPlanSettingsError] = useState<string | null>(null);
   const [generationEngine, setGenerationEngine] = useState(DEFAULT_AUTOPILOT_ENGINE);
@@ -1225,6 +1095,8 @@ export default function AutopilotPage() {
     ...DEFAULT_AUTOPILOT_QUICK_SETTINGS,
   });
   const [planningAnchorMs] = useState(Date.now);
+  const [calendarNow, setCalendarNow] = useState(Date.now);
+  useEffect(() => { const timer = setInterval(() => setCalendarNow(Date.now()), 30_000); return () => clearInterval(timer); }, []);
   const [visibleLimit, setVisibleLimit] = useState(14);
   const approvalBusy = useRef(false);
   const approvalConfirmationResolver = useRef<((confirmed: boolean) => void) | null>(null);
@@ -1233,8 +1105,6 @@ export default function AutopilotPage() {
     description: string;
   } | null>(null);
   const [cancelBuildConfirmation, setCancelBuildConfirmation] = useState(false);
-  // Запрошенная сборка упёрлась в уже запланированные посты: держим покрытие для диалога.
-  const [scheduleConflict, setScheduleConflict] = useState<ScheduleCoverage | null>(null);
   const loadSequence = useRef(0);
   const loadAbort = useRef<AbortController | null>(null);
   const activePlanIdentity = useRef<string | null>(null);
@@ -1299,8 +1169,6 @@ export default function AutopilotPage() {
         // A confirmation belongs to the exact plan revision the person actually read.
         // Editing or replacing even one post invalidates the previous review checklist.
         setReviewedIndexes(new Set());
-        setEditingIndex(null);
-        setEditingText("");
       }
       activePlanIdentity.current = nextPlanIdentity;
     } catch (error) {
@@ -1311,7 +1179,7 @@ export default function AutopilotPage() {
     } finally {
       if (sequence === loadSequence.current) setLoading(false);
     }
-  }, [chId]);
+  }, [chId, fetch]);
 
   useEffect(() => {
     let cancelled = false;
@@ -1320,8 +1188,6 @@ export default function AutopilotPage() {
       setLoading(true);
       setData(null);
       setLoadError(null);
-      setEditingIndex(null);
-      setEditingText("");
       setExpanded(null);
       activePlanIdentity.current = null;
       void load();
@@ -1388,7 +1254,7 @@ export default function AutopilotPage() {
       if (timer) clearTimeout(timer);
       controller?.abort();
     };
-  }, [chId]);
+  }, [chId, fetch]);
 
   useEffect(() => {
     const moveId = Number(new URLSearchParams(window.location.search).get("growthMove"));
@@ -1411,7 +1277,7 @@ export default function AutopilotPage() {
         if ((error as Error)?.name === "AbortError") return;
       });
     return () => controller.abort();
-  }, []);
+  }, [fetch]);
 
   const building = data?.buildAttempt?.status === "building" || [
     "auto_retry_scheduled",
@@ -1422,18 +1288,23 @@ export default function AutopilotPage() {
     if (!building) return;
     let cancelled = false;
     let timer: ReturnType<typeof setTimeout> | null = null;
+    const scheduledRetry = data?.buildAttempt?.recoveryState === "auto_retry_scheduled";
+    const retryAtMs = Date.parse(String(data?.buildAttempt?.nextRetryAt || ""));
+    const pollingDelay = scheduledRetry
+      ? Math.min(15_000, Math.max(3_000, Number.isFinite(retryAtMs) ? retryAtMs - Date.now() : 15_000))
+      : 3_000;
     const poll = async () => {
       await load();
-      if (!cancelled) timer = setTimeout(poll, 3000);
+      if (!cancelled) timer = setTimeout(poll, pollingDelay);
     };
-    timer = setTimeout(poll, 3000);
+    timer = setTimeout(poll, pollingDelay);
     return () => {
       cancelled = true;
       if (timer) clearTimeout(timer);
     };
-  }, [building, load]);
+  }, [building, data?.buildAttempt?.nextRetryAt, data?.buildAttempt?.recoveryState, load]);
 
-  const generate = async (scheduleMode?: "continue" | "replace") => {
+  const generate = async () => {
     if (busy) return;
     setBusy(true);
     try {
@@ -1453,7 +1324,6 @@ export default function AutopilotPage() {
           planningWeeks,
           quickSettings,
           growthMoveId,
-          ...(scheduleMode ? { scheduleMode } : {}),
         }),
       });
       const d = (await r.json().catch(() => null)) as {
@@ -1461,10 +1331,8 @@ export default function AutopilotPage() {
         error?: string;
         publicationTargetCount?: number;
         candidateCount?: number;
-        coverage?: { count?: number; until?: string | null };
       } | null;
       if (d?.ok) {
-        setScheduleConflict(null);
         const publicationCount = Number(d.publicationTargetCount) ||
           plannedPostCountForWeeks(data?.settings?.post_frequency ?? 5, planningWeeks);
         const candidateCount = Number(d.candidateCount) || autopilotCandidateCount(publicationCount);
@@ -1472,18 +1340,10 @@ export default function AutopilotPage() {
         s.toast({
           kind: "info",
           title: `Собираю ${publicationCount} ${plural(publicationCount, "пост", "поста", "постов")}`,
-          body: `Готовый план появится целиком. Обычно это занимает ${duration}; можно продолжать работу в других разделах.`,
+          body: `Первая попытка обычно занимает ${duration}. Если часть текстов не пройдёт проверку, готовые сохранятся, а здесь появится время следующего точечного повтора.`,
         });
         await load();
       } else {
-        // В календаре стоит одобренная неделя, а режим не выбран — спрашиваем, а не сносим.
-        if (r.status === 409 && d?.error === "schedule_exists") {
-          setScheduleConflict({
-            count: Number(d.coverage?.count) || 0,
-            until: d.coverage?.until ?? null,
-          });
-          return;
-        }
         const why: Record<string, string> = {
           no_channel: "Сначала подключи Telegram-канал.",
           no_brief: "Сначала настрой автопилот — без этого он не знает, о чём твой канал.",
@@ -1492,7 +1352,6 @@ export default function AutopilotPage() {
           bad_engine: "Выбери доступную модель и повтори.",
           bad_horizon: "Выбери период от 1 до 12 недель.",
           engine_unavailable: "Для выбранной модели не настроен API-ключ Navy.",
-          bad_schedule_mode: "Выбери, куда ставить новый план, и повтори.",
         };
         s.toast({
           kind: "danger",
@@ -1511,17 +1370,6 @@ export default function AutopilotPage() {
     } finally {
       setBusy(false);
     }
-  };
-
-  // Кнопка сборки: если покрытие уже есть и ответ ещё не дан — открываем выбор,
-  // а не отправляем запрос вслепую (сервер всё равно ответил бы 409).
-  const startBuild = () => {
-    const coverage = data?.scheduleCoverage ?? null;
-    if (coverage && coverage.count > 0) {
-      setScheduleConflict(coverage);
-      return;
-    }
-    void generate();
   };
 
   const toggleAutopilot = async () => {
@@ -1575,36 +1423,6 @@ export default function AutopilotPage() {
     }
   };
 
-  const syncPlanSettingsControls = () => {
-    const saved = data?.settings;
-    if (!saved) return;
-    const savedWeeks = Number(saved.planning_weeks || saved.planning_months * 4);
-    setPlanningWeeks(
-      savedWeeks >= MIN_AUTOPILOT_PLANNING_WEEKS && savedWeeks <= MAX_AUTOPILOT_PLANNING_WEEKS
-        ? savedWeeks
-        : DEFAULT_AUTOPILOT_PLANNING_WEEKS,
-    );
-    setGenerationEngine(
-      AUTOPILOT_ENGINE_OPTIONS.some((option) => option.id === saved.generation_engine)
-        ? saved.generation_engine as typeof DEFAULT_AUTOPILOT_ENGINE
-        : DEFAULT_AUTOPILOT_ENGINE,
-    );
-    setQuickSettings(normalizeAutopilotQuickSettings(saved.quick_settings));
-  };
-
-  const openPlanSettings = () => {
-    syncPlanSettingsControls();
-    setPlanSettingsError(null);
-    setQuickSettingsOpen(true);
-  };
-
-  const closePlanSettings = () => {
-    if (planSettingsSaving) return;
-    syncPlanSettingsControls();
-    setPlanSettingsError(null);
-    setQuickSettingsOpen(false);
-  };
-
   const savePlanSettings = async () => {
     if (planSettingsSaving || busy || building || !chId) return;
     setPlanSettingsSaving(true);
@@ -1644,7 +1462,6 @@ export default function AutopilotPage() {
       setData((current) => current ? { ...current, settings: savedSettings } : current);
       setQuickSettings(savedSettings.quick_settings);
       setPlanningWeeks(savedSettings.planning_weeks);
-      setQuickSettingsOpen(false);
       s.toast({
         kind: "success",
         title: "Параметры сохранены",
@@ -1667,14 +1484,14 @@ export default function AutopilotPage() {
         body: JSON.stringify({ channelId: chId }),
       });
       const result = (await response.json().catch(() => null)) as
-        | { ok?: boolean; cancelled?: boolean }
+        | { ok?: boolean; paused?: boolean; cancelled?: boolean }
         | null;
       if (response.ok && result?.ok) {
         s.toast({
           kind: "info",
-          title: result.cancelled ? "Сборка остановлена" : "Сборка уже завершилась",
-          body: result.cancelled
-            ? "Готовые публикации не затронуты. Можно выбрать другой период и запустить снова."
+          title: result.paused || result.cancelled ? "Сборка приостановлена" : "Сборка уже завершилась",
+          body: result.paused || result.cancelled
+            ? "Готовые тексты и черновики сохранены. Продолжить можно с того же места."
             : "Обновляю актуальное состояние плана.",
         });
       } else {
@@ -1752,28 +1569,15 @@ export default function AutopilotPage() {
   const requestApprovalConfirmation = (preview: AutopilotApprovalPreview) => {
     const channelName = preview.channel.title ||
       (preview.channel.handle ? `@${preview.channel.handle}` : `канал #${preview.channel.id}`);
-    const formattedDates = preview.dates.map(({ scheduledAt }) =>
-      new Date(String(scheduledAt)).toLocaleString("ru-RU", {
-        timeZone: MSK,
-        day: "numeric",
-        month: "short",
-        hour: "2-digit",
-        minute: "2-digit",
-      }),
-    );
-    const schedule = formattedDates.length > 1
-      ? `${formattedDates[0]} — ${formattedDates[formattedDates.length - 1]}`
-      : formattedDates[0];
-    const skipped = preview.counts.expired + preview.counts.blocked;
     setApprovalConfirmation({
-      title: `Добавить ${preview.counts.eligible} ${plural(preview.counts.eligible, "пост", "поста", "постов")} в календарь?`,
+      title: `Добавить ${preview.counts.eligible} ${plural(preview.counts.eligible, "пост", "поста", "постов")} в основной календарь?`,
       description: [
-        `Канал: ${channelName}.`,
-        schedule ? `Расписание: ${schedule}.` : "",
-        skipped > 0
-          ? `${skipped} ${plural(skipped, "материал не попадёт", "материала не попадут", "материалов не попадут")} в календарь: они неактуальны или ещё не готовы.`
-          : "После подтверждения публикации встанут в очередь автоматически.",
-      ].filter(Boolean).join(" "),
+        `Канал: ${channelName}. Посты будут опубликованы автоматически в указанное время (МСК).`,
+        ...preview.dates.map(({ index, scheduledAt }) => {
+          const item = preview.items.find((entry) => Number(entry.i) === index);
+          return `${item?.topic || "Пост"} — ${new Date(String(scheduledAt)).toLocaleString("ru-RU", { timeZone: MSK, day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" })}`;
+        }),
+      ].join("\n"),
     });
     return new Promise<boolean>((resolve) => {
       approvalConfirmationResolver.current = resolve;
@@ -1787,25 +1591,13 @@ export default function AutopilotPage() {
     resolve?.(confirmed);
   };
 
-  const approveAll = async () => {
-    if (approvalBusy.current) return;
+  const approveAll = async (indexes?: number[]) => {
+    if (approvalBusy.current || !canPublish) return;
     const currentPlan = data?.activePlan ?? data?.plan;
-    const reviewable = currentPlan?.items.filter((item) => item.status === "pending") ?? [];
-    const scheduledCheckpoints = currentPlan?.items.filter((item) =>
-      Boolean(item.postId) && ["approved", "published"].includes(item.status),
-    ).length ?? 0;
-    const reviewComplete = Boolean(
-      currentPlan &&
-      reviewable.length > 0 &&
-      reviewable.length + scheduledCheckpoints === currentPlan.publicationTargetCount &&
-      reviewable.every((item) => reviewedIndexes.has(item.i)),
-    );
-    if (!reviewComplete) {
-      s.toast({
-        kind: "info",
-        title: "Сначала проверь весь план",
-        body: `Отметь каждый из ${reviewable.length} оставшихся постов после просмотра текста. До этого календарь не изменится.`,
-      });
+    const selectedIndexes = indexes ?? [...reviewedIndexes];
+    const selectedItems = currentPlan?.items.filter((item) => selectedIndexes.includes(item.i)) ?? [];
+    if (!currentPlan || !selectedIndexes.length || selectedItems.length !== selectedIndexes.length || selectedItems.some((item) => item.status !== "pending" || item.postId || !canApproveItem(item) || (item.draftId && !item.editorVersion))) {
+      s.toast({ kind: "info", title: "Выбери готовые посты", body: "Просмотри тексты и отметь публикации для основного календаря." });
       return;
     }
     approvalBusy.current = true;
@@ -1814,7 +1606,7 @@ export default function AutopilotPage() {
       const previewResponse = await fetch("/api/autopilot/approve", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ channelId: chId, action: "preview" }),
+        body: JSON.stringify({ channelId: chId, action: "preview", selectedIndexes, planId: currentPlan.id, planRevision: currentPlan.revision }),
       });
       const previewBody = (await previewResponse.json().catch(() => null)) as
         | { ok?: boolean; preview?: AutopilotApprovalPreview | null; error?: string }
@@ -1838,8 +1630,8 @@ export default function AutopilotPage() {
       if (!preview.complete) {
         s.toast({
           kind: "info",
-          title: "План ещё не готов целиком",
-          body: `Готово ${preview.counts.eligible} из ${preview.expectedCount}. Ничего не добавлено в календарь. Исправь или замени проблемные посты.`,
+          title: "Выбранные посты требуют проверки",
+          body: `Готово ${preview.counts.eligible} из ${preview.expectedCount}. Ничего не добавлено в календарь. Проверь дату и замечания выбранных постов.`,
         });
         return;
       }
@@ -1864,6 +1656,7 @@ export default function AutopilotPage() {
         body: JSON.stringify({
           channelId: chId,
           action: "confirm",
+          selectedIndexes,
           planId: preview.planId,
           idempotencyKey,
           previewToken: preview.token,
@@ -1906,7 +1699,7 @@ export default function AutopilotPage() {
         s.toast({
           kind: "info",
           title: "План изменился и снова требует проверки",
-          body: "Ничего не добавлено в календарь. Проверь актуальные версии всех постов.",
+          body: "Ничего не добавлено в календарь. Проверь актуальные версии выбранных постов.",
         });
         setReviewedIndexes(new Set());
       } else if (result?.ok) {
@@ -1914,7 +1707,7 @@ export default function AutopilotPage() {
         s.toast({
           kind: result.scheduled ? (skipped ? "info" : "success") : "info",
           title: result.scheduled
-            ? `Одобрено — ${result.scheduled} в очереди 🚀`
+            ? `Добавлено в основной календарь: ${result.scheduled}`
             : "Ничего не поставлено в очередь",
           body: skipped
             ? `${result.expired || 0} неактуальных и ${result.blocked || 0} неготовых материалов не попали в очередь.`
@@ -2104,14 +1897,14 @@ export default function AutopilotPage() {
   // Confirm-план показывает и reader-ready тексты, и безопасные тексты на согласовании.
   // Hard-block и внутренние quality-review черновики остаются скрыты.
   const items = planItems.filter((item) =>
-    item.status !== "expired" && item.status !== "rejected" &&
+    item.status !== "rejected" &&
       (
         item.status === "approved" || item.status === "published" ||
-        isAutopilotReaderReadyItem(item) || isAutopilotHumanReviewItem(item)
+        Boolean(item.draftId) || isAutopilotReaderReadyItem(item) || isAutopilotHumanReviewItem(item)
       ),
   );
-  const pending = items.filter((it) => it.status === "pending");
-  const editorPending = pending.filter((item) => Boolean(item.draftId));
+  const pending = items.filter((it) => it.status === "pending" || it.status === "expired");
+  const editorPending = pending.filter((item) => Boolean(item.draftId) && !item.editorVersion);
   const reviewPending = pending.filter(
     (item) => !item.draftId && isAutopilotHumanReviewItem(item),
   );
@@ -2119,19 +1912,9 @@ export default function AutopilotPage() {
   const visible = [...items]
     .sort((a, b) => new Date(a.scheduledAt).getTime() - new Date(b.scheduledAt).getTime());
   const hasUsablePlan = Boolean(plan && visible.length > 0);
-  const attentionItems = visible.filter((item) => item.status === "pending");
-  const scheduledPlanCheckpoints = planItems.filter((item) =>
-    Boolean(item.postId) && ["approved", "published"].includes(item.status),
-  ).length;
+  const attentionItems = visible.filter((item) => item.status === "pending" || item.status === "expired");
   const reviewedCount = attentionItems.filter((item) => reviewedIndexes.has(item.i)).length;
-  const planReviewComplete = Boolean(
-    plan &&
-    attentionItems.length > 0 &&
-    attentionItems.length + scheduledPlanCheckpoints === plan.publicationTargetCount &&
-    attentionItems.every((item) =>
-      reviewedIndexes.has(item.i) && !item.draftId && canApproveItem(item),
-    ),
-  );
+  const planReviewComplete = reviewedCount > 0 && canPublish;
   const plannedCount = plannedPostCountForWeeks(st.post_frequency, planningWeeks);
   const generationWorkCount = autopilotCandidateCount(plannedCount);
   const plannedDuration = fmtBuildEstimate(estimateAutopilotBuildMinutes(generationWorkCount));
@@ -2168,85 +1951,89 @@ export default function AutopilotPage() {
       : weeklyMeasuredStats.length > 0
         ? "за текущую неделю"
         : "Данных за неделю пока нет";
-  const realScheduleItems: OverviewScheduleItem[] = s.realPosts
-    .filter((post) => (
-      Number(post.channel_id) === chId &&
-      post.publication_origin === "autopilot" &&
-      Boolean(post.scheduled_at) &&
-      !["draft", "cancelled"].includes(post.status)
-    ))
-    .map((post) => ({
-      id: `real-${post.id}`,
-      scheduledAt: post.scheduled_at!,
-      title: plainPostText(post.text),
-      state: post.status === "published"
-        ? "published"
-        : ["failed_retry", "failed", "quarantined", "missing", "deleted_external"].includes(post.status)
-          ? "attention"
-          : "scheduled",
-    }));
-  const planScheduleItems: OverviewScheduleItem[] = attentionItems.map((item) => ({
-    id: `plan-${plan?.id ?? "active"}-${item.i}`,
-    scheduledAt: item.scheduledAt,
-    title: item.topic,
-    state: "review",
-    planIndex: item.i,
-  }));
-  const scheduleItems = [...realScheduleItems, ...planScheduleItems]
-    .sort((left, right) => new Date(left.scheduledAt).getTime() - new Date(right.scheduledAt).getTime());
-  const todayKey = moscowDateKey(new Date());
-  const nextScheduleItem = scheduleItems.find((item) => moscowDateKey(item.scheduledAt) >= todayKey);
-  const scheduleWeekStart = nextScheduleItem
-    ? mondayDateKey(nextScheduleItem.scheduledAt)
-    : currentWeekStartKey;
-  const scheduleDays: OverviewScheduleDay[] = Array.from({ length: 7 }, (_, index) => {
-    const key = shiftDateKey(scheduleWeekStart, index);
-    const date = dateForKey(key);
-    return {
-      key,
-      weekday: new Intl.DateTimeFormat("ru-RU", { weekday: "short", timeZone: "UTC" }).format(date).replace(".", ""),
-      date: date.getUTCDate(),
-      items: scheduleItems.filter((item) => moscowDateKey(item.scheduledAt) === key),
-    };
-  });
-  const planningSummary = `До ${planEndLabel} · ${plannedCount} ${plural(plannedCount, "публикация", "публикации", "публикаций")} · сборка — ${plannedDuration}`;
-  const openPlanItemFromSchedule = (index: number) => {
-    setExpanded(index);
-    requestAnimationFrame(() => {
-      document.querySelector<HTMLButtonElement>(`#autopilot-plan-item-${index} button`)?.focus();
+  const realScheduleItems: AutopilotCalendarItem[] = s.realPosts
+    .filter((post) => Number(post.channel_id) === chId && post.publication_origin === "autopilot" && Boolean(post.scheduled_at) && !["draft", "cancelled"].includes(post.status))
+    .map((post) => {
+      const linked = planItems.find((item) => item.postId === post.id);
+      return {
+        id: `real-${post.id}`, scheduledAt: post.scheduled_at!, title: linked?.topic || plainPostText(post.text).slice(0, 120), text: post.text, media: post.media,
+        formatting: linked?.draft === post.text ? linked.formatting : undefined,
+        state: post.status === "published" ? "published" : post.status === "scheduled" ? "scheduled" : "attention",
+        statusLabel: post.status === "published" ? "Опубликован" : post.status === "scheduled" ? "В основном календаре" : post.status === "publishing" ? "Публикуется" : "Требует внимания",
+        postId: post.id, scheduleRevision: post.schedule_revision, selectable: false,
+        editable: canEdit && canPublish && post.status === "scheduled",
+        issues: post.last_error ? [post.last_error] : [], publishedUrl: realPostUrl(post),
+      };
     });
+  const planScheduleItems: AutopilotCalendarItem[] = attentionItems.map((item) => ({
+    id: `plan-${plan?.id}-${item.i}`, scheduledAt: item.scheduledAt, title: item.topic, text: item.draft, media: item.media, formatting: item.formatting,
+    state: "review", planIndex: item.i,
+    statusLabel: Date.parse(item.scheduledAt) < calendarNow + 60_000 ? "Нужно новое время" : item.draftId && !item.editorVersion ? "Правки в редакторе" : !canApproveItem(item) ? "Нужна проверка" : "Не добавлен в календарь",
+    selectable: canPublish && item.status === "pending" && Date.parse(item.scheduledAt) >= calendarNow + 60_000 && !item.postId && canApproveItem(item) && (!item.draftId || Boolean(item.editorVersion)),
+    editable: canEdit,
+    issues: [
+      ...(Date.parse(item.scheduledAt) < calendarNow + 60_000 ? ["Время публикации прошло. Выбери новую дату и время."] : []),
+      ...(item.draftId && !item.editorVersion ? ["Верни сохранённые правки из редактора в автопилот перед добавлением."] : []),
+      ...(item.approvalBlockers?.map((blocker) => blocker.message) ?? []),
+      ...(!canApproveItem(item) ? item.quality?.blockers ?? ["Пост требует проверки."] : []),
+      ...(isAutopilotHumanReviewItem(item) ? ["Перед добавлением проверь факты и текст публикации."] : []),
+    ],
+  }));
+  const scheduleItems = [...realScheduleItems, ...planScheduleItems].sort((a, b) => Date.parse(a.scheduledAt) - Date.parse(b.scheduledAt));
+  const query = typeof window === "undefined" ? null : new URLSearchParams(window.location.search);
+  const returnItemId = query?.get("post") ? `real-${query.get("post")}` : query?.has("item") && Number(query.get("plan")) === plan?.id ? `plan-${plan.id}-${query.get("item")}` : null;
+  const planningSummary = `До ${planEndLabel} · ${plannedCount} ${plural(plannedCount, "публикация", "публикации", "публикаций")} · первая попытка — ${plannedDuration}`;
+  const savedPlanningWeeks = Number(st.planning_weeks || st.planning_months * 4);
+  const planSettingsDirty = planningWeeks !== savedPlanningWeeks ||
+    JSON.stringify(quickSettings) !== JSON.stringify(normalizeAutopilotQuickSettings(st.quick_settings));
+  const openEditor = async (item: AutopilotCalendarItem) => {
+    if (busy || !item.editable) return;
+    setBusy(true);
+    try {
+      const real = item.postId ? s.realPosts.find((post) => post.id === item.postId) : null;
+      if (real?.publication_operation_id && real.publication_draft_id) {
+        router.push(`/app/composer?draft=${real.publication_draft_id}&publication=${real.publication_operation_id}&from=autopilot`);
+        return;
+      }
+      const response = await fetch("/api/autopilot/item/draft", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ channelId: chId, planId: plan?.id, planRevision: plan?.revision, index: item.planIndex, postId: item.postId }) });
+      const result = await response.json();
+      if (!response.ok || !result.ok) throw new Error(result.error);
+      const context = item.returnView && item.returnAnchor ? `&autopilotView=${item.returnView}&autopilotAnchor=${item.returnAnchor}` : "";
+      router.push(`/app/composer?draft=${result.draftId}&from=autopilot&autopilotChannel=${chId}${result.postId ? `&autopilotPost=${result.postId}` : ""}${context}`);
+    } catch {
+      s.toast({ kind: "danger", title: "Не удалось открыть редактор", body: "Пост мог измениться или уже публикуется. Обновил состояние — попробуй ещё раз." });
+      await load();
+    } finally { setBusy(false); }
+  };
+  const rescheduleItem = async (item: AutopilotCalendarItem, localDate: string, localTime: string) => {
+    if (busy || !item.editable) return false;
+    setBusy(true);
+    try {
+      const real = item.postId ? s.realPosts.find((post) => post.id === item.postId) : null;
+      const response = real?.publication_operation_id
+        ? await fetch(`/api/publication-operations/${real.publication_operation_id}`, {
+          method: "PATCH",
+          headers: { "content-type": "application/json", "idempotency-key": crypto.randomUUID() },
+          body: JSON.stringify({ action: "reschedule", expectedScheduleRevision: real.operation_schedule_revision,
+            expectedStatus: real.publication_operation_status, localDate, localTime, timezone: "Europe/Moscow", disambiguation: "reject" }),
+        })
+        : await fetch("/api/autopilot/item/schedule", { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify({ planId: plan?.id, planRevision: plan?.revision, index: item.planIndex, postId: item.postId, scheduleRevision: item.scheduleRevision, localDate, localTime }) });
+      const result = await response.json();
+      if (!response.ok || !result.ok) throw new Error(result.error === "past" ? "Выбери время не раньше чем через минуту." : "Пост изменился или дата недоступна. Обнови карточку и повтори.");
+      await Promise.all([load(), s.refreshReal()]);
+      s.toast({ kind: result.queuePending ? "info" : "success", title: "Время публикации обновлено", body: item.postId ? "В основном календаре обновлена та же публикация." : "Дата сохранена в плане автопилота." });
+      return true;
+    } catch (error) {
+      s.toast({ kind: "danger", title: "Время не изменено", body: error instanceof Error ? error.message : "Повтори попытку." });
+      await load();
+      return false;
+    } finally { setBusy(false); }
   };
 
   return (
     <AppShell
       title="Автопилот"
       subtitle="Аврора создаёт контент, публикует и анализирует результаты."
-      action={
-        <div className="flex flex-wrap items-center gap-2">
-          <Button
-            type="button"
-            variant="outline"
-            size="md"
-            onClick={openPlanSettings}
-            disabled={busy || building || planSettingsSaving}
-            aria-haspopup="dialog"
-          >
-            <Settings2 className="h-[18px] w-[18px]" strokeWidth={2} aria-hidden />
-            Параметры плана
-          </Button>
-          <Button
-            type="button"
-            variant="brand"
-            size="md"
-            onClick={startBuild}
-            loading={busy}
-            disabled={busy || autopilotToggleBusy || planSettingsSaving || building}
-          >
-            <Play className="h-[18px] w-[18px]" strokeWidth={2} aria-hidden />
-            {building ? "План собирается" : hasUsablePlan ? "Собрать новый план" : "Собрать план"}
-          </Button>
-        </div>
-      }
     >
       {picker}
       {growthNotice && (
@@ -2264,7 +2051,30 @@ export default function AutopilotPage() {
         busy={autopilotToggleBusy}
         blocked={busy || planSettingsSaving}
         onToggle={() => void toggleAutopilot()}
-      />
+      >
+        <PlanSettingsPanel
+          settings={quickSettings}
+          postFrequency={st.post_frequency}
+          planningWeeks={planningWeeks}
+          planningSummary={planningSummary}
+          disabled={busy || building || autopilotToggleBusy}
+          saving={planSettingsSaving}
+          dirty={planSettingsDirty}
+          saveError={planSettingsError}
+          building={building}
+          hasUsablePlan={hasUsablePlan}
+          onChange={(settings) => {
+            setPlanSettingsError(null);
+            setQuickSettings(settings);
+          }}
+          onPlanningWeeksChange={(weeks) => {
+            setPlanSettingsError(null);
+            setPlanningWeeks(weeks);
+          }}
+          onSave={() => void savePlanSettings()}
+          onBuild={() => void generate()}
+        />
+      </AutopilotHero>
 
       <div className="mt-5 grid gap-3 md:grid-cols-3">
         <OverviewMetricCard
@@ -2295,7 +2105,10 @@ export default function AutopilotPage() {
       </div>
 
       <div className="mt-5">
-        <WeekSchedule days={scheduleDays} onSelectPlanItem={openPlanItemFromSchedule} />
+        <AutopilotCalendar key={`${projects.current?.id}:${chId}`} items={scheduleItems} selected={reviewedIndexes} busy={busy}
+          storageKey={`aurora:autopilot-calendar:${projects.current?.id}:${chId}`} channelName={tgChannels.find((channel) => channel.id === chId)?.title ?? "Telegram"} returnItemId={returnItemId}
+          onSelect={(index) => setReviewedIndexes((current) => { const next = new Set(current); if (next.has(index)) next.delete(index); else next.add(index); return next; })}
+          onSelectAll={(indexes) => setReviewedIndexes(new Set(indexes))} onAdd={(indexes) => void approveAll(indexes)} onEdit={(item) => void openEditor(item)} onReschedule={rescheduleItem} />
       </div>
 
       <div className="mt-5">
@@ -2306,21 +2119,6 @@ export default function AutopilotPage() {
           onRetry={() => void s.refreshReal()}
         />
       </div>
-
-      <QuickSettingsDialog
-        open={quickSettingsOpen}
-        settings={quickSettings}
-        planningWeeks={planningWeeks}
-        planningSummary={planningSummary}
-        disabled={busy || building}
-        saving={planSettingsSaving}
-        saveError={planSettingsError}
-        channelId={chId}
-        onChange={setQuickSettings}
-        onPlanningWeeksChange={setPlanningWeeks}
-        onSave={() => void savePlanSettings()}
-        onClose={closePlanSettings}
-      />
 
       <ConfirmDialog
         open={Boolean(approvalConfirmation)}
@@ -2334,24 +2132,15 @@ export default function AutopilotPage() {
 
       <ConfirmDialog
         open={cancelBuildConfirmation}
-        title="Остановить текущую сборку?"
-        description="Готовые тексты сохранятся, но недостающие посты перестанут собираться. Новые публикации в календарь не добавятся."
-        confirmLabel="Остановить сборку"
-        confirmVariant="danger"
+        title="Приостановить текущую сборку?"
+        description="Готовые тексты и черновики сохранятся. Автоповторы остановятся, а продолжить сборку можно будет с того же места."
+        confirmLabel="Приостановить сборку"
+        confirmVariant="primary"
         onConfirm={() => {
           setCancelBuildConfirmation(false);
           void cancelBuild();
         }}
         onCancel={() => setCancelBuildConfirmation(false)}
-      />
-
-      <ScheduleConflictDialog
-        open={Boolean(scheduleConflict)}
-        coverage={scheduleConflict}
-        busy={busy}
-        onContinue={() => void generate("continue")}
-        onReplace={() => void generate("replace")}
-        onClose={() => setScheduleConflict(null)}
       />
 
       {/* Состояние новой сборки не заменяет пригодный план. */}
@@ -2374,29 +2163,6 @@ export default function AutopilotPage() {
         </p>
       )}
 
-      {!hasUsablePlan && !buildAttempt && (
-        <Card className="mt-5 py-4">
-          <EmptyState
-            icon={<Rocket className="h-6 w-6" strokeWidth={1.75} aria-hidden />}
-            title="Собери первый контент-план"
-            body="Аврора найдёт темы, подготовит посты и покажет их здесь перед добавлением в календарь."
-            action={
-              <Button
-                type="button"
-                variant="primary"
-                data-aurora-feature="plan"
-                data-aurora-action="planned"
-                onClick={startBuild}
-                loading={busy}
-              >
-                <Play className="h-[18px] w-[18px]" strokeWidth={2} aria-hidden />
-                Собрать план
-              </Button>
-            }
-          />
-        </Card>
-      )}
-
       {attentionItems.length > 0 && (
         <section className="mt-6" aria-labelledby="autopilot-attention-title">
           <div className="flex flex-wrap items-end justify-between gap-3">
@@ -2415,14 +2181,14 @@ export default function AutopilotPage() {
                 variant="primary"
                 data-aurora-feature="plan"
                 data-aurora-action="approved"
-                onClick={approveAll}
+                onClick={() => void approveAll()}
                 loading={busy}
                 disabled={busy || !planReviewComplete}
               >
                 <Check className="h-[18px] w-[18px]" strokeWidth={2.5} aria-hidden />
                 {planReviewComplete
-                  ? `Одобрить ${attentionItems.length} и добавить в календарь`
-                  : `Проверено ${reviewedCount} из ${attentionItems.length}`}
+                  ? `Добавить в основной календарь · ${reviewedCount}`
+                  : `Выбери посты для календаря`}
               </Button>
             )}
           </div>
@@ -2459,7 +2225,7 @@ export default function AutopilotPage() {
                         </span>
                       </span>
                       {reviewed ? (
-                        <Badge tone="success">проверен</Badge>
+                        <Badge tone="success">выбран</Badge>
                       ) : it.draftId ? (
                         <Badge tone="brand">в редакторе</Badge>
                       ) : isAutopilotHumanReviewItem(it) ? (
@@ -2481,25 +2247,7 @@ export default function AutopilotPage() {
                     </button>
 
                     <div className="px-4 pb-4">
-                      {editingIndex === it.i ? (
-                        <div className="mt-1">
-                          <label htmlFor={`autopilot-edit-${it.i}`} className="text-[13px] font-semibold text-text">
-                            Текст поста
-                          </label>
-                          <textarea
-                            id={`autopilot-edit-${it.i}`}
-                            value={editingText}
-                            onChange={(event) => setEditingText(event.target.value)}
-                            rows={12}
-                            className="mt-2 w-full resize-y rounded-md border border-line bg-surface px-3 py-2 text-[14px] leading-relaxed text-text outline-none focus-visible:border-brand focus-visible:ring-2 focus-visible:ring-brand/20"
-                          />
-                          <p className="mt-1 text-[12px] text-text-3">
-                            После сохранения Аврора заново проверит качество, а весь план потребуется просмотреть ещё раз.
-                          </p>
-                        </div>
-                      ) : (
-                        <PostPreview text={it.draft} expanded={isOpen} />
-                      )}
+                      <PostPreview text={it.draft} expanded={isOpen} />
 
                       {it.draftId && (
                         <div className="mt-3">
@@ -2525,13 +2273,13 @@ export default function AutopilotPage() {
                         <div className="mt-3 flex items-start gap-2 rounded-sm bg-info-soft p-3">
                           <Pencil className="mt-0.5 h-4 w-4 shrink-0 text-info-text" aria-hidden />
                           <p className="text-[13px] leading-snug text-info-text">
-                            Правки сохранены в редакторе. Поставь пост в календарь оттуда — дата Автопилота уже выбрана.
+                            {it.editorVersion ? "Правки сохранены в автопилоте. Пост можно добавить в основной календарь после проверки." : "Открой редактор и нажми «Сохранить и вернуться в автопилот», чтобы применить правки."}
                           </p>
                         </div>
                       )}
 
                       <div className="mt-3 flex flex-wrap gap-2">
-                        {!it.draftId && canApproveItem(it) && (
+                        {(!it.draftId || it.editorVersion) && canApproveItem(it) && canPublish && it.status === "pending" && (
                           <Button
                             size="sm"
                             variant={reviewed ? "primary" : "secondary"}
@@ -2544,63 +2292,16 @@ export default function AutopilotPage() {
                             })}
                           >
                             <Check className="h-4 w-4" aria-hidden />
-                            {reviewed ? "Проверен" : "Подтвердить просмотр"}
+                            {reviewed ? "Выбран для календаря" : "Выбрать для календаря"}
                           </Button>
                         )}
-                        {!it.draftId && editingIndex !== it.i && (
-                          <Button
-                            size="sm"
-                            variant="ghost"
-                            disabled={busy || editingIndex != null}
-                            onClick={() => {
-                              setEditingIndex(it.i);
-                              setEditingText(it.draft);
-                              setReviewedIndexes((current) => {
-                                const next = new Set(current);
-                                next.delete(it.i);
-                                return next;
-                              });
-                            }}
-                          >
-                            <Pencil className="h-4 w-4" aria-hidden />
-                            Редактировать
-                          </Button>
-                        )}
-                        {editingIndex === it.i && (
-                          <>
-                            <Button
-                              size="sm"
-                              variant="primary"
-                              loading={busy}
-                              disabled={busy || !editingText.trim() || editingText.trim() === it.draft.trim()}
-                              onClick={() => {
-                                setBusy(true);
-                                void itemAction(it.i, "edit", editingText).finally(() => {
-                                  setBusy(false);
-                                  setEditingIndex(null);
-                                  setEditingText("");
-                                });
-                              }}
-                            >
-                              Сохранить и проверить
-                            </Button>
-                            <Button
-                              size="sm"
-                              variant="ghost"
-                              disabled={busy}
-                              onClick={() => {
-                                setEditingIndex(null);
-                                setEditingText("");
-                              }}
-                            >
-                              Отмена
-                            </Button>
-                          </>
-                        )}
+                        {canEdit && <Button size="sm" variant="ghost" disabled={busy} onClick={() => { const item = planScheduleItems.find((entry) => entry.planIndex === it.i); if (item) void openEditor(item); }}>
+                          <Pencil className="h-4 w-4" aria-hidden />Редактировать
+                        </Button>}
                         <Button
                           size="sm"
                           variant="ghost"
-                          disabled={busy || editingIndex != null}
+                          disabled={busy || !canPublish}
                           onClick={() => itemAction(it.i, "replace")}
                         >
                           <RefreshCw className="h-4 w-4" aria-hidden />

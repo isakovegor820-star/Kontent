@@ -2,12 +2,6 @@
 import { useProjectFetch, useProjectCall, useProjectStorageKey } from "@/lib/use-project-transport";
 
 
-import { projectNativeUrl } from "@/lib/project-native-url";
-
-import { mediaStorageErrorLabel } from "@/lib/media-storage-quota.mjs";
-
-import { projectFetch as fetch } from "@/lib/project-fetch";
-
 // А5. Редактор поста (Приложение А). Главное действие — «Добавить в календарь».
 // ТЗ 5.3: один пост адаптируется под обе сети перед публикацией.
 // ТЗ 5.6: ИИ пишет/переписывает/сокращает с опорой на разведку (sourceRef → тренд/конкурент).
@@ -3713,11 +3707,11 @@ function ComposerInner() {
       });
       setMediaLibraryAssets((assets) => [payload.asset!, ...assets.filter((asset) => asset.id !== payload.asset!.id)]);
       s.toast({ kind: "success", title: "Изображение добавлено" });
-    } catch (error) {
+    } catch {
       s.toast({
         kind: "danger",
         title: "Изображение не загрузилось",
-        body: mediaStorageErrorLabel(error instanceof Error ? error.message : null) || "Подойдут JPG, PNG или WebP до 10 МБ.",
+        body: "Подойдут JPG, PNG или WebP до 10 МБ.",
       });
     } finally {
       setMediaUploading(false);
@@ -4132,7 +4126,7 @@ function ComposerInner() {
                       className="w-32 shrink-0 snap-start rounded-xs border border-line bg-surface p-2 text-left hover:border-line-strong focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-brand/15"
                     >
                       {/* eslint-disable-next-line @next/next/no-img-element -- authenticated project media cannot use the image optimizer */}
-                      <img src={projectNativeUrl(asset.url)} alt="" className="aspect-square w-full rounded-[8px] object-cover" />
+                      <img src={asset.url} alt="" className="aspect-square w-full rounded-[8px] object-cover" />
                       <span className="mt-2 block truncate text-[12px] font-semibold text-text">{asset.fileName}</span>
                     </button>
                   ))}
@@ -4155,7 +4149,7 @@ function ComposerInner() {
                 >
                   {c.media.kind === "image" && c.media.url ? (
                     // eslint-disable-next-line @next/next/no-img-element -- authenticated project media cannot use the image optimizer
-                    <img src={projectNativeUrl(c.media.url)} alt="" className="h-full w-full object-cover" />
+                    <img src={c.media.url} alt="" className="h-full w-full object-cover" />
                   ) : <span className="absolute inset-0 flex items-center justify-center text-white">
                     {c.media.kind === "video" ? (
                       <Video className="h-5 w-5" strokeWidth={2} />

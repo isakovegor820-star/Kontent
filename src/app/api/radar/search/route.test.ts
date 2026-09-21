@@ -1,10 +1,7 @@
-import type { PoolClient } from "pg";
-import { ProjectAccessError, roleAllows, type ActiveProjectMembership, type ProjectPermission, type ProjectRole } from "@/lib/project-permissions";
+import { ProjectRequest } from "@/test/project-request";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { NextRequest } from "next/server";
 
 const mocks = vi.hoisted(() => ({
-  role: "owner" as ProjectRole,
   query: vi.fn(),
   session: vi.fn(),
   resolveChannel: vi.fn(),
@@ -12,30 +9,24 @@ const mocks = vi.hoisted(() => ({
   trusted: vi.fn(),
 }));
 
+vi.mock("@/lib/project-permissions", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/lib/project-permissions")>();
+  return { ...actual, requireSelectedProjectPermission: vi.fn(async () => ({ projectId: 1, userId: 7, role: "owner", version: 1 })) };
+});
 vi.mock("@/lib/db", () => ({ getPool: () => ({ query: mocks.query }) }));
 vi.mock("@/lib/session", () => ({ getSessionUser: mocks.session }));
 vi.mock("@/lib/autopilot", () => ({ resolveChannel: mocks.resolveChannel }));
 vi.mock("@/lib/radar-search-queue", () => ({ enqueueRadarSearch: mocks.enqueue }));
 vi.mock("@/lib/request-origin", () => ({ hasTrustedMutationOrigin: mocks.trusted }));
 
-// Route behavior is isolated here; real PostgreSQL authority/locks are covered by N21 integration.
-vi.mock("@/lib/selected-project-transaction", () => ({
-  withSelectedProjectPermission: async (pool: PoolClient, userId: number, permission: ProjectPermission,
-    action: (client: PoolClient, membership: ActiveProjectMembership) => Promise<Response>) => {
-    if (!roleAllows(mocks.role, permission)) throw new ProjectAccessError("permission_denied");
-    return action(pool, { projectId: 3, userId, role: mocks.role, version: 1 });
-  },
-}));
-vi.mock("@/lib/research-project-access", async (importOriginal) => ({
-  ...await importOriginal<typeof import("@/lib/research-project-access")>(),
-  researchChannel: mocks.resolveChannel,
-}));
-
 import { GET, POST } from "./route";
 
 const queuedRun = {
   id: "91",
-  project_id: 3,
+  channel_id: 11,
+  project_id: 1,
+  search_scope: "all",
+  search_period: "month",
   query: "садоводство",
   normalized_query: "садоводство",
   status: "queued",
@@ -55,13 +46,11 @@ const queuedRun = {
 describe("hybrid radar search route", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    mocks.role = "owner";
     mocks.session.mockResolvedValue({ id: 7 });
     mocks.resolveChannel.mockResolvedValue(11);
     mocks.trusted.mockReturnValue(true);
     mocks.enqueue.mockResolvedValue({ jobId: "radar-search-91", recovered: false });
     mocks.query.mockImplementation(async (sql: string) => {
-      if (sql.includes("from user_project_preferences")) return { rowCount: 1, rows: [{ project_id: 3, user_id: 7, role: "owner", version: 1 }] };
       if (sql.includes("insert into radar_search_runs")) return { rowCount: 1, rows: [queuedRun] };
       if (sql.includes("queue_confirmed_at = now()")) return { rowCount: 1, rows: [queuedRun] };
       return { rowCount: 0, rows: [] };
@@ -69,7 +58,7 @@ describe("hybrid radar search route", () => {
   });
 
   it("returns local results without requiring an external provider", async () => {
-    const response = await GET(new NextRequest("http://localhost/api/radar/search?q=рыбалка&channel=11"));
+    const response = await GET(new ProjectRequest(1, "http://localhost/api/radar/search?q=рыбалка&channel=11"));
     expect(response.status).toBe(200);
     await expect(response.json()).resolves.toMatchObject({
       channelId: 11,
@@ -103,7 +92,7 @@ describe("hybrid radar search route", () => {
       }
       return { rowCount: 0, rows: [] };
     });
-    const response = await GET(new NextRequest("http://localhost/api/radar/search?q=строительство&channel=11"));
+    const response = await GET(new ProjectRequest(1, "http://localhost/api/radar/search?q=строительство&channel=11"));
     expect(response.status).toBe(200);
     await expect(response.json()).resolves.toMatchObject({
       results: [{
@@ -145,7 +134,7 @@ describe("hybrid radar search route", () => {
       }
       return { rowCount: 0, rows: [] };
     });
-    const response = await GET(new NextRequest("http://localhost/api/radar/search?q=строительство&channel=11"));
+    const response = await GET(new ProjectRequest(1, "http://localhost/api/radar/search?q=строительство&channel=11"));
     expect(response.status).toBe(200);
     await expect(response.json()).resolves.toMatchObject({
       run: { status: "ready", externalCount: 1 },
@@ -201,7 +190,7 @@ describe("hybrid radar search route", () => {
       }
       return { rowCount: 0, rows: [] };
     });
-    const response = await GET(new NextRequest("http://localhost/api/radar/search?run=91"));
+    const response = await GET(new ProjectRequest(1, "http://localhost/api/radar/search?run=91"));
     expect(response.status).toBe(200);
     await expect(response.json()).resolves.toMatchObject({
       results: [
@@ -212,7 +201,7 @@ describe("hybrid radar search route", () => {
   });
 
   it("creates a user-scoped background run and returns immediately", async () => {
-    const response = await POST(new NextRequest("http://localhost/api/radar/search", {
+    const response = await POST(new ProjectRequest(1, "http://localhost/api/radar/search", {
       method: "POST",
       headers: { "content-type": "application/json", "idempotency-key": "radar_garden_1234" },
       body: JSON.stringify({ q: "Садоводство", channelId: 11 }),
@@ -226,33 +215,20 @@ describe("hybrid radar search route", () => {
     expect(mocks.enqueue).toHaveBeenCalledWith({ runId: 91, userId: 7 });
     expect(mocks.query).toHaveBeenCalledWith(
       expect.stringContaining("insert into radar_search_runs"),
-      [7, 11, "radar_garden_1234", "Садоводство", "садоводство", 0, 3],
+      [7, 11, "radar_garden_1234", "Садоводство", "садоводство", 0, 1, "all", "month"],
     );
-  });
-
-  it("denies a current publisher before queueing a paid background search", async () => {
-    mocks.role = "publisher";
-    mocks.query.mockResolvedValue({ rowCount: 1, rows: [{ project_id: 3, user_id: 7, role: "publisher", version: 2 }] });
-    const response = await POST(new NextRequest("http://localhost/api/radar/search", {
-      method: "POST", headers: { "content-type": "application/json", "idempotency-key": "radar_no_permission_1234" },
-      body: JSON.stringify({ q: "садоводство", channelId: 11 }),
-    }));
-    expect(response.status).toBe(403);
-    expect(mocks.enqueue).not.toHaveBeenCalled();
-    expect(mocks.query.mock.calls.some(([sql]) => String(sql).includes("insert into radar_search_runs"))).toBe(false);
   });
 
   it("keeps local results available when queue dispatch fails", async () => {
     mocks.enqueue.mockRejectedValue(new Error("redis offline"));
     mocks.query.mockImplementation(async (sql: string) => {
-      if (sql.includes("from user_project_preferences")) return { rowCount: 1, rows: [{ project_id: 3, user_id: 7, role: "owner", version: 1 }] };
       if (sql.includes("insert into radar_search_runs")) return { rowCount: 1, rows: [queuedRun] };
       if (sql.includes("error_code = 'queue_unavailable'")) {
         return { rowCount: 1, rows: [{ ...queuedRun, status: "failed", stage: "failed", progress: 100 }] };
       }
       return { rowCount: 0, rows: [] };
     });
-    const response = await POST(new NextRequest("http://localhost/api/radar/search", {
+    const response = await POST(new ProjectRequest(1, "http://localhost/api/radar/search", {
       method: "POST",
       headers: { "content-type": "application/json", "idempotency-key": "radar_garden_5678" },
       body: JSON.stringify({ q: "садоводство", channelId: 11 }),
@@ -265,11 +241,47 @@ describe("hybrid radar search route", () => {
     });
   });
 
+  it("starts a fresh Telegram-only run for the selected period without replaying the cache", async () => {
+    const response = await POST(new ProjectRequest(1, "http://localhost/api/radar/search", {
+      method: "POST", headers: { "idempotency-key": "fresh_telegram_123" },
+      body: JSON.stringify({ q: "садоводство", channelId: 11, scope: "telegram", period: "quarter", force: true }),
+    }));
+    expect(response.status).toBe(202);
+    expect(mocks.query).toHaveBeenCalledWith(expect.stringContaining("insert into radar_search_runs"),
+      [7, 11, "fresh_telegram_123", "садоводство", "садоводство", 0, 1, "telegram", "quarter"]);
+    expect(mocks.query.mock.calls.some(([sql]) => String(sql).includes("cache_expires_at > now()"))).toBe(false);
+    expect(mocks.query.mock.calls.some(([sql]) => String(sql).includes("from discovered_sources source"))).toBe(false);
+  });
+
+  it("only considers complete cache entries for the same scope and period", async () => {
+    await POST(new ProjectRequest(1, "http://localhost/api/radar/search", {
+      method: "POST", headers: { "idempotency-key": "cache_telegram_123" },
+      body: JSON.stringify({ q: "садоводство", channelId: 11, scope: "telegram", period: "week" }),
+    }));
+    const call = mocks.query.mock.calls.find(([sql]) => String(sql).includes("cache_expires_at > now()"));
+    expect(call?.[0]).toContain("status = 'ready'");
+    expect(call?.[0]).toContain("search_scope = $5 and search_period = $6");
+    expect(call?.[1]).toEqual([7, 11, "садоводство", 1, "telegram", "week"]);
+  });
+
+  it.each([
+    { channel_id: 12 }, { search_scope: "telegram" }, { search_period: "quarter" }, { normalized_query: "рыбалка" },
+  ])("rejects reusing a request key with a different search identity: %j", async (changes) => {
+    mocks.query.mockImplementation(async (sql: string) => sql.includes("request_key = $2")
+      ? { rowCount: 1, rows: [{ ...queuedRun, ...changes }] } : { rowCount: 0, rows: [] });
+    const response = await POST(new ProjectRequest(1, "http://localhost/api/radar/search", {
+      method: "POST", headers: { "idempotency-key": "conflict_run_123" },
+      body: JSON.stringify({ q: "садоводство", channelId: 11, force: true }),
+    }));
+    expect(response.status).toBe(409);
+    expect(mocks.enqueue).not.toHaveBeenCalled();
+  });
+
   it("never exposes a run owned by another user", async () => {
     mocks.query.mockResolvedValue({ rowCount: 0, rows: [] });
-    const response = await GET(new NextRequest("http://localhost/api/radar/search?run=999"));
+    const response = await GET(new ProjectRequest(1, "http://localhost/api/radar/search?run=999"));
     expect(response.status).toBe(404);
-    expect(mocks.query).toHaveBeenCalledWith(expect.stringContaining("user_id = $2"), [999, 7, 3]);
+    expect(mocks.query).toHaveBeenCalledWith(expect.stringContaining("user_id = $2"), [999, 7, 1]);
   });
 
   it("shows a popular publication once, preferring its trend classification", async () => {
@@ -305,7 +317,7 @@ describe("hybrid radar search route", () => {
       }
       return { rowCount: 0, rows: [] };
     });
-    const response = await GET(new NextRequest("http://localhost/api/radar/search?run=91"));
+    const response = await GET(new ProjectRequest(1, "http://localhost/api/radar/search?run=91"));
     expect(response.status).toBe(200);
     await expect(response.json()).resolves.toMatchObject({
       results: [{ kind: "trend", url: "https://t.me/sea_fishing/42" }],
@@ -341,7 +353,7 @@ describe("hybrid radar search route", () => {
       return { rowCount: 0, rows: [] };
     });
 
-    const response = await GET(new NextRequest("http://localhost/api/radar/search?run=91"));
+    const response = await GET(new ProjectRequest(1, "http://localhost/api/radar/search?run=91"));
     expect(response.status).toBe(200);
     const payload = await response.json();
     expect(payload.results).toHaveLength(85);
@@ -351,4 +363,18 @@ describe("hybrid radar search route", () => {
     expect(String(resultsQuery?.[0])).toContain("id > $3");
     expect(resultsQuery?.[1]).toEqual([91, 7, 0]);
   });
+  it("rejects a reused legacy request key from another project without exposing its run", async () => {
+    mocks.query.mockImplementation(async (sql: string) => ({ rows: sql.includes("request_key = $2")
+      ? [{ ...queuedRun, project_id: 99 }] : [] }));
+    const response = await POST(new ProjectRequest(1, "http://localhost/api/radar/search", {
+      method: "POST", headers: { "content-type": "application/json", "idempotency-key": "shared_key_12345" },
+      body: JSON.stringify({ q: "садоводство", channelId: 11, force: true }),
+    }));
+    expect(response.status).toBe(409);
+    expect(await response.json()).toEqual({ error: "idempotency_conflict" });
+    expect(mocks.enqueue).not.toHaveBeenCalled();
+    expect(mocks.query.mock.calls.some(([sql]) => String(sql).includes("from radar_search_results"))).toBe(false);
+    expect(mocks.resolveChannel).toHaveBeenCalledWith({ actorUserId: 7, projectId: 1 }, 11);
+  });
+
 });

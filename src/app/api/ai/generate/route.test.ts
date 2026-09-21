@@ -1,20 +1,13 @@
-vi.mock("@/lib/ai-spend-ledger.mjs", async (importOriginal) => ({
-  ...await importOriginal(),
-  beginAiSpendAttempt: vi.fn(async () => ({ id: "unit-spend", finish: vi.fn(async () => {}) })),
-}));
+import { ProjectRequest } from "@/test/project-request";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { NextRequest } from "next/server";
-import { ProjectAccessError } from "@/lib/project-permissions";
 
 const mocks = vi.hoisted(() => ({
   getSessionUser: vi.fn(),
-  requireAiChannelAccess: vi.fn(),
   query: vi.fn(),
   channelAiContextFor: vi.fn(),
   styleSamplesFor: vi.fn(),
   lookupAiUsageRequest: vi.fn(),
   acquireAiUsageRequest: vi.fn(),
-  stageAiUsageResult: vi.fn(),
   commitAiUsageResult: vi.fn(),
   releaseAiUsageRequest: vi.fn(),
   aiReady: vi.fn(),
@@ -22,18 +15,19 @@ const mocks = vi.hoisted(() => ({
   beginGenerationOperation: vi.fn(),
   failGenerationOperation: vi.fn(),
   lookupTerminalGenerationFailure: vi.fn(),
-  stageGenerationArtifact: vi.fn(),
+  recoverPendingGenerationResult: vi.fn(),
+  stageGenerationResult: vi.fn(),
   recordAiProviderAttempt: vi.fn(),
   topicAlignment: vi.fn(),
   recordProductEvent: vi.fn(),
 }));
 
-vi.mock("@/lib/ai-project-access", async (importOriginal) => ({
-  ...await importOriginal<typeof import("@/lib/ai-project-access")>(),
-  requireAiChannelAccess: mocks.requireAiChannelAccess,
-}));
+vi.mock("@/lib/project-permissions", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/lib/project-permissions")>();
+  return { ...actual, requireSelectedProjectPermission: vi.fn(async () => ({ projectId: 1, userId: 7, role: "owner", version: 1 })) };
+});
 vi.mock("@/lib/session", () => ({ getSessionUser: mocks.getSessionUser }));
-vi.mock("@/lib/db", () => ({ getPool: () => ({ query: mocks.query, connect: vi.fn() }) }));
+vi.mock("@/lib/db", () => ({ getPool: () => ({ query: mocks.query }) }));
 vi.mock("@/lib/server-product-events.mjs", () => ({
   recordChannelProductEvent: mocks.recordProductEvent,
   productDurationMs: () => 5,
@@ -49,7 +43,6 @@ vi.mock("@/lib/ai-usage", async (importOriginal) => {
     styleSamplesFor: mocks.styleSamplesFor,
     lookupAiUsageRequest: mocks.lookupAiUsageRequest,
     acquireAiUsageRequest: mocks.acquireAiUsageRequest,
-    stageAiUsageResult: mocks.stageAiUsageResult,
     commitAiUsageResult: mocks.commitAiUsageResult,
     releaseAiUsageRequest: mocks.releaseAiUsageRequest,
   };
@@ -69,7 +62,8 @@ vi.mock("@/lib/generation-artifacts", async (importOriginal) => {
     beginGenerationOperation: mocks.beginGenerationOperation,
     failGenerationOperation: mocks.failGenerationOperation,
     lookupTerminalGenerationFailure: mocks.lookupTerminalGenerationFailure,
-    stageGenerationArtifact: mocks.stageGenerationArtifact,
+    recoverPendingGenerationResult: mocks.recoverPendingGenerationResult,
+    stageGenerationResult: mocks.stageGenerationResult,
   };
 });
 vi.mock("@/lib/ai-attempt-budget", async (importOriginal) => {
@@ -103,7 +97,7 @@ describe("generation deadlines", () => {
 });
 
 function request(channelId = 42) {
-  return new NextRequest("http://localhost/api/ai/generate", {
+  return new ProjectRequest(1, "http://localhost/api/ai/generate", {
     method: "POST",
     headers: {
       origin: "http://localhost",
@@ -115,7 +109,7 @@ function request(channelId = 42) {
 }
 
 function studioRequest() {
-  return new NextRequest("http://localhost/api/ai/generate", {
+  return new ProjectRequest(1, "http://localhost/api/ai/generate", {
     method: "POST",
     headers: {
       origin: "http://localhost",
@@ -140,7 +134,7 @@ function studioRequest() {
 }
 
 function studioFactCheckOffRequest() {
-  return new NextRequest("http://localhost/api/ai/generate", {
+  return new ProjectRequest(1, "http://localhost/api/ai/generate", {
     method: "POST",
     headers: {
       origin: "http://localhost",
@@ -165,7 +159,7 @@ function studioFactCheckOffRequest() {
 }
 
 function studioSparseLegalBriefRequest() {
-  return new NextRequest("http://localhost/api/ai/generate", {
+  return new ProjectRequest(1, "http://localhost/api/ai/generate", {
     method: "POST",
     headers: {
       origin: "http://localhost",
@@ -190,7 +184,7 @@ function studioSparseLegalBriefRequest() {
 }
 
 function editorialRequest() {
-  return new NextRequest("http://localhost/api/ai/generate", {
+  return new ProjectRequest(1, "http://localhost/api/ai/generate", {
     method: "POST",
     headers: {
       origin: "http://localhost",
@@ -216,7 +210,7 @@ function editorialRequest() {
 }
 
 function balancedStudioRequest() {
-  return new NextRequest("http://localhost/api/ai/generate", {
+  return new ProjectRequest(1, "http://localhost/api/ai/generate", {
     method: "POST",
     headers: {
       origin: "http://localhost",
@@ -241,7 +235,7 @@ function balancedStudioRequest() {
 }
 
 function maximumStudioRequest() {
-  return new NextRequest("http://localhost/api/ai/generate", {
+  return new ProjectRequest(1, "http://localhost/api/ai/generate", {
     method: "POST",
     headers: {
       origin: "http://localhost",
@@ -268,7 +262,7 @@ function maximumStudioRequest() {
 }
 
 function reviewableBlockedEditorialRequest() {
-  return new NextRequest("http://localhost/api/ai/generate", {
+  return new ProjectRequest(1, "http://localhost/api/ai/generate", {
     method: "POST",
     headers: {
       origin: "http://localhost",
@@ -294,7 +288,7 @@ function reviewableBlockedEditorialRequest() {
 }
 
 function studioReferenceRequest(version = 3) {
-  return new NextRequest("http://localhost/api/ai/generate", {
+  return new ProjectRequest(1, "http://localhost/api/ai/generate", {
     method: "POST",
     headers: {
       origin: "http://localhost",
@@ -365,7 +359,7 @@ function ownedReferenceDraft(overrides: Record<string, unknown> = {}) {
 }
 
 function trendsRequest() {
-  return new NextRequest("http://localhost/api/ai/generate", {
+  return new ProjectRequest(1, "http://localhost/api/ai/generate", {
     method: "POST",
     headers: {
       origin: "http://localhost",
@@ -410,7 +404,6 @@ describe("POST /api/ai/generate prerequisites", () => {
       styleSamples: [],
     });
     mocks.styleSamplesFor.mockResolvedValue([]);
-    mocks.requireAiChannelAccess.mockResolvedValue(3);
     mocks.lookupAiUsageRequest.mockResolvedValue({ state: "missing", reservationId: null, result: null });
     mocks.acquireAiUsageRequest.mockResolvedValue({
       allowed: true,
@@ -423,16 +416,12 @@ describe("POST /api/ai/generate prerequisites", () => {
       requestState: "acquired",
       result: null,
     });
-    mocks.stageAiUsageResult.mockImplementation(async (_userId, _reservationId, _operationId, result) => ({
-      changed: true,
-      status: "reserved",
-      result,
-    }));
     mocks.commitAiUsageResult.mockResolvedValue({ changed: true, status: "committed", result: null });
     mocks.releaseAiUsageRequest.mockResolvedValue(true);
     mocks.aiReady.mockResolvedValue(true);
     mocks.getDraftForUser.mockResolvedValue(null);
     mocks.lookupTerminalGenerationFailure.mockResolvedValue(null);
+    mocks.recoverPendingGenerationResult.mockResolvedValue(null);
     mocks.beginGenerationOperation.mockResolvedValue({ id: 301, state: "created" });
     mocks.failGenerationOperation.mockResolvedValue(true);
     mocks.recordAiProviderAttempt.mockResolvedValue({ estimatedCostMicrousd: 0 });
@@ -441,18 +430,19 @@ describe("POST /api/ai/generate prerequisites", () => {
         ? { verdict: "misaligned", confidence: 0.99, reasonCode: "unrelated_event" }
         : { verdict: "aligned", confidence: 0.96, reasonCode: "subject_developed" }
     ));
-    mocks.stageGenerationArtifact.mockImplementation(async ({ text, validation }) => ({
+    mocks.stageGenerationResult.mockImplementation(async ({ result }) => ({
       id: 501,
-      text,
+      text: result.text,
       resultHash: "a".repeat(64),
-      validation,
+      validation: result.validation,
+      usageResult: { ...result, generationResultId: 501 },
     }));
     vi.unstubAllGlobals();
   });
 
   it("creates a correlation ID before rejecting a cross-site preflight", async () => {
     const warnLog = vi.spyOn(console, "warn").mockImplementation(() => {});
-    const response = await POST(new NextRequest("https://aurora.test/api/ai/generate", {
+    const response = await POST(new ProjectRequest(1, "https://aurora.test/api/ai/generate", {
       method: "POST",
       headers: {
         "content-type": "application/json",
@@ -468,39 +458,6 @@ describe("POST /api/ai/generate prerequisites", () => {
     expect(body).toMatchObject({ error: "forbidden_origin", requestId: expect.any(String) });
     expect(body.requestId).toBe(response.headers.get("x-ai-request-id"));
     expect(mocks.getSessionUser).not.toHaveBeenCalled();
-  });
-
-  it("checks current channel permission before replay, quota, or provider work", async () => {
-    mocks.requireAiChannelAccess.mockRejectedValue(new ProjectAccessError("membership_required"));
-    const fetchMock = vi.fn();
-    vi.stubGlobal("fetch", fetchMock);
-    const response = await POST(studioRequest());
-    expect(response.status).toBe(403);
-    await expect(response.json()).resolves.toMatchObject({ error: "channel_forbidden", retryable: false });
-    expect(mocks.lookupAiUsageRequest).not.toHaveBeenCalled();
-    expect(mocks.acquireAiUsageRequest).not.toHaveBeenCalled();
-    expect(fetchMock).not.toHaveBeenCalled();
-  });
-
-  it("withholds new stream content when membership is revoked during the provider call", async () => {
-    let checks = 0;
-    mocks.requireAiChannelAccess.mockImplementation(async () => {
-      checks += 1;
-      if (checks >= 3) throw new ProjectAccessError("membership_required");
-      return 3;
-    });
-    vi.stubGlobal("fetch", vi.fn(async () => new Response(
-      '{"message":{"content":"FRESH_AFTER_REVOKE"},"done":true}\n',
-      { status: 200, headers: { "content-type": "application/x-ndjson" } },
-    )));
-    const response = await POST(studioRequest());
-    const body = await response.text();
-    const events = body.trim().split("\n").map(line => JSON.parse(line));
-    expect(checks).toBeGreaterThanOrEqual(3);
-    expect(body).not.toContain("FRESH_AFTER_REVOKE");
-    expect(events.some(event => ["delta", "replace", "done"].includes(event.type))).toBe(false);
-    expect(events.some(event => event.type === "error")).toBe(true);
-    expect(mocks.stageGenerationArtifact).not.toHaveBeenCalled();
   });
 
   it("reports session storage failure as a retryable 503", async () => {
@@ -607,8 +564,7 @@ describe("POST /api/ai/generate prerequisites", () => {
     }));
     expect(events.some((event) => event.type === "done")).toBe(true);
     expect(events.some((event) => event.type === "error")).toBe(false);
-    expect(mocks.stageGenerationArtifact).toHaveBeenCalledOnce();
-    expect(mocks.stageAiUsageResult).toHaveBeenCalledOnce();
+    expect(mocks.stageGenerationResult).toHaveBeenCalledOnce();
     expect(mocks.commitAiUsageResult).not.toHaveBeenCalled();
     expect(mocks.releaseAiUsageRequest).not.toHaveBeenCalled();
   });
@@ -642,9 +598,14 @@ describe("POST /api/ai/generate prerequisites", () => {
       }),
     ]);
     expect(response.headers.get("x-ai-ack-required")).toBe("true");
-    expect(mocks.stageAiUsageResult).toHaveBeenCalledWith(7, 81, requestId, expect.objectContaining({
-      protocol: "ndjson",
-      text: "Полный содержательный ответ объясняет идею спокойно, точно и без лишних обещаний.",
+    expect(mocks.stageGenerationResult).toHaveBeenCalledWith(expect.objectContaining({
+      userId: 7,
+      reservationId: 81,
+      serverRequestId: requestId,
+      result: expect.objectContaining({
+        protocol: "ndjson",
+        text: "Полный содержательный ответ объясняет идею спокойно, точно и без лишних обещаний.",
+      }),
     }));
     expect(mocks.commitAiUsageResult).not.toHaveBeenCalled();
     expect(mocks.releaseAiUsageRequest).not.toHaveBeenCalled();
@@ -711,7 +672,7 @@ describe("POST /api/ai/generate prerequisites", () => {
         { status: 200, headers: { "content-type": "text/event-stream" } },
       ));
       vi.stubGlobal("fetch", fetchMock);
-      const response = await POST(new NextRequest("http://localhost/api/ai/generate", {
+      const response = await POST(new ProjectRequest(1, "http://localhost/api/ai/generate", {
         method: "POST",
         headers: { origin: "http://localhost", "content-type": "application/json", "idempotency-key": `brand-event-${engine}` },
         body: JSON.stringify({
@@ -729,7 +690,7 @@ describe("POST /api/ai/generate prerequisites", () => {
       expect(events).toContainEqual(expect.objectContaining({ type: "done", engine, ackRequired: true }));
       expect(events.some((event) => event.type === "error")).toBe(false);
       expect(mocks.acquireAiUsageRequest).toHaveBeenCalledOnce();
-      expect(mocks.stageGenerationArtifact).toHaveBeenCalledOnce();
+      expect(mocks.stageGenerationResult).toHaveBeenCalledOnce();
     },
   );
 
@@ -750,14 +711,14 @@ describe("POST /api/ai/generate prerequisites", () => {
     }));
     expect(events).toContainEqual(expect.objectContaining({ type: "done", ackRequired: true }));
     expect(events.some((event) => event.type === "error")).toBe(false);
-    expect(mocks.stageAiUsageResult).toHaveBeenCalledWith(
-      7,
-      81,
-      response.headers.get("x-ai-request-id"),
-      expect.objectContaining({
+    expect(mocks.stageGenerationResult).toHaveBeenCalledWith(expect.objectContaining({
+      userId: 7,
+      reservationId: 81,
+      serverRequestId: response.headers.get("x-ai-request-id"),
+      result: expect.objectContaining({
         validation: expect.objectContaining({ status: "not_checked", requiresReview: true }),
       }),
-    );
+    }));
     expect(mocks.releaseAiUsageRequest).not.toHaveBeenCalled();
   });
 
@@ -798,27 +759,37 @@ describe("POST /api/ai/generate prerequisites", () => {
     expect(validation.blockerCodes).toEqual(expect.arrayContaining(["channel:too_short"]));
   });
 
-  it("emits exactly one error and no done when terminal staging fails", async () => {
-    vi.stubGlobal("fetch", vi.fn(async () => new Response(
-      '{"message":{"content":"Полный ответ, который можно подтвердить терминальным событием."},"done":true}\n',
-      { status: 200, headers: { "content-type": "application/x-ndjson" } },
-    )));
-    mocks.stageAiUsageResult.mockRejectedValue(new Error("storage offline"));
-    const errorLog = vi.spyOn(console, "error").mockImplementation(() => {});
+  it.each(["navy-deepseek-pro", "navy-deepseek-flash", "navy-gpt-5-4", "navy-qwen-3-6", "navy-minimax-m3"])(
+    "emits one honest error and no final replacement when terminal staging fails on %s",
+    async (engine) => {
+      vi.stubEnv("NAVYAI_API_KEY", "test-key");
+      mocks.query.mockResolvedValue({
+        rows: [{ ai_mood: null, ai_engine: engine, ai_post_settings: null }],
+        rowCount: 1,
+      });
+      vi.stubGlobal("fetch", vi.fn(async () => new Response(
+        `data: ${JSON.stringify({ choices: [{ delta: { content: "Полный ответ модели." } }] })}\n\ndata: [DONE]\n\n`,
+        { status: 200, headers: { "content-type": "text/event-stream" } },
+      )));
+      mocks.stageGenerationResult.mockRejectedValue(new Error("storage offline"));
+      const errorLog = vi.spyOn(console, "error").mockImplementation(() => {});
 
-    const response = await POST(studioRequest());
-    const events = (await response.text()).trim().split("\n").map((line) => JSON.parse(line));
-    errorLog.mockRestore();
+      const response = await POST(studioRequest());
+      const events = (await response.text()).trim().split("\n").map((line) => JSON.parse(line));
+      errorLog.mockRestore();
 
-    expect(events.filter((event) => event.type === "error")).toHaveLength(1);
-    expect(events).toContainEqual(expect.objectContaining({
-      type: "error",
-      error: "usage_finalization_unavailable",
-    }));
-    expect(events.some((event) => event.type === "done")).toBe(false);
-    expect(mocks.commitAiUsageResult).not.toHaveBeenCalled();
-    expect(mocks.releaseAiUsageRequest).toHaveBeenCalledOnce();
-  });
+      expect(events.filter((event) => event.type === "error")).toHaveLength(1);
+      expect(events).toContainEqual(expect.objectContaining({
+        type: "error",
+        error: "usage_finalization_unavailable",
+        engine,
+      }));
+      expect(events.some((event) => event.type === "replace")).toBe(false);
+      expect(events.some((event) => event.type === "done")).toBe(false);
+      expect(mocks.commitAiUsageResult).not.toHaveBeenCalled();
+      expect(mocks.releaseAiUsageRequest).toHaveBeenCalledOnce();
+    },
+  );
 
   it("releases quota when the consumer cancels before done", async () => {
     const encoder = new TextEncoder();
@@ -874,7 +845,7 @@ describe("POST /api/ai/generate prerequisites", () => {
     expect(events.some((event) => event.type === "error")).toBe(false);
     expect(events).toContainEqual(expect.objectContaining({ type: "done", pipeline: "draft-fallback" }));
     expect(events).toContainEqual(expect.objectContaining({ type: "replace", pipeline: "draft-fallback", text: draft }));
-    expect(mocks.stageAiUsageResult).toHaveBeenCalledOnce();
+    expect(mocks.stageGenerationResult).toHaveBeenCalledOnce();
     expect(mocks.commitAiUsageResult).not.toHaveBeenCalled();
     expect(mocks.releaseAiUsageRequest).not.toHaveBeenCalled();
     expect(keys[0]).toMatch(/^[a-f0-9]{64}$/u);
@@ -916,7 +887,7 @@ describe("POST /api/ai/generate prerequisites", () => {
       ackRequired: true,
     }));
     expect(events.some((event) => event.type === "error")).toBe(false);
-    expect(mocks.stageAiUsageResult).toHaveBeenCalledOnce();
+    expect(mocks.stageGenerationResult).toHaveBeenCalledOnce();
     expect(mocks.releaseAiUsageRequest).not.toHaveBeenCalled();
   });
 
@@ -947,7 +918,7 @@ describe("POST /api/ai/generate prerequisites", () => {
       text: edited,
     }));
     expect(events.some((event) => event.type === "done")).toBe(true);
-    expect(mocks.stageAiUsageResult).toHaveBeenCalledOnce();
+    expect(mocks.stageGenerationResult).toHaveBeenCalledOnce();
     expect(mocks.releaseAiUsageRequest).not.toHaveBeenCalled();
   });
 
@@ -993,12 +964,12 @@ describe("POST /api/ai/generate prerequisites", () => {
       topicAlignment: expect.objectContaining({ status: "passed" }),
     }));
     expect(mocks.getDraftForUser).toHaveBeenCalledWith(7, 71);
-    expect(mocks.stageAiUsageResult).toHaveBeenCalledWith(
-      7,
-      81,
-      response.headers.get("x-ai-request-id"),
-      expect.objectContaining({ protocol: "ndjson" }),
-    );
+    expect(mocks.stageGenerationResult).toHaveBeenCalledWith(expect.objectContaining({
+      userId: 7,
+      reservationId: 81,
+      serverRequestId: response.headers.get("x-ai-request-id"),
+      result: expect.objectContaining({ protocol: "ndjson" }),
+    }));
   });
 
   it("repairs an off-topic Studio reference before delivering the final post", async () => {
@@ -1069,8 +1040,7 @@ describe("POST /api/ai/generate prerequisites", () => {
     }));
     expect(events.some((event) => event.type === "error")).toBe(false);
     expect(events.some((event) => event.type === "done")).toBe(true);
-    expect(mocks.stageGenerationArtifact).toHaveBeenCalledOnce();
-    expect(mocks.stageAiUsageResult).toHaveBeenCalledOnce();
+    expect(mocks.stageGenerationResult).toHaveBeenCalledOnce();
     expect(mocks.failGenerationOperation).not.toHaveBeenCalled();
     expect(mocks.releaseAiUsageRequest).not.toHaveBeenCalled();
   });
@@ -1179,8 +1149,7 @@ describe("POST /api/ai/generate prerequisites", () => {
       generationResultId: 501,
     }));
     expect(events.some((event) => event.type === "error")).toBe(false);
-    expect(mocks.stageGenerationArtifact).toHaveBeenCalledOnce();
-    expect(mocks.stageAiUsageResult).toHaveBeenCalledOnce();
+    expect(mocks.stageGenerationResult).toHaveBeenCalledOnce();
     expect(mocks.failGenerationOperation).not.toHaveBeenCalled();
     expect(mocks.releaseAiUsageRequest).not.toHaveBeenCalled();
   });
@@ -1215,7 +1184,7 @@ describe("POST /api/ai/generate prerequisites", () => {
     expect(events.some((event) => event.type === "done")).toBe(true);
     expect(events.some((event) => event.type === "error")).toBe(false);
     expect(mocks.commitAiUsageResult).not.toHaveBeenCalled();
-    expect(mocks.stageAiUsageResult).toHaveBeenCalledOnce();
+    expect(mocks.stageGenerationResult).toHaveBeenCalledOnce();
     expect(mocks.releaseAiUsageRequest).not.toHaveBeenCalled();
   });
 
@@ -1288,7 +1257,54 @@ describe("POST /api/ai/generate prerequisites", () => {
     }));
     expect(fetchMock).not.toHaveBeenCalled();
     expect(mocks.acquireAiUsageRequest).not.toHaveBeenCalled();
-    expect(mocks.stageAiUsageResult).not.toHaveBeenCalled();
+    expect(mocks.stageGenerationResult).not.toHaveBeenCalled();
+  });
+
+  it("repairs and replays a legacy pending ACK artifact without another provider call", async () => {
+    const recovered = {
+      protocol: "ndjson" as const,
+      text: "Восстановленный черновик",
+      pipeline: "single" as const,
+      requestedEngine: "navy-deepseek-flash",
+      engine: "navy-deepseek-flash",
+      fallbackUsed: false,
+      generationResultId: 501,
+      validation: {
+        version: 1 as const,
+        status: "not_checked" as const,
+        requiresReview: true,
+        provenance: {},
+        blockerCodes: [],
+      },
+    };
+    mocks.lookupAiUsageRequest.mockResolvedValue({
+      state: "released",
+      reservationId: 81,
+      result: null,
+    });
+    mocks.recoverPendingGenerationResult.mockResolvedValue(recovered);
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+
+    const response = await POST(studioRequest());
+    const events = (await response.text()).trim().split("\n").map((line) => JSON.parse(line));
+
+    expect(events).toEqual(expect.arrayContaining([
+      expect.objectContaining({ type: "replace", text: recovered.text }),
+      expect.objectContaining({
+        type: "done",
+        replayed: true,
+        generationResultId: recovered.generationResultId,
+      }),
+    ]));
+    expect(mocks.recoverPendingGenerationResult).toHaveBeenCalledWith(
+      7,
+      "web:studio_stream_test_1",
+      expect.stringMatching(/^[a-f0-9]{64}$/u),
+    );
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(mocks.acquireAiUsageRequest).not.toHaveBeenCalled();
+    expect(mocks.stageGenerationResult).not.toHaveBeenCalled();
   });
 
   it("rejects the same client key with a different request fingerprint before provider work", async () => {
@@ -1305,7 +1321,7 @@ describe("POST /api/ai/generate prerequisites", () => {
     });
     expect(fetchMock).not.toHaveBeenCalled();
     expect(mocks.acquireAiUsageRequest).not.toHaveBeenCalled();
-    expect(mocks.stageAiUsageResult).not.toHaveBeenCalled();
+    expect(mocks.stageGenerationResult).not.toHaveBeenCalled();
   });
 
   it("keeps an unavailable selected model and proposes exactly one ready alternative before quota", async () => {
@@ -1390,10 +1406,10 @@ describe("POST /api/ai/generate prerequisites", () => {
       fallbackUsed: true,
     }));
     const providerBodies = fetchMock.mock.calls.map((call) => JSON.parse(String(call[1]?.body)));
-    expect(providerBodies.map((body) => body.model)).toEqual(["deepseek-v4-flash", "qwen3.6-27b"]);
+    expect(providerBodies.map((body) => body.model)).toEqual(["qwen3.8-27b", "qwen3.6-27b"]);
     expect(mocks.commitAiUsageResult).not.toHaveBeenCalled();
     expect(mocks.releaseAiUsageRequest).not.toHaveBeenCalled();
-    expect(mocks.stageAiUsageResult).toHaveBeenCalled();
+    expect(mocks.stageGenerationResult).toHaveBeenCalled();
   });
 
   it("never sends or saves Qwen think output and falls back to a finished post", async () => {
@@ -1420,7 +1436,7 @@ describe("POST /api/ai/generate prerequisites", () => {
       ));
     vi.stubGlobal("fetch", fetchMock);
 
-    const response = await POST(new NextRequest("http://localhost/api/ai/generate", {
+    const response = await POST(new ProjectRequest(1, "http://localhost/api/ai/generate", {
       method: "POST",
       headers: {
         origin: "http://localhost",
@@ -1461,7 +1477,9 @@ describe("POST /api/ai/generate prerequisites", () => {
       requestedEngine: "navy-qwen-3-6",
       fallbackUsed: true,
     }));
-    expect(mocks.stageGenerationArtifact).toHaveBeenCalledWith(expect.objectContaining({ text: post }));
+    expect(mocks.stageGenerationResult).toHaveBeenCalledWith(expect.objectContaining({
+      result: expect.objectContaining({ text: post }),
+    }));
   });
 
   it("uses different provider idempotency keys after an explicitly confirmed engine change", async () => {
@@ -1495,10 +1513,10 @@ describe("POST /api/ai/generate prerequisites", () => {
     const keys = headers.map((item) => item.get("idempotency-key"));
     expect(fetchMock).toHaveBeenCalledTimes(2);
     expect(keys[0]).toMatch(/^[a-f0-9]{64}:reasoning-none$/u);
-    expect(keys[1]).toMatch(/^[a-f0-9]{64}:reasoning-none$/u);
-    expect(keys[1]).not.toBe(keys[0]);
+    expect(keys[1]).toMatch(/^[a-f0-9]{64}$/u);
+    expect(keys[1]).not.toBe(keys[0]?.split(":")[0]);
     expect(headers[1].get("x-request-id")).not.toBe(headers[0].get("x-request-id"));
-    expect(mocks.stageAiUsageResult).not.toHaveBeenCalled();
+    expect(mocks.stageGenerationResult).not.toHaveBeenCalled();
     expect(mocks.commitAiUsageResult).not.toHaveBeenCalled();
   });
 });

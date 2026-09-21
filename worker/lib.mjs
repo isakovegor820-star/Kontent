@@ -356,20 +356,17 @@ function variedSinglePostHours(bestHour) {
  * Раньше пост i вставал на день i+1: пять постов — пять дней, семь — семь. Поэтому и стоял
  * потолок 7 — он прятал то, что при 14 план разъезжался на две недели вместо «14 за неделю».
  * Теперь: дни делим поровну, а внутри дня разносим по часам, чтобы посты не падали в одну минуту.
- * startDay — сдвиг старта (1 = завтра): при режиме «продолжить» новый план разъезжается
- * после конца уже покрытого окна, а не поверх занятых дней.
  * Возвращает массив ISO-строк длиной N.
  */
-export function periodSlots(n, weeks, bestHour, startDay = 1) {
+export function periodSlots(n, weeks, bestHour) {
   const count = Math.max(0, Math.round(Number(n) || 0));
   const days = Math.max(7, Math.round(Number(weeks) || 1) * 7);
-  const offset = Math.max(1, Math.round(Number(startDay) || 1));
   const byDay = new Map();
   const singlePostHours = variedSinglePostHours(bestHour);
   for (let i = 0; i < count; i++) {
     // Evenly span the complete horizon. The old `i / perDay` layout put a capped
     // 90-post plan into the first half of its 12-week period and left the rest empty.
-    const day = Math.floor((i * days) / count) + offset;
+    const day = Math.floor((i * days) / count) + 1;
     const group = byDay.get(day) || [];
     group.push(i);
     byDay.set(day, group);

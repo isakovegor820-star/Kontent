@@ -113,9 +113,9 @@ export async function createLegacyBotLink(pool, input) {
       [userId],
     );
     await client.query(
-      `insert into bot_links (code, user_id, expires_at, channel_project_id)
-       values ($1, $2, now() + make_interval(mins => $3), $4)`,
-      [code, userId, BOT_CONNECTION_TTL_MINUTES, input?.projectId == null ? null : safeUserId(input.projectId)],
+      `insert into bot_links (code, user_id, expires_at)
+       values ($1, $2, now() + make_interval(mins => $3))`,
+      [code, userId, BOT_CONNECTION_TTL_MINUTES],
     );
     await client.query("commit");
     return { code, expiresInMinutes: BOT_CONNECTION_TTL_MINUTES };
@@ -137,7 +137,7 @@ export async function consumeLegacyBotLink(pool, input) {
     await lockBotConnections(client);
     const candidate = (
       await client.query(
-        `select user_id, channel_project_id from bot_links
+        `select user_id from bot_links
           where code = $1 and used_at is null and expires_at > now()`,
         [code],
       )
@@ -154,7 +154,7 @@ export async function consumeLegacyBotLink(pool, input) {
     );
     const link = (
       await client.query(
-        `select user_id, channel_project_id from bot_links
+        `select user_id from bot_links
           where code = $1 and user_id = $2
             and used_at is null and expires_at > now()
           for update`,
@@ -211,7 +211,7 @@ export async function consumeLegacyBotLink(pool, input) {
       await recordBotConnectionChange(client, { actorUserId: userId, userId, action: "bot.chat.connected", source: "settings_link" });
     }
     await client.query("commit");
-    return { state: "connected", userId, telegramChatId, moved, projectId: link.channel_project_id == null ? null : Number(link.channel_project_id) };
+    return { state: "connected", userId, telegramChatId, moved };
   } catch (error) {
     await client.query("rollback").catch(() => {});
     throw error;
