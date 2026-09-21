@@ -1,28 +1,23 @@
+import { calendarQuery, CalendarQueryError } from "@/lib/calendar-query";
+import { withProjectRoute } from "@/lib/project-route";
 // Д.3/Д.4 — список реальных постов пользователя (для календаря).
 
 import { NextRequest, NextResponse } from "next/server";
-import { withSelectedProjectPermission } from "@/lib/selected-project-transaction";
 import { getPool } from "@/lib/db";
-import { ProjectAccessError } from "@/lib/project-permissions";
+import { ProjectAccessError, requireSelectedProjectPermission } from "@/lib/project-permissions";
 import { getSessionUser } from "@/lib/session";
-
-import { parsePostsQuery, postsCursor, PostsQueryError } from "@/lib/posts-pagination";
 
 export const runtime = "nodejs";
 
-export async function GET(req: NextRequest) {
+async function handleGET(req: NextRequest) {
   try {
     const user = await getSessionUser(req);
     if (!user) return NextResponse.json({ error: "unauthorized" }, { status: 401 });
     const pool = getPool();
-    return await withSelectedProjectPermission(pool, user.id, "project.read", async (pool, membership) => {
-    const { from, to, limit, cursor, id } = parsePostsQuery(req.nextUrl.searchParams, membership.projectId);
+    const membership = await requireSelectedProjectPermission(pool, user.id, "project.read");
+    const query = await calendarQuery(pool, membership.projectId, "posts", req.nextUrl.searchParams);
     const rows = await pool.query(
-      `select calendar_page.*, snapshot.calendar_version::text as calendar_version
-         from projects snapshot
-         left join lateral (
-       select p.id, p.user_id as author_user_id,
-              to_char(p.scheduled_at at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') as cursor_at,
+      `select p.id, p.user_id as author_user_id,
               coalesce(nullif(btrim(post_author.name), ''), 'Участник ' || p.user_id::text) as author_name,
               p.text, p.media, p.scheduled_at, p.status, p.tg_message_id, p.vk_post_id,
               p.attempts, p.last_error, p.published_at, p.created_at,
@@ -38,22 +33,23 @@ export async function GET(req: NextRequest) {
               p.publication_operation_id, operation.draft_id as publication_draft_id,
               operation.status as publication_operation_status,
               operation.schedule_revision as operation_schedule_revision,
+              (p.publication_origin = 'autopilot' and p.publication_operation_id is null
+                and p.status = 'scheduled' and p.provider_started_at is null
+                and exists (
+                  select 1 from autopilot_schedule_outbox o
+                  join autopilot_plan plan on plan.id = o.plan_id and plan.project_id = o.project_id
+                  where o.post_id = p.id and o.project_id = p.project_id
+                    and o.channel_id = p.channel_id and plan.channel_id = p.channel_id
+                    and o.status <> 'cancelled'
+                    and exists (select 1 from jsonb_array_elements(plan.items) item
+                      where item->>'postId' = p.id::text and item->>'i' = o.item_index::text
+                        and item->>'status' in ('pending', 'expired', 'approved'))
+                ) and not exists (select 1 from publication_parts started where started.post_id = p.id
+                  and (started.external_message_id is not null or started.send_status not in ('pending', 'failed')))
+              ) as autopilot_can_reschedule,
               p.channel_id, c.network, c.title as channel_title, c.handle, c.vk_group_id,
               coalesce(parts.items, '[]'::jsonb) as publication_parts
-         from (
-           select page.* from posts page
-        where page.project_id = $1
-          and exists (select 1 from channels scoped where scoped.id = page.channel_id and scoped.project_id = page.project_id)
-          and ($7::bigint is null or page.id = $7)
-          and ($2::timestamptz is null or page.scheduled_at >= $2::timestamptz)
-          and ($3::timestamptz is null or page.scheduled_at < $3::timestamptz)
-          and ($4::bigint is null or
-            ($5::timestamptz is null and page.scheduled_at is null and page.id > $4) or
-            ($5::timestamptz is not null and (page.scheduled_at > $5::timestamptz or page.scheduled_at is null
-              or (page.scheduled_at = $5::timestamptz and page.id > $4))))
-        order by page.scheduled_at nulls last, page.id
-           limit $6
-         ) p
+         from posts p
          join users post_author on post_author.id = p.user_id
          join channels c on c.id = p.channel_id and c.project_id = p.project_id
          left join publication_operations operation
@@ -69,29 +65,15 @@ export async function GET(req: NextRequest) {
                   ) order by pp.part_index) as items
              from publication_parts pp where pp.post_id = p.id
          ) parts on true
-        order by p.scheduled_at nulls last, p.id
-        limit $6
-         ) calendar_page on true
-        where snapshot.id = $1
-        order by calendar_page.scheduled_at nulls last, calendar_page.id`,
-      [membership.projectId, from, to, cursor?.id ?? null, cursor?.at ?? null, limit + 1, id],
+        where p.project_id = $1
+        ${query.tail}`,
+      query.values,
     );
-    const snapshotVersion = rows.rows[0]?.calendar_version;
-    if (typeof snapshotVersion !== "string" || !/^[1-9]\d*$/u.test(snapshotVersion)) throw new Error("posts_snapshot_unavailable");
-    if (cursor && cursor.snapshotVersion !== snapshotVersion) {
-      return NextResponse.json({ error: "posts_snapshot_changed" }, { status: 409, headers: { "cache-control": "no-store" } });
-    }
-    const records = rows.rows.filter((row) => row.id !== null);
-    const posts = records.slice(0, limit);
-    const hasMore = records.length > limit;
-    const last = posts.at(-1);
+    const page = query.page(rows.rows);
     return NextResponse.json({
-      projectId: membership.projectId,
-      pageInfo: { snapshotVersion, hasMore, nextCursor: hasMore && last ? postsCursor({snapshotVersion, projectId: membership.projectId, from, to, at: last.cursor_at, id: Number(last.id)}) : null, from, to },
-      posts: posts.map((post) => ({
+      hasMore: page.hasMore, nextCursor: page.nextCursor,
+      posts: page.items.map((post) => ({
         ...post,
-        cursor_at: undefined,
-        calendar_version: undefined,
         // PostgreSQL `bigint` arrives through node-postgres as a string. The client-side
         // RealPost contract uses numbers and compares channel ids with RealChannel ids, so
         // normalize every numeric identity once at the API boundary.
@@ -107,11 +89,11 @@ export async function GET(req: NextRequest) {
         publication_draft_id: post.publication_draft_id == null
           ? null
           : Number(post.publication_draft_id),
+        schedule_revision: Number(post.schedule_revision),
       })),
     });
-    });
   } catch (err) {
-    if (err instanceof PostsQueryError) return NextResponse.json({error: err.message}, {status: 400});
+    if (err instanceof CalendarQueryError) return NextResponse.json({ error: err.message }, { status: 400 });
     if (err instanceof ProjectAccessError) {
       return NextResponse.json({ error: "access_denied" }, { status: 403 });
     }
@@ -119,3 +101,5 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ error: "unavailable" }, { status: 503 });
   }
 }
+
+export const GET = withProjectRoute(handleGET);

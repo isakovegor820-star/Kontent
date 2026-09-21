@@ -54,7 +54,7 @@ describe("project export worker runtime wiring", () => {
       ["exports", { pattern: "* * * * *", tz: "Europe/Moscow" }, { name: "exports" }],
     ]);
     expect(queue.add.mock.calls.map(([name]) => name)).toEqual([
-      "stats", "recon", "trend", "today-opportunities", "knowledge-index", "discover", "exports",
+      "stats", "recon", "trend", "market-signals", "today-opportunities", "knowledge-index", "discover", "exports",
     ]);
     expect(queue.add).toHaveBeenCalledWith("exports", {}, { jobId: "startup-exports", removeOnComplete: true });
     const reconcileProjectExports = vi.fn(async () => "export-reconciled");

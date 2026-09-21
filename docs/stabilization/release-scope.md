@@ -1,36 +1,66 @@
-# Aurora release scope
+# Aurora stable release scope
 
-Состояние: весь включённый продукт на кандидате исправлений аудита 2026-09-05. Исходный SHA `2161d5d0ba7b73143a3a353565015f68bb1a7fa4`; окончательный SHA и допуск — в IMPLEMENTATION-RESULT.md рядом с PLAN-ALL.md. Наличие функции в этом документе не является доказательством её production readiness.
+Статус: актуализировано по runtime boundary 2026-09-16.
 
-## Включённый продукт
+Этот список разрешает только исправления стабильности, безопасности, доступности,
+наблюдаемости и основного пользовательского пути. Любое расширение требует отдельного
+решения release owner и нового полного release gate.
 
-| Раздел | Серверные возможности | Обязательная проверка |
-| --- | --- | --- |
-| Аккаунт / настройки | Регистрация, пароль/сессии, logout, recovery, email change, аватар, export | registration, password-recovery, session/epoch, profile tests |
-| Проекты / бренд | Выбор проекта, команды/роли, приглашения/отзыв, профиль и источники | project-collaboration, two-window project isolation, AI authorization |
-| Редактор / календарь | Черновики, exact revision approval, медиа, schedule/change/cancel, history/export | publication-operation/lifecycle, calendar pagination, three-engine E2E |
-| Telegram | Подтверждённый actor + project/chat proof; текст/изображение/видео/альбом, pin/first comment, analytics | ownership/replay/race + durable unknown/restart, разрешённый live sandbox |
-| VK | Ключ сообщества, wall text, first comment, comment controls, analytics; media публикация остаётся unsupported по существующему реестру | provider contracts, fake VK E2E, live sandbox |
-| AI / Studio / Autopilot / Today | Interactive и monthly generation, legal visuals/video, orchestration, reservations/ack, media jobs | authorization, attempts/spend caps, prompt evidence, exact approved revision, full worker E2E |
-| Источники / знания / рост | RSS, Library, Trends/Radar/Recon, Opportunities/Growth/Knowledge, Site Analysis | tenant/security corpus, SSRF, background jobs, Trends hydration |
-| Sites / WordPress | Domain verification, анализ/отчёты, редакции статей; hosted и WordPress publish/update/unpublish | Sites role/destination matrix, SSRF, durable unknown, fake и разрешённые live contracts |
-| Admin | Межпроектные read-only отчёты, публикационные действия, блокировка/сессии/reset/AI-квота аккаунта с аудитом | admin allowlist/negative tests, verified identity, mutation audit |
+## Входит в release
 
-Весь `/app` и соответствующий API входят в область. `EXPERIMENTAL_APP_PATH_PREFIXES` и `EXPERIMENTAL_API_PATH_PREFIXES` пусты. Никакая подписанная пользовательская функция не исключена в рамках исправлений. `/app` показывает Today; календарь доступен отдельно. Фактическую навигацию задаёт существующий AppShell.
+- аккаунт: регистрация, вход, выход и восстановление доступа;
+- проекты: создание, выбор, переключение, команда и роли;
+- onboarding из пяти серверно подтверждаемых шагов;
+- один пользовательский канал публикации — Telegram;
+- календарь и очередь;
+- редактор, черновики, версии, форматирование и медиа;
+- источники, доказательства и RSS;
+- редакционное согласование;
+- публикация, история операций, retry/reconciliation и quarantine;
+- Today, Studio, Autopilot и месячные кампании;
+- Library, RSS и Knowledge;
+- Competitors, Trends, Opportunities, Radar, Site Analysis и Sites;
+- Growth и аналитика;
+- настройки аккаунта, проекта, Telegram и публикаций;
+- одноразовый Telegram-initiated маршрут подключения `/bot/connect`; остальные
+  `/bot`-страницы остаются experimental.
 
-`provider-capabilities.mjs` остаётся источником поддерживаемых социальных операций/форматов. YouTube/Instagram не получают Composer publish только от наличия OAuth credential. TenChat требует официальный доступ и предлагает export; RSS является источником. Это существующие capability ограничения, не новое сокращение релиза.
+Основная навигация задаётся единым registry в `src/lib/app-routes.ts` и включает группы
+«Работа», «Рынок» и «Итоги». `/app` ведёт в календарь, а незавершённый пользователь после
+входа — в `/app/onboarding`.
 
-Публичные варианты `/old`, `/v2`, `/v3`, `/variants`, `/scroll-test`, `/finale`, `/footer`, `/cycle`, `/memory`, `/quality`, `/reasons`, `/how`, `/bot`, `/rss` остаются preview-only по `release-scope.ts`. Точное исключение `/bot/connect` доступно для одноразовой Telegram привязки. Preview flag не меняет scope подписанного приложения.
+## Что не следует путать с одинаковой степенью готовности
 
-## Гарантии и эксплуатационные границы
+Все перечисленные authenticated-разделы доступны в обычном runtime, но их фактическая
+готовность зависит от провайдера и evidence конкретного сценария. Включение маршрута в
+production surface не доказывает live-доставку, полноту внешнего поиска, качество ИИ,
+корректность конкретной аналитической цифры или юридическую проверку материала.
 
-- Каждая операция проверяет действующую сессию, текущие права и явный контекст проекта; внешний аккаунт требует отдельного подтверждения.
-- Неопределённая доставка не становится автоматическим resend. Отсутствие receipt или slug у провайдера не доказывает отсутствие внешнего эффекта.
-- Расходный AI ledger отделён от возврата пользовательского кредита. Денежные/storage caps и тарифы должен принять владелец; тестовые числа не являются production бюджетом.
-- Admin user-ID allowlist привязан к серверной личности. Email allowlist требует подтверждения текущего адреса через одноразовый mailbox flow; самостоятельная регистрация адреса недостаточна. Исторические адреса автоматически не подтверждаются.
-- Браузерный gate проекта — Chromium, Firefox, WebKit и 30×3 stability. Headless engines не заменяют физические устройства, настоящий zoom и screen reader; фактическое покрытие указывается в итоговом отчёте.
-- Production read-only inventory, collector exposure, live sandbox, billing, backup/restore, rollback target, RPO/RTO, нагрузочный профиль, legal/privacy и владельцы alerts принимаются отдельно на основании evidence.
+Не входят в подтверждённое обещание без отдельной настройки и проверки:
 
-## Поддержка границ
+- live-публикация во внешние сети помимо поддержанного и настроенного Telegram-контура;
+- качество/точность результата ИИ и полностью автономная публикация;
+- полнота Radar, Trends, RSS, Competitors и Site Analysis при частичном provider coverage;
+- финансовый эффект, ROI и юридическое соответствие;
+- дополнительные landing-варианты и публичные экспериментальные маршруты.
 
-Новая server capability одновременно обновляет этот документ, реестр, permission matrix и регрессию. Исправления не обходят readiness, миграционный ledger, checksum или rollback gates. Локальный запуск: `npm run dev` с web и полным worker. Отдельно разрешённый deploy выполняется установленным GitHub workflow после зелёного CI; подробности — AGENTS.md и operational runbooks.
+Экспериментальными остаются только публичные design/demo prefixes из
+`EXPERIMENTAL_PUBLIC_PATH_PREFIXES`; они перенаправляются на `/` без явного preview-флага.
+`EXPERIMENTAL_APP_PATH_PREFIXES` и `EXPERIMENTAL_API_PATH_PREFIXES` сейчас пусты. Это
+намеренная release boundary, а не утверждение о равной зрелости всех функций.
+
+`/bot/connect` — точное публичное исключение из experimental-префикса `/bot`.
+Исключение не распространяется на `/bot` или `/bot/*`; token fragment очищается
+клиентом сразу после чтения и не является частью стабильного URL.
+
+## Инварианты заморозки
+
+1. Новая ссылка не попадает в shell, Telegram-меню, onboarding или настройки без включения
+   в этот документ.
+2. Новый mutation route закрыт по умолчанию, пока не доказаны project scope, permission,
+   idempotency, failure recovery и аудит.
+3. Экспериментальный код не должен влиять на стабильные polling, worker side effects или
+   пользовательские лимиты.
+4. Любой исправленный P0/P1 получает regression test.
+5. Сильное продуктовое обещание получает отдельное runtime/evidence подтверждение; наличие
+   маршрута, теста или интерфейса само по себе недостаточно.

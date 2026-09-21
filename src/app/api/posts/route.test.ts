@@ -1,5 +1,5 @@
+import { ProjectRequest } from "@/test/project-request";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { NextRequest } from "next/server";
 
 const mocks = vi.hoisted(() => ({
   getSessionUser: vi.fn(),
@@ -7,15 +7,7 @@ const mocks = vi.hoisted(() => ({
 }));
 
 vi.mock("@/lib/session", () => ({ getSessionUser: mocks.getSessionUser }));
-vi.mock("@/lib/db", () => ({ getPool: () => ({ query: mocks.query, connect: async()=>({
-  query: async(sql:string,values?:unknown[])=>{
-    if (["begin","commit","rollback"].includes(sql) || sql.startsWith("set local")) return {rows:[],rowCount:0};
-    if (sql.startsWith("select id from projects")) return {rows:[{id:44}],rowCount:1};
-    if (sql.startsWith("select role, version from project_members")) return {rows:[{role:"publisher",version:4}],rowCount:1};
-    if (sql.startsWith("select id from users")) return {rows:[{id:91}],rowCount:1};
-    return mocks.query(sql,values);
-  },release:vi.fn(),
-}) }) }));
+vi.mock("@/lib/db", () => ({ getPool: () => ({ query: mocks.query }) }));
 
 import { GET } from "./route";
 
@@ -36,11 +28,11 @@ describe("GET /api/posts project isolation", () => {
     mocks.query
       .mockResolvedValueOnce(membership())
       .mockResolvedValueOnce({
-        rows: [{ id: "501", calendar_version: "7", text: "Изменения в договорной работе", channel_id: "73" }],
+        rows: [{ id: "501", text: "Изменения в договорной работе", channel_id: "73" }],
         rowCount: 1,
       });
 
-    const response = await GET(new NextRequest("http://localhost/api/posts"));
+    const response = await GET(new ProjectRequest(44, "http://localhost/api/posts"));
 
     expect(response.status).toBe(200);
     await expect(response.json()).resolves.toMatchObject({
@@ -52,14 +44,14 @@ describe("GET /api/posts project isolation", () => {
     });
     const [dataSql, dataParams] = mocks.query.mock.calls[1];
     const normalizedSql = String(dataSql).replace(/\s+/g, " ");
-    expect(normalizedSql).toContain("where page.project_id = $1");
-    expect(normalizedSql).not.toContain("where page.user_id = $1");
+    expect(normalizedSql).toContain("where p.project_id = $1");
+    expect(normalizedSql).not.toContain("where p.user_id = $1");
     expect(normalizedSql).toContain("c.project_id = p.project_id");
     expect(normalizedSql).toContain("operation.project_id = p.project_id");
     expect(normalizedSql).toContain("operation.draft_id as publication_draft_id");
     expect(normalizedSql).toContain("post_author.id = p.user_id");
     expect(normalizedSql).toContain("author_user_id");
-    expect(dataParams).toEqual([44, null, null, null, null, 201, null]);
+    expect(dataParams).toEqual([44, 201]);
   });
 
   it("normalizes PostgreSQL bigint identities for strict client-side channel matching", async () => {
@@ -67,7 +59,7 @@ describe("GET /api/posts project isolation", () => {
       .mockResolvedValueOnce(membership())
       .mockResolvedValueOnce({
         rows: [{
-          id: "501", calendar_version: "7",
+          id: "501",
           author_user_id: "91",
           channel_id: "73",
           tg_message_id: "812",
@@ -79,7 +71,7 @@ describe("GET /api/posts project isolation", () => {
         rowCount: 1,
       });
 
-    const response = await GET(new NextRequest("http://localhost/api/posts"));
+    const response = await GET(new ProjectRequest(44, "http://localhost/api/posts"));
 
     await expect(response.json()).resolves.toMatchObject({
       posts: [{
@@ -98,7 +90,7 @@ describe("GET /api/posts project isolation", () => {
   it("never runs the post query for a user outside the selected project", async () => {
     mocks.query.mockResolvedValueOnce({ rows: [], rowCount: 0 });
 
-    const response = await GET(new NextRequest("http://localhost/api/posts"));
+    const response = await GET(new ProjectRequest(44, "http://localhost/api/posts"));
 
     expect(response.status).toBe(403);
     await expect(response.json()).resolves.toEqual({ error: "access_denied" });
@@ -108,7 +100,7 @@ describe("GET /api/posts project isolation", () => {
   it("returns 401 before project authorization when the session is missing", async () => {
     mocks.getSessionUser.mockResolvedValueOnce(null);
 
-    const response = await GET(new NextRequest("http://localhost/api/posts"));
+    const response = await GET(new ProjectRequest(44, "http://localhost/api/posts"));
 
     expect(response.status).toBe(401);
     expect(mocks.query).not.toHaveBeenCalled();

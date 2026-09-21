@@ -1,4 +1,4 @@
-import { mediaAssetUrl } from "@/lib/project-native-url";
+import { withProjectRoute } from "@/lib/project-route";
 import { NextRequest, NextResponse } from "next/server";
 import { randomUUID } from "node:crypto";
 
@@ -20,7 +20,7 @@ function response(requestId: string, body: Record<string, unknown>, status = 200
   );
 }
 
-export async function GET(req: NextRequest, ctx: { params: Promise<{ id: string }> }) {
+async function handleGET(req: NextRequest, ctx: { params: Promise<{ id: string }> }) {
   let requestId: string = randomUUID();
   const user = await getSessionUser(req);
   if (!user) return response(requestId, { error: "unauthorized" }, 401);
@@ -94,8 +94,8 @@ export async function GET(req: NextRequest, ctx: { params: Promise<{ id: string 
         seconds: row.seconds,
         style: row.style,
         assetId,
-        assetUrl: assetId ? mediaAssetUrl(assetId, membership.projectId) : null,
-        downloadUrl: assetId ? `${mediaAssetUrl(assetId, membership.projectId)}&download=1` : null,
+        assetUrl: assetId ? `/api/media/assets/${assetId}` : null,
+        downloadUrl: assetId ? `/api/media/assets/${assetId}?download=1` : null,
         mimeType: row.mime_type,
         bytes: row.bytes,
         errorCode: row.error_code,
@@ -119,3 +119,5 @@ export async function GET(req: NextRequest, ctx: { params: Promise<{ id: string 
     return response(requestId, { error: "server", retryable: true }, 500);
   }
 }
+
+export const GET = withProjectRoute(handleGET);

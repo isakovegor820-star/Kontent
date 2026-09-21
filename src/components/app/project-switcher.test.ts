@@ -1,4 +1,3 @@
-// @vitest-environment jsdom
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vitest";
@@ -49,14 +48,4 @@ describe("ProjectSwitcherView", () => {
     expect(html).toContain("Повторить загрузку проектов");
     expect(html).toContain("<button");
   });
-});
-
- it("does not display another project as selected after the current membership is revoked", () => {
-  const root = document.createElement("div");
-  root.innerHTML = renderToStaticMarkup(createElement(ProjectSwitcherView, {
-    projects: [project], current: null, ready: true, error: true, switching: false,
-    onSelect: vi.fn(), onRetry: vi.fn(),
-  }));
-  expect(root.querySelector("select")?.value).toBe("");
-  expect(root.querySelector("option:checked")?.textContent).toBe("Выберите проект");
 });

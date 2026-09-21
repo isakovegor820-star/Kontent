@@ -2,8 +2,6 @@
 import { useProjectFetch } from "@/lib/use-project-transport";
 
 
-import { projectFetch as fetch } from "@/lib/project-fetch";
-
 import { useCallback, useEffect, useId, useRef, useState } from "react";
 import { Check, ChevronDown, Copy, Link2 } from "lucide-react";
 

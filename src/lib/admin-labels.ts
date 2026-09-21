@@ -153,6 +153,7 @@ const SYSTEM_METRIC_LABELS: Record<string, Record<string, string>> = {
   publication_worker: {
     waiting: "Запланировано", active: "Отправляются", retrying: "Ожидают повторной попытки", stuck: "Отправляются более 15 минут",
     failures: "Посты в состоянии failed сейчас", successes: "Посты published за 24 часа",
+    unverified: "Доставка требует подтверждения",
     averageDurationMs: "От начала вызова API до публикации, среднее за 24 часа",
   },
   mail_delivery: { sent: "Принято почтовым API за 30 дней", failed: "Failed, обновлены за 24 часа", pending: "Ожидают отправки / отправляются", overdue: "Просрочены / истёк lease" },

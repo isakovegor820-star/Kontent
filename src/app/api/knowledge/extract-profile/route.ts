@@ -1,4 +1,4 @@
-import { ProjectAccessError, requireSelectedProjectPermission } from "@/lib/project-permissions";
+import { withProjectRoute } from "@/lib/project-route";
 // Профиль канала: ИИ сам читает посты и вытаскивает «что это за бизнес» — человеку
 // заполнять базу знаний руками больше не нужно (она стала невидимой).
 //
@@ -7,14 +7,13 @@ import { ProjectAccessError, requireSelectedProjectPermission } from "@/lib/proj
 //        и читать нечего). Различаем kind: авто-извлечённый 'profile' еженедельный крон
 //        может перезаписать свежим; 'profile_edit' — слова самого человека, его НЕ трогаем.
 
-import { AI_CONTENT_ROLES_SQL } from "@/lib/ai-project-access";
 import { readJsonBodyValue } from "@/lib/bounded-request-body";
 import { NextRequest, NextResponse } from "next/server";
 import { getPool } from "@/lib/db";
 import { getSessionUser } from "@/lib/session";
 import { getStatsQueue } from "@/lib/queue";
 import { enqueueKnowledgeIndex } from "@/lib/knowledge-index-queue.mjs";
-import { resolveChannel } from "@/lib/autopilot";
+import { knowledgeChannelSelector, knowledgeFailure, requireKnowledgeChannel, withKnowledgeChannel } from "@/lib/knowledge-access";
 import { fetchPublicPosts } from "@/lib/tg-public";
 import { completeAiText } from "@/lib/ai-completion-service.mjs";
 import { isEngineId } from "@/lib/engines";
@@ -45,54 +44,28 @@ async function saveProfileSource(
   kind: "profile" | "profile_edit",
   usageReservationId: number | null = null,
 ) {
-  const pool = getPool();
   const wipe = kind === "profile_edit" ? ["profile", "profile_edit"] : [kind];
-  const tx = await pool.connect();
-  let sourceId: number;
-  try {
-    await tx.query("begin");
-    const access = await tx.query(`select channel.id from channels channel
-      join projects project on project.id=channel.project_id
-      join project_members member on member.project_id=project.id and member.user_id=$2
-      where channel.id=$1 and channel.is_active=true and channel.status='active'
-        and project.is_archived=false and member.status='active'
-        and member.role in (${AI_CONTENT_ROLES_SQL}) for update of channel for share of project,member`, [channelId,userId]);
-    if (!access.rowCount) throw new ProjectAccessError("permission_denied");
+  const sourceId = await withKnowledgeChannel(getPool(), userId, channelId, "content.edit", async (tx, channel) => {
     await tx.query(
       `delete from knowledge_sources where channel_id = $1 and kind = any($2)`,
-      [channelId, wipe],
+      [channel.id, wipe],
     );
     const ins = await tx.query<{ id: number }>(
       `insert into knowledge_sources (user_id, channel_id, kind, title, raw_text)
        values ($1, $2, $3, $4, $5) returning id`,
-      [userId, channelId, kind, title, profileToSourceText(profile)],
+      [userId, channel.id, kind, title, profileToSourceText(profile)],
     );
-    sourceId = Number(ins.rows[0].id);
     if (usageReservationId !== null) {
-      // Профиль и списание — одна транзакция: ни сохранённого бесплатного результата,
-      // ни списания за откатившееся сохранение.
-      const finalized = await finalizeAiUsage(
-        userId,
-        usageReservationId,
-        "committed",
-        tx,
-      );
+      const finalized = await finalizeAiUsage(userId, usageReservationId, "committed", tx);
       if (!finalized.changed) throw new Error("ai usage reservation expired or already finalized");
     }
-    await tx.query("commit");
-  } catch (err) {
-    await tx.query("rollback").catch(() => {});
-    throw err;
-  } finally {
-    tx.release();
-  }
-  await enqueueKnowledgeIndex(getStatsQueue(), sourceId)
-    .catch(() => {
-      /* Источник сохранён в pending; периодическая DB→queue сверка подберёт его позже. */
-    });
+    return Number(ins.rows[0].id);
+  });
+  try { await enqueueKnowledgeIndex(getStatsQueue(), sourceId); }
+  catch { console.warn("[knowledge] enqueue deferred", { sourceId, code: "knowledge_queue_unavailable" }); }
 }
 
-export async function POST(req: NextRequest) {
+async function handlePOST(req: NextRequest) {
   if (!hasTrustedMutationOrigin(req)) {
     return NextResponse.json({ ok: false, error: "forbidden_origin" }, { status: 403 });
   }
@@ -105,16 +78,15 @@ export async function POST(req: NextRequest) {
   let committed = false;
   try {
     const pool = getPool();
-    const membership = await requireSelectedProjectPermission(pool, user.id, "content.create");
-    const channelId = await resolveChannel({ actorUserId: user.id, projectId: membership.projectId }, body.channelId ?? null);
-    if (!channelId) return NextResponse.json({ ok: false, error: "no_channel" }, { status: 422 });
+    const channel = await requireKnowledgeChannel(pool, user.id, knowledgeChannelSelector(body.channelId), "content.edit");
+    const channelId = channel.id;
 
     const ch = (
       await pool.query<{ handle: string | null; title: string | null; ai_engine: string | null }>(
         `select c.handle, c.title, u.ai_engine
-           from channels c join users u on u.id = c.user_id
-          where c.id = $1 and c.project_id = $2`,
-        [channelId, membership.projectId],
+           from channels c join users u on u.id = $2
+          where c.id = $1 and c.project_id = $3`,
+        [channelId, user.id, channel.projectId],
       )
     ).rows[0];
     if (!ch?.handle) return NextResponse.json({ ok: false, error: "no_handle" }, { status: 422 });
@@ -142,7 +114,7 @@ export async function POST(req: NextRequest) {
         engine: isEngineId(ch.ai_engine) ? ch.ai_engine : null,
         temperature: 0.2,
         maxTokens: 700,
-      }, { signal: req.signal, spendScope: { pool, userId: user.id, projectId: membership.projectId } });
+      }, { signal: req.signal });
       profile = parseProfile(completed.text);
     } catch (err) {
       console.error("[/api/knowledge/extract-profile] generation failed", {
@@ -165,7 +137,8 @@ export async function POST(req: NextRequest) {
     committed = true;
     return NextResponse.json({ ok: true, profile, posts: posts.length });
   } catch (err) {
-    if (err instanceof ProjectAccessError) return NextResponse.json({ ok: false, error: "forbidden" }, { status: 403 });
+    const failure = knowledgeFailure(err);
+    if (failure) return NextResponse.json({ ok: false, error: failure.error }, { status: failure.status });
     console.error("[/api/knowledge/extract-profile] POST", {
       errorName: (err as Error)?.name || "Error",
     });
@@ -177,7 +150,7 @@ export async function POST(req: NextRequest) {
   }
 }
 
-export async function PUT(req: NextRequest) {
+async function handlePUT(req: NextRequest) {
   if (!hasTrustedMutationOrigin(req)) {
     return NextResponse.json({ ok: false, error: "forbidden_origin" }, { status: 403 });
   }
@@ -196,9 +169,8 @@ export async function PUT(req: NextRequest) {
 
   try {
     const pool = getPool();
-    const membership = await requireSelectedProjectPermission(pool, user.id, "content.create");
-    const channelId = await resolveChannel({ actorUserId: user.id, projectId: membership.projectId }, body.channelId ?? null);
-    if (!channelId) return NextResponse.json({ ok: false, error: "no_channel" }, { status: 422 });
+    const channel = await requireKnowledgeChannel(pool, user.id, knowledgeChannelSelector(body.channelId), "content.edit");
+    const channelId = channel.id;
 
     const ch = (
       await pool.query<{ title: string | null }>(`select title from channels where id = $1`, [
@@ -211,8 +183,12 @@ export async function PUT(req: NextRequest) {
     await saveProfileSource(user.id, channelId, `Профиль канала «${ch?.title || "без названия"}»`, profile, "profile_edit");
     return NextResponse.json({ ok: true });
   } catch (err) {
-    if (err instanceof ProjectAccessError) return NextResponse.json({ ok: false, error: "forbidden" }, { status: 403 });
-    console.error("[/api/knowledge/extract-profile] PUT", { errorName: (err as Error)?.name || "Error" });
+    const failure = knowledgeFailure(err);
+    if (failure) return NextResponse.json({ ok: false, error: failure.error }, { status: failure.status });
+    console.error("[/api/knowledge/extract-profile] PUT", err);
     return NextResponse.json({ ok: false, error: "server" }, { status: 500 });
   }
 }
+
+export const POST = withProjectRoute(handlePOST);
+export const PUT = withProjectRoute(handlePUT);

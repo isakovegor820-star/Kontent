@@ -1,11 +1,11 @@
-import { withAiSpendScope } from "@/lib/ai-spend-ledger.mjs";
-import { requireAiChannelAccess } from "@/lib/ai-project-access";
-import { ProjectAccessError } from "@/lib/project-permissions";
+import { ProjectAccessError, requireSelectedProjectPermission } from "@/lib/project-permissions";
+import { withProjectRoute } from "@/lib/project-route";
 // Генерация контента ИИ (ТЗ Д.8). Стримит ответ по мере генерации. Перед генерацией:
 // проверяем дневной лимит, подкладываем прошлые посты пользователя как образец стиля.
 // Движок скрыт за переходником ai-provider — этот роут не знает, Ollama там или облако.
 
 import { JsonBodyReadError, readJsonBodyValue } from "@/lib/bounded-request-body";
+import { reportGenerationFailure } from "@/lib/generation-failure-observability.mjs";
 import { NextRequest, NextResponse } from "next/server";
 import { getPool } from "@/lib/db";
 import { getSessionUser } from "@/lib/session";
@@ -35,7 +35,6 @@ import {
   channelAiContextFor,
   lookupAiUsageRequest,
   releaseAiUsageRequest,
-  stageAiUsageResult,
   styleSamplesFor,
   type AiUsageStoredResult,
 } from "@/lib/ai-usage";
@@ -73,7 +72,8 @@ import {
   failGenerationOperation,
   GenerationArtifactError,
   lookupTerminalGenerationFailure,
-  stageGenerationArtifact,
+  recoverPendingGenerationResult,
+  stageGenerationResult,
 } from "@/lib/generation-artifacts";
 import {
   buildReferenceAdaptationTask,
@@ -158,6 +158,7 @@ class AiUsageFinalizationError extends Error {
 type SafeLogLevel = "error" | "warn" | "info";
 type SafeAiLogCode =
   | AiPublicFailureCode
+  | "ai_operation_budget_exhausted"
   | "session_unavailable"
   | "settings_unavailable"
   | "context_unavailable"
@@ -191,6 +192,7 @@ function logAiRequest(
   // Next's dev logger can collapse a second object argument to `{}`. Keep one redacted,
   // machine-parseable line so the browser request id can be correlated end to end.
   console[level](`[/api/ai/generate] ${JSON.stringify(entry)}`);
+  if (level === "error") reportGenerationFailure({ surface: "text", ...entry });
 }
 
 function aiJson(
@@ -260,6 +262,9 @@ function failurePayload(
     };
   }
   if (error instanceof AiOperationBudgetError) {
+    logAiRequest("error", requestId, "ai_operation_budget_exhausted", {
+      engine: engine.id, status: 422, scope: error.dimension,
+    });
     return {
       error: "ai_operation_budget_exhausted",
       engine: engine.id,
@@ -382,13 +387,11 @@ async function runOrchestratedText(
   emitDeltas: boolean,
   attemptContext: {
     userId: number;
-    channelId: number;
     reservationId: number | null;
     phase: AiAttemptPhase;
     budget: ReturnType<typeof createAiOperationBudget>;
   },
 ): Promise<OrchestratedText> {
-  const estimate = estimateGenerateTokenBudget(params);
   const attemptTelemetry = createAiAttemptTelemetry({
     pool: getPool(),
     userId: attemptContext.userId,
@@ -396,11 +399,14 @@ async function runOrchestratedText(
     logicalOperationId: requestId,
     phase: attemptContext.phase,
     budget: attemptContext.budget,
-    projectionFor: (candidate) => ({
-      model: resolveEngineRuntime(candidate as EngineId).model,
-      inputTokens: estimate.inputTokens,
-      outputTokens: estimate.maxOutputTokens,
-    }),
+    projectionFor: (candidate) => {
+      const estimate = estimateGenerateTokenBudget(params, candidate as EngineId);
+      return {
+        model: resolveEngineRuntime(candidate as EngineId).model,
+        inputTokens: estimate.inputTokens,
+        outputTokens: estimate.maxOutputTokens,
+      };
+    },
     // Keep this injected so route tests can verify durable rows without a real DB.
     record: recordAiProviderAttempt,
   });
@@ -424,13 +430,9 @@ async function runOrchestratedText(
       fallbackEngines: configuredFallbackEngines(engineId),
       firstTokenMs: deadlines.firstTokenMs,
       overallMs: deadlines.attemptOverallMs,
-      beforeAttempt: async (attempt) => {
-        await requireAiChannelAccess(attemptContext.userId, attemptContext.channelId);
-        await attemptTelemetry.beforeAttempt(attempt);
-      },
+      beforeAttempt: (attempt) => attemptTelemetry.beforeAttempt(attempt),
     })) {
       if (event.type === "delta") {
-        await requireAiChannelAccess(attemptContext.userId, attemptContext.channelId);
         text += event.text;
         engine = event.engine;
         attemptTelemetry.addDelta(event.engine, event.text);
@@ -621,7 +623,6 @@ function studioStreamResponse(
   );
   const attemptContext = (phase: AiAttemptPhase) => ({
     userId,
-    channelId: operation.channelId,
     reservationId,
     phase,
     budget: attemptBudget,
@@ -819,24 +820,19 @@ function studioStreamResponse(
             : {}),
         };
       };
-      const stageReservation = async (result: AiUsageStoredResult) => {
-        const staged = await stageAiUsageResult(userId, reservationId, requestId, result).catch(() => {
-          throw new AiUsageFinalizationError();
-        });
-        if (staged.status !== "reserved" || !staged.result) throw new AiUsageFinalizationError();
-      };
       const stageAndSendTerminal = async (
         result: AiUsageStoredResult,
         terminal: Extract<AiStreamEvent, { type: "done" }>,
+        replacement: Extract<AiStreamEvent, { type: "replace" }>,
       ) => {
         if (!result.validation) throw new AiUsageFinalizationError();
-        let artifact;
+        let staged;
         try {
-          artifact = await stageGenerationArtifact({
+          staged = await stageGenerationResult({
             userId,
+            reservationId,
             serverRequestId: requestId,
-            text: result.text,
-            validation: result.validation,
+            result,
             providerResult: {
               protocol: result.protocol,
               pipeline: result.pipeline,
@@ -854,15 +850,18 @@ function studioStreamResponse(
           });
           throw new AiUsageFinalizationError();
         }
-        const stored = { ...result, generationResultId: artifact.id };
-        await stageReservation(stored);
         if (consumerSignal.aborted) {
+          throw new DOMException("AI stream consumer closed", "AbortError");
+        }
+        // The final replacement is visible only after artifact + replay payload commit.
+        // Provider deltas can still stream, but a late storage error cannot promote an
+        // uncommitted candidate to a ready result.
+        if (!send(replacement)) {
           throw new DOMException("AI stream consumer closed", "AbortError");
         }
         // This is the sole terminal outcome. It never charges quota: only a client that
         // received `done` can ACK the staged result in the separate second phase.
-        await requireAiChannelAccess(userId, operation.channelId);
-        if (!send({ ...terminal, generationResultId: artifact.id })) {
+        if (!send({ ...terminal, generationResultId: staged.id })) {
           throw new DOMException("AI stream consumer closed", "AbortError");
         }
       };
@@ -965,8 +964,6 @@ function studioStreamResponse(
           ) {
             throw new PostSettingsValidationError(validation.issues);
           }
-          await requireAiChannelAccess(userId, operation.channelId);
-          if (!send({ type: "replace", requestId, text: finalText, pipeline: finalPipeline })) return;
           await stageAndSendTerminal(
             {
               protocol: "ndjson",
@@ -986,6 +983,7 @@ function studioStreamResponse(
               fallbackUsed: anyFallback,
               ackRequired: true,
             },
+            { type: "replace", requestId, text: finalText, pipeline: finalPipeline },
           );
           completed = true;
           return;
@@ -1097,8 +1095,6 @@ function studioStreamResponse(
         ) {
           throw new PostSettingsValidationError(validation.issues, validation.errorCode);
         }
-        await requireAiChannelAccess(userId, operation.channelId);
-        if (!send({ type: "replace", requestId, text: finalText, pipeline: finalPipeline })) return;
         await stageAndSendTerminal(
           {
             protocol: "ndjson",
@@ -1118,6 +1114,7 @@ function studioStreamResponse(
             fallbackUsed: anyFallback,
             ackRequired: true,
           },
+          { type: "replace", requestId, text: finalText, pipeline: finalPipeline },
         );
         completed = true;
       } catch (error) {
@@ -1184,7 +1181,7 @@ function studioStreamResponse(
   });
 }
 
-export async function POST(req: NextRequest) {
+async function handlePOST(req: NextRequest) {
   const requestId = crypto.randomUUID();
   if (!hasTrustedMutationOrigin(req)) {
     logAiRequest("warn", requestId, "forbidden_origin", { status: 403 });
@@ -1314,15 +1311,6 @@ export async function POST(req: NextRequest) {
   if (channelId == null) {
     return aiJson(requestId, { error: "no_channel", retryable: false }, { status: 422 });
   }
-  let projectId: number;
-  try {
-    projectId = await requireAiChannelAccess(user.id, channelId);
-  } catch (error) {
-    if (error instanceof ProjectAccessError) {
-      return aiJson(requestId, { error: "channel_forbidden", retryable: false }, { status: 403 });
-    }
-    return prerequisiteUnavailable(requestId, error, "context");
-  }
   let inputDraftContext: Awaited<ReturnType<typeof getDraftForUser>> = null;
   if (hasInputDraft) {
     try {
@@ -1339,10 +1327,17 @@ export async function POST(req: NextRequest) {
       return aiJson(requestId, { error: "input_draft_conflict", retryable: false }, { status: 409 });
     }
   }
+  try {
+    await requireSelectedProjectPermission(getPool(), user.id, "content.create");
+  } catch (error) {
+    if (error instanceof ProjectAccessError) return aiJson(requestId, { error: "access_denied", retryable: false }, { status: 403 });
+    return prerequisiteUnavailable(requestId, error, "context");
+  }
   const usageKey = `web:${requestKey}`;
   const fingerprintKind: AiKind = KINDS.includes(body.command as AiKind) ? (body.command as AiKind) : "write";
   const requestFingerprint = aiRequestFingerprint({
     ...body,
+    channelId,
     ...(hasReferenceDraft
       ? { input: undefined, history: undefined, referenceText: undefined, referenceSource: undefined }
       : {}),
@@ -1359,6 +1354,21 @@ export async function POST(req: NextRequest) {
     if ((existing.state === "replay" || existing.state === "terminal_pending_ack") && existing.result) {
       logAiRequest("info", requestId, "request_replayed", { engine: existing.result.engine });
       return replayResponse(requestId, existing.result);
+    }
+    if (
+      existing.state === "released"
+      || existing.state === "expired"
+      || existing.state === "committed_without_result"
+    ) {
+      const recovered = await recoverPendingGenerationResult(
+        user.id,
+        usageKey,
+        requestFingerprint,
+      );
+      if (recovered) {
+        logAiRequest("info", requestId, "request_replayed", { engine: recovered.engine });
+        return replayResponse(requestId, recovered);
+      }
     }
     if (existing.state === "in_progress") {
       return aiJson(
@@ -1685,7 +1695,7 @@ export async function POST(req: NextRequest) {
     && effectivePostSettings.qualityMode === "maximum"
     && EDITORIAL_KINDS.includes(kind)
     && role !== "critic";
-  return withAiSpendScope({ pool: getPool(), userId: user.id, projectId }, () => studioStreamResponse(
+  return studioStreamResponse(
     requestId,
     params,
     chosen,
@@ -1699,5 +1709,7 @@ export async function POST(req: NextRequest) {
     semanticAdapter,
     deliverGeneratedResult,
     { providerEngine: chosen, providerModel: runtime.model, channelId, startedAt },
-  ));
+  );
 }
+
+export const POST = withProjectRoute(handlePOST);

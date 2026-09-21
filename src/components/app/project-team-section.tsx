@@ -2,8 +2,6 @@
 import { useProjectCall } from "@/lib/use-project-transport";
 import { projectFetch as fetch } from "@/lib/project-transport";
 
-import { projectFetch as fetch } from "@/lib/project-fetch";
-
 import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
 import {
   Check,

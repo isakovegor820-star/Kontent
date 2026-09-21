@@ -3,18 +3,17 @@ import { NextRequest } from "next/server";
 
 const mocks = vi.hoisted(() => ({
   getSessionUser: vi.fn(),
-  checkRateLimit: vi.fn(),
-  requireSelectedProjectPermission: vi.fn(),
   query: vi.fn(),
   createLegacyBotLink: vi.fn(),
+  disconnectBotAccount: vi.fn(),
   probeRedisAndPublicationWorker: vi.fn(),
 }));
 
-vi.mock("@/lib/rate-limit", () => ({ checkRateLimit: mocks.checkRateLimit }));
-vi.mock("@/lib/project-permissions", async (original) => ({ ...await original<typeof import("@/lib/project-permissions")>(), requireSelectedProjectPermission: mocks.requireSelectedProjectPermission }));
 vi.mock("@/lib/session", () => ({ getSessionUser: mocks.getSessionUser }));
 vi.mock("@/lib/db", () => ({ getPool: () => ({ query: mocks.query }) }));
-vi.mock("@/lib/bot-connection.mjs", () => ({
+vi.mock("@/lib/bot-connection.mjs", async (original) => ({
+  ...await original<typeof import("@/lib/bot-connection.mjs")>(),
+  disconnectBotAccount: mocks.disconnectBotAccount,
   createLegacyBotLink: mocks.createLegacyBotLink,
   normalizeTelegramBotUsername: (value: unknown) => {
     const username = String(value || "").replace(/^@/u, "").trim();
@@ -30,16 +29,16 @@ vi.mock("@/lib/readiness-probes", () => ({
   probeRedisAndPublicationWorker: mocks.probeRedisAndPublicationWorker,
 }));
 
-import { GET, POST } from "./route";
+import { GET, POST, DELETE } from "./route";
+import { botConnectionKey } from "@/lib/bot-connection.mjs";
 
 describe("GET /api/bot/link", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     vi.stubEnv("TG_BOT_USERNAME", "aurora_bot");
-    mocks.checkRateLimit.mockResolvedValue({ allowed: true });
-    mocks.requireSelectedProjectPermission.mockResolvedValue({ projectId: 12 });
     mocks.getSessionUser.mockResolvedValue({ id: 7 });
     mocks.query.mockResolvedValue({ rows: [{ tg_chat_id: "123" }] });
+    mocks.disconnectBotAccount.mockResolvedValue({ state: "disconnected" });
     mocks.createLegacyBotLink.mockResolvedValue({
       code: "a".repeat(32),
       expiresInMinutes: 15,
@@ -75,6 +74,7 @@ describe("GET /api/bot/link", () => {
     expect(response.status).toBe(200);
     await expect(response.json()).resolves.toEqual({
       linked: true,
+      connectionKey: botConnectionKey(7, 123),
       bot: "aurora_bot",
       channelConnectUrl: "https://t.me/aurora_bot?startchannel&admin=post_messages",
       botStatus: "down",
@@ -92,6 +92,7 @@ describe("GET /api/bot/link", () => {
   });
 
   it("creates a validated, atomic one-time link", async () => {
+    mocks.query.mockResolvedValue({ rows: [{ tg_chat_id: null }] });
     const response = await POST(new NextRequest("http://localhost/api/bot/link", {
       method: "POST",
       headers: { origin: "http://localhost" },
@@ -109,6 +110,24 @@ describe("GET /api/bot/link", () => {
     });
   });
 
+  it("opens an already linked account without issuing or replacing a connection token", async () => {
+    const response = await POST(new NextRequest("http://localhost/api/bot/link", {
+      method: "POST", headers: { origin: "http://localhost" },
+    }));
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ ok: true, linked: true, url: "https://t.me/aurora_bot" });
+    expect(mocks.createLegacyBotLink).not.toHaveBeenCalled();
+  });
+
+  it("does not issue a new link when the saved account cannot be read", async () => {
+    mocks.query.mockRejectedValueOnce(new Error("database unavailable"));
+    const response = await POST(new NextRequest("http://localhost/api/bot/link", {
+      method: "POST", headers: { origin: "http://localhost" },
+    }));
+    expect(response.status).toBe(500);
+    expect(mocks.createLegacyBotLink).not.toHaveBeenCalled();
+  });
+
   it("preserves channel intent through the one-time Telegram start link", async () => {
     const response = await POST(new NextRequest("http://localhost/api/bot/link", {
       method: "POST",
@@ -120,7 +139,7 @@ describe("GET /api/bot/link", () => {
     await expect(response.json()).resolves.toMatchObject({
       url: `https://t.me/aurora_bot?start=${"a".repeat(32)}_channel`,
     });
-    expect(mocks.createLegacyBotLink).toHaveBeenCalledWith(expect.anything(), { userId: 7, projectId: 12 });
+    expect(mocks.createLegacyBotLink).toHaveBeenCalledWith(expect.anything(), { userId: 7 });
   });
 
   it("does not create a broken link for an invalid configured bot username", async () => {
@@ -132,5 +151,38 @@ describe("GET /api/bot/link", () => {
 
     expect(response.status).toBe(503);
     expect(mocks.createLegacyBotLink).not.toHaveBeenCalled();
+  });
+
+  const unlinkRequest = (body?: unknown, origin = "http://localhost") => new NextRequest("http://localhost/api/bot/link", {
+    method: "DELETE", headers: { origin, "content-type": "application/json" },
+    ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+  });
+
+  it.each([undefined, {}, { confirm: false, connectionKey: "a".repeat(32) }, { confirm: true }])("requires explicit unlink confirmation and the displayed connection (%j)", async (body) => {
+    const response = await DELETE(unlinkRequest(body));
+    expect(response.status).toBe(400);
+    expect(mocks.disconnectBotAccount).not.toHaveBeenCalled();
+  });
+
+  it("uses the signed-in account and the confirmed connection for atomic unlink", async () => {
+    const connectionKey = botConnectionKey(7, 123);
+    const response = await DELETE(unlinkRequest({ confirm: true, connectionKey, userId: 99 }));
+    expect(response.status).toBe(200);
+    expect(mocks.disconnectBotAccount).toHaveBeenCalledWith(expect.anything(), { userId: 7, expectedConnectionKey: connectionKey, source: "settings" });
+  });
+
+  it("rejects a stale confirmation without reporting a successful unlink", async () => {
+    mocks.disconnectBotAccount.mockResolvedValue({ state: "connection_changed" });
+    const response = await DELETE(unlinkRequest({ confirm: true, connectionKey: "a".repeat(32) }));
+    expect(response.status).toBe(409);
+    expect(await response.json()).toEqual({ ok: false, error: "connection_changed" });
+  });
+
+  it("rejects unlink from an untrusted origin or without authentication", async () => {
+    const body = { confirm: true, connectionKey: "a".repeat(32) };
+    expect((await DELETE(unlinkRequest(body, "https://foreign.test"))).status).toBe(403);
+    mocks.getSessionUser.mockResolvedValue(null);
+    expect((await DELETE(unlinkRequest(body))).status).toBe(401);
+    expect(mocks.disconnectBotAccount).not.toHaveBeenCalled();
   });
 });

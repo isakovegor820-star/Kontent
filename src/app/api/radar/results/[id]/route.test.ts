@@ -1,10 +1,7 @@
-import type { PoolClient } from "pg";
-import { ProjectAccessError, roleAllows, type ActiveProjectMembership, type ProjectPermission, type ProjectRole } from "@/lib/project-permissions";
+import { ProjectRequest } from "@/test/project-request";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { NextRequest } from "next/server";
 
 const mocks = vi.hoisted(() => ({
-  role: "owner" as ProjectRole,
   query: vi.fn(),
   session: vi.fn(),
   resolveChannel: vi.fn(),
@@ -12,24 +9,15 @@ const mocks = vi.hoisted(() => ({
   trusted: vi.fn(),
 }));
 
+vi.mock("@/lib/project-permissions", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/lib/project-permissions")>();
+  return { ...actual, requireSelectedProjectPermission: vi.fn(async () => ({ projectId: 1, userId: 7, role: "owner", version: 1 })) };
+});
 vi.mock("@/lib/db", () => ({ getPool: () => ({ query: mocks.query }) }));
 vi.mock("@/lib/session", () => ({ getSessionUser: mocks.session }));
 vi.mock("@/lib/autopilot", () => ({ resolveChannel: mocks.resolveChannel }));
 vi.mock("@/lib/queue", () => ({ getStatsQueue: () => ({ add: mocks.queueAdd }) }));
 vi.mock("@/lib/request-origin", () => ({ hasTrustedMutationOrigin: mocks.trusted }));
-
-// Route behavior is isolated here; real PostgreSQL authority/locks are covered by N21 integration.
-vi.mock("@/lib/selected-project-transaction", () => ({
-  withSelectedProjectPermission: async (pool: PoolClient, userId: number, permission: ProjectPermission,
-    action: (client: PoolClient, membership: ActiveProjectMembership) => Promise<Response>) => {
-    if (!roleAllows(mocks.role, permission)) throw new ProjectAccessError("permission_denied");
-    return action(pool, { projectId: 13, userId, role: mocks.role, version: 1 });
-  },
-}));
-vi.mock("@/lib/research-project-access", async (importOriginal) => ({
-  ...await importOriginal<typeof import("@/lib/research-project-access")>(),
-  researchChannel: mocks.resolveChannel,
-}));
 
 import { POST } from "./route";
 
@@ -50,7 +38,6 @@ const channelResult = {
 describe("radar result actions", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    mocks.role = "owner";
     mocks.session.mockResolvedValue({ id: 7 });
     mocks.resolveChannel.mockResolvedValue(11);
     mocks.trusted.mockReturnValue(true);
@@ -65,15 +52,15 @@ describe("radar result actions", () => {
       if (sql.includes("insert into competitors")) return { rowCount: 1, rows: [{ id: "81" }] };
       return { rowCount: 0, rows: [] };
     });
-    const response = await POST(new NextRequest("http://localhost/api/radar/results/41", {
+    const response = await POST(new ProjectRequest(1, "http://localhost/api/radar/results/41", {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ action: "add_competitor", channelId: 11 }),
     }), ctx);
     expect(response.status).toBe(200);
     await expect(response.json()).resolves.toMatchObject({ ok: true, id: 81, handle: "umsadovnik" });
-    expect(mocks.queueAdd).toHaveBeenCalledWith("competitor", { id: 81, userId: 7, projectId: 13 }, expect.any(Object));
-    expect(mocks.query).toHaveBeenCalledWith(expect.stringContaining("result.user_id = $2"), [41, 7, 13]);
+    expect(mocks.queueAdd).toHaveBeenCalledWith("competitor", { id: 81 }, expect.any(Object));
+    expect(mocks.query).toHaveBeenCalledWith(expect.stringContaining("result.user_id = $2"), [41, 7, 1]);
   });
 
   it("saves a verified post as a deduplicated library reference", async () => {
@@ -85,7 +72,7 @@ describe("radar result actions", () => {
       if (sql.includes("insert into saved_posts")) return { rowCount: 1, rows: [{ id: "55" }] };
       return { rowCount: 0, rows: [] };
     });
-    const response = await POST(new NextRequest("http://localhost/api/radar/results/41", {
+    const response = await POST(new ProjectRequest(1, "http://localhost/api/radar/results/41", {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ action: "save_idea", channelId: 11 }),
@@ -112,7 +99,7 @@ describe("radar result actions", () => {
       if (sql.includes("insert into saved_posts")) return { rowCount: 1, rows: [{ id: "56" }] };
       return { rowCount: 0, rows: [] };
     });
-    const response = await POST(new NextRequest("http://localhost/api/radar/results/41", {
+    const response = await POST(new ProjectRequest(1, "http://localhost/api/radar/results/41", {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ action: "save_reference", channelId: 11 }),
@@ -124,7 +111,7 @@ describe("radar result actions", () => {
 
   it("returns not found instead of acting on another user's result", async () => {
     mocks.query.mockResolvedValue({ rowCount: 0, rows: [] });
-    const response = await POST(new NextRequest("http://localhost/api/radar/results/41", {
+    const response = await POST(new ProjectRequest(1, "http://localhost/api/radar/results/41", {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ action: "save_idea", channelId: 11 }),

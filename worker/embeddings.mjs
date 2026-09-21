@@ -1,66 +1,47 @@
-import { beginAiSpendAttempt } from "../src/lib/ai-spend-ledger.mjs";
-import { assertWorkerAiCallPolicy } from "./ai-call-policy.mjs";
+import { assertWorkerAiCallPolicy } from './ai-call-policy.mjs';
+import { resolveEmbeddingConfig, EMBED_DIM } from '../src/lib/embedding-config.mjs';
+export { EMBED_DIM };
 
-export const EMBED_DIM = 1024;
+const httpCode = status => status === 401 || status === 403 ? 'embedding_auth' : status === 404 ? 'embedding_model_unavailable' : status === 429 ? 'embedding_rate_limit' : status >= 500 ? 'embedding_provider_unavailable' : 'embedding_request_rejected';
 
-/**
- * Один код эмбеддинга для базы знаний каналов и сайтов. Облачный провайдер — при наличии
- * AI_API_KEY, иначе локальный Ollama (bge-m3). null означает «движок недоступен»:
- * вызывающий код обязан оставить объект непроиндексированным, а не записать мусор.
- */
-export function createEmbedder(env = process.env, { fetchImpl = fetch, timeoutMs = 30_000 } = {}) {
-  const ollamaUrl = String(env.OLLAMA_URL || "http://127.0.0.1:11434").replace(/\/+$/u, "");
-  const cloudKey = String(env.AI_API_KEY || "");
-  const cloudUrl = String(env.AI_API_URL || "https://api.openai.com/v1").replace(/\/+$/u, "");
-  const localModel = env.EMBED_MODEL || "bge-m3";
-  const cloudModel = env.EMBED_CLOUD_MODEL || "text-embedding-3-small";
-
-  return async function embed(text, spendScope) {
-    assertWorkerAiCallPolicy("knowledge-embedding");
-    const input = String(text || "").trim();
-    if (!input) return null;
+/** A nullable compatibility wrapper for retrieval; indexing uses result() for typed errors. */
+export function createEmbedder(env = process.env, { fetchImpl = fetch, timeoutMs = 30_000, onResult = event => console.info('[knowledge-embedding]', JSON.stringify(event)) } = {}) {
+  const config = resolveEmbeddingConfig(env);
+  async function result(text) {
+    assertWorkerAiCallPolicy('knowledge-embedding');
+    const input = String(text || '').trim();
+    const started = Date.now();
+    let output;
     try {
-      if (cloudKey) {
-        const spend = await beginAiSpendAttempt({ provider: "openai-embedding",model:cloudModel,
-          inputTokens:Buffer.byteLength(input,"utf8") + 256,outputTokens:0 }, { env, ...(spendScope ? { scope:spendScope } : {}) });
-        let usage = null;
-        let succeeded = false;
-        try {
-        const response = await fetchImpl(`${cloudUrl}/embeddings`, {
-          method: "POST",
-          headers: { "content-type": "application/json", authorization: `Bearer ${cloudKey}` },
+      if (!config.configured) output = { vector: null, code: 'embedding_not_configured', retryable: false };
+      else if (!input) output = { vector: null, code: 'embedding_empty', retryable: false };
+      else {
+        const local = config.provider === 'ollama';
+        const response = await fetchImpl(`${config.url}${local ? '/api/embed' : '/embeddings'}`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json', ...(!local ? { authorization: `Bearer ${config.key}` } : {}) },
           signal: AbortSignal.timeout(timeoutMs),
-          body: JSON.stringify({ model: cloudModel, input }),
+          body: JSON.stringify({ model: config.model, input, ...(!local ? { dimensions: EMBED_DIM, encoding_format: 'float' } : {}) }),
         });
-        if (!response.ok) return null;
-        const data = await response.json();
-        const vector = data?.data?.[0]?.embedding ?? null;
-        if (Number.isSafeInteger(data.usage?.prompt_tokens)) usage = { inputTokens:data.usage.prompt_tokens,outputTokens:0 };
-        succeeded = Array.isArray(vector) && vector.length === EMBED_DIM;
-        return succeeded ? vector : null;
-        } finally { await spend.finish({ outcome:succeeded ? "succeeded" : "unknown",usage }); }
+        if (!response.ok) output = { vector: null, code: httpCode(response.status), retryable: response.status === 429 || response.status >= 500, httpStatus: response.status };
+        else {
+          const data = await response.json();
+          const vector = local ? data?.embeddings?.[0] ?? data?.embedding : data?.data?.[0]?.embedding;
+          if (!Array.isArray(vector) || vector.length !== EMBED_DIM) output = { vector: null, code: 'embedding_dimension_mismatch', retryable: false };
+          else if (!vector.every(Number.isFinite) || !vector.some(value => value !== 0)) output = { vector: null, code: 'embedding_invalid_vector', retryable: false };
+          else output = { vector, code: null, retryable: false };
+        }
       }
-      await beginAiSpendAttempt({ provider: "local", model: localModel,
-        inputTokens: Buffer.byteLength(input,"utf8"), outputTokens: 0 }, { env, ...(spendScope ? {scope:spendScope} : {}) });
-      const response = await fetchImpl(`${ollamaUrl}/api/embed`, {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        signal: AbortSignal.timeout(timeoutMs),
-        body: JSON.stringify({ model: localModel, input }),
-      });
-      if (!response.ok) return null;
-      const data = await response.json();
-      const vector = data?.embeddings?.[0] ?? data?.embedding ?? null;
-      if (vector && vector.length !== EMBED_DIM) {
-        console.error(`[база] ${localModel} даёт ${vector.length} измерений, схема ждёт ${EMBED_DIM}`);
-        return null;
-      }
-      return vector;
     } catch (error) {
-      if (/^ai_(?:work|spend)_/u.test(String(error?.code || ""))) throw error;
-      return null;
+      output = { vector: null, code: error?.name === 'SyntaxError' ? 'embedding_invalid_response' : /Timeout|Abort/.test(error?.name || '') ? 'embedding_timeout' : 'embedding_network', retryable: error?.name !== 'SyntaxError' };
     }
-  };
+    // Only controlled fields: no source text, request URL, response body, key or exception message.
+    onResult({ provider: config.provider, model: config.model, dimensions: EMBED_DIM, ok: Boolean(output.vector), code: output.code, httpStatus: output.httpStatus ?? null, latencyMs: Date.now() - started });
+    return { ...output, model: config.identity };
+  }
+  const embed = async text => (await result(text)).vector;
+  embed.result = result;
+  embed.identity = config.identity;
+  return embed;
 }
-
-export const toVector = (vector) => `[${vector.join(",")}]`;
+export const toVector = vector => `[${vector.join(',')}]`;

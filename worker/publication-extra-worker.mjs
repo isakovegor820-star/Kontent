@@ -1,4 +1,3 @@
-import { classifyTelegramDelivery } from "../src/lib/telegram-response.mjs";
 import { createHash, randomUUID } from "node:crypto";
 import { UnrecoverableError, Worker } from "bullmq";
 
@@ -109,11 +108,16 @@ async function executeProviderOperation({
         disable_web_page_preview: true,
         reply_parameters: { message_id: mapping.discussionMessageId },
       });
-      const outcome = classifyTelegramDelivery(response);
-      if (outcome.kind === "unknown") {
-        throw new PublicationExtraOperationError("telegram_comment_delivery_unknown", "Telegram не подтвердил первый комментарий. Проверьте обсуждение перед повтором.", { deliveryUnknown: true });
+      if (!response?.ok || !Number.isSafeInteger(Number(response.result?.message_id))) {
+        const error = safeProviderError("telegram", response);
+        if (error.retryable) {
+          error.retryable = false;
+          error.deliveryUnknown = true;
+          error.code = "telegram_comment_delivery_unknown";
+          error.message = "Telegram не подтвердил первый комментарий. Проверьте обсуждение перед повтором.";
+        }
+        throw error;
       }
-      if (outcome.kind === "rejected") throw safeProviderError("telegram", response);
       return { externalId: String(response.result.message_id), externalUrl: null };
     }
     if (!Number.isSafeInteger(postMessageId) || postMessageId <= 0) {
@@ -156,9 +160,8 @@ async function executeProviderOperation({
         guid: vkGuid(operation.fingerprint),
       }, token);
       const commentId = Number(response?.response?.comment_id ?? response?.response);
-      if (response?.error && Number.isSafeInteger(response.error.error_code) && response.error.error_code > 0) throw safeProviderError("vk", response);
-      if (!Number.isSafeInteger(commentId) || commentId <= 0) {
-        throw new PublicationExtraOperationError("delivery_unknown", "VK не подтвердил первый комментарий. Проверьте обсуждение перед повтором.", { deliveryUnknown: true });
+      if (response?.error || !Number.isSafeInteger(commentId) || commentId <= 0) {
+        throw safeProviderError("vk", response);
       }
       return {
         externalId: String(commentId),
@@ -183,7 +186,6 @@ async function markTerminalAndContinue(pool, operation, status, error = null) {
           set status = $4, attempts = attempts + 1,
               last_error_code = $5, last_error_message = $6,
               lease_token = null, lease_expires_at = null,
-              provider_started_at = case when $4 = 'failed_retry' then null else provider_started_at end,
               completed_at = case when $4 in ('succeeded','failed','skipped','unsupported','cancelled') then now() else completed_at end,
               updated_at = now()
         where id = $1 and project_id = $2 and fingerprint = $3
@@ -222,26 +224,6 @@ async function markTerminalAndContinue(pool, operation, status, error = null) {
   return true;
 }
 
-function extraAuthority(expectedParameter = null) {
-  return `authorized as materialized (
-    select extra.id
-      from publication_extra_operations extra
-      join posts post on post.id = extra.post_id and post.project_id = extra.project_id
-      join projects project on project.id = extra.project_id and not project.is_archived
-      join project_members member on member.project_id = project.id
-        and member.user_id = coalesce(extra.requested_by_user_id, post.user_id)
-        and member.status = 'active' and member.role in ('owner','publisher')
-      join users actor on actor.id = member.user_id and actor.blocked_at is null
-      join channels channel on channel.id = extra.channel_id and channel.project_id = project.id
-        and channel.is_active and channel.status = 'active'
-     where extra.id = $1 and extra.project_id = $2
-       ${expectedParameter ? `and jsonb_build_object('network',channel.network,
-         'tg_chat_id',channel.tg_chat_id::text,'vk_group_id',channel.vk_group_id::text,
-         'vk_token',channel.vk_token) = ${expectedParameter}::jsonb` : ""}
-     for share of project, member, actor, channel
-  )`;
-}
-
 export async function processPublicationExtraOperation({
   pool,
   operationId,
@@ -257,12 +239,12 @@ export async function processPublicationExtraOperation({
     .update(`${data.operationId}:${randomUUID()}`)
     .digest("hex");
   const claimed = await pool.query(
-    `with ${extraAuthority()}, claimed as (
+    `with claimed as (
        update publication_extra_operations extra
           set status = 'running', lease_token = $4,
               lease_expires_at = now() + interval '2 minutes', updated_at = now()
          from posts post, channels channel
-        where extra.id = $1 and extra.id in (select id from authorized) and extra.project_id = $2 and extra.fingerprint = $3
+        where extra.id = $1 and extra.project_id = $2 and extra.fingerprint = $3
           and extra.status in ('pending','queued','failed_retry')
           and post.id = extra.post_id and post.project_id = extra.project_id and post.status = 'published'
           and channel.id = extra.channel_id and channel.project_id = extra.project_id
@@ -307,7 +289,6 @@ export async function processPublicationExtraOperation({
       { retryable: true },
     );
   }
-  let providerCallStarted = false;
   try {
     const providerId = operation.network;
     if (operation.request_snapshot?.providerId !== providerId) {
@@ -328,6 +309,7 @@ export async function processPublicationExtraOperation({
     // A previous ambiguous Telegram comment request must never be repeated blindly.
     if (
       operation.kind === "first_comment"
+      && operation.request_snapshot?.providerId === "tg"
       && operation.provider_started_at
     ) {
       throw new PublicationExtraOperationError(
@@ -341,19 +323,15 @@ export async function processPublicationExtraOperation({
       await resolveTelegramDiscussion(pool, operation);
     }
     const marked = await pool.query(
-      `with ${extraAuthority("$5")}
-       update publication_extra_operations
+      `update publication_extra_operations
           set provider_started_at = coalesce(provider_started_at, now()), updated_at = now()
-        where id = $1 and id in (select id from authorized) and project_id = $2 and fingerprint = $3
+        where id = $1 and project_id = $2 and fingerprint = $3
           and status = 'running' and lease_token = $4`,
-      [operation.id, operation.project_id, operation.fingerprint, leaseToken,
-        JSON.stringify({network:operation.network,tg_chat_id:operation.tg_chat_id == null ? null : String(operation.tg_chat_id),
-          vk_group_id:operation.vk_group_id == null ? null : String(operation.vk_group_id),vk_token:operation.vk_token})],
+      [operation.id, operation.project_id, operation.fingerprint, leaseToken],
     );
     if (marked.rowCount !== 1) {
-      throw new PublicationExtraOperationError("publication_authority_or_lease_lost", "Право на действие изменилось. Проверьте доступ и состояние публикации.");
+      throw new PublicationExtraOperationError("operation_lease_lost", "Действие будет повторено.", { retryable: true });
     }
-    providerCallStarted = true;
     const result = await executeProviderOperation({ pool, operation, telegramRequest, vkRequest, decryptToken });
     const saved = await pool.query(
       `with terminal as (
@@ -414,9 +392,7 @@ export async function processPublicationExtraOperation({
   } catch (rawError) {
     const error = rawError instanceof PublicationExtraOperationError
       ? rawError
-      : operation.kind === "first_comment" && providerCallStarted
-        ? new PublicationExtraOperationError("delivery_unknown", "Результат первого комментария неизвестен. Проверьте обсуждение перед повтором.", { deliveryUnknown: true })
-        : new PublicationExtraOperationError("provider_unavailable", "Площадка временно недоступна.", { retryable: true });
+      : new PublicationExtraOperationError("provider_unavailable", "Площадка временно недоступна.", { retryable: true });
     const retryable = error.retryable && !error.deliveryUnknown && !finalAttempt;
     await markTerminalAndContinue(pool, operation, retryable ? "failed_retry" : "failed", error);
     throw error;

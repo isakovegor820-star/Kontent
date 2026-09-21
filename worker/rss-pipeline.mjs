@@ -1,8 +1,7 @@
 // RSS pipeline без глобального состояния. Зависимости передаются снаружи, чтобы поведение
-// «один пользователь → только его feeds → scheduled post → publish queue» можно было
+// «проект и канал → его feeds → scheduled post → publish queue» можно было
 // проверить без запуска всего worker.mjs.
 
-import { rssAccessSql } from "./rss-access.mjs";
 import { parseRss } from "./lib.mjs";
 import { fetchPublicText } from "../src/lib/safe-http.mjs";
 import { decodeRssResponse } from "../src/lib/rss-text.mjs";
@@ -17,7 +16,7 @@ export const RSS_IRRELEVANT_MARKER = "__AURORA_RSS_SKIP__";
 
 /**
  * `userId = null` — плановый cron для всех аккаунтов.
- * Числовой `userId` — ручной запуск, строго в границах одного владельца.
+ * Числовой `userId` — ручной запуск в явно переданном проекте с текущим членством.
  */
 export async function collectRssPipeline({
   pool,
@@ -30,19 +29,23 @@ export async function collectRssPipeline({
   now = () => Date.now(),
   logger = console,
 }) {
-  if(userId!==null&&(!Number.isSafeInteger(userId)||userId<=0))throw new Error("RSS user scope invalid");
-  if(channelId!==null&&(!Number.isSafeInteger(channelId)||channelId<=0))throw new Error("RSS channel scope invalid");
   const userScoped = Number.isInteger(userId) && userId > 0;
+  const projectScoped = Number.isSafeInteger(projectId) && projectId > 0;
   const channelScoped = Number.isInteger(channelId) && channelId > 0;
   if (channelScoped && !userScoped) throw new Error("RSS channel scope requires user scope");
-  if(userScoped&&(!Number.isSafeInteger(projectId)||projectId<=0))throw new Error("RSS project scope required");
+  if (userScoped && !projectScoped) throw new Error("RSS manual collection requires project scope");
   const scopeParams = [];
-  const scopeConditions = ["f.is_active = true", "c.is_active=true", "c.status='active'", rssAccessSql("c.project_id","f.user_id")];
+  const scopeConditions = ["f.is_active = true", "c.is_active = true", "project.is_archived = false"];
+  if (projectId != null && !projectScoped) throw new Error("RSS invalid project scope");
+  if (projectScoped) {
+    scopeParams.push(projectId);
+    scopeConditions.push(`c.project_id = $${scopeParams.length}`);
+  }
   if (userScoped) {
     scopeParams.push(userId);
-    scopeConditions.push(`f.user_id = $${scopeParams.length}`);
+    scopeConditions.push(`exists (select 1 from project_members member where member.project_id = c.project_id
+           and member.user_id = $${scopeParams.length} and member.status = 'active' and member.role in ('owner','author','approver'))`);
   }
-  if(userScoped){scopeParams.push(projectId);scopeConditions.push(`c.project_id=$${scopeParams.length}`);}
   if (channelScoped) {
     scopeParams.push(channelId);
     scopeConditions.push(`f.channel_id = $${scopeParams.length}`);
@@ -50,13 +53,13 @@ export async function collectRssPipeline({
   const feeds = (
     await pool.query(
       `select f.id, f.url, f.title, f.channel_id, f.user_id, f.ai_summarize, f.max_per_day,
-              f.last_fetched_at, f.publish_existing, f.source_kind, f.auto_publish_enabled, c.project_id,
+              f.last_fetched_at, f.publish_existing, f.source_kind, f.auto_publish_enabled,
               c.title as channel_title,
               (select b.niche from content_brief b
-                where b.user_id = f.user_id and b.channel_id = f.channel_id
+                where b.project_id = c.project_id and b.channel_id = f.channel_id
                 limit 1) as channel_niche,
               (select ks.raw_text from knowledge_sources ks
-                where ks.user_id = f.user_id and ks.channel_id = f.channel_id
+                where ks.channel_id = f.channel_id
                   and ks.kind in ('profile_edit', 'profile')
                 order by (ks.kind = 'profile_edit') desc, ks.added_at desc
                 limit 1) as channel_profile,
@@ -67,12 +70,12 @@ export async function collectRssPipeline({
               (select count(*)::int
                  from rss_items channel_item
                  join rss_feeds channel_feed on channel_feed.id = channel_item.feed_id
-                where channel_feed.user_id = f.user_id
-                  and channel_feed.channel_id = f.channel_id
+                where channel_feed.channel_id = f.channel_id
                   and channel_item.fetched_at > now() - interval '24 hours'
                   and channel_item.status = 'posted') as channel_posted_today
          from rss_feeds f
-         join channels c on c.id = f.channel_id and c.project_id=f.project_id
+         join channels c on c.id = f.channel_id
+         join projects project on project.id = c.project_id
         where ${scopeConditions.join(" and ")}
         order by f.id`,
       scopeParams,
@@ -87,9 +90,6 @@ export async function collectRssPipeline({
     // лент и других пользователей, особенно после ручного «Проверить сейчас».
     let postedThisRun = 0;
     try {
-      const current=await pool.query(`select f.id from rss_feeds f join channels c on c.id=f.channel_id and c.project_id=f.project_id
-        where f.id=$1 and c.project_id=$2 and f.is_active and c.is_active and c.status='active' and ${rssAccessSql("c.project_id","f.user_id")}`,[feed.id,feed.project_id]);
-      if(!current.rowCount)continue;
       const res = await fetchFn(feed.url, {
         timeoutMs: RSS_FETCH_TIMEOUT_MS,
         maxBytes: 2 * 1024 * 1024,
@@ -99,15 +99,11 @@ export async function collectRssPipeline({
       const items = parseRss(await decodeRssResponse(res)).slice(0, RSS_BATCH_SIZE);
 
       for (const item of items) {
-        const scheduleKey = `${feed.user_id}:${feed.channel_id}`;
+        const scheduleKey = String(feed.channel_id);
         const postsForChannelThisRun = scheduledByChannel.get(scheduleKey) || 0;
         const ins = await pool.query(
           `insert into rss_items (feed_id, guid, title, link, summary, published_at)
-           select $1, $2, $3, $4, $5, $6 from rss_feeds current_feed
-           join channels current_channel on current_channel.id=current_feed.channel_id and current_channel.project_id=current_feed.project_id
-           where current_feed.id=$1 and current_channel.project_id=$7 and current_feed.is_active
-             and current_channel.is_active and current_channel.status='active'
-             and ${rssAccessSql("current_channel.project_id","current_feed.user_id")}
+           values ($1, $2, $3, $4, $5, $6)
            on conflict (feed_id, guid) do update
              set title = excluded.title, link = excluded.link, summary = excluded.summary,
                  published_at = excluded.published_at
@@ -115,7 +111,7 @@ export async function collectRssPipeline({
                 or strpos(coalesce(rss_items.title, ''), chr(65533)) > 0
                 or strpos(coalesce(rss_items.summary, ''), chr(65533)) > 0
            returning id`,
-          [feed.id, item.guid, item.title, item.link, item.summary, item.publishedAt, feed.project_id],
+          [feed.id, item.guid, item.title, item.link, item.summary, item.publishedAt],
         );
         if (!ins.rowCount) continue;
         const itemId = ins.rows[0].id;
@@ -237,9 +233,7 @@ export async function collectRssPipeline({
         scheduledByChannel.set(scheduleKey, positionInChannel + 1);
       }
 
-      await pool.query(`update rss_feeds f set last_fetched_at = now() from channels c
-        where f.id=$1 and c.id=f.channel_id and c.project_id=f.project_id and c.project_id=$2 and f.is_active
-          and c.is_active and c.status='active' and ${rssAccessSql("c.project_id","f.user_id")}`, [feed.id,feed.project_id]);
+      await pool.query(`update rss_feeds set last_fetched_at = now() where id = $1`, [feed.id]);
     } catch (err) {
       logger.error(`[rss] фид ${feed.id} (${feed.url}):`, err?.message);
     }

@@ -89,7 +89,7 @@ describe("generation artifact binding", () => {
     const query = vi.fn(async (sql: string) => {
       if (sql.includes("from user_project_preferences")) return { rows: [{ project_id: 17, user_id: 5, role: "author", version: 1 }], rowCount: 1 };
       if (sql === "begin" || sql === "rollback") return { rows: [], rowCount: null };
-      if (sql.includes("from channels channel")) return { rows: [{ id: 11, project_id: 3 }], rowCount: 1 };
+      if (sql.includes("select id from channels")) return { rows: [{ id: 11 }], rowCount: 1 };
       if (sql.includes("from generation_operations")) {
         return {
           rows: [{
