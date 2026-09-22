@@ -1,10 +1,12 @@
 import { Queue } from "bullmq";
 
+import { resolveRedisUrl } from "./redis-url.mjs";
+
 export const PUBLICATION_EXTRA_QUEUE = "publication-extra";
 
 const globalQueue = globalThis;
 
-function producerConnectionOptions(value = process.env.REDIS_URL || "redis://127.0.0.1:6379") {
+function producerConnectionOptions(value = resolveRedisUrl()) {
   const url = new URL(value);
   if (!(url.protocol === "redis:" || url.protocol === "rediss:")) throw new Error("invalid_redis_protocol");
   const databaseText = url.pathname.replace(/^\/+|\/+$/gu, "");

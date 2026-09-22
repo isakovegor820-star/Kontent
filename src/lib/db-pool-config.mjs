@@ -1,5 +1,18 @@
 const RUNTIME_ROLES = new Set(["web", "worker", "shared"]);
 
+// Токен сознательного подтверждения для отключения проверки SSL-сертификата БД.
+// Ревью P2: PGSSL_REJECT_UNAUTHORIZED=false была постоянно открытой MITM-дверью;
+// теперь в production одного выключателя мало — нужно второе, «громкое» значение.
+export const PGSSL_INSECURE_CONFIRMATION = "I_ACCEPT_MITM_RISK";
+
+/** true, кроме случая явного выключателя; в production выключатель требует подтверждения. */
+export function resolvePgSslRejectUnauthorized(env = process.env) {
+  if (env.PGSSL_REJECT_UNAUTHORIZED !== "false") return true;
+  if (env.NODE_ENV !== "production") return false;
+  if (String(env.PGSSL_INSECURE_CONFIRM || "").trim() === PGSSL_INSECURE_CONFIRMATION) return false;
+  throw new Error("pgssl_insecure_confirmation_required");
+}
+
 const DEFAULTS = Object.freeze({
   max: 3,
   connectionTimeoutMillis: 2_000,

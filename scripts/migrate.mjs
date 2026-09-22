@@ -5,6 +5,7 @@ import { pathToFileURL } from "node:url";
 import { Pool } from "pg";
 import { migrationBody, prepareMigrationSet } from "./migration-policy.mjs";
 import { SCHEMA_MANIFEST } from "../src/lib/schema-manifest.mjs";
+import { resolvePgSslRejectUnauthorized } from "../src/lib/db-pool-config.mjs";
 
 const LOCK_ID = 1_972_475_321;
 const STATEMENT_TIMEOUT_MS = 300_000;
@@ -123,7 +124,7 @@ function poolOptions(connectionString, env) {
   }
   return {
     connectionString,
-    ssl: local ? false : { rejectUnauthorized: env.PGSSL_REJECT_UNAUTHORIZED !== "false" },
+    ssl: local ? false : { rejectUnauthorized: resolvePgSslRejectUnauthorized(env) },
     max: 1,
     connectionTimeoutMillis: 5_000,
   };

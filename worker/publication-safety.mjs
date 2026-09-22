@@ -1,6 +1,7 @@
 export const DEFAULT_OVERDUE_GRACE_MS = 5 * 60_000;
 export const DEFAULT_QUARANTINE_BATCH_SIZE = 250;
 export const DEFAULT_QUARANTINE_MAX_BATCHES = 40;
+export const DEFAULT_PUBLISH_CONCURRENCY = 4;
 
 function boundedInteger(value, fallback, min, max) {
   const number = Number(value);
@@ -14,6 +15,16 @@ export function publicationGraceMs(env = process.env) {
     60_000,
     60 * 60_000,
   );
+}
+
+/**
+ * Параллельность обработки очереди publish (ревью P1: head-of-line blocking).
+ * Обработчик джобы job-local, а пост заявляется атомарным CAS-лизингом, поэтому
+ * параллельные джобы не могут опубликовать один пост дважды. Потолок 16 — чтобы
+ * случайная опечатка не выставила конкурентов больше, чем держит pg-пул.
+ */
+export function publishConcurrency(env = process.env) {
+  return boundedInteger(env.AURORA_PUBLISH_CONCURRENCY, DEFAULT_PUBLISH_CONCURRENCY, 1, 16);
 }
 
 export function duePublicationRevision(jobData) {

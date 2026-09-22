@@ -16,13 +16,15 @@ import Redis from "ioredis";
 import { isIP } from "node:net";
 import { NextResponse } from "next/server";
 
+import { resolveRedisUrl } from "./redis-url.mjs";
+
 const globalForRedis = globalThis as unknown as { auroraRateRedis?: Redis };
 
 // Один клиент на процесс (как пул базы и очереди). ioredis сам разбирает URL,
 // включая rediss:// с логином/паролем — тот же REDIS_URL, что у BullMQ.
 function getRedis(): Redis {
   if (globalForRedis.auroraRateRedis) return globalForRedis.auroraRateRedis;
-  const url = process.env.REDIS_URL || "redis://127.0.0.1:6379";
+  const url = resolveRedisUrl();
   const client = new Redis(url, {
     maxRetriesPerRequest: 1, // не копим команды при обрыве — лимит не критичен
     connectTimeout: 3000,
@@ -124,6 +126,30 @@ function normalizedIp(value: string): string | null {
 }
 
 /**
+ * Число доверенных proxy-хоп между клиентом и процессом. Неверное значение —
+ * не косметика: 0/miss при прямом доступе к Next означает подставляемый клиентом
+ * X-Forwarded-For (обход IP-лимитов) или общий bucket "unknown" (self-DoS).
+ * Невалидное/незаданное значение даёт 1 — рантайм остаётся работоспособным,
+ * но в production это проверяется на boot: см. assertTrustedProxyBootContract.
+ */
+export function resolveTrustedProxyHops(env: Record<string, string | undefined> = process.env): number {
+  const configured = Number(String(env.AURORA_TRUSTED_PROXY_HOPS || "").trim() || Number.NaN);
+  return Number.isSafeInteger(configured) && configured >= 1 && configured <= 10 ? configured : 1;
+}
+
+/** Fail-closed контракт запуска web-процесса (ревью P1): в production хопы обязаны быть заданы явно. */
+export function assertTrustedProxyBootContract(env: Record<string, string | undefined> = process.env): void {
+  if (env.NODE_ENV !== "production") return;
+  // Сборка и тесты не обслуживают трафик — контракт проверяется только на живом рантайме.
+  if (env.NEXT_PHASE === "phase-production-build" || env.VITEST) return;
+  const raw = String(env.AURORA_TRUSTED_PROXY_HOPS || "").trim();
+  const configured = Number(raw);
+  if (!raw || !Number.isSafeInteger(configured) || configured < 1 || configured > 10) {
+    throw new Error("trusted_proxy_hops_not_configured");
+  }
+}
+
+/**
  * IP клиента берётся справа от X-Forwarded-For: доверенный ingress добавляет адрес
  * непосредственного клиента в конец цепочки, поэтому клиентские префиксы не меняют ключ.
  * Для нескольких доверенных proxy оператор задаёт AURORA_TRUSTED_PROXY_HOPS.
@@ -132,10 +158,7 @@ export function clientIp(req: Request): string {
   const fwd = req.headers.get("x-forwarded-for");
   if (fwd) {
     const chain = fwd.split(",").map(normalizedIp).filter((value): value is string => Boolean(value));
-    const configuredHops = Number(process.env.AURORA_TRUSTED_PROXY_HOPS || 1);
-    const trustedHops = Number.isSafeInteger(configuredHops) && configuredHops >= 1 && configuredHops <= 10
-      ? configuredHops
-      : 1;
+    const trustedHops = resolveTrustedProxyHops();
     return chain.at(-trustedHops) || "unknown";
   }
   // X-Real-IP has no chain semantics and is trusted only when ingress is explicitly

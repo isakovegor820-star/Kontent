@@ -7,7 +7,9 @@ const source = await readFile(new URL("../worker.mjs", import.meta.url), "utf8")
 describe("worker database pool runtime contract", () => {
   it("uses the shared monitored pool with worker-role limits and timeouts", () => {
     expect(source).toContain('process.env.AURORA_RUNTIME_ROLE = "worker"');
-    expect(source).toContain('import { resolveDatabasePoolConfig } from "./src/lib/db-pool-config.mjs"');
+    expect(source).toContain('import { resolveDatabasePoolConfig, resolvePgSslRejectUnauthorized } from "./src/lib/db-pool-config.mjs"');
+    // Ревью P2: worker обязан проходить через тот же двойной контракт подтверждения MITM-фолбэка.
+    expect(source).toContain("resolvePgSslRejectUnauthorized(process.env)");
     expect(source).toContain('import { MonitoredPgPool } from "./src/lib/monitored-pg-pool.mjs"');
     expect(source).toContain("const databasePoolConfig = resolveDatabasePoolConfig()");
     expect(source).toContain("const pool = new MonitoredPgPool({");

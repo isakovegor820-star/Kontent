@@ -4,7 +4,7 @@
 
 import { type Pool } from "pg";
 
-import { resolveDatabasePoolConfig } from "./db-pool-config.mjs";
+import { resolveDatabasePoolConfig, resolvePgSslRejectUnauthorized } from "./db-pool-config.mjs";
 import { DatabasePoolMonitor, type DatabasePoolSnapshot } from "./db-pool-monitor.mjs";
 import { MonitoredPgPool } from "./monitored-pg-pool.mjs";
 
@@ -22,9 +22,10 @@ export function getPool(): Pool {
   const isLocal = /\/\/(?:[^@/]+@)?(?:localhost|127\.0\.0\.1)(?::|\/)/.test(connectionString);
 
   // По умолчанию проверяем сертификат хоста (защита от MITM). Аварийный выход —
-  // PGSSL_REJECT_UNAUTHORIZED=false, если cert-chain хоста не доверен Node. Neon использует
+  // PGSSL_REJECT_UNAUTHORIZED=false, а в production он дополнительно требует
+  // сознательного подтверждения PGSSL_INSECURE_CONFIRM (ревью P2). Neon использует
   // сертификаты Amazon Trust Services/Let's Encrypt (в стандартном CA-бандле), так что true работает.
-  const sslRejectUnauthorized = process.env.PGSSL_REJECT_UNAUTHORIZED !== "false";
+  const sslRejectUnauthorized = resolvePgSslRejectUnauthorized(process.env);
   const config = resolveDatabasePoolConfig();
 
   const pool = new MonitoredPgPool({

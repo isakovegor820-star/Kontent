@@ -21,12 +21,13 @@ import { CRON_SCHEDULES } from "./worker/cron-schedules.mjs";
 process.env.AURORA_RUNTIME_ROLE = "worker";
 
 import "./sentry.worker.config.mjs";
+import * as Sentry from "@sentry/node";
 import { reportGenerationFailure } from "./src/lib/generation-failure-observability.mjs";
 import { Worker, Queue, UnrecoverableError } from "bullmq";
 import IORedis from "ioredis";
 import { createHash, randomUUID } from "node:crypto";
 import { Temporal } from "@js-temporal/polyfill";
-import { resolveDatabasePoolConfig } from "./src/lib/db-pool-config.mjs";
+import { resolveDatabasePoolConfig, resolvePgSslRejectUnauthorized } from "./src/lib/db-pool-config.mjs";
 import { MonitoredPgPool } from "./src/lib/monitored-pg-pool.mjs";
 // Чистые функции (парсинг, страж фактов, раскладка, разметка) вынесены в отдельный модуль
 // без сайд-эффектов — так их можно тестировать, не поднимая пул/Redis/BullMQ.
@@ -334,6 +335,7 @@ import {
 } from "./worker/telegram-update-retry.mjs";
 import {
   duePublicationRevision,
+  publishConcurrency,
   publicationGraceMs,
   quarantineOverduePublications,
 } from "./worker/publication-safety.mjs";
@@ -437,8 +439,12 @@ import {
   assertRuntimeSchemaReady,
   safePreflightFailure,
 } from "./scripts/runtime-schema-preflight.mjs";
+import { resolveRedisUrl } from "./src/lib/redis-url.mjs";
+import { installCrashGuards } from "./worker/crash-guards.mjs";
 
-const REDIS_URL = process.env.REDIS_URL || "redis://127.0.0.1:6379";
+// В production без REDIS_URL процесс не стартует (redis_url_not_configured) —
+// молчаливый localhost-фолбэк ронял бы воркер в «зелёный, но глухой» режим.
+const REDIS_URL = resolveRedisUrl();
 const DATABASE_URL = process.env.DATABASE_URL;
 const TOKEN = process.env.TG_BOT_TOKEN;
 const OWNER_CHAT = process.env.TG_CHAT_ID;
@@ -633,9 +639,10 @@ if (!DATABASE_URL) {
 
 const isLocal = /\/\/(?:[^@/]+@)?(?:localhost|127\.0\.0\.1)(?::|\/)/u.test(DATABASE_URL);
 // SSL: по умолчанию проверяем сертификат хоста (защита от MITM). Аварийный выход —
-// PGSSL_REJECT_UNAUTHORIZED=false, если cert-chain хоста не доверен Node. Neon использует
-// сертификаты Amazon Trust Services/Let's Encrypt (в стандартном CA-бандле), так что true работает.
-const sslRejectUnauthorized = process.env.PGSSL_REJECT_UNAUTHORIZED !== "false";
+// PGSSL_REJECT_UNAUTHORIZED=false, а в production он требует подтверждения
+// PGSSL_INSECURE_CONFIRM (ревью P2). Neon использует сертификаты Amazon Trust
+// Services/Let's Encrypt (в стандартном CA-бандле), так что true работает.
+const sslRejectUnauthorized = resolvePgSslRejectUnauthorized(process.env);
 const databasePoolConfig = resolveDatabasePoolConfig();
 const pool = new MonitoredPgPool({
   connectionString: DATABASE_URL,
@@ -683,6 +690,10 @@ const workerDatabasePoolReportTimer = setInterval(
 workerDatabasePoolReportTimer.unref();
 
 const PUBLICATION_OVERDUE_GRACE_MS = publicationGraceMs(process.env);
+// Ревью P1: последовательный воркер (concurrency 1) блокировал всю очередь публикаций
+// на время одного медленного провайдера. Параллельность безопасна: пост заявляется
+// атомарным CAS-лизингом (claimPublicationLease), джобы разных постов независимы.
+const PUBLISH_CONCURRENCY = publishConcurrency(process.env);
 if (workerModeHasPublication(process.env.AURORA_WORKER_MODE)) {
   try {
     const startupQuarantine = await quarantineOverduePublications(pool, {
@@ -2318,7 +2329,7 @@ const worker = AUTOPILOT_ONLY || MEDIA_ONLY ? null : new Worker(
       await notifyUser(post.user_id, failText, failBtn, { kind: "failure", projectId });
     }
   },
-  { connection },
+  { connection, concurrency: PUBLISH_CONCURRENCY },
 );
 
 const publicationHeartbeatEnabled = Boolean(
@@ -12307,7 +12318,7 @@ async function reconcileScheduledPosts() {
 // Graceful shutdown: при деплое (SIGTERM) даём текущей задаче доработать, чтобы не оставлять
 // пост в 'publishing'.
 let shutdownStarted = false;
-async function shutdown(sig) {
+async function shutdown(sig, exitCode = 0) {
   // A process-group signal reaches this worker directly, while scripts/dev.mjs also
   // forwards the same signal to its children. Closing the same BullMQ Worker twice
   // can strand its Redis registration until heartbeat expiry and make a clean
@@ -12360,15 +12371,33 @@ async function shutdown(sig) {
   } catch {
     /* всё равно выходим */
   }
-  process.exit(0);
+  process.exit(exitCode);
 }
 process.on("SIGTERM", () => shutdown("SIGTERM"));
 process.on("SIGINT", () => shutdown("SIGINT"));
 
+// Страховка P0 (ревью): в этом процессе живут все очереди, Telegram-polling и ~11
+// таймеров-reconcilers. Раньше любая unhandled rejection роняла их молча и без
+// диагностики. Теперь: отчёт (лог + Sentry) → best-effort дренаж той же процедурой
+// завершения с жёстким таймаутом → exit(1); рестартует супервизор (deploy/systemd).
+installCrashGuards({
+  captureException: (error, hint) => Sentry.captureException(error, hint),
+  onFatal: async (kind) => {
+    await shutdown(`FATAL:${kind}`, 1);
+  },
+});
+
 // Регистрация плановых задач (идемпотентно: upsert не плодит дубли при повторном запуске).
 // Расписание живёт в Redis и стреляет независимо от того, когда стартовал процесс.
+// Ревью P2: без attempts временный сбой (морг Redis, лимит провайдера) откладывал
+// задачу до следующего полного тика — stats на 6 ч, weekly на неделю. Одна повторная
+// попытка через минуту покрывает транзиентные отказы; идемпотентность задач — по БД-гарантиям.
 for (const s of AUTOPILOT_ONLY || MEDIA_ONLY || PUBLICATION_ONLY ? [] : CRON_SCHEDULES) {
-  await cronQueue.upsertJobScheduler(s.name, { pattern: s.pattern, tz: "Europe/Moscow" }, { name: s.name });
+  await cronQueue.upsertJobScheduler(s.name, { pattern: s.pattern, tz: "Europe/Moscow" }, {
+    name: s.name,
+    attempts: 2,
+    backoff: { type: "exponential", delay: 60_000 },
+  });
 }
 if (!AUTOPILOT_ONLY && !MEDIA_ONLY && !PUBLICATION_ONLY) {
   console.log("[cron] планировщики зарегистрированы:", CRON_SCHEDULES.map((s) => s.name).join(", "));
@@ -12387,7 +12416,12 @@ if (!AUTOPILOT_ONLY && !MEDIA_ONLY && !PUBLICATION_ONLY) {
 // Идут через ту же очередь (concurrency: 1) — не долбят t.me все разом при старте.
 // weekly НЕ запускаем: планы не должны перестраиваться при каждом рестарте (лечит баг «плана нет»).
 for (const name of AUTOPILOT_ONLY || MEDIA_ONLY || PUBLICATION_ONLY ? [] : ["stats", "recon", "trend", "market-signals", "today-opportunities", "knowledge-index", "discover", "exports"]) {
-  await cronQueue.add(name, {}, { jobId: `startup-${name}`, removeOnComplete: true }).catch(() => {});
+  await cronQueue.add(name, {}, {
+    jobId: `startup-${name}`,
+    removeOnComplete: true,
+    attempts: 2,
+    backoff: { type: "exponential", delay: 60_000 },
+  }).catch(() => {});
 }
 
 if (autopilotQueue) {

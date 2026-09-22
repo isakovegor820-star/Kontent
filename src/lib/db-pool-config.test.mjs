@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vitest";
 
-import { resolveDatabasePoolConfig } from "./db-pool-config.mjs";
+import {
+  PGSSL_INSECURE_CONFIRMATION,
+  resolveDatabasePoolConfig,
+  resolvePgSslRejectUnauthorized,
+} from "./db-pool-config.mjs";
 
 describe("database pool configuration", () => {
   it("keeps local/test defaults bounded while allowing explicit overrides", () => {
@@ -66,5 +70,36 @@ describe("database pool configuration", () => {
         AURORA_DB_SLOW_QUERY_MS: value,
       })).toThrowError("database_slow_query_threshold_invalid");
     }
+  });
+});
+
+describe("pg ssl verification switch", () => {
+  it("verifies certificates by default", () => {
+    expect(resolvePgSslRejectUnauthorized({})).toBe(true);
+    expect(resolvePgSslRejectUnauthorized({ NODE_ENV: "production" })).toBe(true);
+    expect(resolvePgSslRejectUnauthorized({ PGSSL_REJECT_UNAUTHORIZED: "true" })).toBe(true);
+  });
+
+  it("allows the emergency switch outside production without extra ceremony", () => {
+    expect(resolvePgSslRejectUnauthorized({ NODE_ENV: "development", PGSSL_REJECT_UNAUTHORIZED: "false" })).toBe(false);
+    expect(resolvePgSslRejectUnauthorized({ NODE_ENV: "test", PGSSL_REJECT_UNAUTHORIZED: "false" })).toBe(false);
+  });
+
+  it("requires a second, explicit confirmation in production (ревью P2)", () => {
+    expect(() => resolvePgSslRejectUnauthorized({
+      NODE_ENV: "production",
+      PGSSL_REJECT_UNAUTHORIZED: "false",
+    })).toThrowError("pgssl_insecure_confirmation_required");
+    // Половинчатые значения не считаются: нужен ровно согласованный токен.
+    expect(() => resolvePgSslRejectUnauthorized({
+      NODE_ENV: "production",
+      PGSSL_REJECT_UNAUTHORIZED: "false",
+      PGSSL_INSECURE_CONFIRM: "yes",
+    })).toThrowError("pgssl_insecure_confirmation_required");
+    expect(resolvePgSslRejectUnauthorized({
+      NODE_ENV: "production",
+      PGSSL_REJECT_UNAUTHORIZED: "false",
+      PGSSL_INSECURE_CONFIRM: PGSSL_INSECURE_CONFIRMATION,
+    })).toBe(false);
   });
 });

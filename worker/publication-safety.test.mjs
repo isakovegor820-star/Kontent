@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import {
   duePublicationRevision,
+  publishConcurrency,
   publicationGraceMs,
   quarantineOverduePublications,
 } from "./publication-safety.mjs";
@@ -87,6 +88,15 @@ describe("overdue publication safety", () => {
     expect(duePublicationRevision({ scheduleRevision: 3 })).toBe(3);
     expect(duePublicationRevision({ scheduleRevision: 0 })).toBeNull();
     expect(publicationGraceMs({ PUBLICATION_OVERDUE_GRACE_MS: "1" })).toBe(60_000);
+  });
+
+  it("defaults publish concurrency above one and bounds operator overrides", () => {
+    // Ревью P1: concurrency 1 сериализовал все публикации за одним медленным провайдером.
+    expect(publishConcurrency({})).toBe(4);
+    expect(publishConcurrency({ AURORA_PUBLISH_CONCURRENCY: "8" })).toBe(8);
+    expect(publishConcurrency({ AURORA_PUBLISH_CONCURRENCY: "0" })).toBe(1);
+    expect(publishConcurrency({ AURORA_PUBLISH_CONCURRENCY: "9999" })).toBe(16);
+    expect(publishConcurrency({ AURORA_PUBLISH_CONCURRENCY: "abc" })).toBe(4);
   });
 });
 

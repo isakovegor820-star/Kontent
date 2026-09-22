@@ -1,0 +1,34 @@
+# Аврора — web-процесс (Next.js). Источник истины для политики рестарта (ревью P0):
+# раньше юниты жили только на сервере, и «кто поднимает процесс после падения» было
+# знанием одного хоста. Установка: см. deploy/systemd/README.md.
+# Запускать строго с тем же портом, который ждёт AURORA_HEALTH_URL в deploy-production.sh.
+
+[Unit]
+Description=Aurora web (Next.js server)
+After=network-online.target
+Wants=network-online.target
+# Рестарт после серии падений считается неудачей — systemd остаётся in failed,
+# алерт администраторам даёт и сам факт отсутствия heartbeat/readiness.
+StartLimitIntervalSec=600
+StartLimitBurst=10
+
+[Service]
+Type=simple
+User=aurora
+WorkingDirectory=/opt/aurora-current
+EnvironmentFile=/opt/aurora-current/.env.production
+Environment=NODE_ENV=production
+Environment=AURORA_RUNTIME_ROLE=web
+ExecStart=/usr/bin/env npm run start:web
+Restart=always
+RestartSec=5
+KillSignal=SIGTERM
+TimeoutStopSec=30
+# Эти hardening-опции совместимы с npm/node и не ломают доступ к release-каталогу.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=read-only
+
+[Install]
+WantedBy=multi-user.target

@@ -7,6 +7,8 @@ const mocks = vi.hoisted(() => ({
   resolveChannel: vi.fn(),
   enqueue: vi.fn(),
   trusted: vi.fn(),
+  checkRateLimit: vi.fn(async () => ({ allowed: true, limit: 15, remaining: 15, retryAfter: 0 })),
+  rateLimitResponse: vi.fn(),
 }));
 
 vi.mock("@/lib/project-permissions", async (importOriginal) => {
@@ -18,6 +20,10 @@ vi.mock("@/lib/session", () => ({ getSessionUser: mocks.session }));
 vi.mock("@/lib/autopilot", () => ({ resolveChannel: mocks.resolveChannel }));
 vi.mock("@/lib/radar-search-queue", () => ({ enqueueRadarSearch: mocks.enqueue }));
 vi.mock("@/lib/request-origin", () => ({ hasTrustedMutationOrigin: mocks.trusted }));
+vi.mock("@/lib/rate-limit", () => ({
+  checkRateLimit: mocks.checkRateLimit,
+  rateLimitResponse: mocks.rateLimitResponse,
+}));
 
 import { GET, POST } from "./route";
 
