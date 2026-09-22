@@ -75,6 +75,26 @@ describe("production deployment shell contract", () => {
     expect(workflow).toContain("AURORA_DB_POOL_MAX_WORKER=${AURORA_DB_POOL_MAX_WORKER}");
   });
 
+  it("manages the production boot contracts from the release pipeline", () => {
+    // Ревью P1: web падает на boot без AURORA_TRUSTED_PROXY_HOPS, а worker — без REDIS_URL.
+    // Пайплайн обязан уметь поставлять оба значения явно: хопы перезаписываются, если
+    // переменная задана, а Redis добавляется только когда его в файле вовсе нет —
+    // иначе откат релиза наследовал бы чужую конфигурацию.
+    expect(script).toContain('TRUSTED_PROXY_HOPS="${AURORA_TRUSTED_PROXY_HOPS:-}"');
+    expect(script).toContain('REDIS_URL_IF_MISSING="${AURORA_REDIS_URL_IF_MISSING:-}"');
+    expect(script).toContain('if (hops == "") { print; next }');
+    expect(script).toContain('print "AURORA_TRUSTED_PROXY_HOPS=" hops');
+    expect(script).toContain('if (redis_url != "" && !redis_seen) print "REDIS_URL=" redis_url');
+    // Обе переменные интерполируются в удалённую командную строку — набор символов
+    // ограничен и в workflow, и внутри деплой-скрипта.
+    expect(script).toMatch(/TRUSTED_PROXY_HOPS" =~ \^\(\[1-9\]\|10\)\$/u);
+    expect(workflow).toContain("AURORA_TRUSTED_PROXY_HOPS: \${{ vars.TRUSTED_PROXY_HOPS }}");
+    expect(workflow).toContain("AURORA_REDIS_URL_IF_MISSING: \${{ vars.REDIS_URL_IF_MISSING }}");
+    expect(workflow).toContain("AURORA_TRUSTED_PROXY_HOPS=\${AURORA_TRUSTED_PROXY_HOPS}");
+    expect(workflow).toContain("AURORA_REDIS_URL_IF_MISSING=\${AURORA_REDIS_URL_IF_MISSING}");
+    expect(workflow).toMatch(/AURORA_REDIS_URL_IF_MISSING" =~ \^rediss\?:/u);
+  });
+
   it("routes the AI engine selection through the release without stranding a rollback", () => {
     // An engine whose upstream route stops answering has to be routable away from without a
     // hand-edit on the box: production pinned a dead engine and took Autopilot and the

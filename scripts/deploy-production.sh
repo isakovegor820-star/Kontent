@@ -22,6 +22,8 @@ SOURCE_BUNDLE_SHA256="${AURORA_SOURCE_BUNDLE_SHA256:-}"
 AVATAR_BODY_LIMIT_BYTES="${AURORA_AVATAR_BODY_LIMIT_BYTES:-}"
 DB_POOL_MAX_WEB="${AURORA_DB_POOL_MAX_WEB:-}"
 DB_POOL_MAX_WORKER="${AURORA_DB_POOL_MAX_WORKER:-}"
+TRUSTED_PROXY_HOPS="${AURORA_TRUSTED_PROXY_HOPS:-}"
+REDIS_URL_IF_MISSING="${AURORA_REDIS_URL_IF_MISSING:-}"
 AI_SERVICE_ENGINE="${AURORA_AI_SERVICE_ENGINE:-}"
 AI_FALLBACK_ENGINES="${AURORA_AI_FALLBACK_ENGINES:-}"
 AI_SEMANTIC_ENGINE="${AURORA_AI_SEMANTIC_ENGINE:-}"
@@ -76,6 +78,18 @@ if [[ "$DEPLOY_ACTION" == "deploy" ]]; then
       exit 1
     fi
   done
+  # Boot-контракт web (ревью P1): в production хопы обязательны. Пайплайн — явный
+  # источник этого значения; пустая переменная оставляет на сервере уже настроенное.
+  if [[ -n "$TRUSTED_PROXY_HOPS" && ! "$TRUSTED_PROXY_HOPS" =~ ^([1-9]|10)$ ]]; then
+    echo "AURORA_TRUSTED_PROXY_HOPS must be empty or an integer between 1 and 10" >&2
+    exit 1
+  fi
+  # Значение пишется в env-файл, который позже источается через `set -a`,
+  # поэтому ограничивается символьным набором redis-URL, а не доверяется на слово.
+  if [[ -n "$REDIS_URL_IF_MISSING" && ! "$REDIS_URL_IF_MISSING" =~ ^rediss?:\/\/[A-Za-z0-9._:@%/?#-]+$ ]]; then
+    echo "AURORA_REDIS_URL_IF_MISSING must be a redis:// or rediss:// URL without spaces or shell metacharacters" >&2
+    exit 1
+  fi
   # These values are written verbatim into .env.production, which this script later sources
   # with `set -a`, so they are restricted to the engine-id charset rather than trusted.
   for engine_id in "$AI_SERVICE_ENGINE" "$AI_SEMANTIC_ENGINE"; do
@@ -274,13 +288,16 @@ release_key="$(date -u +%Y.%m.%d)-$(printf '%s' "$DEPLOY_SHA" | cut -c1-12)"
 awk -v avatar="$AVATAR_BODY_LIMIT_BYTES" -v web_pool="$DB_POOL_MAX_WEB" -v worker_pool="$DB_POOL_MAX_WORKER" \
     -v ai_service="$AI_SERVICE_ENGINE" -v ai_fallbacks="$AI_FALLBACK_ENGINES" \
     -v ai_semantic="$AI_SEMANTIC_ENGINE" -v ai_semantic_fallbacks="$AI_SEMANTIC_FALLBACK_ENGINES" \
+    -v hops="$TRUSTED_PROXY_HOPS" -v redis_url="$REDIS_URL_IF_MISSING" \
     -v release_key="$release_key" -v release_sha="$DEPLOY_SHA" -v release_deployed_at="$release_deployed_at" '
   BEGIN {
     avatar_written = 0; web_pool_written = 0; worker_pool_written = 0; role_written = 0
     ai_service_written = 0; ai_fallbacks_written = 0
     ai_semantic_written = 0; ai_semantic_fallbacks_written = 0
+    hops_written = 0; redis_seen = 0
   }
   /^AURORA_RELEASE=/ || /^AURORA_RELEASE_SHA=/ || /^AURORA_DEPLOYED_AT=/ { next }
+  /^REDIS_URL=/ { redis_seen = 1 }
   /^AI_SERVICE_ENGINE=/ {
     if (ai_service == "") { print; next }
     if (!ai_service_written) print "AI_SERVICE_ENGINE=" ai_service
@@ -303,6 +320,12 @@ awk -v avatar="$AVATAR_BODY_LIMIT_BYTES" -v web_pool="$DB_POOL_MAX_WEB" -v worke
     if (ai_semantic_fallbacks == "") { print; next }
     if (!ai_semantic_fallbacks_written) print "AI_SEMANTIC_FALLBACK_ENGINES=" ai_semantic_fallbacks
     ai_semantic_fallbacks_written = 1
+    next
+  }
+  /^AURORA_TRUSTED_PROXY_HOPS=/ {
+    if (hops == "") { print; next }
+    if (!hops_written) print "AURORA_TRUSTED_PROXY_HOPS=" hops
+    hops_written = 1
     next
   }
   /^AURORA_AVATAR_BODY_LIMIT_BYTES=/ {
@@ -337,6 +360,8 @@ awk -v avatar="$AVATAR_BODY_LIMIT_BYTES" -v web_pool="$DB_POOL_MAX_WEB" -v worke
     if (ai_semantic_fallbacks != "" && !ai_semantic_fallbacks_written) {
       print "AI_SEMANTIC_FALLBACK_ENGINES=" ai_semantic_fallbacks
     }
+    if (hops != "" && !hops_written) print "AURORA_TRUSTED_PROXY_HOPS=" hops
+    if (redis_url != "" && !redis_seen) print "REDIS_URL=" redis_url
     print "AURORA_RELEASE=" release_key
     print "AURORA_RELEASE_SHA=" release_sha
     print "AURORA_DEPLOYED_AT=" release_deployed_at
