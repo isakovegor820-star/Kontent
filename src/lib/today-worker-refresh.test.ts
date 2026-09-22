@@ -32,11 +32,15 @@ async function registeredJobs() {
 }
 
 describe("Today background refresh worker contract", () => {
+  // Ревью P2: cron-задачи получают одну повторную попытку через минуту — транзиентный
+  // сбой не откладывает stats на 6 ч, а weekly на неделю.
+  const retry = { attempts: 2, backoff: { type: "exponential", delay: 60_000 } };
+
   it("schedules opportunity materialization through the existing cron worker", async () => {
     expect(worker).toContain('import { materializeAllOpportunitySnapshots }');
     const queue = await registeredJobs();
     expect(queue.upsertJobScheduler.mock.calls.filter(([name]) => name === "today-opportunities")).toEqual([
-      ["today-opportunities", { pattern: "20,50 * * * *", tz: "Europe/Moscow" }, { name: "today-opportunities" }],
+      ["today-opportunities", { pattern: "20,50 * * * *", tz: "Europe/Moscow" }, { name: "today-opportunities", ...retry }],
     ]);
     const pool = {};
     const materializeAllOpportunitySnapshots = vi.fn(async () => "snapshots-refreshed");
@@ -48,7 +52,7 @@ describe("Today background refresh worker contract", () => {
   it("refreshes public market signals before opportunity snapshots", async () => {
     const queue = await registeredJobs();
     expect(queue.upsertJobScheduler.mock.calls.filter(([name]) => name === "market-signals")).toEqual([
-      ["market-signals", { pattern: "5,35 * * * *", tz: "Europe/Moscow" }, { name: "market-signals" }],
+      ["market-signals", { pattern: "5,35 * * * *", tz: "Europe/Moscow" }, { name: "market-signals", ...retry }],
     ]);
     const pool = {};
     const statsProducerQueue = {};
@@ -65,7 +69,7 @@ describe("Today background refresh worker contract", () => {
   it("retries channel statistics during the day instead of waiting until tomorrow", async () => {
     const queue = await registeredJobs();
     expect(queue.upsertJobScheduler.mock.calls.filter(([name]) => name === "stats")).toEqual([
-      ["stats", { pattern: "0 */6 * * *", tz: "Europe/Moscow" }, { name: "stats" }],
+      ["stats", { pattern: "0 */6 * * *", tz: "Europe/Moscow" }, { name: "stats", ...retry }],
     ]);
     const collectAllProjectStats = vi.fn(async () => "stats-refreshed");
     const process = await run(`return ${cronWorker.arguments![1].getText(parsed)};`, { collectAllProjectStats });

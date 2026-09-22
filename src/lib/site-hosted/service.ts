@@ -157,3 +157,14 @@ export function sectionJsonLd(site: HostedSite): Record<string, unknown> {
     publisher: { "@type": "Organization", name: site.brandName, url: site.canonicalUrl },
   };
 }
+
+/**
+ * Сериализация JSON-LD для <script type="application/ld+json"> (ревью P2).
+ * JSON.stringify не экранирует «<»: значение вида "</script><script…" из
+ * user-контролируемых полей (brandName, structuredData статьи) выламывалось из
+ * script-блока — stored HTML-injection на hosted-поддомене. Экранирование «<»
+ * сохраняет валидность JSON (\u003c — тот же символ) и убивает вектор целиком.
+ */
+export function jsonLdHtml(value: Record<string, unknown>): string {
+  return JSON.stringify(value).replace(/</gu, "\\u003c");
+}

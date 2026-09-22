@@ -5,6 +5,7 @@
 #   /opt/aurora-releases/<utc-timestamp>-<sha>
 #   /opt/aurora-current -> current release
 #   systemd units: aurora-web.service, aurora-worker.service
+#                  (исходники юнитов закреплены в deploy/systemd/ — ревью P0)
 set -euo pipefail
 
 DEPLOY_SHA="${AURORA_DEPLOY_SHA:?AURORA_DEPLOY_SHA is required}"

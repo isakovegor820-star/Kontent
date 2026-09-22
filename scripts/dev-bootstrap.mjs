@@ -5,6 +5,7 @@ import IORedis from "ioredis";
 import { Pool } from "pg";
 import { migrate, recordBootstrapMigrations } from "./migrate.mjs";
 import { assertRuntimeSchemaReady } from "./runtime-schema-preflight.mjs";
+import { resolvePgSslRejectUnauthorized } from "../src/lib/db-pool-config.mjs";
 
 const LOOPBACK_HOSTS = new Set(["localhost", "127.0.0.1", "::1"]);
 const DEFAULT_REDIS_URL = "redis://127.0.0.1:6379";
@@ -76,7 +77,7 @@ function postgresPoolOptions(connectionString, env) {
     connectionString,
     ssl: isLoopbackConnection(connectionString)
       ? false
-      : { rejectUnauthorized: env.PGSSL_REJECT_UNAUTHORIZED !== "false" },
+      : { rejectUnauthorized: resolvePgSslRejectUnauthorized(env) },
     max: 1,
     connectionTimeoutMillis: 1_500,
     statement_timeout: 5_000,

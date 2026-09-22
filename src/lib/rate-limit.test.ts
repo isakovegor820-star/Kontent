@@ -1,5 +1,11 @@
 import { afterEach, describe, it, expect, vi } from "vitest";
-import { clientIp, rateLimitResponse, unavailableRateLimitResult } from "./rate-limit";
+import {
+  assertTrustedProxyBootContract,
+  clientIp,
+  rateLimitResponse,
+  resolveTrustedProxyHops,
+  unavailableRateLimitResult,
+} from "./rate-limit";
 
 function reqWith(headers: Record<string, string>): Request {
   return new Request("http://localhost/api/x", { headers });
@@ -68,5 +74,40 @@ describe("rate-limit outage policy", () => {
       remaining: 10,
       retryAfter: 0,
     });
+  });
+});
+
+describe("trusted proxy contract", () => {
+  it("bounds the resolver to a safe hop count without crashing the runtime", () => {
+    expect(resolveTrustedProxyHops({})).toBe(1);
+    expect(resolveTrustedProxyHops({ AURORA_TRUSTED_PROXY_HOPS: "3" })).toBe(3);
+    for (const invalid of ["0", "-2", "11", "2.5", "many", ""]) {
+      expect(resolveTrustedProxyHops({ AURORA_TRUSTED_PROXY_HOPS: invalid })).toBe(1);
+    }
+  });
+
+  it("fails web boot in production when hops are not explicit (ревью P1)", () => {
+    expect(() => assertTrustedProxyBootContract({
+      NODE_ENV: "production",
+      AURORA_TRUSTED_PROXY_HOPS: "1",
+    })).not.toThrow();
+    expect(() => assertTrustedProxyBootContract({ NODE_ENV: "production" }))
+      .toThrowError("trusted_proxy_hops_not_configured");
+    expect(() => assertTrustedProxyBootContract({ NODE_ENV: "production", AURORA_TRUSTED_PROXY_HOPS: "0" }))
+      .toThrowError("trusted_proxy_hops_not_configured");
+    expect(() => assertTrustedProxyBootContract({ NODE_ENV: "production", AURORA_TRUSTED_PROXY_HOPS: "11" }))
+      .toThrowError("trusted_proxy_hops_not_configured");
+  });
+
+  it("stays silent outside production, builds and tests", () => {
+    expect(() => assertTrustedProxyBootContract({ NODE_ENV: "development" })).not.toThrow();
+    expect(() => assertTrustedProxyBootContract({
+      NODE_ENV: "production",
+      NEXT_PHASE: "phase-production-build",
+    })).not.toThrow();
+    expect(() => assertTrustedProxyBootContract({
+      NODE_ENV: "production",
+      VITEST: "true",
+    })).not.toThrow();
   });
 });

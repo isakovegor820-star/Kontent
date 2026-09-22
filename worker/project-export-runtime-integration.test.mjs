@@ -50,13 +50,15 @@ describe("project export worker runtime wiring", () => {
     expect(source).toContain("reconcileProjectExportOutbox({");
     expect(source).toContain("expireProjectExportArtifacts(pool, 500)");
     const queue = await registeredJobs();
+    // Ревью P2: планировщики и стартовые задачи cron идут с одной повторной попыткой через минуту.
+    const retry = { attempts: 2, backoff: { type: "exponential", delay: 60_000 } };
     expect(queue.upsertJobScheduler.mock.calls.filter(([name]) => name === "exports")).toEqual([
-      ["exports", { pattern: "* * * * *", tz: "Europe/Moscow" }, { name: "exports" }],
+      ["exports", { pattern: "* * * * *", tz: "Europe/Moscow" }, { name: "exports", ...retry }],
     ]);
     expect(queue.add.mock.calls.map(([name]) => name)).toEqual([
       "stats", "recon", "trend", "market-signals", "today-opportunities", "knowledge-index", "discover", "exports",
     ]);
-    expect(queue.add).toHaveBeenCalledWith("exports", {}, { jobId: "startup-exports", removeOnComplete: true });
+    expect(queue.add).toHaveBeenCalledWith("exports", {}, { jobId: "startup-exports", removeOnComplete: true, ...retry });
     const reconcileProjectExports = vi.fn(async () => "export-reconciled");
     const process = await run(`return ${cronWorker.arguments[1].getText(parsed)};`, { reconcileProjectExports });
     await expect(process({ name: "exports" })).resolves.toBe("export-reconciled");

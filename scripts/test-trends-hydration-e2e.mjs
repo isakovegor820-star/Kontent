@@ -28,6 +28,8 @@ const redis = new IORedis(redisUrl, { maxRetriesPerRequest: null });
 const runtimeEnv = {
   ...process.env,
   NODE_ENV: "production",
+  // Boot-контракт production-web (ревью P1): один доверенный hop — сам харнесс.
+  AURORA_TRUSTED_PROXY_HOPS: "1",
   DATABASE_URL: databaseUrl,
   REDIS_URL: redisUrl,
   APP_URL: baseUrl,

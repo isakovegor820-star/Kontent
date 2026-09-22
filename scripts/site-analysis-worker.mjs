@@ -1,11 +1,13 @@
 import IORedis from "ioredis";
 import pg from "pg";
 
+import { resolveRedisUrl } from "../src/lib/redis-url.mjs";
+import { resolvePgSslRejectUnauthorized } from "../src/lib/db-pool-config.mjs";
 import { safePreflightFailure } from "./runtime-schema-preflight.mjs";
 import { assertSiteAnalysisSchemaReady } from "./site-analysis-schema-preflight.mjs";
 import { createSiteAnalysisWorker } from "../worker/site-analysis-worker.mjs";
 
-const redisUrl = process.env.REDIS_URL || "redis://127.0.0.1:6379";
+const redisUrl = resolveRedisUrl();
 const databaseUrl = process.env.DATABASE_URL;
 
 if (!databaseUrl) {
@@ -18,7 +20,7 @@ const pool = new pg.Pool({
   connectionString: databaseUrl,
   ssl: isLocalDatabase
     ? false
-    : { rejectUnauthorized: process.env.PGSSL_REJECT_UNAUTHORIZED !== "false" },
+    : { rejectUnauthorized: resolvePgSslRejectUnauthorized(process.env) },
 });
 pool.on("error", (error) => {
   console.error("[site-analysis] соединение с PostgreSQL прервано", error?.message || error);

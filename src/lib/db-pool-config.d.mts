@@ -13,3 +13,7 @@ export type DatabasePoolConfig = Readonly<{
 }>;
 
 export function resolveDatabasePoolConfig(env?: NodeJS.ProcessEnv): DatabasePoolConfig;
+
+export const PGSSL_INSECURE_CONFIRMATION: "I_ACCEPT_MITM_RISK";
+
+export function resolvePgSslRejectUnauthorized(env?: NodeJS.ProcessEnv): boolean;

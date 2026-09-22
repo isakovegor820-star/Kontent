@@ -1,10 +1,24 @@
 import { NextRequest, NextResponse } from "next/server";
 import { ProjectAccessError } from "./project-permissions";
+import { checkRateLimit, clientIp, rateLimitResponse } from "./rate-limit";
 import { hasTrustedMutationOrigin } from "./request-origin";
 import { getSessionUser } from "./session";
 import { runWithProjectRequest, type ProjectRequestContext } from "./project-request-context";
 
 export const PROJECT_HEADER = "x-aurora-project-id";
+
+// Ревью P2: ~83 auth-мутационных маршрутов не имели route-level лимита вовсе.
+// Здесь — общий потолочный anti-spam на IP: он не подменяет точечные лимиты дорогих
+// операций, но не даёт заспамить write-путь через маршруты без собственных лимитов.
+// Порог заведомо щедрый (в разы выше поведения реального UI за окном), fail-open по
+// умолчанию — при недоступном Redis лимит не превращается в отказ обслуживания.
+const MUTATION_CEILING = Object.freeze({ limit: 240, windowSeconds: 60 });
+
+export function mutationCeilingEnabled(env: Record<string, string | undefined> = process.env): boolean {
+  // Unit-тесты гоняют десятки мутаций через одни и те же маршруты с «общим IP»;
+  // реальный Redis в них не нужен — поведение ветки покрывается dedicated-тестами.
+  return !env.VITEST && env.NODE_ENV !== "test";
+}
 export function parseRequestProjectId(value: string | null): number | null {
   if (!value || !/^[1-9][0-9]*$/u.test(value)) return null;
   const id = Number(value);
@@ -17,6 +31,10 @@ export function withProjectRoute<Args extends unknown[]>(
   options: { objectRead?: boolean; projectInPath?: boolean } = {},
 ) {
   return async (request: NextRequest, ...args: Args): Promise<Response> => {
+    if (mutationCeilingEnabled() && !["GET", "HEAD", "OPTIONS"].includes(request.method)) {
+      const ceiling = await checkRateLimit(`mutation:ip:${clientIp(request)}`, MUTATION_CEILING.limit, MUTATION_CEILING.windowSeconds);
+      if (!ceiling.allowed) return rateLimitResponse(ceiling);
+    }
     const header = request.headers.get(PROJECT_HEADER);
     const query = request.nextUrl.searchParams.getAll("projectId");
     const pathId = options.projectInPath ? request.nextUrl.pathname.match(/^\/api\/projects\/([^/]+)(?:\/|$)/u)?.[1] : null;

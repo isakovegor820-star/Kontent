@@ -1,5 +1,6 @@
 import pg from "pg";
 import { probeSchemaCompatibility } from "../src/lib/schema-readiness.mjs";
+import { resolvePgSslRejectUnauthorized } from "../src/lib/db-pool-config.mjs";
 
 export class RuntimeSchemaPreflightError extends Error {
   constructor(code, reasons = []) {
@@ -14,7 +15,7 @@ function poolOptions(connectionString, env) {
   const local = /\/\/(?:[^@/]+@)?(?:localhost|127\.0\.0\.1)(?::|\/)/u.test(connectionString);
   return {
     connectionString,
-    ssl: local ? false : { rejectUnauthorized: env.PGSSL_REJECT_UNAUTHORIZED !== "false" },
+    ssl: local ? false : { rejectUnauthorized: resolvePgSslRejectUnauthorized(env) },
     max: 1,
     connectionTimeoutMillis: 5_000,
     statement_timeout: 5_000,

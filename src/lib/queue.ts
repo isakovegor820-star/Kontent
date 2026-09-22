@@ -4,6 +4,8 @@
 
 import { Queue, type ConnectionOptions } from "bullmq";
 
+import { resolveRedisUrl } from "./redis-url.mjs";
+
 export const PUBLISH_QUEUE = "publish";
 export const STATS_QUEUE = "stats";
 export const MEDIA_QUEUE = "media-generation";
@@ -20,7 +22,7 @@ const globalForQueue = globalThis as unknown as {
 // сам создал соединение — так не конфликтуют версии ioredis. Номер logical DB обязателен:
 // producer и worker должны слушать один и тот же изолированный namespace.
 export function redisProducerConnectionOptions(
-  value = process.env.REDIS_URL || "redis://127.0.0.1:6379",
+  value = resolveRedisUrl(),
 ): ConnectionOptions & { db: number } {
   const url = new URL(value);
   if (url.protocol !== "redis:" && url.protocol !== "rediss:") {

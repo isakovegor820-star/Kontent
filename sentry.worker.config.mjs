@@ -15,4 +15,10 @@ Sentry.init({
   environment: process.env.SENTRY_ENVIRONMENT ?? (isProduction ? "prod" : "development"),
   tracesSampleRate,
   sendDefaultPii: false,
+  // Политикой падения процесса владеют worker/crash-guards.mjs (ревью P0): Sentry
+  // только репортит uncaught/unhandled, выход — за guard-обработчиком с дренажем
+  // и детерминированным exit(1) для рестарта супервизором.
+  integrations: [
+    Sentry.onUncaughtExceptionIntegration({ exitOnUncaught: false }),
+  ],
 });

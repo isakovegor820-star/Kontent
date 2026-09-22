@@ -1,0 +1,37 @@
+# Аврора — фоновый воркер (BullMQ + Telegram polling + reconcilers). Ревью P0:
+# падение этого процесса останавливает публикации, бота, статистику, RAG и autopilot,
+# поэтому рестарт обязателен и закреплён здесь, а не в памяти одного хоста.
+# Политика самого процесса (worker/crash-guards.mjs): фатальная ошибка → отчёт →
+# дренаж с таймаутом → exit(1) → systemd поднимает заново через RestartSec.
+# Разделение blast radius: при росте нагрузки поднимайте дополнительные экземпляры
+# через AURORA_WORKER_MODE=publication|media (см. package.json scripts).
+
+[Unit]
+Description=Aurora background worker (BullMQ, Telegram, cron)
+After=network-online.target
+Wants=network-online.target
+StartLimitIntervalSec=600
+StartLimitBurst=20
+
+[Service]
+Type=simple
+User=aurora
+WorkingDirectory=/opt/aurora-current
+EnvironmentFile=/opt/aurora-current/.env.production
+Environment=NODE_ENV=production
+ExecStart=/usr/bin/env npm run start:worker
+Restart=always
+# 5 секунд — быстрее следующего Telegram heartbeat-окна, но без flap-шторма.
+RestartSec=5
+KillSignal=SIGTERM
+# Воркер при SIGTERM дренажит очереди (graceful shutdown); запас на long poll и
+# активные джобы. После таймаута systemd доубивает SIGKILL, lease переживёт это
+# через CAS/идемпотентные jobId.
+TimeoutStopSec=90
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=read-only
+
+[Install]
+WantedBy=multi-user.target

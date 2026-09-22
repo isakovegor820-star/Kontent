@@ -11,6 +11,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { resolveChannel } from "@/lib/autopilot";
 import { parseTrendStatPeriod } from "@/lib/trend-statistics";
 import { getPool } from "@/lib/db";
+import { checkRateLimit, rateLimitResponse } from "@/lib/rate-limit";
 import {
   normalizeRadarQuery,
   radarTsQuery,
@@ -408,6 +409,11 @@ async function handlePOST(req: NextRequest) {
   }
   const user = await getSessionUser(req);
   if (!user) return json({ error: "unauthorized" }, 401);
+  // Ревью P2: дорогой внешний поиск без per-user потолка (кеш и request_key дедуп —
+  // единственные защиты). Fail-closed: внешний сайд-эффект не должен дешивиться при
+  // недоступном Redis — иначе обход лимита тривиален.
+  const searchLimit = await checkRateLimit(`radar:search:user-${user.id}`, 15, 60, { failureMode: "closed" });
+  if (!searchLimit.allowed) return rateLimitResponse(searchLimit);
   let body: Record<string, unknown>;
   try {
     body = await readJsonBodyValue(req);
