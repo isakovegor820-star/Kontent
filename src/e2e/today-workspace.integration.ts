@@ -14,7 +14,7 @@ import { loadTodayPublications } from "@/lib/today-publications";
 import { materializeAllOpportunitySnapshots } from "@/lib/opportunity-snapshot-materializer.mjs";
 
 const url = new URL(process.env.TODAY_TEST_DATABASE_URL || "http://invalid");
-if (!["localhost", "127.0.0.1"].includes(url.hostname) || !/^\/aurora_today_review_\d+$/u.test(url.pathname)) {
+if (!["localhost", "127.0.0.1"].includes(url.hostname) || !(/^\/aurora_today_review_\d+$/u.test(url.pathname) || url.pathname === "/aurora_today_workspace_test")) {
   throw new Error("TODAY_TEST_DATABASE_URL must name an isolated local aurora_today_review database");
 }
 const pool = new pg.Pool({ connectionString: url.href, max: 4 });

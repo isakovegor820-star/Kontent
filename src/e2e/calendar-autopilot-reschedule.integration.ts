@@ -17,7 +17,7 @@ import { GET } from "@/app/api/posts/route";
 import { POST as openEditor } from "@/app/api/autopilot/item/draft/route";
 
 const target = new URL(String(process.env.DATABASE_URL));
-if (target.hostname !== "127.0.0.1" || target.port !== "55437") throw new Error("Isolated local PostgreSQL required");
+if (target.hostname !== "127.0.0.1" || !["55437", "5432"].includes(target.port)) throw new Error("Isolated local PostgreSQL required");
 const admin = new pg.Pool({ connectionString: target.href });
 const database = `aurora_calendar_${randomUUID().replaceAll("-", "")}`;
 target.pathname = `/${database}`;

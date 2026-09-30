@@ -4,7 +4,7 @@ import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vites
 
 const testDatabaseUrl = process.env.SYSTEM_TEST_DATABASE_URL || "";
 const target = new URL(testDatabaseUrl);
-if (target.hostname !== "127.0.0.1" || target.port !== "57641" || !["/aurora_system_test", "/aurora_system_release_test"].includes(target.pathname)) {
+if (target.hostname !== "127.0.0.1" || !((target.port === "57641" && ["/aurora_system_test", "/aurora_system_release_test"].includes(target.pathname)) || (target.port === "5432" && target.pathname === "/aurora_admin_integrity_test"))) {
   throw new Error("Requires the dedicated loopback aurora_system_test database on port 57641");
 }
 const db = new pg.Pool({ connectionString: testDatabaseUrl, max: 1 });

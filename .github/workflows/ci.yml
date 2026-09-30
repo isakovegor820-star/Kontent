@@ -99,9 +99,26 @@ jobs:
             aurora_password_gate_test \
             aurora_bot_persistence_test \
             aurora_tracking_gate_test \
-            aurora_launch_test
+            aurora_launch_test \
+            aurora_admin_access_test \
+            aurora_admin_integrity_test \
+            aurora_today_workspace_test \
+            aurora_trend_statistics_test
           do
             createdb -h localhost -U postgres "$database"
+          done
+        env:
+          PGPASSWORD: postgres
+
+      - name: Bootstrap schemas for fixture-only integration databases
+        run: |
+          for database in \
+            aurora_admin_access_test \
+            aurora_admin_integrity_test \
+            aurora_today_workspace_test \
+            aurora_trend_statistics_test
+          do
+            psql "postgresql://postgres:postgres@localhost:5432/${database}" -v ON_ERROR_STOP=1 -f db/schema.sql
           done
         env:
           PGPASSWORD: postgres
@@ -196,6 +213,81 @@ jobs:
         run: npx vitest run --config vitest.integration.config.ts src/e2e/knowledge-engine.integration.ts src/e2e/knowledge-access.integration.ts --maxWorkers=1
         env:
           DATABASE_URL: "postgres://postgres:postgres@127.0.0.1:5432/aurora_launch_test"
+
+      # Ранее осиротевшие интеграции (аудит 2026-09-30): каждая — на своей одноразовой
+      # базе/логическом Redis-DB, с fail-closed guard'ами на localhost.
+      - name: Test registration identity and transaction races
+        run: env -u DATABASE_URL npm run test:registration:integration
+        env:
+          MIGRATION_TEST_DATABASE_URL: "postgres://postgres:postgres@localhost:5432/aurora_publication_gate_test"
+
+      - name: Test VK channel connection persistence
+        run: npm run test:vk-storage:integration
+        env:
+          DATABASE_URL: "postgres://postgres:postgres@localhost:5432/postgres"
+
+      - name: Test calendar completeness and stable pagination
+        run: npm run test:calendar:integration
+        env:
+          DATABASE_URL: "postgres://postgres:postgres@localhost:5432/postgres"
+
+      - name: Test launch monitoring probes
+        run: npm run test:launch-monitoring:integration
+        env:
+          DATABASE_URL: "postgres://postgres:postgres@localhost:5432/postgres"
+
+      - name: Test autopilot editor isolation
+        run: npm run test:autopilot-editor:integration
+        env:
+          DATABASE_URL: "postgres://postgres:postgres@localhost:5432/postgres"
+
+      - name: Test calendar autopilot reschedule
+        run: npm run test:calendar-autopilot-reschedule:integration
+        env:
+          DATABASE_URL: "postgres://postgres:postgres@localhost:5432/postgres"
+
+      - name: Test database pool acquisition deadline
+        run: env -u DATABASE_URL npm run test:database-pool-timeout:integration
+
+      - name: Test project request isolation
+        run: npm run test:projects:integration
+        env:
+          DATABASE_URL: "postgres://postgres:postgres@127.0.0.1:5432/aurora_launch_test"
+
+      - name: Test bot draft publication
+        run: npm run test:bot-publication:integration
+        env:
+          DATABASE_URL: "postgres://postgres:postgres@127.0.0.1:5432/aurora_launch_test"
+
+      - name: Test admin access recovery
+        run: npm run test:admin-access-recovery:integration
+        env:
+          SYSTEM_TEST_DATABASE_URL: "postgres://postgres:postgres@localhost:5432/aurora_admin_access_test"
+
+      - name: Test admin operations center queries
+        run: npm run test:admin-operations-center:integration
+        env:
+          MIGRATION_TEST_DATABASE_URL: "postgres://postgres:postgres@localhost:5432/aurora_migration_test"
+
+      - name: Test admin system integrity
+        run: npm run test:admin-system-integrity:integration
+        env:
+          SYSTEM_TEST_DATABASE_URL: "postgres://postgres:postgres@localhost:5432/aurora_admin_integrity_test"
+
+      - name: Test admin system queue probes
+        run: npm run test:admin-system-queues:integration
+        env:
+          SYSTEM_TEST_REDIS_URL: "redis://127.0.0.1:6380/12"
+
+      - name: Test today workspace
+        run: npm run test:today-workspace:integration
+        env:
+          TODAY_TEST_DATABASE_URL: "postgres://postgres:postgres@localhost:5432/aurora_today_workspace_test"
+
+      - name: Test trend statistics datasets
+        run: npm run test:trend-statistics:integration
+        env:
+          DATABASE_URL: "postgres://postgres:postgres@localhost:5432/aurora_trend_statistics_test"
 
       - name: Production build
         run: npm run build

@@ -5,7 +5,7 @@ import { probeAdminQueues } from "@/lib/admin-system-diagnostics";
 // A different logical DB from the full QA worker: no real publication processor
 // can consume these jobs. No provider or publication code runs in this suite.
 const url = process.env.SYSTEM_TEST_REDIS_URL || "";
-if (url !== "redis://127.0.0.1:57642/1") throw new Error("Requires dedicated audit Redis logical DB 1");
+if (!["redis://127.0.0.1:57642/1", "redis://127.0.0.1:6380/12"].includes(url)) throw new Error("Requires dedicated audit Redis logical DB");
 const connection = { host: "127.0.0.1", port: 57642, db: 1, maxRetriesPerRequest: null };
 const queue = new Queue("publish", { connection });
 let worker: Worker | undefined;

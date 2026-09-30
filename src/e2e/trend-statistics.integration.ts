@@ -4,7 +4,7 @@ import { claimRadarSearchRun } from "../../worker/trend-search.mjs";
 import { trendDatasetQuery, serializeTrendDataset, type TrendDatasetInput } from "@/lib/trend-dataset";
 import { seedTrendQa } from "../../scripts/trends-qa-fixtures.mjs";
 const url = new URL(String(process.env.DATABASE_URL));
-if (!['127.0.0.1', 'localhost'].includes(url.hostname) || !url.pathname.startsWith('/aurora_trends_qa_')) throw new Error('Isolated disposable trends QA database required');
+if (!['127.0.0.1', 'localhost'].includes(url.hostname) || !(url.pathname.startsWith('/aurora_trends_qa_') || url.pathname === '/aurora_trend_statistics_test')) throw new Error('Isolated disposable trends QA database required');
 const pool = new pg.Pool({ connectionString: url.href, ssl: false, max: 2 });
 let fixture: Awaited<ReturnType<typeof seedTrendQa>>;
 beforeAll(async () => { fixture = await seedTrendQa(pool); });

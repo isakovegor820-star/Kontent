@@ -16,7 +16,7 @@ vi.mock("@/lib/vk", () => ({ resolveGroupByToken: mocks.group }));
 vi.mock("@/lib/provider-write-boundary.mjs", () => ({ resolveProviderLiveWriteBoundary: () => ({ allowed: true }) }));
 import { POST } from "@/app/api/channels/connect-vk/route";
 const target = new URL(String(process.env.DATABASE_URL));
-if (target.hostname !== "127.0.0.1" || target.port !== "55437") throw new Error("Isolated local PostgreSQL required");
+if (target.hostname !== "127.0.0.1" || !["55437", "5432"].includes(target.port)) throw new Error("Isolated local PostgreSQL required");
 const admin = new pg.Pool({ connectionString: target.href, ssl: false });
 const database = `aurora_vk_${randomUUID().replaceAll("-", "")}`;
 target.pathname = `/${database}`;

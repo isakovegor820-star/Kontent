@@ -54,7 +54,14 @@
     "test:calendar:browser": "node scripts/test-calendar-pagination-browser.mjs",
     "test:calendar-return:browser": "node scripts/test-calendar-return-browser.mjs",
     "test:launch-monitoring:integration": "vitest run --config vitest.integration.config.ts src/e2e/launch-monitoring.integration.ts --maxWorkers=1",
-    "test:autopilot-editor:integration": "vitest run --config vitest.integration.config.ts src/e2e/autopilot-editor-isolation.integration.ts --maxWorkers=1"
+    "test:autopilot-editor:integration": "vitest run --config vitest.integration.config.ts src/e2e/autopilot-editor-isolation.integration.ts --maxWorkers=1",
+    "test:admin-access-recovery:integration": "vitest run --config vitest.integration.config.ts src/e2e/admin-access-recovery.integration.ts --maxWorkers=1",
+    "test:admin-operations-center:integration": "vitest run --config vitest.integration.config.ts src/e2e/admin-operations-center.integration.ts --maxWorkers=1",
+    "test:admin-system-integrity:integration": "vitest run --config vitest.integration.config.ts src/e2e/admin-system-integrity.integration.ts --maxWorkers=1",
+    "test:admin-system-queues:integration": "vitest run --config vitest.integration.config.ts src/e2e/admin-system-queues.integration.ts --maxWorkers=1",
+    "test:today-workspace:integration": "vitest run --config vitest.integration.config.ts src/e2e/today-workspace.integration.ts --maxWorkers=1",
+    "test:trend-statistics:integration": "vitest run --config vitest.integration.config.ts src/e2e/trend-statistics.integration.ts --maxWorkers=1",
+    "test:calendar-autopilot-reschedule:integration": "vitest run --config vitest.integration.config.ts src/e2e/calendar-autopilot-reschedule.integration.ts --maxWorkers=1"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.1104.0",

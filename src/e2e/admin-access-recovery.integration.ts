@@ -6,7 +6,7 @@ import { hashPassword, verifyPassword } from '../lib/password';
 import { consumePasswordReset } from '../lib/password-reset';
 
 const url = new URL(process.env.SYSTEM_TEST_DATABASE_URL || 'postgresql://invalid/invalid');
-if (!['127.0.0.1', 'localhost'].includes(url.hostname) || url.port !== '57641' || url.pathname !== '/aurora_system_release_test') throw new Error('isolated_recovery_database_required');
+if (!['127.0.0.1', 'localhost'].includes(url.hostname) || !((url.port === '57641' && url.pathname === '/aurora_system_release_test') || (url.port === '5432' && url.pathname === '/aurora_admin_access_test'))) throw new Error('isolated_recovery_database_required');
 const pool = new pg.Pool({ connectionString: url.href, max: 3 });
 let userId: number;
 let initialEpoch: number;

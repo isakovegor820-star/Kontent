@@ -13,7 +13,7 @@ import { POST as openEditor, PATCH as saveEditor } from "@/app/api/autopilot/ite
 import { PATCH as moveItem } from "@/app/api/autopilot/item/schedule/route";
 
 const target = new URL(String(process.env.DATABASE_URL));
-if (target.hostname !== "127.0.0.1" || target.port !== "55437") throw new Error("Isolated local PostgreSQL required");
+if (target.hostname !== "127.0.0.1" || !["55437", "5432"].includes(target.port)) throw new Error("Isolated local PostgreSQL required");
 const admin = new pg.Pool({ connectionString: target.href });
 const database = `aurora_editor_${randomUUID().replaceAll("-", "")}`;
 target.pathname = `/${database}`;
