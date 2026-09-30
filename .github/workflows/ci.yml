@@ -273,7 +273,7 @@ jobs:
       - name: Test admin system integrity
         run: npm run test:admin-system-integrity:integration
         env:
-          SYSTEM_TEST_DATABASE_URL: "postgres://postgres:postgres@localhost:5432/aurora_admin_integrity_test"
+          SYSTEM_TEST_DATABASE_URL: "postgres://postgres:postgres@127.0.0.1:5432/aurora_admin_integrity_test"
 
       - name: Test admin system queue probes
         run: npm run test:admin-system-queues:integration
