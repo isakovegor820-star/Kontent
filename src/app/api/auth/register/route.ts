@@ -65,7 +65,10 @@ export async function POST(req: NextRequest) {
     const hash = await hashPassword(password);
     const registration = await registerPasswordUser({ pool, email, name, passwordHash: hash });
     if (!registration.ok) {
-      return NextResponse.json({ ok: false, error: registration.error }, { status: 409 });
+      // Не раскрываем, что именно конфликтует (перечисление занятых почт).
+      // Универсальный код: пользователь с существующим аккаунтом пойдёт во «вход»,
+      // а атакующий не получит подтверждение, что адрес зарегистрирован.
+      return NextResponse.json({ ok: false, error: "conflict" }, { status: 409 });
     }
 
     // Только после commit: сбой CRM/Telegram не откатывает и не маскирует созданный аккаунт.

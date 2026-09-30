@@ -48,6 +48,8 @@ describe("getSessionUser", () => {
         avatar: null,
         onboarding_completed_at: null,
         expires_at: new Date(Date.now() + 29 * 24 * 60 * 60 * 1000).toISOString(),
+        created_at: new Date().toISOString(),
+        has_project_context: true,
       }],
     });
   });
@@ -63,6 +65,35 @@ describe("getSessionUser", () => {
       vk_id: null,
     });
     expect(mocks.query.mock.calls[0]?.[1]).toEqual([hashSessionToken("test-session")]);
+  });
+
+  it("завершает сессию старше абсолютного потолка и удаляет её из базы", async () => {
+    mocks.query.mockResolvedValueOnce({
+      rowCount: 1,
+      rows: [{
+        id: "17",
+        tg_id: null,
+        vk_id: null,
+        email: "user@example.com",
+        name: "User",
+        avatar: null,
+        onboarding_completed_at: null,
+        expires_at: new Date(Date.now() + 29 * 24 * 60 * 60 * 1000).toISOString(),
+        created_at: new Date(Date.now() - 91 * 24 * 60 * 60 * 1000).toISOString(),
+        has_project_context: true,
+      }],
+    });
+    mocks.query.mockResolvedValueOnce({ rowCount: 1, rows: [] });
+
+    const request = new NextRequest("http://localhost/api/auth/me", {
+      headers: { cookie: "sid=old-session" },
+    });
+
+    await expect(getSessionUser(request)).resolves.toBeNull();
+    expect(mocks.query).toHaveBeenCalledWith(
+      "delete from sessions where token_hash = $1",
+      [hashSessionToken("old-session")],
+    );
   });
 });
 

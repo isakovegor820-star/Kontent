@@ -44,11 +44,11 @@ describe("registration route", () => {
   });
   afterEach(() => vi.clearAllMocks());
 
-  it("returns stable email_taken without lead or session side effects", async () => {
+  it("returns a stable conflict without revealing a taken email, and skips side effects", async () => {
     mocks.register.mockResolvedValue({ ok: false, error: "email_taken" });
     const response = await POST(request());
     expect(response.status).toBe(409);
-    await expect(response.json()).resolves.toMatchObject({ error: "email_taken" });
+    await expect(response.json()).resolves.toMatchObject({ error: "conflict" });
     expect(mocks.convertLead).not.toHaveBeenCalled();
     expect(mocks.createSession).not.toHaveBeenCalled();
   });

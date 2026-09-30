@@ -146,8 +146,8 @@ export function AuthScreen({ mode, intent = "platform" }: { mode: AuthMode; inte
       if (response.status === 429 && data?.error === "rate_limited") {
         const minutes = Math.max(1, Math.ceil((data.retryAfter ?? 900) / 60));
         setFormError(`Слишком много попыток. Попробуйте снова через ${minutes} мин.`);
-      } else if (response.status === 409 && data?.error === "email_taken") {
-        setFormError("Эта почта уже зарегистрирована. Войдите в аккаунт.");
+      } else if (response.status === 409 && data?.error === "conflict") {
+        setFormError("Не удалось создать аккаунт. Если у тебя уже есть аккаунт — войди в него.");
       } else if (response.status === 401 && data?.error === "invalid") {
         setFormError("Почта или пароль не подошли. Проверьте данные и попробуйте снова.");
       } else if (response.status === 422 && data?.error === "bad_email") {

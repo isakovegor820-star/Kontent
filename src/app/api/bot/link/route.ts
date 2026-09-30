@@ -18,7 +18,7 @@ import { getSessionUser } from "@/lib/session";
 import { hasTrustedMutationOrigin } from "@/lib/request-origin";
 import { probeRedisAndPublicationWorker } from "@/lib/readiness-probes";
 
-import { readJsonBodyValue } from "@/lib/bounded-request-body";
+import { readJsonBodyLimited, readJsonBodyValue } from "@/lib/bounded-request-body";
 
 export const runtime = "nodejs";
 
@@ -68,15 +68,21 @@ export async function POST(req: NextRequest) {
   }
 
   try {
-    const body = await req.json().catch(() => null) as { intent?: unknown } | null;
-    if (body?.intent !== "channel") {
+    // Тело опционально (вызов без JSON валиден), но объём ограничен: превышение —
+    // 413, отсутствие/повреждённое тело трактуем как null, как и раньше.
+    const bodyResult = await readJsonBodyLimited<{ intent?: unknown }>(req, 16 * 1024);
+    if (!bodyResult.ok && bodyResult.error === "payload_too_large") {
+      return NextResponse.json({ ok: false, error: "payload_too_large" }, { status: 413 });
+    }
+    const parsed = bodyResult.ok ? bodyResult.value : null;
+    if (parsed?.intent !== "channel") {
       const account = await getPool().query<{ tg_chat_id: string | null }>(`select tg_chat_id from users where id = $1`, [user.id]);
       if (account.rows[0]?.tg_chat_id) return NextResponse.json({ ok: true, linked: true, url: `https://t.me/${bot}` });
     }
     // Замена старого кода и выпуск нового происходят одной транзакцией: при сбое
     // предыдущая рабочая ссылка не исчезнет без новой ссылки на замену.
     const link = await createLegacyBotLink(getPool(), { userId: user.id });
-    const startPayload = body?.intent === "channel" ? `${link.code}_channel` : link.code;
+    const startPayload = parsed?.intent === "channel" ? `${link.code}_channel` : link.code;
 
     return NextResponse.json({
       ok: true,

@@ -13,6 +13,16 @@ const COOKIE = "sid";
 const THIRTY_DAYS_S = 60 * 60 * 24 * 30;
 // Продлеваем срок, только если осталось меньше этого — чтобы не писать в базу на каждый запрос.
 const RENEW_WHEN_LEFT_S = 60 * 60 * 24 * 25;
+// Скользящая сессия без потолка жила бы бессрочно у активного пользователя, а украденный
+// cookie оставался бы валидным без ограничения. Абсолютный максимум — 90 дней по умолчанию,
+// переопределяется через AURORA_SESSION_MAX_AGE_DAYS (30..365).
+const DEFAULT_SESSION_MAX_AGE_S = 60 * 60 * 24 * 90;
+function sessionMaxAgeSeconds(env: NodeJS.ProcessEnv = process.env): number {
+  const raw = Number(env.AURORA_SESSION_MAX_AGE_DAYS ?? "");
+  if (!Number.isFinite(raw)) return DEFAULT_SESSION_MAX_AGE_S;
+  const days = Math.min(365, Math.max(30, Math.floor(raw)));
+  return days * 60 * 60 * 24;
+}
 
 /** The bearer cookie is never persisted; a database dump contains only this verifier. */
 export function hashSessionToken(token: string): string {
@@ -89,9 +99,9 @@ export async function getSessionUser(req: NextRequest): Promise<SessionUser | nu
   const tokenHash = hashSessionToken(token);
 
   const pool = getPool();
-  const rows = await pool.query<SessionUser & { expires_at: string; has_project_context: boolean }>(
+  const rows = await pool.query<SessionUser & { expires_at: string; created_at: string; has_project_context: boolean }>(
     `select u.id, u.tg_id, u.vk_id, u.email, u.name, u.avatar,
-            u.onboarding_completed_at, s.expires_at,
+            u.onboarding_completed_at, s.expires_at, s.created_at,
             exists (
               select 1
                 from user_project_preferences preference
@@ -113,7 +123,15 @@ export async function getSessionUser(req: NextRequest): Promise<SessionUser | nu
   );
   if (rows.rowCount === 0) return null;
 
-  const { expires_at, has_project_context, ...rawUser } = rows.rows[0];
+  const { expires_at, created_at, has_project_context, ...rawUser } = rows.rows[0];
+  // Абсолютный потолок: активность продлевает скользящий срок, но не отменяет
+  // предельный возраст сессии. Старше потолка — удаляем строку и требуем новый вход.
+  const maxAgeMs = sessionMaxAgeSeconds() * 1000;
+  const createdAtMs = new Date(created_at).getTime();
+  if (!Number.isFinite(createdAtMs) || Date.now() - createdAtMs > maxAgeMs) {
+    await pool.query(`delete from sessions where token_hash = $1`, [tokenHash]).catch(() => {});
+    return null;
+  }
   // `pg` returns PostgreSQL bigint values as strings at runtime. Keep the public
   // session contract numeric so account-scoped caches and persistence never compare
   // `"1"` with `1` and accidentally reject valid data.
