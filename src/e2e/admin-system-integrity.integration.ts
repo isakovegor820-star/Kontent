@@ -35,6 +35,11 @@ beforeEach(async () => {
     tail = result.catch(() => undefined);
     return result;
   });
+  // Собственный fixture-пользователь: в CI база бутстрапится только schema.sql,
+  // и пользователя с id=1 может не существовать.
+  await client.query(
+    "insert into users(id,email,name) values(1,'system-integrity-fixture@aurora.test','System fixture') on conflict (id) do nothing",
+  );
   projectId = Number((await client.query("insert into projects(name,created_by_user_id) values ('System integrity transaction fixture',1) returning id")).rows[0].id);
   await client.query("insert into project_members(project_id,user_id,role,status) values($1,1,'owner','active')", [projectId]);
   channelId = Number((await client.query("insert into channels(user_id,project_id,network,vk_group_id,title) values(1,$1,'vk',123,'Transaction fixture') returning id", [projectId])).rows[0].id);
