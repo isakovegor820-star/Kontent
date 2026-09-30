@@ -430,11 +430,11 @@ function ChannelsSection({ index }: { index: number }) {
 
                   <div className="min-w-0 flex-1">
                     <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
-                      <p className="truncate text-[15px] font-bold text-text">{label}</p>
+                      <p className="truncate text-[15px] font-bold text-text" title={label}>{label}</p>
                       <Badge tone="neutral">{NETWORK_LABEL[ch.network]}</Badge>
                     </div>
                     {ch.handle && ch.handle !== ch.title && (
-                      <p className="mt-1 truncate font-mono text-[13px] text-text-3">{ch.handle}</p>
+                      <p className="mt-1 truncate font-mono text-[13px] text-text-3" title={ch.handle}>{ch.handle}</p>
                     )}
                   </div>
 
@@ -750,7 +750,7 @@ function OAuthNetworks() {
                 <Glyph className="h-[18px] w-[18px]" />
               </span>
               <div className="min-w-0 flex-1">
-                <p className="truncate text-[14px] font-semibold text-text">{label}</p>
+                <p className="truncate text-[14px] font-semibold text-text" title={label}>{label}</p>
                 <p className="text-[12px] leading-snug text-text-3">{providerHint}</p>
               </div>
               {status === "soon" ? (

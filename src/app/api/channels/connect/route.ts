@@ -26,9 +26,11 @@ interface TgChat {
   linked_chat_id?: number;
 }
 
-async function tg<T>(method: string, params: Record<string, string>): Promise<T | null> {
+type TgCall<T> = { ok: true; result: T | null } | { ok: false; network: boolean };
+
+async function tg<T>(method: string, params: Record<string, string>): Promise<TgCall<T>> {
   const token = process.env.TG_BOT_TOKEN;
-  if (!token) return null;
+  if (!token) return { ok: false, network: false };
   const url = new URL(`https://api.telegram.org/bot${token}/${method}`);
   for (const [k, v] of Object.entries(params)) url.searchParams.set(k, v);
   try {
@@ -38,9 +40,12 @@ async function tg<T>(method: string, params: Record<string, string>): Promise<T 
       signal: AbortSignal.timeout(8_000),
     });
     const data = (await r.json()) as { ok: boolean; result?: T };
-    return data.ok ? (data.result ?? null) : null;
+    if (data.ok) return { ok: true, result: data.result ?? null };
+    // Telegram ответил отказом — это НЕ сбой сети, а отсутствие доступа.
+    return { ok: false, network: false };
   } catch {
-    return null;
+    // Сеть/таймаут: временная ошибка провайдера, а не отказ прав.
+    return { ok: false, network: true };
   }
 }
 
@@ -79,17 +84,31 @@ async function handlePOST(req: NextRequest) {
   const chatRef = /^-?\d+$/.test(handle) ? handle : `@${handle}`;
 
   // 1. Есть ли у бота доступ к каналу?
-  const chat = await tg<TgChat>("getChat", { chat_id: chatRef });
+  const chatCall = await tg<TgChat>("getChat", { chat_id: chatRef });
+  if (!chatCall.ok) {
+    return NextResponse.json(
+      { ok: false, error: chatCall.network ? "provider_unavailable" : "no_access" },
+      { status: chatCall.network ? 503 : 422 },
+    );
+  }
+  const chat = chatCall.result;
   if (!chat) {
     return NextResponse.json({ ok: false, error: "no_access" }, { status: 422 });
   }
 
   // 2. Бот — админ с правом публикации?
   const botId = process.env.TG_BOT_TOKEN?.split(":")[0] ?? "";
-  const member = await tg<{ status?: string; can_post_messages?: boolean }>("getChatMember", {
+  const memberCall = await tg<{ status?: string; can_post_messages?: boolean }>("getChatMember", {
     chat_id: String(chat.id),
     user_id: botId,
   });
+  if (!memberCall.ok) {
+    return NextResponse.json(
+      { ok: false, error: memberCall.network ? "provider_unavailable" : "not_admin" },
+      { status: memberCall.network ? 503 : 422 },
+    );
+  }
+  const member = memberCall.result;
   const canPost =
     member?.status === "administrator" && member.can_post_messages !== false;
   if (!canPost) {
@@ -110,10 +129,17 @@ async function handlePOST(req: NextRequest) {
       { status: 403 },
     );
   }
-  const actor = await tg<{ status?: string }>("getChatMember", {
+  const actorCall = await tg<{ status?: string }>("getChatMember", {
     chat_id: String(chat.id),
     user_id: String(actorId),
   });
+  if (!actorCall.ok) {
+    return NextResponse.json(
+      { ok: false, error: actorCall.network ? "provider_unavailable" : "not_channel_admin" },
+      { status: actorCall.network ? 503 : 403 },
+    );
+  }
+  const actor = actorCall.result;
   if (actor?.status !== "creator" && actor?.status !== "administrator") {
     return NextResponse.json(
       { ok: false, error: "not_channel_admin" },

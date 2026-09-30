@@ -47,6 +47,7 @@ export function LandingNav() {
 
   const headerRef = useRef<HTMLElement>(null);
   const burgerRef = useRef<HTMLButtonElement>(null);
+  const panelRef = useRef<HTMLDivElement>(null);
 
   /* ------------------------------------------------------------- СКРОЛЛ */
   // Слушаем пассивно и через requestAnimationFrame: один пересчёт на кадр,
@@ -115,10 +116,30 @@ export function LandingNav() {
   useEffect(() => {
     if (!open) return;
 
+    const focusables = () => Array.from(
+      panelRef.current?.querySelectorAll<HTMLElement>(
+        'a[href], button:not([disabled])',
+      ) ?? [],
+    );
+
     const onKeyDown = (e: KeyboardEvent) => {
-      if (e.key !== "Escape") return;
-      setOpen(false);
-      burgerRef.current?.focus();
+      if (e.key === "Escape") {
+        setOpen(false);
+        burgerRef.current?.focus();
+        return;
+      }
+      if (e.key !== "Tab") return;
+      const items = focusables();
+      if (items.length === 0) return;
+      const first = items[0];
+      const last = items[items.length - 1];
+      if (e.shiftKey && document.activeElement === first) {
+        e.preventDefault();
+        last.focus();
+      } else if (!e.shiftKey && document.activeElement === last) {
+        e.preventDefault();
+        first.focus();
+      }
     };
 
     const onPointerDown = (e: PointerEvent) => {
@@ -126,13 +147,29 @@ export function LandingNav() {
       setOpen(false);
     };
 
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+
     document.addEventListener("keydown", onKeyDown);
     document.addEventListener("pointerdown", onPointerDown);
 
     return () => {
+      document.body.style.overflow = previousOverflow;
       document.removeEventListener("keydown", onKeyDown);
       document.removeEventListener("pointerdown", onPointerDown);
     };
+  }, [open]);
+
+  // Первый фокус — в меню, а не за ним: иначе Tab из бургера уходит под оверлей.
+  useEffect(() => {
+    if (!open) return;
+    const frame = requestAnimationFrame(() => {
+      const first = panelRef.current?.querySelector<HTMLElement>(
+        'a[href], button:not([disabled])',
+      );
+      first?.focus();
+    });
+    return () => cancelAnimationFrame(frame);
   }, [open]);
 
   // Растянули окно до десктопа — меню больше не нужно, бургера там нет.
@@ -283,6 +320,10 @@ export function LandingNav() {
             <motion.div
               key="menu"
               id={menuId}
+              ref={panelRef}
+              role="dialog"
+              aria-modal="true"
+              aria-label="Меню разделов"
               initial={{ opacity: 0, y: -10, scale: 0.98 }}
               animate={{ opacity: 1, y: 0, scale: 1 }}
               exit={{ opacity: 0, y: -10, scale: 0.98 }}
