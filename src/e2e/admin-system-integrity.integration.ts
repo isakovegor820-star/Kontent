@@ -1,6 +1,12 @@
 import { randomUUID } from "node:crypto";
 import pg, { type PoolClient } from "pg";
+import Redis from "ioredis";
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+
+import {
+  PUBLICATION_HEARTBEAT_KEY,
+  serializePublicationHeartbeat,
+} from "../../worker/publication-heartbeat.mjs";
 
 const testDatabaseUrl = process.env.SYSTEM_TEST_DATABASE_URL || "";
 const target = new URL(testDatabaseUrl);
@@ -16,6 +22,7 @@ let client: PoolClient;
 let projectId: number;
 let channelId: number;
 let fixtureUserId: number;
+let redis: Redis | null = null;
 const now = Date.now();
 const at = (offsetMs = 0) => new Date(now + offsetMs).toISOString();
 
@@ -30,6 +37,13 @@ beforeEach(async () => {
   vi.stubEnv("TG_BOT_TOKEN", "");
   client = await db.connect();
   await client.query("begin");
+  // Диагностика считает воркер публикаций «вниз» без свежего heartbeat; в CI нет
+  // живого воркера, поэтому тест сеет собственный heartbeat в изолированный Redis.
+  redis = new Redis(String(process.env.SYSTEM_TEST_REDIS_URL || "redis://127.0.0.1:57642/0"), {
+    maxRetriesPerRequest: 1,
+    lazyConnect: true,
+  });
+  await redis.set(PUBLICATION_HEARTBEAT_KEY, serializePublicationHeartbeat(now), "EX", 300).catch(() => {});
   let tail: Promise<unknown> = Promise.resolve();
   state.query.mockImplementation((...args: Parameters<PoolClient["query"]>) => {
     const result = tail.then(() => client.query(...args));
@@ -45,7 +59,12 @@ beforeEach(async () => {
   await client.query("insert into project_members(project_id,user_id,role,status) values($1,$2,'owner','active')", [projectId, fixtureUserId]);
   channelId = Number((await client.query("insert into channels(user_id,project_id,network,vk_group_id,title) values($1,$2,'vk',123,'Transaction fixture') returning id", [fixtureUserId, projectId])).rows[0].id);
 });
-afterEach(async () => { await client.query("rollback"); client.release(); vi.unstubAllEnvs(); });
+afterEach(async () => {
+  await client.query("rollback");
+  client.release();
+  if (redis) { await redis.quit().catch(() => {}); redis = null; }
+  vi.unstubAllEnvs();
+});
 afterAll(async () => { await db.end(); });
 
 async function report() { return loadAdminSystemDiagnostics({ now: () => now }); }
