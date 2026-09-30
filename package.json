@@ -67,7 +67,7 @@
     "ioredis": "^5.11.1",
     "lucide-react": "^1.24.0",
     "motion": "^12.42.2",
-    "next": "16.3.4",
+    "next": "16.3.8",
     "parse5": "^8.0.1",
     "pdfkit": "^0.17.2",
     "pg": "^8.22.0",
@@ -84,7 +84,7 @@
     "@types/react": "^19",
     "@types/react-dom": "^19",
     "eslint": "^9",
-    "eslint-config-next": "16.3.4",
+    "eslint-config-next": "16.3.8",
     "jsdom": "^29.1.1",
     "playwright-core": "^1.61.1",
     "tailwindcss": "^4",
@@ -99,7 +99,7 @@
       "brace-expansion": "1.1.18"
     },
     "minimatch@10.2.5": {
-      "brace-expansion": "5.0.9"
+      "brace-expansion": "5.0.12"
     },
     "next": {
       "postcss": "8.5.26",
