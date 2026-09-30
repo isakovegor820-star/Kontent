@@ -98,7 +98,9 @@ afterAll(async () => {
   if (clusterRoot) process.stderr.write(`database-pool-timeout evidence retained at ${clusterRoot}\n`);
 }, 30_000);
 
-describe("database pool timeout integration", () => {
+// initdb отказывается запускаться от root: в GitHub Actions раннер работает под root,
+// поэтому в CI сьют честно пропускается, а локально (обычный пользователь) исполняется.
+describe.skipIf(() => typeof process.getuid === "function" && process.getuid() === 0)("database pool timeout integration", () => {
   it("times out a second acquisition and reports it without error details", async () => {
     const held = await pool.connect();
     const startedAt = performance.now();
