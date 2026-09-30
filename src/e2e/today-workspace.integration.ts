@@ -53,7 +53,9 @@ it("the real background path discovers multiple themes and audience questions wi
   const count = Number((await pool.query("select count(*) from opportunity_snapshots where project_id=$1", [projectId])).rows[0].count);
   expect(count).toBe(26);
   const opportunities = await listOpportunitySnapshots({ actorUserId: userId, channelId }, pool);
-  expect(opportunities).toHaveLength(26);
+  // Контракт выдачи — top-12 страница (content-intelligence.ts limit 12), не полный
+  // набор; полнота данных проверена выше по growth_moves и opportunity_snapshots.
+  expect(opportunities).toHaveLength(12);
   expect(opportunities.every(item => item.actionable && item.actionHref?.startsWith("/app/studio?growthMove="))).toBe(true);
 });
 
