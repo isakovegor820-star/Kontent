@@ -32,7 +32,11 @@ async function tg<T>(method: string, params: Record<string, string>): Promise<T 
   const url = new URL(`https://api.telegram.org/bot${token}/${method}`);
   for (const [k, v] of Object.entries(params)) url.searchParams.set(k, v);
   try {
-    const r = await fetch(url, { cache: "no-store" });
+    const r = await fetch(url, {
+      cache: "no-store",
+      // Без deadline зависший Telegram держит запрос и поток пользователя.
+      signal: AbortSignal.timeout(8_000),
+    });
     const data = (await r.json()) as { ok: boolean; result?: T };
     return data.ok ? (data.result ?? null) : null;
   } catch {
@@ -90,6 +94,31 @@ async function handlePOST(req: NextRequest) {
     member?.status === "administrator" && member.can_post_messages !== false;
   if (!canPost) {
     return NextResponse.json({ ok: false, error: "not_admin" }, { status: 422 });
+  }
+
+  // 2.1 Канал может подключать только тот, кто сам им владеет или администрирует
+  // (граница владения внешним аккаунтом). Бот-флоу в worker.mjs доказывает это же
+  // через Telegram-identity; веб-путь без проверки позволял присвоить чужой канал,
+  // где общий бот остался администратором после отключения в Авроре.
+  const identity = (
+    await pool.query(`select tg_chat_id from users where id = $1`, [user.id])
+  ).rows[0] as { tg_chat_id?: string | number | null } | undefined;
+  const actorId = Number(identity?.tg_chat_id);
+  if (!Number.isSafeInteger(actorId) || actorId <= 0) {
+    return NextResponse.json(
+      { ok: false, error: "telegram_identity_required" },
+      { status: 403 },
+    );
+  }
+  const actor = await tg<{ status?: string }>("getChatMember", {
+    chat_id: String(chat.id),
+    user_id: String(actorId),
+  });
+  if (actor?.status !== "creator" && actor?.status !== "administrator") {
+    return NextResponse.json(
+      { ok: false, error: "not_channel_admin" },
+      { status: 403 },
+    );
   }
 
   // 3. Сохраняем (или обновляем) канал пользователя.

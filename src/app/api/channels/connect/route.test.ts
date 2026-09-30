@@ -46,6 +46,7 @@ describe("POST /api/channels/connect", () => {
     mocks.requireProjectPermission.mockResolvedValue({ projectId: 12 });
     mocks.add.mockResolvedValue({ id: "discover" });
     mocks.saveVerifiedTelegramChannel.mockResolvedValue({ state: "connected", channelId: 41 });
+    mocks.query.mockResolvedValue({ rows: [{ tg_chat_id: "888777" }] });
     vi.stubGlobal("fetch", vi.fn()
       .mockResolvedValueOnce(new Response(JSON.stringify({
         ok: true,
@@ -54,6 +55,10 @@ describe("POST /api/channels/connect", () => {
       .mockResolvedValueOnce(new Response(JSON.stringify({
         ok: true,
         result: { status: "administrator", can_post_messages: true },
+      })))
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        ok: true,
+        result: { status: "creator" },
       }))));
   });
 
@@ -101,5 +106,57 @@ describe("POST /api/channels/connect", () => {
     expect(response.status).toBe(409);
     await expect(response.json()).resolves.toMatchObject({ error: "taken" });
     expect(mocks.add).not.toHaveBeenCalled();
+  });
+
+  it("fails closed when the user has no linked Telegram identity", async () => {
+    mocks.query.mockResolvedValue({ rows: [] });
+
+    const response = await POST(request());
+
+    expect(response.status).toBe(403);
+    await expect(response.json()).resolves.toMatchObject({ error: "telegram_identity_required" });
+    expect(mocks.saveVerifiedTelegramChannel).not.toHaveBeenCalled();
+  });
+
+  it("fails closed when the linked Telegram user does not administer the channel", async () => {
+    // Третья заглушка — проверка актора: бот админ, но пользователь нет.
+    vi.mocked(fetch).mockReset();
+    vi.mocked(fetch)
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        ok: true,
+        result: { id: -1001, title: "Team", username: "team" },
+      })))
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        ok: true,
+        result: { status: "administrator", can_post_messages: true },
+      })))
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        ok: true,
+        result: { status: "member" },
+      })));
+
+    const response = await POST(request());
+
+    expect(response.status).toBe(403);
+    await expect(response.json()).resolves.toMatchObject({ error: "not_channel_admin" });
+    expect(mocks.saveVerifiedTelegramChannel).not.toHaveBeenCalled();
+  });
+
+  it("passes the actor-checked chat to the atomic connection service", async () => {
+    const response = await POST(request());
+
+    expect(response.status).toBe(200);
+    const calls = vi.mocked(fetch).mock.calls;
+    expect(calls).toHaveLength(3);
+    expect(String(calls[2][0])).toContain("/getChatMember");
+    expect(String(calls[2][0])).toContain("user_id=888777");
+    expect(mocks.saveVerifiedTelegramChannel).toHaveBeenCalledWith(
+      expect.anything(),
+      {
+        userId: 7,
+        projectId: 12,
+        chat: { id: -1001, title: "Team", username: "team" },
+      },
+    );
   });
 });
