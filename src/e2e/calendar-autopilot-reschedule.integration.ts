@@ -189,7 +189,15 @@ describe.sequential("Autopilot calendar dates through PostgreSQL and Redis", () 
       if (!["127.0.0.1", "localhost"].includes(parsed.hostname) || !["redis:", "rediss:"].includes(parsed.protocol)) {
         throw new Error("isolated loopback Redis required");
       }
-      connection = redisUrl;
+      connection = {
+        host: parsed.hostname,
+        port: Number(parsed.port || 6379),
+        db: Number(parsed.pathname.replace(/^\//u, "") || 0),
+        username: parsed.username ? decodeURIComponent(parsed.username) : undefined,
+        password: parsed.password ? decodeURIComponent(parsed.password) : undefined,
+        tls: parsed.protocol === "rediss:" ? {} : undefined,
+        maxRetriesPerRequest: null,
+      };
     } else {
       connection = { host: "127.0.0.1", port: 56437, maxRetriesPerRequest: null };
     }
