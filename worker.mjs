@@ -419,6 +419,7 @@ import {
 } from "./worker/reconnaissance-schedule.mjs";
 import { telegramHistoryPageDecision } from "./worker/reconnaissance-pagination.mjs";
 import { reconcilePublicationOutbox } from "./src/lib/publication-outbox.mjs";
+import { enqueuePublishJob as enqueuePublishJobIdempotent } from "./src/lib/publish-queue.mjs";
 import { TELEGRAM_BOT_COMMANDS } from "./src/lib/telegram-bot-commands.mjs";
 import { resolveTranscriptionRuntime } from "./src/lib/transcription-runtime.mjs";
 import { deliverTelegramParts, telegramPartDefinitions } from "./worker/telegram-multipart.mjs";
@@ -2035,33 +2036,56 @@ const worker = AUTOPILOT_ONLY || MEDIA_ONLY ? null : new Worker(
     }
 
     // Публикуем по сети; результат нормализован (publishTg/publishVk/publishOAuth).
+    // Любое исключение провайдера нормализуется здесь в delivery_unknown: пост не должен
+    // зависать в 'publishing' навсегда, а автоповтор после неопределённого результата
+    // рискует дублем внешнего поста.
     let out;
-    if (channel.network === "vk") {
-      const providerOperationId = vkProviderOperationIdentity({
+    try {
+      if (channel.network === "vk") {
+        const providerOperationId = vkProviderOperationIdentity({
+          postId,
+          revision: scheduleRevision,
+        });
+        const providerIdentitySaved = await pool.query(
+          `update posts
+              set provider_operation_id = $2, provider_reconciliation_state = 'none',
+                  provider_reconciliation_requested_at = null
+            where id = $1 and publish_lease_token = $3 and schedule_revision = $4`,
+          [postId, providerOperationId, leaseToken, scheduleRevision],
+        );
+        if (providerIdentitySaved.rowCount !== 1) return;
+        out = await publishVk(channel, post.text, providerOperationId);
+      } else if (OAUTH_NETWORKS.includes(channel.network)) {
+        // media — jsonb: объект или null. Для видео (YouTube/Reels) нужен источник файла.
+        const media = post.media && typeof post.media === "object" ? post.media : null;
+        const firstLine = String(post.text || "").split("\n")[0].trim();
+        out = await publishOAuth(channel, {
+          text: post.text,
+          media,
+          title: media?.title || firstLine.slice(0, 100) || "Видео из Авроры",
+          privacyStatus: media?.privacyStatus || "private",
+        });
+      } else {
+        out = await publishTg(channel, post.id, post.text, post.media, post.publication_origin === "autopilot" && Number(post.publication_draft_version) > 0);
+      }
+    } catch (error) {
+      console.warn("[publication_event]", {
+        event: "provider_exception_normalized",
+        operationId: post.publication_operation_id == null ? null : Number(post.publication_operation_id),
         postId,
+        destinationId: Number(channel.id),
+        provider: channel.network,
         revision: scheduleRevision,
+        errorName: error && typeof error === "object" && "name" in error ? String(error.name) : "Error",
       });
-      const providerIdentitySaved = await pool.query(
-        `update posts
-            set provider_operation_id = $2, provider_reconciliation_state = 'none',
-                provider_reconciliation_requested_at = null
-          where id = $1 and publish_lease_token = $3 and schedule_revision = $4`,
-        [postId, providerOperationId, leaseToken, scheduleRevision],
-      );
-      if (providerIdentitySaved.rowCount !== 1) return;
-      out = await publishVk(channel, post.text, providerOperationId);
-    } else if (OAUTH_NETWORKS.includes(channel.network)) {
-      // media — jsonb: объект или null. Для видео (YouTube/Reels) нужен источник файла.
-      const media = post.media && typeof post.media === "object" ? post.media : null;
-      const firstLine = String(post.text || "").split("\n")[0].trim();
-      out = await publishOAuth(channel, {
-        text: post.text,
-        media,
-        title: media?.title || firstLine.slice(0, 100) || "Видео из Авроры",
-        privacyStatus: media?.privacyStatus || "private",
-      });
-    } else {
-      out = await publishTg(channel, post.id, post.text, post.media, post.publication_origin === "autopilot" && Number(post.publication_draft_version) > 0);
+      out = {
+        ok: false,
+        deliveryUnknown: true,
+        reason: String(
+          (error && typeof error === "object" && "message" in error && error.message)
+            || error,
+        ),
+      };
     }
 
     const channelFailure = channel.network === "vk"
@@ -2272,7 +2296,7 @@ const worker = AUTOPILOT_ONLY || MEDIA_ONLY ? null : new Worker(
         await queue.add(
           "publish",
           { postId, projectId, scheduleRevision },
-          { delay, jobId: `post-${postId}-r${scheduleRevision}-retry-${attempts}`, removeOnComplete: true, removeOnFail: false },
+          { delay, jobId: `post-${postId}-r${scheduleRevision}-retry-${attempts}`, removeOnComplete: true, removeOnFail: 200 },
         );
       } catch (queueError) {
         await pool.query(
@@ -8024,11 +8048,12 @@ async function enqueuePublishJob(postId, scheduledAt, scheduleRevision = 1, expl
     error.code = "PUBLICATION_PROJECT_MISSING";
     throw error;
   }
-  const delay = Math.max(0, new Date(scheduledAt).getTime() - Date.now());
-  await queue.add(
-    "publish",
+  // Идемпотентно: повторный add с тем же детерминированным jobId не создаёт дубля,
+  // а lost-ACK (Redis потерял задачу после accept) восстанавливается через getJob.
+  await enqueuePublishJobIdempotent(
+    queue,
     { postId, projectId, scheduleRevision },
-    { delay, jobId: `post-${postId}-r${scheduleRevision}`, removeOnComplete: true, removeOnFail: false },
+    scheduledAt,
   );
 }
 
@@ -8187,7 +8212,59 @@ async function weeklyPlans() {
       });
     }
   }
+  // Ledger недельного тика: успешный проход записывается в Redis, чтобы
+  // догоняющий запуск при старте не перестраивал планы после состоявшегося тика.
+  await recordWeeklyCronPass().catch(() => {});
   return summary;
+}
+
+/**
+ * Последний момент «вс 21:00 МСК» не позже now (UTC+3, без DST). Redis-планировщик не
+ * бэкфиллит пропущенные итерации: если воркер/Redis лежал в окно тика, недельные планы
+ * не появятся до следующего воскресенья. Догоняем при старте только пропущенное окно.
+ */
+function lastWeeklyTickMs(nowMs = Date.now()) {
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone: "Europe/Moscow",
+    year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", hour12: false,
+  }).formatToParts(new Date(nowMs));
+  const get = (type) => parts.find((part) => part.type === type)?.value ?? "";
+  const year = Number(get("year"));
+  const month = Number(get("month"));
+  const day = Number(get("day"));
+  if (!Number.isFinite(year) || !Number.isFinite(month) || !Number.isFinite(day)) return 0;
+  const localDate = new Date(Date.UTC(year, month - 1, day));
+  const daysBack = (localDate.getUTCDay() + 6) % 7; // 0, если сегодня воскресенье
+  return new Date(Date.UTC(year, month - 1, day - daysBack, 21 - 3, 0, 0)).getTime();
+}
+
+const WEEKLY_CATCHUP_GRACE_MS = 60 * 60 * 1000; // час после тика: даём штатному job время выполниться
+const WEEKLY_LEDGER_TTL_S = 8 * 24 * 60 * 60;   // окно недели + запас
+
+async function recordWeeklyCronPass() {
+  const tickMs = lastWeeklyTickMs();
+  if (tickMs <= 0) return;
+  await connection
+    .set(`aurora:cron:weekly:${tickMs}`, String(Date.now()), "EX", WEEKLY_LEDGER_TTL_S)
+    .catch(() => {});
+}
+
+async function maybeCatchUpWeekly() {
+  const now = Date.now();
+  const tickMs = lastWeeklyTickMs(now);
+  if (tickMs <= 0 || now - tickMs < WEEKLY_CATCHUP_GRACE_MS) return;
+  const ledgerKey = `aurora:cron:weekly:${tickMs}`;
+  try {
+    const recorded = await connection.get(ledgerKey);
+    if (recorded) return;
+    // Только один экземпляр воркера догоняет (SET NX); второй видит ключ и выходит.
+    const claimed = await connection.set(ledgerKey, String(now), "EX", WEEKLY_LEDGER_TTL_S, "NX");
+    if (claimed !== "OK") return;
+  } catch {
+    return; // Redis недоступен — штатный тик тоже не сработает; догоним при следующем старте
+  }
+  console.log("[cron] недельный тик пропущен — догоняющий запуск weekly");
+  await weeklyPlans();
 }
 
 // ============================================================================
@@ -12297,20 +12374,25 @@ async function reconcileScheduledPosts() {
     const atValue = post.status === "failed_retry" ? post.next_attempt_at : post.scheduled_at;
     const at = atValue ? new Date(atValue).getTime() : Date.now();
     const revision = Number(post.schedule_revision || 1);
-    const jobId = post.status === "failed_retry"
+    const retryReconcileJobId = post.status === "failed_retry"
       ? `post-${post.id}-r${revision}-retry-reconcile`
-      : `post-${post.id}-r${revision}`;
-    await queue.add(
-      "publish",
-      { postId: Number(post.id), projectId: Number(post.project_id), scheduleRevision: revision },
-      {
-        delay: Math.max(0, at - Date.now()),
-        jobId,
-        removeOnComplete: true,
-        removeOnFail: false,
-      },
-    );
-    restored++;
+      : null;
+    try {
+      // Идемпотентное восстановление: если задача уже живёт в Redis — recovered,
+      // иначе add. Потерянный delayed-job пересоздаётся с тем же jobId.
+      await enqueuePublishJobIdempotent(
+        queue,
+        { postId: Number(post.id), projectId: Number(post.project_id), scheduleRevision: revision },
+        new Date(at),
+        retryReconcileJobId ? { jobId: retryReconcileJobId } : {},
+      );
+      restored++;
+    } catch (error) {
+      console.warn("[worker] сверка расписания: задача не восстановлена", {
+        postId: Number(post.id),
+        errorName: error && typeof error === "object" && "name" in error ? String(error.name) : "Error",
+      });
+    }
   });
   if (restored) console.log(`[worker] расписание сверено с очередью: ${restored} постов`);
 }
@@ -12424,6 +12506,15 @@ for (const name of AUTOPILOT_ONLY || MEDIA_ONLY || PUBLICATION_ONLY ? [] : ["sta
   }).catch(() => {});
 }
 
+// Догоняющий weekly: только если тик реально пропущен (см. maybeCatchUpWeekly).
+if (!AUTOPILOT_ONLY && !MEDIA_ONLY && !PUBLICATION_ONLY) {
+  await maybeCatchUpWeekly().catch((error) => {
+    console.warn("[cron] weekly catch-up не выполнен", {
+      errorName: error && typeof error === "object" && "name" in error ? String(error.name) : "Error",
+    });
+  });
+}
+
 if (autopilotQueue) {
   await reconcileAutopilotBuildQueue().catch((error) => {
     console.error("[autopilot] startup build queue reconcile failed", {
@@ -12524,6 +12615,9 @@ if (!AUTOPILOT_ONLY && !MEDIA_ONLY) {
     .catch((e) => console.error("[worker] восстановление постов:", e));
   const scheduleReconcileTimer = setInterval(() => {
     reconcileScheduledPosts().catch((e) => console.error("[worker] сверка расписания:", e?.message));
+    // Периодическая (а не только при старте) зачистка застрявших 'publishing':
+    // исключение провайдера или падение процесса не должны вешать пост навсегда.
+    reclaimStuckPosts().catch((e) => console.error("[worker] зачистка застрявших публикаций:", e?.message));
   }, 60_000);
   scheduleReconcileTimer.unref();
   if (!PUBLICATION_ONLY) reconcilePasswordResetOutbox(pool)

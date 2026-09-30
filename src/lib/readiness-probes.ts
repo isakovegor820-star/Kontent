@@ -45,17 +45,25 @@ export async function probeDatabaseAndSchema(): Promise<{
       tokenEncryption: "not_configured",
     };
   }
-  let timeout: ReturnType<typeof setTimeout> | null = null;
-  try {
-    const schema = await Promise.race([
-      probeSchemaCompatibility(getPool()),
+  const timers: ReturnType<typeof setTimeout>[] = [];
+  const bounded = <T,>(work: Promise<T>): Promise<T> =>
+    Promise.race([
+      work,
       new Promise<never>((_, reject) => {
-        timeout = setTimeout(() => reject(new Error("database_probe_timeout")), 2_000);
+        timers.push(setTimeout(() => reject(new Error("database_probe_timeout")), 2_000));
       }),
     ]);
+  try {
+    const schema = await bounded(probeSchemaCompatibility(getPool()));
     let tokenEncryption: DependencyState = "down";
     if (schema.ready) {
-      tokenEncryption = (await tokenEnvelopeKeyReadiness(getPool())).state;
+      // Токен-проба тоже ограничена бюджетом; её зависание не должно маскировать
+      // успешно прочитанную схему как «база недоступна».
+      try {
+        tokenEncryption = (await bounded(tokenEnvelopeKeyReadiness(getPool()))).state;
+      } catch {
+        tokenEncryption = "down";
+      }
     }
     return { database: "up", schema, tokenEncryption };
   } catch {
@@ -65,7 +73,7 @@ export async function probeDatabaseAndSchema(): Promise<{
       tokenEncryption: "down",
     };
   } finally {
-    if (timeout) clearTimeout(timeout);
+    for (const timer of timers) clearTimeout(timer);
   }
 }
 
