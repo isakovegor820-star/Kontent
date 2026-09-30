@@ -111,7 +111,7 @@ describe.sequential("admin operations analytics SQL", () => {
     const analytics = await loadAdminAuroraAnalytics(transactionalDb as never, filters, { now });
     const studio = analytics.sections.find((section) => section.id === "studio");
 
-    expect(analytics.sections).toHaveLength(15);
+    expect(analytics.sections).toHaveLength(16); // 8+5+3 маршрутов каталога APP_NAV_GROUPS
     expect(studio?.activity.launches.current).toBe(1);
     expect(studio?.outcome.timeToResultP50Ms.current).toBe(60_000);
     expect(analytics.detail?.errors).toEqual(expect.arrayContaining([

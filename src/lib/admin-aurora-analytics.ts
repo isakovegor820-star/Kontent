@@ -489,7 +489,7 @@ async function loadSectionMetrics(db: Queryable, filters: AdminAuroraAnalyticsFi
        from section_metrics metric
        left join journey_metrics journey
          on journey.section_id = metric.section_id and journey.period = metric.period`,
-    // Cards must always cover all 15 sections; the section URL controls detail only.
+    // Cards must always cover all 16 sections; the section URL controls detail only.
     queryParams(filters, null),
   );
 }
