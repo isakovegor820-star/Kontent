@@ -224,27 +224,27 @@ jobs:
       - name: Test VK channel connection persistence
         run: npm run test:vk-storage:integration
         env:
-          DATABASE_URL: "postgres://postgres:postgres@localhost:5432/postgres"
+          DATABASE_URL: "postgres://postgres:postgres@127.0.0.1:5432/postgres"
 
       - name: Test calendar completeness and stable pagination
         run: npm run test:calendar:integration
         env:
-          DATABASE_URL: "postgres://postgres:postgres@localhost:5432/postgres"
+          DATABASE_URL: "postgres://postgres:postgres@127.0.0.1:5432/postgres"
 
       - name: Test launch monitoring probes
         run: npm run test:launch-monitoring:integration
         env:
-          DATABASE_URL: "postgres://postgres:postgres@localhost:5432/postgres"
+          DATABASE_URL: "postgres://postgres:postgres@127.0.0.1:5432/postgres"
 
       - name: Test autopilot editor isolation
         run: npm run test:autopilot-editor:integration
         env:
-          DATABASE_URL: "postgres://postgres:postgres@localhost:5432/postgres"
+          DATABASE_URL: "postgres://postgres:postgres@127.0.0.1:5432/postgres"
 
       - name: Test calendar autopilot reschedule
         run: npm run test:calendar-autopilot-reschedule:integration
         env:
-          DATABASE_URL: "postgres://postgres:postgres@localhost:5432/postgres"
+          DATABASE_URL: "postgres://postgres:postgres@127.0.0.1:5432/postgres"
 
       - name: Test database pool acquisition deadline
         run: env -u DATABASE_URL npm run test:database-pool-timeout:integration
