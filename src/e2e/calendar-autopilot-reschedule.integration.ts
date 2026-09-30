@@ -182,7 +182,17 @@ describe.sequential("Autopilot calendar dates through PostgreSQL and Redis", () 
     mock.enqueue.mockRejectedValueOnce(new Error("Redis unavailable"));
     expect(await (await move()).json()).toMatchObject({ ok: true, queuePending: true, scheduleRevision: 2 });
     const name = `calendar-drag-${randomUUID()}`;
-    const connection = { host: "127.0.0.1", port: 56437, maxRetriesPerRequest: null };
+    const redisUrl = String(process.env.AUTOPILOT_RESCHEDULE_TEST_REDIS_URL || "").trim();
+    let connection;
+    if (redisUrl) {
+      const parsed = new URL(redisUrl);
+      if (!["127.0.0.1", "localhost"].includes(parsed.hostname) || !["redis:", "rediss:"].includes(parsed.protocol)) {
+        throw new Error("isolated loopback Redis required");
+      }
+      connection = redisUrl;
+    } else {
+      connection = { host: "127.0.0.1", port: 56437, maxRetriesPerRequest: null };
+    }
     const queue = new Queue(name, { connection });
     let worker: Worker | undefined;
     try {

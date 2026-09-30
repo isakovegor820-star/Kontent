@@ -245,6 +245,7 @@ jobs:
         run: npm run test:calendar-autopilot-reschedule:integration
         env:
           DATABASE_URL: "postgres://postgres:postgres@127.0.0.1:5432/postgres"
+          AUTOPILOT_RESCHEDULE_TEST_REDIS_URL: "redis://127.0.0.1:6380/13"
 
       - name: Test database pool acquisition deadline
         run: env -u DATABASE_URL npm run test:database-pool-timeout:integration
