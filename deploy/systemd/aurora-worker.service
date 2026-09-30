@@ -28,6 +28,13 @@ KillSignal=SIGTERM
 # активные джобы. После таймаута systemd доубивает SIGKILL, lease переживёт это
 # через CAS/идемпотентные jobId.
 TimeoutStopSec=90
+# Ресурсные пределы (ревью 2026-09-30): OOM воркера не должен забирать хост.
+# Лимиты — стартовые ориентиры; при выносе подсистем в отдельные экземпляры
+# (AURORA_WORKER_MODE=publication|media) задавайте пределы каждому юниту отдельно.
+MemoryMax=4G
+MemoryHigh=3G
+CPUQuota=300%
+TasksMax=1024
 NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=full

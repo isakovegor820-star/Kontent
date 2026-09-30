@@ -7,6 +7,12 @@
 
 - `aurora-worker.service` / `aurora-web.service` — `Restart=always` с ограничением
   частоты рестартов (`StartLimit*`);
+- оба юнита ограничены по ресурсам (`MemoryMax/MemoryHigh/CPUQuota/TasksMax`) —
+  OOM одного процесса не забирает хост; при выносе подсистем задавайте лимиты
+  каждому экземпляру отдельно;
+- политика персистентности Redis: `docs/operations/redis-persistence-policy.md`;
+- бэкапы/репетиция восстановления: `docs/operations/backup-runbook.md`;
+- почта, алерты, staging: `docs/operations/post-release-checklists.md`.
 - сам воркер при фатальной ошибке отчитывается в Sentry и выходит с кодом 1
   (`worker/crash-guards.mjs`), то есть падает громко и предсказуемо;
 - `scripts/deploy-production.sh` перезапускает ровно эти имена сервисов.
