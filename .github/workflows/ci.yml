@@ -274,6 +274,7 @@ jobs:
         run: npm run test:admin-system-integrity:integration
         env:
           SYSTEM_TEST_DATABASE_URL: "postgres://postgres:postgres@127.0.0.1:5432/aurora_admin_integrity_test"
+          SYSTEM_TEST_REDIS_URL: "redis://127.0.0.1:6380/12"
 
       - name: Test admin system queue probes
         run: npm run test:admin-system-queues:integration

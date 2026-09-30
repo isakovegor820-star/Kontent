@@ -21,7 +21,7 @@ const at = (offsetMs = 0) => new Date(now + offsetMs).toISOString();
 
 beforeEach(async () => {
   vi.stubEnv("DATABASE_URL", testDatabaseUrl);
-  vi.stubEnv("REDIS_URL", "redis://127.0.0.1:57642/0");
+  vi.stubEnv("REDIS_URL", String(process.env.SYSTEM_TEST_REDIS_URL || "redis://127.0.0.1:57642/0"));
   vi.stubEnv("AI_SERVICE_ENGINE", "local");
   vi.stubEnv("RESEND_API_KEY", "synthetic-config-only-no-request");
   vi.stubEnv("PASSWORD_RESET_FROM", "system-audit@aurora.test");
