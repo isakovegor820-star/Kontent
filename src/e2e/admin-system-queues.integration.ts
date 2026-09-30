@@ -6,7 +6,13 @@ import { probeAdminQueues } from "@/lib/admin-system-diagnostics";
 // can consume these jobs. No provider or publication code runs in this suite.
 const url = process.env.SYSTEM_TEST_REDIS_URL || "";
 if (!["redis://127.0.0.1:57642/1", "redis://127.0.0.1:6380/12"].includes(url)) throw new Error("Requires dedicated audit Redis logical DB");
-const connection = { host: "127.0.0.1", port: 57642, db: 1, maxRetriesPerRequest: null };
+const parsed = new URL(url);
+const connection = {
+  host: parsed.hostname,
+  port: Number(parsed.port || 6379),
+  db: Number(parsed.pathname.replace(/^\//u, "") || 0),
+  maxRetriesPerRequest: null,
+};
 const queue = new Queue("publish", { connection });
 let worker: Worker | undefined;
 async function snapshot() { return (await probeAdminQueues()).find(q => q.name === "publish")!; }
