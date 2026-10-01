@@ -32,6 +32,21 @@ export function isRetryableMediaError(error) {
   return RETRYABLE_HTTP_STATUSES.has(status);
 }
 
+// Разовый обрыв на опросе не означает, что генерация провалена. Реальный замер
+// (9 генераций, октябрь 2026): 4 запроса опроса не уложились в жёсткий таймаут 30 с,
+// хотя у провайдера все четыре задачи уже были готовы. Раньше такой таймаут объявлялся
+// терминальным (httpStatus нет → isRetryableMediaError = false), платная генерация
+// падала навсегда, а девятиминутный дедлайн опроса даже не успевал помочь.
+const TRANSIENT_POLL_CODES = new Set(["provider_timeout", "provider_network_error"]);
+
+export function isTransientPollFailure(error) {
+  if (isRetryableMediaError(error)) return true;
+  const code = String(error?.code || "").trim();
+  if (TRANSIENT_POLL_CODES.has(code)) return true;
+  // Неизвестный сбой сети: fetch бросает TypeError без кода.
+  return !code || code === "worker_failed";
+}
+
 function terminalError(code, message) {
   return new MediaGenerationAttemptError(code, message);
 }
@@ -127,20 +142,44 @@ export async function executeMediaGenerationJob(job, deps, config = {}) {
     }
 
     const deadline = deps.now() + options.pollDeadlineMs;
+    // Терпим серию сетевых сбоев, но не бесконечно: иначе сломанный провайдер
+    // займёт воркер на весь девятиминутный дедлайн.
+    const maxConsecutiveTransientPollFailures = Math.max(1, Number(config.maxConsecutiveTransientPollFailures || 15));
+    let transientPollFailures = 0;
+    let lastPollError = null;
     while (deps.now() < deadline) {
       await deps.wait(options.pollIntervalMs);
       await lease.assertActive();
-      const result = await deps.provider.poll({
-        providerJobId,
-        requestId: generation.request_id,
-        signal: lease.signal,
-      });
+      let result;
+      try {
+        result = await deps.provider.poll({
+          providerJobId,
+          requestId: generation.request_id,
+          signal: lease.signal,
+        });
+      } catch (error) {
+        const pollError = mediaErrorForAttempt(error);
+        // Задача уже оплачена и, скорее всего, готова — ждём дальше до дедлайна,
+        // вместо того чтобы хоронить результат из-за одного медленного ответа.
+        if (isTransientPollFailure(pollError)) {
+          transientPollFailures += 1;
+          lastPollError = pollError;
+          if (transientPollFailures >= maxConsecutiveTransientPollFailures) throw pollError;
+          continue;
+        }
+        throw pollError;
+      }
+      transientPollFailures = 0;
+      lastPollError = null;
       if (result.state === "completed" && result.outputUrl) {
         await lease.assertActive();
         await deps.store.persistResult(generation, result.outputUrl, lease);
         return { outcome: "ready", providerJobId };
       }
     }
+    // Если дедлайн истёк, а последним ответом был сетевой сбой, отдаём именно его:
+    // по коду видно, что дело в связи, а не в отказе модели.
+    if (lastPollError) throw lastPollError;
     throw terminalError(
       "timed_out",
       "Генерация заняла слишком много времени. Запусти её ещё раз позже.",

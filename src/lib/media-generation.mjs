@@ -34,7 +34,11 @@ export const MEDIA_MODELS = Object.freeze({
       id: "gpt-image-2",
       label: "GPT Image 2 · качество",
       premium: true,
-      aspectRatios: Object.freeze(["1:1", "2:3", "3:2"]),
+      // Реальная проверка провайдера (октябрь 2026, 3 запроса): этот путь API молча
+      // игнорирует aspect_ratio и всегда возвращает 1024×1024. Форматы 2:3 и 3:2
+      // выглядели рабочими, но давали квадрат, который затем обрезался по центру —
+      // терялось 33 % картинки. Оставляем только формат, который провайдер соблюдает.
+      aspectRatios: Object.freeze(["1:1"]),
       defaultAspectRatio: "1:1",
       qualities: Object.freeze(["low", "medium"]),
       defaultQuality: "medium",

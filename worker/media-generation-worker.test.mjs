@@ -200,3 +200,79 @@ describe("media generation worker core", () => {
     expect(final.provider.create).not.toHaveBeenCalled();
   });
 });
+
+describe("опрос провайдера переживает сетевые сбои", () => {
+  // Замер октября 2026: 4 из 9 генераций не собрались с первого раза, потому что
+  // GET-опрос не уложился в 30 секунд, хотя у провайдера файл уже был готов.
+  // Раньше такой таймаут был терминальным и платная генерация падала навсегда.
+  it("продолжает опрос после таймаута и сохраняет готовый файл", async () => {
+    let polls = 0;
+    const { deps, store } = harness({
+      provider: {
+        create: vi.fn(async () => ({ state: "pending", outputUrl: null, providerJobId: "job-77" })),
+        poll: vi.fn(async () => {
+          polls += 1;
+          if (polls === 1) throw new MediaGenerationAttemptError("provider_timeout", "NavyAI не успел ответить.");
+          return { state: "completed", outputUrl: "data:image/jpeg;base64,/9j/4AAQ" };
+        }),
+      },
+    });
+
+    await expect(executeMediaGenerationJob({
+      generationId: 41,
+      requestId: generation.request_id,
+      requestKey: generation.request_key,
+      finalAttempt: true,
+    }, deps)).resolves.toEqual({ outcome: "ready", providerJobId: "job-77" });
+
+    expect(polls).toBe(2);
+    expect(store.persistResult).toHaveBeenCalledOnce();
+    expect(store.failAndRelease).not.toHaveBeenCalled();
+  });
+
+  it("не повторяет опрос после отказа модели", async () => {
+    let polls = 0;
+    const { deps, store } = harness({
+      provider: {
+        create: vi.fn(async () => ({ state: "pending", outputUrl: null, providerJobId: "job-78" })),
+        poll: vi.fn(async () => {
+          polls += 1;
+          throw new MediaGenerationAttemptError("provider_failed", "Модель не смогла создать файл.");
+        }),
+      },
+    });
+
+    await expect(executeMediaGenerationJob({
+      generationId: 41,
+      requestId: generation.request_id,
+      requestKey: generation.request_key,
+      finalAttempt: true,
+    }, deps)).rejects.toMatchObject({ code: "provider_failed" });
+
+    expect(polls).toBe(1);
+    expect(store.failAndRelease).toHaveBeenCalledOnce();
+  });
+
+  it("сдаётся после серии сетевых сбоев, не занимая воркер до дедлайна", async () => {
+    let polls = 0;
+    const { deps } = harness({
+      provider: {
+        create: vi.fn(async () => ({ state: "pending", outputUrl: null, providerJobId: "job-79" })),
+        poll: vi.fn(async () => {
+          polls += 1;
+          throw new MediaGenerationAttemptError("provider_network_error", "Нет связи с NavyAI.");
+        }),
+      },
+    });
+
+    await expect(executeMediaGenerationJob({
+      generationId: 41,
+      requestId: generation.request_id,
+      requestKey: generation.request_key,
+      finalAttempt: true,
+    }, deps, { maxConsecutiveTransientPollFailures: 3 }))
+      .rejects.toMatchObject({ code: "provider_network_error" });
+
+    expect(polls).toBe(3);
+  });
+});
