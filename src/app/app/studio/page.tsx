@@ -2472,8 +2472,12 @@ function StudioPageInner() {
             {/* min-h-0 обязателен: лента сжимается и прокручивается внутри, а поле ввода
                 остаётся закреплённым внизу рабочей области. */}
             <section aria-label="Диалог с ИИ" className="flex min-h-0 min-w-0 flex-1 flex-col">
-              {/* Одна прокрутка для всей истории; сам текст держим в комфортной ширине. */}
-              <div ref={feedRef} className="min-h-0 flex-1 overflow-y-auto">
+              {/* Одна прокрутка для всей истории; сам текст держим в комфортной ширине.
+                  relative обязателен: в каждом ответе есть sr-only-статусы (position: absolute).
+                  Без позиционированного предка их containing block — корень приложения, скроллер
+                  их не обрезает, и документ растягивается на высоту всей переписки. Именно так
+                  лента «проваливалась в пустоту»: страница уезжала на тысячи пикселей вниз. */}
+              <div ref={feedRef} className="relative min-h-0 flex-1 overflow-y-auto">
                 <div
                   className={cn(
                     "mx-auto flex min-h-full w-full max-w-[820px] flex-col px-4 py-6 md:px-6 md:py-8",

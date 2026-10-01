@@ -2,9 +2,18 @@
 
 import { useEffect, useId, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { AlertTriangle, Check, ChevronDown, ChevronRight, Plus, SlidersHorizontal, Sparkles, Trash2, X } from "lucide-react";
+import { AlertTriangle, Check, ChevronDown, Info, Plus, RotateCcw, Search, SlidersHorizontal, Sparkles, Trash2, X } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
+import {
+  POST_SETTINGS_FIELDS,
+  POST_SETTINGS_GROUPS,
+  fieldsForGroup,
+  isTechnicalField,
+  searchFields,
+  type PostSettingsField,
+  type PostSettingsGroupId,
+} from "@/lib/post-settings-fields";
 import {
   POST_PRESETS,
   POST_TARGET_OPTIONS,
@@ -27,206 +36,291 @@ import { cn } from "@/lib/utils";
 type SettingsTab = "quick" | "advanced";
 
 const selectClass =
-  "mt-1.5 h-11 w-full rounded-sm border border-line bg-surface px-3 text-base font-medium text-text outline-none transition-colors hover:border-line-strong focus:border-brand focus:ring-2 focus:ring-brand/15 sm:text-[13px]";
+  "h-11 w-full rounded-sm border border-line bg-surface px-3 text-base font-medium text-text outline-none transition-colors hover:border-line-strong focus:border-brand focus:ring-2 focus:ring-brand/15 sm:text-[13px]";
 const inputClass =
-  "mt-1.5 min-h-11 w-full rounded-sm border border-line bg-surface px-3 py-2 text-base leading-relaxed text-text outline-none placeholder:text-text-3 transition-colors hover:border-line-strong focus:border-brand focus:ring-2 focus:ring-brand/15 sm:text-[13px]";
+  "min-h-11 w-full rounded-sm border border-line bg-surface px-3 py-2 text-base leading-relaxed text-text outline-none placeholder:text-text-3 transition-colors hover:border-line-strong focus:border-brand focus:ring-2 focus:ring-brand/15 sm:text-[13px]";
 
-const GOALS = [
-  ["auto", "Авто — по задаче"],
-  ["reach", "Охват"],
-  ["engagement", "Вовлечение"],
-  ["sale", "Продажа"],
-  ["traffic", "Трафик"],
-  ["education", "Обучение"],
-  ["announcement", "Анонс"],
-  ["warmup", "Прогрев"],
-] as const;
+/* ------------------------------------------------------------------ утилиты */
 
-const LENGTHS = [
-  ["auto", "Авто — по формату"],
-  ["short", "Короткая"],
-  ["medium", "Средняя"],
-  ["long", "Длинная"],
-  ["custom", "Точный диапазон"],
-] as const;
+/** Значение поля «как в авто» — с ним сравниваем, чтобы показать «изменено». */
+function autoValue(key: keyof PostSettings): unknown {
+  return automaticPostSettings()[key];
+}
 
-const CTAS = [
-  ["auto", "Авто — только при необходимости"],
-  ["none", "Без призыва"],
-  ["comment", "Комментарий"],
-  ["save", "Сохранить"],
-  ["share", "Поделиться"],
-  ["subscribe", "Подписаться"],
-  ["click", "Перейти по ссылке"],
-  ["buy", "Купить / оставить заявку"],
-  ["reply", "Ответить автору"],
-  ["register", "Зарегистрироваться"],
-  ["download", "Скачать материал"],
-] as const;
+function sameValue(left: unknown, right: unknown): boolean {
+  if (Array.isArray(left) || Array.isArray(right)) return JSON.stringify(left) === JSON.stringify(right);
+  return left === right;
+}
 
-const PROFANITY_MODES = [
-  ["auto", "Как в настройках канала"],
-  ["forbid", "Запрещён"],
-  ["allow", "Допустим, но не обязателен"],
-  ["masked", "Обязателен, со звёздочками"],
-  ["required_direct", "Обязателен, без цензуры"],
-] as const;
+export function fieldIsOverridden(settings: PostSettings, key: keyof PostSettings): boolean {
+  return !sameValue(settings[key], autoValue(key));
+}
 
-const AUDIENCE_PRESETS = [
-  ["", "Из паспорта канала"],
-  ["новая аудитория, которая ещё не знакома с брендом", "Новая аудитория"],
-  ["подписчики, которые уже читают канал", "Текущие подписчики"],
-  ["потенциальные клиенты, которые выбирают решение", "Потенциальные клиенты"],
-  ["действующие клиенты", "Действующие клиенты"],
-  ["новички в теме", "Новички в теме"],
-  ["профессионалы и эксперты в теме", "Профессионалы и эксперты"],
-] as const;
+/** Сколько правил пользователь включил вручную — это и есть «активные настройки». */
+export function overriddenFieldKeys(settings: PostSettings): (keyof PostSettings)[] {
+  return POST_SETTINGS_FIELDS.filter((field) => !isTechnicalField(field))
+    .filter((field) => fieldIsOverridden(settings, field.key))
+    .map((field) => field.key);
+}
 
-const EMOJI_MODES = [
-  ["auto", "Авто — если уместно"],
-  ["none", "Без эмодзи"],
-  ["few", "Один эмодзи"],
-  ["moderate", "От двух до трёх"],
-  ["many", "От четырёх до восьми"],
-  ["custom", "Точное количество · расширенно"],
-] as const;
+function groupOverrideCount(settings: PostSettings, group: PostSettingsGroupId): number {
+  const keys = new Set(fieldsForGroup(group, settings).map((field) => field.key as string));
+  return overriddenFieldKeys(settings).filter((key) => keys.has(key as string)).length;
+}
 
-const HASHTAG_MODES = [
-  ["auto", "Авто — по площадке"],
-  ["none", "Без хэштегов"],
-  ["custom", "Точное количество · расширенно"],
-] as const;
+/* -------------------------------------------------------------- примитивы */
 
-function QuickGroup({ title, children }: { title: string; children: React.ReactNode }) {
+function OverrideBadge({ onReset }: { onReset: () => void }) {
   return (
-    <fieldset className="grid gap-3 rounded-md border border-line bg-surface-inset p-3 sm:grid-cols-2">
-      <legend className="px-1 text-[12px] font-extrabold text-text">{title}</legend>
-      {children}
-    </fieldset>
+    <span className="inline-flex shrink-0 items-center gap-1">
+      <span className="rounded-full bg-brand/10 px-1.5 py-0.5 text-[10px] font-bold text-brand">изменено</span>
+      <button
+        type="button"
+        onClick={onReset}
+        title="Вернуть автоматическое значение"
+        aria-label="Вернуть автоматическое значение"
+        className="grid h-6 w-6 place-items-center rounded-full text-text-3 transition-colors hover:bg-surface-inset hover:text-text"
+      >
+        <RotateCcw className="h-3.5 w-3.5" aria-hidden />
+      </button>
+    </span>
   );
 }
 
-function Field({ label, hint, children }: { label: string; hint?: string; children: React.ReactNode }) {
-  return (
-    <label className="block">
-      <span className="text-[12px] font-bold text-text">{label}</span>
-      {hint && <span className="ml-1.5 text-[10px] font-normal text-text-3">{hint}</span>}
-      {children}
-    </label>
-  );
-}
-
-function SelectField({
-  label,
-  hint,
-  value,
-  onChange,
-  options,
+function FieldShell({
+  field,
+  overridden,
+  onReset,
+  span,
+  children,
 }: {
-  label: string;
-  hint?: string;
-  value: string;
-  onChange: (value: string) => void;
-  options: readonly (readonly [string, string])[];
+  field: PostSettingsField;
+  overridden: boolean;
+  onReset: () => void;
+  span?: boolean;
+  children: React.ReactNode;
 }) {
   return (
-    <Field label={label} hint={hint}>
-      <div className="relative">
-        <select value={value} onChange={(event) => onChange(event.target.value)} className={cn(selectClass, "appearance-none pr-9")}>
-          {options.map(([id, option]) => <option key={id} value={id}>{option}</option>)}
-        </select>
-        <ChevronDown className="pointer-events-none absolute right-3 top-[calc(50%+3px)] h-4 w-4 -translate-y-1/2 text-text-3" aria-hidden />
+    <div className={cn("min-w-0", span && "sm:col-span-2")} data-setting={field.key}>
+      <div className="flex min-w-0 items-center justify-between gap-2">
+        <span className="min-w-0 text-[12px] font-bold text-text">{field.label}</span>
+        {overridden ? <OverrideBadge onReset={onReset} /> : null}
       </div>
-    </Field>
+      {field.help ? (
+        <p className="mt-0.5 flex items-start gap-1 text-[10px] leading-snug text-text-3">
+          <Info className="mt-[1px] h-3 w-3 shrink-0" aria-hidden />
+          <span>{field.help}</span>
+        </p>
+      ) : null}
+      <div className="mt-1.5">{children}</div>
+      {field.dependsOn ? <p className="mt-1 text-[10px] leading-snug text-text-3">Работает при условии: {field.dependsOn}.</p> : null}
+    </div>
   );
 }
 
-function TextField({
-  label,
-  hint,
+function SelectControl({
+  id,
+  value,
+  options,
+  onChange,
+}: {
+  id: string;
+  value: string;
+  options: readonly (readonly [string, string])[];
+  onChange: (value: string) => void;
+}) {
+  return (
+    <div className="relative">
+      <select id={id} value={value} onChange={(event) => onChange(event.target.value)} className={cn(selectClass, "appearance-none pr-9")}>
+        {options.map(([optionId, label]) => (
+          <option key={optionId} value={optionId}>
+            {label}
+          </option>
+        ))}
+      </select>
+      <ChevronDown className="pointer-events-none absolute right-3 top-1/2 h-4 w-4 -translate-y-1/2 text-text-3" aria-hidden />
+    </div>
+  );
+}
+
+function TextControl({
+  id,
   value,
   placeholder,
+  multiline,
   type = "text",
-  inputMode,
   min,
   max,
+  datalist,
   onChange,
 }: {
-  label: string;
-  hint?: string;
+  id: string;
   value: string;
   placeholder?: string;
+  multiline?: boolean;
   type?: "text" | "number";
-  inputMode?: "text" | "numeric";
   min?: number;
   max?: number;
+  datalist?: readonly (readonly [string, string])[];
   onChange: (value: string) => void;
 }) {
-  return (
-    <Field label={label} hint={hint}>
-      <input
-        className={inputClass}
-        type={type}
-        inputMode={inputMode}
-        min={min}
-        max={max}
+  if (multiline) {
+    return (
+      <textarea
+        id={id}
+        rows={2}
+        className={cn(inputClass, "resize-y")}
         value={value}
         placeholder={placeholder}
         onChange={(event) => onChange(event.target.value)}
       />
-    </Field>
+    );
+  }
+  return (
+    <>
+      <input
+        id={id}
+        className={inputClass}
+        type={type}
+        inputMode={type === "number" ? "numeric" : "text"}
+        min={min}
+        max={max}
+        list={datalist ? `${id}-list` : undefined}
+        value={value}
+        placeholder={placeholder}
+        onChange={(event) => onChange(event.target.value)}
+      />
+      {datalist ? (
+        <datalist id={`${id}-list`}>
+          {datalist
+            .filter(([optionValue]) => optionValue)
+            .map(([optionValue, label]) => (
+              <option key={optionValue} value={optionValue}>
+                {label}
+              </option>
+            ))}
+        </datalist>
+      ) : null}
+    </>
   );
 }
 
-function ListField({
+function ToggleControl({
+  id,
+  checked,
   label,
-  hint,
-  value,
+  onChange,
+}: {
+  id: string;
+  checked: boolean;
+  label: string;
+  onChange: (checked: boolean) => void;
+}) {
+  return (
+    <button
+      type="button"
+      id={id}
+      role="switch"
+      aria-checked={checked}
+      aria-label={label}
+      onClick={() => onChange(!checked)}
+      className={cn(
+        "flex h-11 w-full items-center justify-between gap-3 rounded-sm border px-3 text-[12px] font-semibold transition-colors",
+        checked ? "border-brand/40 bg-brand/5 text-text" : "border-line bg-surface text-text-2 hover:border-line-strong",
+      )}
+    >
+      <span>{checked ? "Включено" : "Выключено"}</span>
+      <span className={cn("relative h-5 w-9 shrink-0 rounded-full transition-colors", checked ? "bg-brand" : "bg-line-strong")}>
+        <span
+          className={cn("absolute top-0.5 h-4 w-4 rounded-full bg-white shadow-sm transition-all", checked ? "left-[18px]" : "left-0.5")}
+        />
+      </span>
+    </button>
+  );
+}
+
+function MultiSelectControl({
+  id,
+  values,
+  options,
+  onChange,
+}: {
+  id: string;
+  values: string[];
+  options: readonly (readonly [string, string])[];
+  onChange: (values: string[]) => void;
+}) {
+  return (
+    <div id={id} className="flex flex-wrap gap-1.5">
+      {options.map(([optionId, label]) => {
+        const active = values.includes(optionId);
+        return (
+          <button
+            key={optionId}
+            type="button"
+            aria-pressed={active}
+            onClick={() => onChange(active ? values.filter((item) => item !== optionId) : [...values, optionId])}
+            className={cn(
+              "inline-flex min-h-9 items-center gap-1 rounded-full border px-3 text-[12px] font-semibold transition-colors",
+              active
+                ? "border-brand bg-brand/10 text-brand"
+                : "border-line bg-surface text-text-2 hover:border-line-strong hover:text-text",
+            )}
+          >
+            {active ? <Check className="h-3.5 w-3.5" aria-hidden /> : null}
+            {label}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+function ListControl({
+  id,
+  values,
   placeholder,
   onChange,
 }: {
-  label: string;
-  hint?: string;
-  value: string[];
+  id: string;
+  values: string[];
   placeholder?: string;
-  onChange: (value: string[]) => void;
+  onChange: (values: string[]) => void;
 }) {
   return (
-    <Field label={label} hint={hint}>
-      <textarea
-        rows={2}
-        className={cn(inputClass, "resize-y")}
-        value={value.join("\n")}
-        placeholder={placeholder}
-        onChange={(event) => onChange(event.target.value.split("\n").map((item) => item.trim()).filter(Boolean))}
-      />
-    </Field>
+    <textarea
+      id={id}
+      rows={3}
+      className={cn(inputClass, "resize-y font-normal")}
+      value={values.join("\n")}
+      placeholder={placeholder}
+      onChange={(event) =>
+        onChange(
+          event.target.value
+            .split("\n")
+            .map((item) => item.trim())
+            .filter(Boolean),
+        )
+      }
+    />
   );
 }
 
-function ToggleField({ label, checked, onChange, hint }: { label: string; checked: boolean; onChange: (checked: boolean) => void; hint?: string }) {
-  return (
-    <label className="flex min-h-11 cursor-pointer items-center justify-between gap-3 rounded-sm border border-line bg-surface px-3 py-2">
-      <span>
-        <span className="block text-[12px] font-bold text-text">{label}</span>
-        {hint ? <span className="mt-0.5 block text-[10px] leading-snug text-text-3">{hint}</span> : null}
-      </span>
-      <input type="checkbox" checked={checked} onChange={(event) => onChange(event.target.checked)} className="h-4 w-4 accent-brand" />
-    </label>
-  );
-}
+const proofTypes = [
+  ["number", "Цифра"],
+  ["statistic", "Статистика"],
+  ["case", "Кейс"],
+  ["review", "Отзыв"],
+  ["quote", "Цитата"],
+  ["experience", "Личный опыт"],
+  ["research", "Исследование"],
+  ["certificate", "Сертификат"],
+  ["demo", "Демонстрация"],
+  ["comparison", "Сравнение"],
+  ["product_fact", "Факт о продукте"],
+] as const;
 
-function Section({ title, children }: { title: string; children: React.ReactNode }) {
-  return (
-    <details className="group rounded-md border border-line bg-surface">
-      <summary className="flex min-h-11 cursor-pointer list-none items-center justify-between gap-3 px-3.5 text-[12px] font-extrabold text-text marker:content-none">
-        {title}
-        <ChevronRight className="h-4 w-4 shrink-0 text-text-3 transition-transform group-open:rotate-90" aria-hidden />
-      </summary>
-      <div className="grid gap-3 border-t border-line px-3.5 py-3.5 sm:grid-cols-2">{children}</div>
-    </details>
-  );
-}
+/* ------------------------------------------------------- блок «автоподбор» */
 
 function AutomaticSettingsAction({
   pending,
@@ -242,12 +336,12 @@ function AutomaticSettingsAction({
   onSelect: () => void;
 }) {
   return (
-    <div className="flex flex-col gap-3 rounded-md bg-surface-inset px-3.5 py-3 sm:flex-row sm:items-center sm:justify-between">
-      <div>
+    <div className="flex flex-col gap-3 rounded-md border border-brand/25 bg-brand/5 px-3.5 py-3 sm:flex-row sm:items-center sm:justify-between">
+      <div className="min-w-0">
         <p className="text-[12px] font-extrabold text-text">
           {advanced ? "Автоподбор всех расширенных настроек" : "Тему напиши сообщением в чате"}
         </p>
-        <p className="mt-0.5 text-[11px] leading-relaxed text-text-3">
+        <p className="mt-0.5 text-[11px] leading-relaxed text-text-2">
           {advanced
             ? "Аврора очистит ручные ограничения и заново подберёт каждый параметр по задаче, площадке и голосу канала."
             : "Аврора возьмёт задачу из сообщения — дублировать её в настройках не нужно."}
@@ -279,11 +373,7 @@ function AutomaticSettingsAction({
   );
 }
 
-const proofTypes = [
-  ["number", "Цифра"], ["statistic", "Статистика"], ["case", "Кейс"], ["review", "Отзыв"],
-  ["quote", "Цитата"], ["experience", "Личный опыт"], ["research", "Исследование"],
-  ["certificate", "Сертификат"], ["demo", "Демонстрация"], ["comparison", "Сравнение"], ["product_fact", "Факт о продукте"],
-] as const;
+/* -------------------------------------------------------------- компонент */
 
 export function PostSettingsMenu({
   value,
@@ -302,6 +392,8 @@ export function PostSettingsMenu({
 }) {
   const [open, setOpen] = useState(Boolean(initialOpen));
   const [tab, setTab] = useState<SettingsTab>("quick");
+  const [activeGroup, setActiveGroup] = useState<PostSettingsGroupId>("base");
+  const [query, setQuery] = useState("");
   const [automaticSelectionPending, setAutomaticSelectionPending] = useState(false);
   const rootRef = useRef<HTMLDivElement>(null);
   const triggerRef = useRef<HTMLButtonElement>(null);
@@ -323,22 +415,24 @@ export function PostSettingsMenu({
   const blockers = conflicts.filter((item) => item.severity === "error");
   const summary = buildPostSettingsSummary(settings, network);
 
+  // Считаем прямо в рендере: normalizePostSettings каждый раз возвращает новый объект,
+  // поэтому ручная мемоизация здесь всё равно не сохраняется (React Compiler её отвергает).
+  const overridden = overriddenFieldKeys(settings);
+  const overriddenSet = new Set(overridden.map(String));
+  const visibleCount = POST_SETTINGS_FIELDS.filter((field) => !isTechnicalField(field)).length;
+  const results = searchFields(query, settings);
+  const group = POST_SETTINGS_GROUPS.find((item) => item.id === activeGroup) ?? POST_SETTINGS_GROUPS[0];
+
   useEffect(() => {
     if (!open) return;
     const focusFrame = window.requestAnimationFrame(() => {
       panelRef.current
-        ?.querySelector<HTMLElement>(
-          'button:not([disabled]), select:not([disabled]), input:not([disabled]), textarea:not([disabled])',
-        )
+        ?.querySelector<HTMLElement>("button:not([disabled]), select:not([disabled]), input:not([disabled]), textarea:not([disabled])")
         ?.focus();
     });
     const onPointer = (event: MouseEvent) => {
-      const target = event.target as Node;
-      if (
-        rootRef.current
-        && !rootRef.current.contains(target)
-        && !panelRef.current?.contains(target)
-      ) {
+      const clickTarget = event.target as Node;
+      if (rootRef.current && !rootRef.current.contains(clickTarget) && !panelRef.current?.contains(clickTarget)) {
         setOpen(false);
         triggerRef.current?.focus();
       }
@@ -351,9 +445,11 @@ export function PostSettingsMenu({
         return;
       }
       if (event.key === "Tab" && panelRef.current) {
-        const focusable = Array.from(panelRef.current.querySelectorAll<HTMLElement>(
-          'button:not([disabled]), select:not([disabled]), input:not([disabled]), textarea:not([disabled]), a[href]',
-        ));
+        const focusable = Array.from(
+          panelRef.current.querySelectorAll<HTMLElement>(
+            "button:not([disabled]), select:not([disabled]), input:not([disabled]), textarea:not([disabled]), a[href]",
+          ),
+        ).filter((element) => element.getClientRects().length > 0);
         const first = focusable[0];
         const last = focusable.at(-1);
         if (!first || !last) return;
@@ -379,7 +475,11 @@ export function PostSettingsMenu({
     setAutomaticSelectionPending(false);
     setDraft(
       keepPreset
-        ? normalizePostSettings({ ...settings, ...patch, preset: settings.preset })
+        ? normalizePostSettings({
+            ...settings,
+            ...patch,
+            preset: settings.preset,
+          })
         : patchPostSettings(settings, patch),
     );
   };
@@ -399,7 +499,9 @@ export function PostSettingsMenu({
     update({ proofs: [...settings.proofs, proof] });
   };
   const updateProof = (id: string, patch: Partial<PostProof>) =>
-    update({ proofs: settings.proofs.map((proof) => proof.id === id ? { ...proof, ...patch } : proof) });
+    update({
+      proofs: settings.proofs.map((proof) => (proof.id === id ? { ...proof, ...patch } : proof)),
+    });
   const removeProof = (id: string) => update({ proofs: settings.proofs.filter((proof) => proof.id !== id) });
 
   const targetOptions: readonly (readonly [string, string])[] = [
@@ -411,11 +513,6 @@ export function PostSettingsMenu({
     ...POST_PRESETS.map((item): [string, string] => [item.id, item.label]),
     ["custom", "Настроено вручную"],
   ];
-  const quickAudienceOptions: readonly (readonly [string, string])[] = AUDIENCE_PRESETS.some(
-    ([value]) => value === settings.audience,
-  )
-    ? AUDIENCE_PRESETS
-    : [[settings.audience, "Свой сегмент · настроен в расширенном режиме"], ...AUDIENCE_PRESETS];
 
   const useAutomaticQuickSettings = () => {
     const next = automaticPostSettings();
@@ -424,6 +521,230 @@ export function PostSettingsMenu({
     // pending marker so the Save button remains available and the profile is written again.
     setAutomaticSelectionPending(true);
   };
+
+  const resetAllToAuto = () => {
+    setDraft(automaticPostSettings());
+    setAutomaticSelectionPending(true);
+  };
+
+  const renderField = (field: PostSettingsField) => {
+    const id = `post-setting-${field.key}`;
+    const isOverridden = overriddenSet.has(String(field.key));
+    const reset = () => update({ [field.key]: autoValue(field.key) } as Partial<PostSettings>);
+    const spanTwo = field.kind === "proofs" || (field.kind === "list" && Boolean(field.options)) || field.kind === "textarea";
+
+    if (field.kind === "proofs") {
+      return (
+        <FieldShell key={field.key} field={field} overridden={isOverridden} onReset={reset} span>
+          <div className="grid gap-3">
+            {settings.proofs.map((proof, index) => (
+              <div key={proof.id} className="rounded-sm border border-line bg-surface-2 p-3">
+                <div className="flex items-center justify-between gap-3">
+                  <p className="text-[11px] font-extrabold text-text">Доказательство {index + 1}</p>
+                  <button
+                    type="button"
+                    onClick={() => removeProof(proof.id)}
+                    className="grid h-9 w-9 place-items-center rounded-full text-text-3 hover:bg-danger-soft hover:text-danger-text"
+                    aria-label={`Удалить доказательство ${index + 1}`}
+                  >
+                    <Trash2 className="h-3.5 w-3.5" aria-hidden />
+                  </button>
+                </div>
+                <div className="mt-2 grid gap-2 sm:grid-cols-2">
+                  <label className="block">
+                    <span className="text-[11px] font-bold text-text-2">Тип</span>
+                    <div className="mt-1">
+                      <SelectControl
+                        id={`proof-${proof.id}-type`}
+                        value={proof.type}
+                        options={proofTypes}
+                        onChange={(next) =>
+                          updateProof(proof.id, {
+                            type: next as PostProof["type"],
+                          })
+                        }
+                      />
+                    </div>
+                  </label>
+                  <label className="block">
+                    <span className="text-[11px] font-bold text-text-2">Дата актуальности</span>
+                    <div className="mt-1">
+                      <TextControl
+                        id={`proof-${proof.id}-date`}
+                        value={proof.validAt}
+                        onChange={(next) => updateProof(proof.id, { validAt: next })}
+                      />
+                    </div>
+                  </label>
+                  <label className="block sm:col-span-2">
+                    <span className="text-[11px] font-bold text-text-2">Само доказательство</span>
+                    <div className="mt-1">
+                      <TextControl
+                        id={`proof-${proof.id}-text`}
+                        value={proof.text}
+                        onChange={(next) => updateProof(proof.id, { text: next })}
+                      />
+                    </div>
+                  </label>
+                  <label className="block sm:col-span-2">
+                    <span className="text-[11px] font-bold text-text-2">Источник</span>
+                    <div className="mt-1">
+                      <TextControl
+                        id={`proof-${proof.id}-source`}
+                        value={proof.source}
+                        onChange={(next) => updateProof(proof.id, { source: next })}
+                      />
+                    </div>
+                  </label>
+                  <ToggleControl
+                    id={`proof-${proof.id}-required`}
+                    label="Использовать обязательно"
+                    checked={proof.required}
+                    onChange={(next) => updateProof(proof.id, { required: next })}
+                  />
+                  <ToggleControl
+                    id={`proof-${proof.id}-name`}
+                    label="Можно указать имя"
+                    checked={proof.allowClientName}
+                    onChange={(next) => updateProof(proof.id, { allowClientName: next })}
+                  />
+                  <ToggleControl
+                    id={`proof-${proof.id}-paraphrase`}
+                    label="Можно перефразировать"
+                    checked={proof.allowParaphrase}
+                    onChange={(next) => updateProof(proof.id, { allowParaphrase: next })}
+                  />
+                </div>
+              </div>
+            ))}
+            <button
+              type="button"
+              onClick={addProof}
+              className="inline-flex min-h-11 items-center justify-center gap-2 rounded-sm border border-dashed border-line-strong px-3 text-[12px] font-bold text-text-2 hover:bg-surface-inset"
+            >
+              <Plus className="h-4 w-4" aria-hidden /> Добавить доказательство
+            </button>
+          </div>
+        </FieldShell>
+      );
+    }
+
+    if (field.kind === "toggle") {
+      return (
+        <FieldShell key={field.key} field={field} overridden={isOverridden} onReset={reset} span>
+          <ToggleControl
+            id={id}
+            label={field.label}
+            checked={Boolean(settings[field.key])}
+            onChange={(next) => update({ [field.key]: next } as Partial<PostSettings>)}
+          />
+        </FieldShell>
+      );
+    }
+
+    if (field.kind === "list" && field.options) {
+      const values = (settings[field.key] as string[]) ?? [];
+      return (
+        <FieldShell key={field.key} field={field} overridden={isOverridden} onReset={reset} span>
+          <MultiSelectControl
+            id={id}
+            values={values}
+            options={field.options}
+            onChange={(next) => update({ [field.key]: next } as Partial<PostSettings>)}
+          />
+        </FieldShell>
+      );
+    }
+
+    if (field.kind === "list") {
+      return (
+        <FieldShell key={field.key} field={field} overridden={isOverridden} onReset={reset} span={spanTwo}>
+          <ListControl
+            id={id}
+            values={(settings[field.key] as string[]) ?? []}
+            placeholder={field.placeholder}
+            onChange={(next) => update({ [field.key]: next } as Partial<PostSettings>)}
+          />
+        </FieldShell>
+      );
+    }
+
+    if (field.kind === "select") {
+      const options = field.key === "target" ? targetOptions : field.key === "preset" ? presetOptions : (field.options ?? []);
+      const raw = String(settings[field.key] ?? "");
+      return (
+        <FieldShell key={field.key} field={field} overridden={isOverridden} onReset={reset} span={spanTwo}>
+          <SelectControl
+            id={id}
+            value={raw}
+            options={options}
+            onChange={(next) => {
+              if (field.key === "target") update({ target: next as PostSettings["target"] }, true);
+              else if (field.key === "preset") {
+                setAutomaticSelectionPending(false);
+                if (next === "auto") setDraft(normalizePostSettings({ ...settings, preset: "auto" }));
+                else if (next !== "custom") setDraft(applyPostPreset(settings, next as Exclude<PostPresetId, "auto" | "custom">));
+              } else update({ [field.key]: next } as Partial<PostSettings>);
+            }}
+          />
+          {field.key === "preset" && preset ? <p className="mt-1.5 text-[11px] leading-relaxed text-text-3">{preset.description}</p> : null}
+          {field.key === "length" && settings.length === "custom" ? (
+            <p className="mt-1.5 text-[11px] leading-relaxed text-text-3">
+              Сейчас: {settings.customMinChars ?? 300}–{settings.customMaxChars ?? 1200} знаков.
+            </p>
+          ) : null}
+        </FieldShell>
+      );
+    }
+
+    if (field.kind === "number") {
+      const raw = field.key === "ctaRepeats" ? String(settings.ctaRepeats) : String(settings[field.key] ?? "");
+      return (
+        <FieldShell key={field.key} field={field} overridden={isOverridden} onReset={reset}>
+          <TextControl
+            id={id}
+            type="number"
+            min={field.min}
+            max={
+              field.key === "hashtagCount"
+                ? rule.platformHashtagMax
+                : field.key === "customMaxChars" || field.key === "customMinChars"
+                  ? rule.hardLimit
+                  : field.max
+            }
+            value={raw}
+            onChange={(next) => update({ [field.key]: Number(next) } as Partial<PostSettings>)}
+          />
+        </FieldShell>
+      );
+    }
+
+    return (
+      <FieldShell key={field.key} field={field} overridden={isOverridden} onReset={reset} span={spanTwo}>
+        <TextControl
+          id={id}
+          value={String(settings[field.key] ?? "")}
+          placeholder={field.placeholder}
+          multiline={field.kind === "textarea"}
+          datalist={field.options}
+          onChange={(next) => update({ [field.key]: next } as Partial<PostSettings>)}
+        />
+      </FieldShell>
+    );
+  };
+
+  const footerSummary = (
+    <div className="min-w-0">
+      <p className="text-[11px] leading-relaxed text-text-3">
+        {hasPendingChanges ? "Изменения пока не применены к следующим публикациям." : "Все настройки публикации сохранены."}
+      </p>
+      <p className="mt-0.5 text-[11px] leading-relaxed text-text-2">
+        {overridden.length === 0
+          ? "Сейчас работает только автоподбор — ни одно правило не задано вручную."
+          : `Вручную задано правил: ${overridden.length}. Аврора проверит пост по каждому.`}
+      </p>
+    </div>
+  );
 
   return (
     <div ref={rootRef} className="relative min-w-0">
@@ -436,6 +757,7 @@ export function PostSettingsMenu({
           else {
             setDraft(normalizePostSettings(value));
             setAutomaticSelectionPending(false);
+            setQuery("");
             setOpen(true);
           }
         }}
@@ -444,7 +766,7 @@ export function PostSettingsMenu({
         aria-haspopup="dialog"
         aria-label="Настройки публикации"
         className={cn(
-          "inline-flex min-h-11 max-w-[190px] min-w-0 cursor-pointer items-center gap-1.5 rounded-full px-2.5",
+          "inline-flex min-h-11 max-w-[220px] min-w-0 cursor-pointer items-center gap-1.5 rounded-full px-2.5",
           "text-[12px] font-semibold text-text-2 transition-colors hover:bg-surface-2 hover:text-text",
           "disabled:pointer-events-none disabled:opacity-45",
           open && "bg-surface-2 text-text",
@@ -452,431 +774,270 @@ export function PostSettingsMenu({
       >
         <SlidersHorizontal className="h-4 w-4 shrink-0" strokeWidth={2} aria-hidden />
         <span className="truncate">Настройки</span>
+        {overridden.length > 0 ? (
+          <span className="shrink-0 rounded-full bg-brand/12 px-1.5 text-[10px] font-bold text-brand" aria-hidden>
+            {overridden.length}
+          </span>
+        ) : null}
         {saving ? <span className="h-1.5 w-1.5 shrink-0 animate-pulse rounded-full bg-brand" aria-label="Сохраняю" /> : null}
       </button>
 
-      {open && typeof document !== "undefined" && createPortal(
-        <div
-          ref={panelRef}
-          id={panelId}
-          role="dialog"
-          aria-modal="true"
-          aria-label="Настройки публикации"
-          className="fixed inset-x-3 top-3 bottom-[calc(env(safe-area-inset-bottom)+5.5rem)] z-50 flex w-auto flex-col overflow-hidden rounded-lg border border-line-strong bg-surface-2 shadow-lift sm:inset-x-auto sm:right-4 sm:top-1/2 sm:bottom-auto sm:max-h-[calc(100dvh-2rem)] sm:w-[540px] sm:max-w-[calc(100vw-1.5rem)] sm:-translate-y-1/2"
-        >
-          <div className="flex items-start justify-between gap-4 border-b border-line px-4 py-3.5">
-            <div>
-              <p className="text-[15px] font-extrabold text-text">Как написать публикацию</p>
-              <p className="mt-1 text-[11px] leading-relaxed text-text-3">
-                {rule.label} · целевой объём {minChars}–{maxChars} знаков
-              </p>
-            </div>
-            <div className="flex shrink-0 items-center gap-2">
-              <span className="inline-flex items-center gap-1 text-[10px] font-semibold text-text-3">
-                {!saving && !hasPendingChanges && <Check className="h-3.5 w-3.5 text-success-text" aria-hidden />}
-                {saving ? "Сохраняю…" : hasPendingChanges ? "Есть изменения" : "Сохранено"}
-              </span>
-              <button
-                type="button"
-                onClick={() => {
-                  setOpen(false);
-                  triggerRef.current?.focus();
-                }}
-                aria-label="Закрыть настройки публикации"
-                className="grid h-11 w-11 place-items-center rounded-sm text-text-3 hover:bg-surface-inset hover:text-text"
-              >
-                <X className="h-4 w-4" aria-hidden />
-              </button>
-            </div>
-          </div>
-
-          <div className="grid grid-cols-2 border-b border-line p-1.5" role="group" aria-label="Режим настроек публикации">
-            {(["quick", "advanced"] as const).map((item) => (
-              <button
-                key={item}
-                type="button"
-                onClick={() => setTab(item)}
-                aria-pressed={tab === item}
-                className={cn(
-                  "min-h-11 rounded-sm text-[12px] font-bold transition-colors",
-                  tab === item ? "bg-surface-inset text-text" : "text-text-3 hover:text-text",
-                )}
-              >
-                {item === "quick" ? "Быстрый выбор" : "Расширенно"}
-              </button>
-            ))}
-          </div>
-
-          <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-4 py-4 sm:max-h-[min(52dvh,540px)]">
-            {tab === "quick" ? (
-              <div className="grid gap-4">
-                <AutomaticSettingsAction
-                  pending={automaticSelectionPending && automatic}
-                  saved={automaticSaved}
-                  saving={saving}
-                  onSelect={useAutomaticQuickSettings}
-                />
-
-                <QuickGroup title="Основа публикации">
-                  <div className="sm:col-span-2">
-                    <SelectField label="Площадка и формат" value={settings.target} onChange={(next) => update({ target: next as PostSettings["target"] }, true)} options={targetOptions} />
-                  </div>
-                  <div className="sm:col-span-2">
-                    <SelectField
-                      label="Характер публикации"
-                      hint="готовый набор настроек"
-                      value={settings.preset}
-                      onChange={(next) => {
-                        setAutomaticSelectionPending(false);
-                        if (next === "auto") setDraft(normalizePostSettings({ ...settings, preset: "auto" }));
-                        else if (next !== "custom") setDraft(applyPostPreset(settings, next as Exclude<PostPresetId, "auto" | "custom">));
-                      }}
-                      options={presetOptions}
-                    />
-                    {preset && <p className="mt-1.5 text-[11px] leading-relaxed text-text-3">{preset.description}</p>}
-                  </div>
-                </QuickGroup>
-
-                <QuickGroup title="Задача и аудитория">
-                  <SelectField label="Цель" value={settings.goal} onChange={(next) => update({ goal: next as PostSettings["goal"] })} options={GOALS} />
-                  <SelectField label="Длина" value={settings.length} onChange={(next) => update({ length: next as PostSettings["length"] })} options={LENGTHS} />
-                  <div className="sm:col-span-2">
-                    <SelectField label="Для кого" value={settings.audience} onChange={(next) => update({ audience: next })} options={quickAudienceOptions} />
-                  </div>
-                  {settings.length === "custom" && (
-                    <p className="rounded-sm bg-surface px-3 py-2 text-[11px] leading-relaxed text-text-3 sm:col-span-2">
-                      Сейчас: {settings.customMinChars ?? 300}–{settings.customMaxChars ?? 1200} знаков. Точный диапазон меняется во вкладке «Расширенно».
-                    </p>
-                  )}
-                </QuickGroup>
-
-                <QuickGroup title="Голос публикации">
-                  <SelectField label="Тон" value={settings.formality} onChange={(next) => update({ formality: next as PostSettings["formality"] })} options={[["auto", "Из голоса канала"], ["casual", "Разговорный"], ["neutral", "Нейтральный"], ["formal", "Деловой"]]} />
-                  <SelectField label="Обращение" value={settings.address} onChange={(next) => update({ address: next as PostSettings["address"] })} options={[["auto", "Из голоса канала"], ["ты", "На «ты»"], ["вы", "На «вы»"], ["neutral", "Без обращения"]]} />
-                  <SelectField label="Энергия" value={settings.energy} onChange={(next) => update({ energy: next as PostSettings["energy"] })} options={[["auto", "Авто — по теме"], ["calm", "Спокойная"], ["balanced", "Сбалансированная"], ["high", "Высокая"]]} />
-                  <SelectField label="Юмор" value={settings.humor} onChange={(next) => update({ humor: next as PostSettings["humor"] })} options={[["auto", "Если уместно"], ["none", "Без юмора"], ["light", "Лёгкий"], ["bold", "Смелый"]]} />
-                  <SelectField label="Язык" value={settings.language} onChange={(next) => update({ language: next as PostSettings["language"] })} options={[["auto", "Язык сообщения"], ["ru", "Русский"], ["en", "Английский"]]} />
-                  <SelectField label="Мат" value={settings.profanityMode} onChange={(next) => update({ profanityMode: next as PostSettings["profanityMode"] })} options={PROFANITY_MODES} />
-                </QuickGroup>
-
-                <QuickGroup title="Оформление">
-                  <SelectField label="Эмодзи" value={settings.emojiMode} onChange={(next) => update({ emojiMode: next as PostSettings["emojiMode"] })} options={EMOJI_MODES} />
-                  <SelectField label="Хэштеги" value={settings.hashtags} onChange={(next) => update({ hashtags: next as PostSettings["hashtags"] })} options={HASHTAG_MODES} />
-                </QuickGroup>
-
-                <QuickGroup title="Финальный результат">
-                  <SelectField label="Призыв к действию" value={settings.cta} onChange={(next) => update({ cta: next as PostSettings["cta"] })} options={CTAS} />
-                  <SelectField label="Похожесть с прошлыми постами" value={settings.similarityLevel} onChange={(next) => update({ similarityLevel: next as PostSettings["similarityLevel"], requireNewAngle: next !== "allow" })} options={[["strict", "Не допускать похожие"], ["moderate", "Избегать повторов"], ["allow", "Повторы допустимы"]]} />
-                  <div className="sm:col-span-2">
-                    <SelectField label="Качество" value={settings.qualityMode} onChange={(next) => update({ qualityMode: next as PostSettings["qualityMode"] })} options={[["fast", "Быстро — один проход + проверка"], ["balanced", "Качественно — один сильный проход"], ["maximum", "Максимум — черновик и редактура"]]} />
-                  </div>
-                </QuickGroup>
-
-                <p className="text-[11px] leading-relaxed text-text-3">
-                  Готово: здесь всё выбирается из списка. Аврора всегда проверит выбранные правила. В быстрых режимах она отметит риск, а в режиме «Максимум» дополнительно отредактирует текст. Свои формулировки, точные числа и доказательства доступны во вкладке «Расширенно».
-                </p>
-
-                <div className="rounded-sm bg-surface-inset px-3 py-2.5 text-[11px] leading-relaxed text-text-3">
-                  Один запуск возвращает одну чистую публикацию. Дополнительный вариант создаётся кнопкой «Ещё вариант», поэтому версии не смешиваются в одном тексте.
-                </div>
-
-                {conflicts.length > 0 && (
-                  <div className={cn("rounded-sm px-3 py-2.5 text-[11px] leading-relaxed", blockers.length ? "bg-danger-soft text-danger-text" : "bg-info-soft text-info-text") }>
-                    <p className="flex items-center gap-1.5 font-bold"><AlertTriangle className="h-3.5 w-3.5" aria-hidden /> Проверка брифа</p>
-                    <ul className="mt-1.5 grid gap-1">
-                      {conflicts.map((item) => <li key={item.code}>• {item.message}</li>)}
-                    </ul>
-                  </div>
-                )}
-
-                <div className="rounded-sm border border-line bg-surface px-3 py-2.5">
-                  <p className="text-[11px] font-extrabold text-text">Кратко</p>
-                  <p className="mt-1 text-[11px] leading-relaxed text-text-3">{summary}</p>
-                </div>
-              </div>
-            ) : (
-              <div className="grid gap-5">
-                <AutomaticSettingsAction
-                  pending={automaticSelectionPending && automatic}
-                  saved={automaticSaved}
-                  saving={saving}
-                  advanced
-                  onSelect={useAutomaticQuickSettings}
-                />
-
-                <Section title="Задача поста">
-                  <TextField label="Главная мысль" value={settings.mainIdea} onChange={(next) => update({ mainIdea: next })} />
-                  <SelectField label="Длина" value={settings.length} onChange={(next) => update({ length: next as PostSettings["length"] })} options={LENGTHS} />
-                  {settings.length === "custom" && (
-                    <>
-                      <TextField label="От, знаков" type="number" inputMode="numeric" min={1} max={rule.hardLimit} value={String(settings.customMinChars ?? 300)} onChange={(next) => update({ customMinChars: Number(next) })} />
-                      <TextField label="До, знаков" type="number" inputMode="numeric" min={1} max={rule.hardLimit} value={String(settings.customMaxChars ?? 1200)} onChange={(next) => update({ customMaxChars: Number(next) })} />
-                    </>
-                  )}
-                  <TextField label="Что читатель должен понять" value={settings.readerUnderstanding} onChange={(next) => update({ readerUnderstanding: next })} />
-                  <SelectField label="Что должен почувствовать" value={settings.desiredFeeling} onChange={(next) => update({ desiredFeeling: next as PostSettings["desiredFeeling"] })} options={[
-                    ["auto", "Авто"], ["interest", "Интерес"], ["trust", "Доверие"], ["desire", "Желание"], ["urgency", "Срочность"], ["relief", "Облегчение"], ["inspiration", "Вдохновение"],
-                  ]} />
-                  <TextField label="Что должен сделать" value={settings.readerAction} onChange={(next) => update({ readerAction: next })} />
-                  <SelectField label="Главная метрика" value={settings.primaryMetric} onChange={(next) => update({ primaryMetric: next as PostSettings["primaryMetric"] })} options={[
-                    ["auto", "Авто"], ["readthrough", "Дочитывания"], ["saves", "Сохранения"], ["comments", "Комментарии"], ["clicks", "Переходы"], ["leads", "Заявки"], ["sales", "Продажи"],
-                  ]} />
-                  <SelectField label="Количество смыслов" value={settings.messageCount} onChange={(next) => update({ messageCount: next as PostSettings["messageCount"] })} options={[
-                    ["one", "Один основной"], ["one_plus", "Основной + дополнительный"], ["several", "Несколько"],
-                  ]} />
-                  <ToggleField label="Добавлять вывод" checked={settings.includeConclusion} onChange={(next) => update({ includeConclusion: next })} />
-                </Section>
-
-                <Section title="Продукт и оффер">
-                  <SelectField label="Тип предложения" value={settings.promotionType} onChange={(next) => update({ promotionType: next as PostSettings["promotionType"] })} options={[
-                    ["auto", "Авто"], ["product", "Продукт"], ["service", "Услуга"], ["event", "Мероприятие"], ["personal_brand", "Личный бренд"], ["lead_magnet", "Бесплатный материал"],
-                  ]} />
-                  <TextField label="Что продвигаем" value={settings.promotionName} onChange={(next) => update({ promotionName: next })} />
-                  <TextField label="Конкретное предложение" value={settings.offer} onChange={(next) => update({ offer: next })} />
-                  <TextField label="Главная выгода" value={settings.mainBenefit} onChange={(next) => update({ mainBenefit: next })} />
-                  <TextField label="Главное отличие" value={settings.differentiation} onChange={(next) => update({ differentiation: next })} />
-                  <TextField label="Цена" hint="или «не указывать»" value={settings.price} onChange={(next) => update({ price: next })} />
-                  <TextField label="Ссылка или место обращения" value={settings.offerDestination} onChange={(next) => update({ offerDestination: next })} />
-                  <SelectField label="Интенсивность продажи" value={settings.salesIntensity} onChange={(next) => update({ salesIntensity: next as PostSettings["salesIntensity"] })} options={[
-                    ["native", "Нативная"], ["soft", "Мягкая"], ["confident", "Уверенная"], ["direct", "Прямая"],
-                  ]} />
-                  <SelectField label="Когда показать продукт" value={settings.productReveal} onChange={(next) => update({ productReveal: next as PostSettings["productReveal"] })} options={[
-                    ["immediately", "Сразу"], ["after_problem", "После проблемы"], ["near_end", "Ближе к концу"], ["cta_only", "Только в призыве"],
-                  ]} />
-                </Section>
-
-                <Section title="Мотивация аудитории">
-                  <TextField label="Сегмент аудитории" value={settings.audience} onChange={(next) => update({ audience: next })} />
-                  <TextField label="Ситуация читателя" value={settings.readerSituation} onChange={(next) => update({ readerSituation: next })} />
-                  <TextField label="Главная проблема" value={settings.audienceProblem} onChange={(next) => update({ audienceProblem: next })} />
-                  <TextField label="Желаемый результат" value={settings.desiredResult} onChange={(next) => update({ desiredResult: next })} />
-                  <TextField label="Эмоциональное желание" value={settings.emotionalDesire} onChange={(next) => update({ emotionalDesire: next })} />
-                  <TextField label="Главный страх" value={settings.primaryFear} onChange={(next) => update({ primaryFear: next })} />
-                  <TextField label="Барьер" value={settings.barrier} onChange={(next) => update({ barrier: next })} />
-                  <TextField label="Основное возражение" value={settings.objection} onChange={(next) => update({ objection: next })} />
-                  <TextField label="Неудачные попытки" value={settings.failedAttempts} onChange={(next) => update({ failedAttempts: next })} />
-                  <TextField label="Текущая альтернатива" value={settings.currentAlternative} onChange={(next) => update({ currentAlternative: next })} />
-                  <TextField label="Триггер покупки" value={settings.purchaseTrigger} onChange={(next) => update({ purchaseTrigger: next })} />
-                  <TextField label="Критерий выбора" value={settings.choiceCriterion} onChange={(next) => update({ choiceCriterion: next })} />
-                  <SelectField label="Уровень доверия" value={settings.trustLevel} onChange={(next) => update({ trustLevel: next as PostSettings["trustLevel"] })} options={[
-                    ["auto", "Авто"], ["cold", "Холодная"], ["familiar", "Знакомая"], ["warm", "Тёплая"], ["customer", "Клиент"],
-                  ]} />
-                  <TextField label="Язык аудитории" value={settings.audienceLanguage} onChange={(next) => update({ audienceLanguage: next })} />
-                  <TextField label="Не наша аудитория" value={settings.excludedAudience} onChange={(next) => update({ excludedAudience: next })} />
-                </Section>
-
-                <Section title={`Доказательства · ${settings.proofs.filter((proof) => proof.text).length}`}>
-                  <SelectField label="Проверка фактов" hint="при отключении потребуется ручная проверка перед публикацией" value={settings.factStrictness} onChange={(next) => update({ factStrictness: next as PostSettings["factStrictness"] })} options={[
-                    ["off", "Отключена"], ["verified", "Только подтверждённые"], ["verified_inference", "Факты + осторожные выводы"], ["general", "Общие рассуждения"], ["creative_no_new_facts", "Креативно, без новых фактов"],
-                  ]} />
-                  <SelectField label="Если данных недостаточно" value={settings.missingFactsMode} onChange={(next) => update({ missingFactsMode: next as PostSettings["missingFactsMode"] })} options={[
-                    ["ask", "Задать вопрос"], ["omit", "Не использовать утверждение"], ["neutral", "Написать нейтрально"], ["placeholder", "Оставить место для заполнения"],
-                  ]} />
-                  <div className="grid gap-3 sm:col-span-2">
-                    {settings.proofs.map((proof, index) => (
-                      <div key={proof.id} className="rounded-sm border border-line bg-surface-2 p-3">
-                        <div className="flex items-center justify-between gap-3">
-                          <p className="text-[11px] font-extrabold text-text">Доказательство {index + 1}</p>
-                          <button type="button" onClick={() => removeProof(proof.id)} className="grid h-11 w-11 place-items-center rounded-full text-text-3 hover:bg-danger-soft hover:text-danger-text" aria-label={`Удалить доказательство ${index + 1}`}><Trash2 className="h-3.5 w-3.5" /></button>
-                        </div>
-                        <div className="mt-2 grid gap-2 sm:grid-cols-2">
-                          <SelectField label="Тип" value={proof.type} onChange={(next) => updateProof(proof.id, { type: next as PostProof["type"] })} options={proofTypes} />
-                          <TextField label="Дата актуальности" value={proof.validAt} onChange={(next) => updateProof(proof.id, { validAt: next })} />
-                          <div className="sm:col-span-2"><TextField label="Само доказательство" value={proof.text} onChange={(next) => updateProof(proof.id, { text: next })} /></div>
-                          <div className="sm:col-span-2"><TextField label="Источник" value={proof.source} onChange={(next) => updateProof(proof.id, { source: next })} /></div>
-                          <ToggleField label="Использовать обязательно" checked={proof.required} onChange={(next) => updateProof(proof.id, { required: next })} />
-                          <ToggleField label="Можно указать имя" checked={proof.allowClientName} onChange={(next) => updateProof(proof.id, { allowClientName: next })} />
-                          <ToggleField label="Можно перефразировать" checked={proof.allowParaphrase} onChange={(next) => updateProof(proof.id, { allowParaphrase: next })} />
-                        </div>
-                      </div>
-                    ))}
-                    <button type="button" onClick={addProof} className="inline-flex min-h-11 items-center justify-center gap-2 rounded-sm border border-dashed border-line-strong px-3 text-[12px] font-bold text-text-2 hover:bg-surface-inset"><Plus className="h-4 w-4" /> Добавить доказательство</button>
-                  </div>
-                </Section>
-
-                <Section title="Механика продажи">
-                  <SelectField label="Угол подачи" value={settings.salesAngle} onChange={(next) => update({ salesAngle: next as PostSettings["salesAngle"] })} options={[
-                    ["auto", "Авто"], ["problem", "Через проблему"], ["desired_result", "Через желаемый результат"], ["mistake", "Через ошибку"], ["lost_opportunity", "Через потерянную возможность"], ["saving", "Через экономию"], ["speed", "Через скорость"], ["simplicity", "Через простоту"], ["safety", "Через безопасность"], ["status", "Через статус"], ["novelty", "Через новизну"], ["comparison", "Через сравнение"], ["case", "Через кейс"], ["objection", "Через возражение"], ["demo", "Через демонстрацию"], ["personal_story", "Через личную историю"],
-                  ]} />
-                  <SelectField label="Формула убеждения" value={settings.persuasionFormula} onChange={(next) => update({ persuasionFormula: next as PostSettings["persuasionFormula"] })} options={[
-                    ["auto", "Авто"], ["aida", "Внимание → интерес → желание → действие"], ["pas", "Проблема → усиление → решение"], ["problem_consequence_solution", "Проблема → последствия → решение"], ["before_after_bridge", "До → после → мост"], ["story_insight_offer", "История → вывод → предложение"], ["objection_proof_offer", "Возражение → доказательство → предложение"], ["mistake_approach_product", "Ошибка → подход → продукт"], ["result_mechanism_cta", "Результат → механизм → призыв"], ["alternatives", "Сравнение альтернатив"], ["demo_benefit_action", "Демонстрация → выгода → действие"],
-                  ]} />
-                  <TextField label="Какое возражение закрыть" value={settings.objectionToHandle} onChange={(next) => update({ objectionToHandle: next })} />
-                  <SelectField label="Сколько доказательств" value={settings.proofCount} onChange={(next) => update({ proofCount: next as PostSettings["proofCount"] })} options={[["auto", "Авто"], ["0", "0"], ["1", "1"], ["2", "2"], ["3_plus", "3 и более"]]} />
-                  <SelectField label="Указывать цену" value={settings.priceMode} onChange={(next) => update({ priceMode: next as PostSettings["priceMode"] })} options={[["auto", "Если уместно"], ["required", "Обязательно"], ["never", "Не указывать"]]} />
-                  <SelectField label="Уровень давления" value={settings.salesPressure} onChange={(next) => update({ salesPressure: next as PostSettings["salesPressure"] })} options={[["soft", "Без давления"], ["neutral", "Уверенный"], ["direct", "Прямой"]]} />
-                  <SelectField label="Дефицит" value={settings.scarcity} onChange={(next) => update({ scarcity: next as PostSettings["scarcity"] })} options={[["none", "Не использовать"], ["real_quantity", "Реальное ограничение количества"]]} />
-                  <SelectField label="Срочность" value={settings.urgency} onChange={(next) => update({ urgency: next as PostSettings["urgency"] })} options={[["none", "Без срочности"], ["deadline", "Реальный дедлайн"], ["event", "Событие"], ["price_increase", "Повышение цены"], ["enrollment_end", "Окончание набора"]]} />
-                  {(settings.urgency !== "none" || settings.scarcity !== "none") && <TextField label="Реальная причина" hint="без неё генерация будет остановлена" value={settings.urgencyReason} onChange={(next) => update({ urgencyReason: next })} />}
-                  <SelectField label="Снижение риска" value={settings.riskReducer} onChange={(next) => update({ riskReducer: next as PostSettings["riskReducer"] })} options={[["none", "Не использовать"], ["guarantee", "Гарантия"], ["trial", "Пробный период"], ["consultation", "Бесплатная консультация"], ["refund", "Возврат"], ["demo", "Демонстрация"]]} />
-                </Section>
-
-                <Section title="Призыв к действию">
-                  <SelectField label="Основное действие" value={settings.cta} onChange={(next) => update({ cta: next as PostSettings["cta"] })} options={CTAS} />
-                  <TextField label="Конкретная формулировка" value={settings.ctaWording} onChange={(next) => update({ ctaWording: next })} />
-                  <TextField label="Куда ведём" value={settings.ctaDestination} onChange={(next) => update({ ctaDestination: next })} />
-                  <TextField label="Что будет после действия" value={settings.ctaOutcome} onChange={(next) => update({ ctaOutcome: next })} />
-                  <TextField label="Кодовое слово" value={settings.ctaCodeword} onChange={(next) => update({ ctaCodeword: next })} />
-                  <SelectField label="Второй призыв" value={settings.secondaryCta} onChange={(next) => update({ secondaryCta: next as PostSettings["secondaryCta"] })} options={CTAS} />
-                  <SelectField label="Сила призыва" value={settings.ctaStrength} onChange={(next) => update({ ctaStrength: next as PostSettings["ctaStrength"] })} options={[["soft", "Мягкая"], ["neutral", "Ясная"], ["direct", "Прямая"]]} />
-                  <SelectField label="Позиция призыва" value={settings.ctaPlacement} onChange={(next) => update({ ctaPlacement: next as PostSettings["ctaPlacement"] })} options={[["natural", "По смыслу"], ["end", "В конце"]]} />
-                  <SelectField label="Повторять призыв" value={String(settings.ctaRepeats)} onChange={(next) => update({ ctaRepeats: Number(next) as 1 | 2 })} options={[["1", "Один раз"], ["2", "Два раза"]]} />
-                  <ToggleField label="Добавлять причину действовать" checked={settings.ctaAddReason} onChange={(next) => update({ ctaAddReason: next })} />
-                  <ToggleField label="Указывать следующий шаг" checked={settings.ctaNextStep} onChange={(next) => update({ ctaNextStep: next })} />
-                </Section>
-
-                <Section title="Контекст публикации">
-                  <SelectField label="Тип трафика" value={settings.trafficType} onChange={(next) => update({ trafficType: next as PostSettings["trafficType"] })} options={[["auto", "Авто"], ["organic", "Органический"], ["paid", "Рекламный"]]} />
-                  <SelectField label="Температура аудитории" value={settings.audienceTemperature} onChange={(next) => update({ audienceTemperature: next as PostSettings["audienceTemperature"] })} options={[["auto", "Авто"], ["cold", "Холодная"], ["warm", "Тёплая"], ["hot", "Горячая"]]} />
-                  <SelectField label="Этап воронки" value={settings.funnelStage} onChange={(next) => update({ funnelStage: next as PostSettings["funnelStage"] })} options={[["auto", "Авто"], ["awareness", "Знакомство"], ["problem", "Проблема"], ["solution", "Решение"], ["trust", "Доверие"], ["objection", "Возражение"], ["offer", "Предложение"], ["close", "Завершение"]]} />
-                  <SelectField label="Тип касания" value={settings.touchType} onChange={(next) => update({ touchType: next as PostSettings["touchType"] })} options={[["auto", "Авто"], ["first", "Первое"], ["repeat", "Повторное"], ["final", "Финальное"]]} />
-                  <TextField label="Кампания" value={settings.campaign} onChange={(next) => update({ campaign: next })} />
-                  <SelectField label="Серия постов" value={settings.seriesStage} onChange={(next) => update({ seriesStage: next as PostSettings["seriesStage"] })} options={[["none", "Нет"], ["start", "Начало"], ["middle", "Середина"], ["finish", "Завершение"]]} />
-                  <TextField label="Что было до этого" value={settings.previousPost} onChange={(next) => update({ previousPost: next })} />
-                  <TextField label="Что будет дальше" value={settings.nextPost} onChange={(next) => update({ nextPost: next })} />
-                  <TextField label="Что аудитория уже знает" value={settings.audienceKnows} onChange={(next) => update({ audienceKnows: next })} />
-                  <TextField label="Что нельзя раскрывать" value={settings.confidential} onChange={(next) => update({ confidential: next })} />
-                  <TextField label="Дата или событие" value={settings.eventDate} onChange={(next) => update({ eventDate: next })} />
-                  <SelectField label="Актуальность" value={settings.relevance} onChange={(next) => update({ relevance: next as PostSettings["relevance"] })} options={[["evergreen", "Вечнозелёный"], ["temporary", "Временный"], ["news", "Новостной"]]} />
-                </Section>
-
-                <Section title="Оригинальность">
-                  <SelectField label="Глубина сравнения" value={settings.originalityDepth} onChange={(next) => update({ originalityDepth: next as PostSettings["originalityDepth"] })} options={[["10", "Последние 10"], ["30", "Последние 30"], ["100", "Последние 100"], ["all", "Все доступные"]]} />
-                  <SelectField label="Максимальная похожесть" value={settings.similarityLevel} onChange={(next) => update({ similarityLevel: next as PostSettings["similarityLevel"] })} options={[["strict", "Строгая"], ["moderate", "Умеренная"], ["allow", "Повторы допустимы"]]} />
-                  <ToggleField label="Запрещать шаблонные фразы ИИ" checked={settings.blockAiCliches} onChange={(next) => update({ blockAiCliches: next })} />
-                  <ToggleField label="Запрещать общие фразы" checked={settings.blockGenericPhrases} onChange={(next) => update({ blockGenericPhrases: next })} />
-                  <ToggleField label="Требовать конкретный пример" checked={settings.requireConcreteExample} onChange={(next) => update({ requireConcreteExample: next })} />
-                  <ToggleField label="Требовать новый угол" checked={settings.requireNewAngle} onChange={(next) => update({ requireNewAngle: next })} />
-                  <ToggleField label="Показывать похожие посты" checked={settings.showSimilarPosts} onChange={(next) => update({ showSimilarPosts: next })} hint="Показывает до трёх ближайших совпадений из истории канала." />
-                  <div className="sm:col-span-2">
-                    <p className="mb-2 text-[12px] font-bold text-text">Не повторять</p>
-                    <div className="grid gap-2 sm:grid-cols-2">
-                      {([[
-                        "hooks", "Начала постов"], ["cta", "Призывы"], ["stories", "Истории"], ["examples", "Примеры"], ["structure", "Структуру"], ["phrases", "Ключевые формулировки"],
-                      ] as const).map(([id, label]) => <ToggleField key={id} label={label} checked={settings.avoidRepetitions.includes(id)} onChange={(checked) => update({ avoidRepetitions: checked ? [...settings.avoidRepetitions, id] : settings.avoidRepetitions.filter((item) => item !== id) })} />)}
-                    </div>
-                  </div>
-                </Section>
-
-                <Section title="Контроль голоса автора">
-                  <ListField label="Пиши примерно так" hint="примеры по одному на строку" value={settings.goodVoiceExamples} onChange={(next) => update({ goodVoiceExamples: next })} />
-                  <ListField label="Никогда не пиши так" value={settings.badVoiceExamples} onChange={(next) => update({ badVoiceExamples: next })} />
-                  <ListField label="Фирменные выражения" value={settings.signatureExpressions} onChange={(next) => update({ signatureExpressions: next })} />
-                  <ListField label="Запрещённые выражения" value={settings.bannedExpressions} onChange={(next) => update({ bannedExpressions: next })} />
-                  <SelectField label="Длина предложений" value={settings.sentenceLength} onChange={(next) => update({ sentenceLength: next as PostSettings["sentenceLength"] })} options={[["auto", "Авто"], ["short", "Короткие"], ["mixed", "Разный ритм"], ["long", "Развёрнутые"]]} />
-                  <SelectField label="Степень копирования" value={settings.styleMatch} onChange={(next) => update({ styleMatch: next as PostSettings["styleMatch"] })} options={[["light", "Лёгкое сходство"], ["recognizable", "Узнаваемый голос"], ["maximum", "Максимально близко"]]} />
-                  <SelectField label="Уровень сленга" value={settings.slangLevel} onChange={(next) => update({ slangLevel: next as PostSettings["slangLevel"] })} options={[["none", "Не использовать"], ["low", "Низкий"], ["medium", "Средний"], ["high", "Высокий"]]} />
-                  <SelectField label="Мат" hint="Настройка текущего поста" value={settings.profanityMode} onChange={(next) => update({ profanityMode: next as PostSettings["profanityMode"] })} options={PROFANITY_MODES} />
-                  <SelectField label="Уровень метафор" value={settings.metaphorLevel} onChange={(next) => update({ metaphorLevel: next as PostSettings["metaphorLevel"] })} options={[["none", "Не использовать"], ["low", "Низкий"], ["medium", "Средний"], ["high", "Высокий"]]} />
-                  <SelectField label="Англицизмы" value={settings.anglicisms} onChange={(next) => update({ anglicisms: next as PostSettings["anglicisms"] })} options={[["none", "Не использовать"], ["low", "Редко"], ["medium", "Умеренно"], ["high", "Свободно"]]} />
-                  <SelectField label="Риторические вопросы" value={settings.rhetoricalQuestions} onChange={(next) => update({ rhetoricalQuestions: next as PostSettings["rhetoricalQuestions"] })} options={[["none", "Запрещены"], ["low", "Редко"], ["medium", "Умеренно"], ["high", "Допустимы"]]} />
-                  <SelectField label="Уровень провокации" value={settings.provocationLevel} onChange={(next) => update({ provocationLevel: next as PostSettings["provocationLevel"] })} options={[["none", "Без провокации"], ["low", "Низкий"], ["medium", "Средний"], ["high", "Высокий без хамства"]]} />
-                  <TextField label="Пунктуация" hint="тире, скобки, многоточия" value={settings.punctuationNotes} onChange={(next) => update({ punctuationNotes: next })} />
-                  <ListField label="Никогда не начинать" value={settings.neverStart} onChange={(next) => update({ neverStart: next })} />
-                  <ListField label="Никогда не заканчивать" value={settings.neverEnd} onChange={(next) => update({ neverEnd: next })} />
-                  <ToggleField label="Разрешить заглавные слова" checked={settings.capitalsAllowed} onChange={(next) => update({ capitalsAllowed: next })} />
-                </Section>
-
-                <Section title="Комплектация и качество">
-                  <SelectField label="Режим качества" value={settings.qualityMode} onChange={(next) => update({ qualityMode: next as PostSettings["qualityMode"] })} options={[["fast", "Быстро — один проход + проверка"], ["balanced", "Качественно — один сильный проход"], ["maximum", "Максимум — черновик и редактура"]]} />
-                  <SelectField label="Минимальная оценка" value={String(settings.qualityThreshold)} onChange={(next) => update({ qualityThreshold: Number(next) as PostSettings["qualityThreshold"] })} options={[["7", "7/10"], ["8", "8/10"], ["9", "9/10"]]} />
-                  <p className="rounded-sm bg-surface-inset px-3 py-2.5 text-[11px] leading-relaxed text-text-3 sm:col-span-2">
-                    «Быстро» и «Качественно» возвращают результат за один проход. «Максимум» запускает отдельную редактуру после готового черновика.
-                  </p>
-                  <SelectField label="Для «Ещё вариант»" value={settings.variantChange} onChange={(next) => update({ variantChange: next as PostSettings["variantChange"] })} options={[["full", "Полностью другая концепция"], ["hook", "Новое начало"], ["sales_angle", "Новый угол продажи"], ["structure", "Новая структура"], ["emotional", "Более эмоциональный"], ["expert", "Более экспертный"], ["native", "Более естественный"]]} />
-                  <div className="sm:col-span-2">
-                    <p className="mb-2 text-[12px] font-bold text-text">Что получить вместе с постом</p>
-                    <div className="grid gap-2 sm:grid-cols-2">
-                      {([
-                        ["hooks", "5 вариантов начала"], ["titles", "3 заголовка"], ["cover", "Текст на обложку"], ["first_comment", "Первый комментарий"], ["pinned_comment", "Закреплённый комментарий"], ["hashtags", "Хэштеги"], ["alt", "Описание изображения"], ["visual_brief", "Задание для изображения"], ["image_idea", "Идея изображения"], ["short_version", "Короткая версия"], ["stories", "Версия для историй"], ["cross_platform", "Другая площадка"], ["comment_replies", "Ответы на комментарии"], ["utm", "Ссылка с меткой"], ["discussion_question", "Вопрос для обсуждения"],
-                      ] as const).map(([id, label]) => <ToggleField key={id} label={label} checked={settings.outputParts.includes(id)} onChange={(checked) => update({ outputParts: checked ? [...settings.outputParts, id] : settings.outputParts.filter((item) => item !== id) })} />)}
-                    </div>
-                  </div>
-                </Section>
-
-                <Section title="Аудитория и голос">
-                  <SelectField label="Осведомлённость" value={settings.awareness} onChange={(next) => update({ awareness: next as PostSettings["awareness"] })} options={[
-                    ["auto", "Авто — по контексту"], ["unaware", "Не знает о проблеме"], ["problem_aware", "Понимает проблему"], ["solution_aware", "Ищет решение"], ["product_aware", "Знает продукт"], ["ready", "Готова действовать"],
-                  ]} />
-                  <SelectField label="Язык" value={settings.language} onChange={(next) => update({ language: next as PostSettings["language"] })} options={[["auto", "Авто — язык задачи"], ["ru", "Русский"], ["en", "Английский"]]} />
-                  <SelectField label="Формальность" value={settings.formality} onChange={(next) => update({ formality: next as PostSettings["formality"] })} options={[["auto", "Из голоса бренда"], ["casual", "Разговорно"], ["neutral", "Нейтрально"], ["formal", "Формально"]]} />
-                  <SelectField label="Обращение" value={settings.address} onChange={(next) => update({ address: next as PostSettings["address"] })} options={[["auto", "Из голоса бренда"], ["ты", "На «ты»"], ["вы", "На «вы»"], ["neutral", "Без обращения"]]} />
-                  <SelectField label="Энергия" value={settings.energy} onChange={(next) => update({ energy: next as PostSettings["energy"] })} options={[["auto", "Авто — по теме"], ["calm", "Спокойная"], ["balanced", "Сбалансированная"], ["high", "Высокая"]]} />
-                  <SelectField label="Юмор" value={settings.humor} onChange={(next) => update({ humor: next as PostSettings["humor"] })} options={[["auto", "Только если уместно"], ["none", "Без юмора"], ["light", "Лёгкий"], ["bold", "Смелый без грубости"]]} />
-                </Section>
-
-                <Section title="Начало и структура">
-                  <SelectField label="Тип начала" value={settings.hook} onChange={(next) => update({ hook: next as PostSettings["hook"] })} options={[["auto", "Авто — по содержанию"], ["insight", "Вывод"], ["benefit", "Польза"], ["problem", "Проблема"], ["story", "Сцена"], ["fact", "Факт"], ["question", "Вопрос"], ["contrast", "Контраст"], ["none", "Без отдельного начала"]]} />
-                  <SelectField label="Структура" value={settings.structure} onChange={(next) => update({ structure: next as PostSettings["structure"] })} options={[["auto", "Авто — по материалу"], ["free", "Свободная"], ["explainer", "Объяснение"], ["problem_solution", "Проблема → решение"], ["story", "История"], ["list", "Список"], ["news", "Новость"], ["announcement", "Анонс"]]} />
-                  <SelectField label="Абзацы" value={settings.paragraphs} onChange={(next) => update({ paragraphs: next as PostSettings["paragraphs"] })} options={[["auto", "Нативно площадке"], ["short", "1–2 предложения"], ["medium", "2–4 предложения"]]} />
-                  <SelectField label="Списки" value={settings.lists} onChange={(next) => update({ lists: next as PostSettings["lists"] })} options={[["auto", "Только когда полезно"], ["avoid", "Не использовать"], ["prefer", "Предпочитать для шагов"], ["required", "Один список обязателен"]]} />
-                </Section>
-
-                <Section title="Оформление и хэштеги">
-                  <SelectField label="Эмодзи" value={settings.emojiMode} onChange={(next) => update({ emojiMode: next as PostSettings["emojiMode"] })} options={EMOJI_MODES} />
-                  {settings.emojiMode === "custom" && <TextField label="Точное количество эмодзи" type="number" inputMode="numeric" min={0} max={20} value={String(settings.emojiMax ?? 3)} onChange={(next) => update({ emojiMax: Number(next) })} />}
-                  <SelectField label="Позиция эмодзи" value={settings.emojiPlacement} onChange={(next) => update({ emojiPlacement: next as PostSettings["emojiPlacement"] })} options={[["auto", "Нативно"], ["inline", "Внутри строк"], ["line_end", "В конце строк"], ["bullets", "Маркеры списка"]]} />
-                  <SelectField label="Хэштеги" value={settings.hashtags} onChange={(next) => update({ hashtags: next as PostSettings["hashtags"] })} options={[["auto", "Авто — по формату"], ["none", "Без хэштегов"], ["custom", "Точное количество"]]} />
-                  {settings.hashtags === "custom" && <TextField label="Количество хэштегов" type="number" inputMode="numeric" min={0} max={rule.platformHashtagMax} value={String(settings.hashtagCount ?? 3)} onChange={(next) => update({ hashtagCount: Number(next) })} />}
-                  <SelectField label="Креативность" value={settings.creativity} onChange={(next) => update({ creativity: next as PostSettings["creativity"] })} options={[["low", "Низкая — точность"], ["balanced", "Сбалансированная"], ["high", "Высокая без выдумки"]]} />
-                  <ListField label="Разрешённые эмодзи" hint="по одному на строку" value={settings.allowedEmojis} placeholder="✅\n💡" onChange={(next) => update({ allowedEmojis: next })} />
-                  <ListField label="Запрещённые эмодзи" hint="по одному на строку" value={settings.forbiddenEmojis} placeholder="🔥\n🚀" onChange={(next) => update({ forbiddenEmojis: next })} />
-                </Section>
-
-                <Section title="Точные требования">
-                  <ListField label="Ключевые слова" hint="по одному на строку" value={settings.keywords} onChange={(next) => update({ keywords: next })} />
-                  <ListField label="Упоминания" hint="с @, без изменений" value={settings.mentions} onChange={(next) => update({ mentions: next })} />
-                  <ListField label="Ссылки" hint="только подтверждённые" value={settings.links} onChange={(next) => update({ links: next })} />
-                  <ListField label="Обязательные факты" hint="модель не вправе их менять" value={settings.requiredFacts} onChange={(next) => update({ requiredFacts: next })} />
-                  <ListField label="Запрещённые слова" value={settings.forbiddenWords} onChange={(next) => update({ forbiddenWords: next })} />
-                  <ListField label="Стоп-темы" value={settings.forbiddenTopics} onChange={(next) => update({ forbiddenTopics: next })} />
-                </Section>
-
-                <p className="rounded-sm bg-surface-inset px-3 py-2.5 text-[10px] leading-relaxed text-text-3 sm:col-span-2">
-                  «Стиль текста» управляет манерой письма. Нативный шрифт Instagram, Telegram, VK и YouTube платформа изменить не может; псевдошрифты Unicode намеренно не используются.
-                </p>
-              </div>
+      {open &&
+        typeof document !== "undefined" &&
+        createPortal(
+          <div
+            ref={panelRef}
+            id={panelId}
+            role="dialog"
+            aria-modal="true"
+            aria-label="Настройки публикации"
+            className={cn(
+              "fixed z-50 flex flex-col overflow-hidden border border-line-strong bg-surface-2 shadow-lift",
+              "inset-x-0 top-0 bottom-0 rounded-none",
+              "sm:inset-x-auto sm:right-4 sm:top-1/2 sm:bottom-auto sm:h-[min(860px,calc(100dvh-2rem))] sm:w-[min(920px,calc(100vw-2rem))] sm:-translate-y-1/2 sm:rounded-lg",
             )}
-          </div>
-          <div className="flex flex-col gap-2 border-t border-line bg-surface px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
-            <p className="text-[11px] leading-relaxed text-text-3">
-              {hasPendingChanges ? "Изменения пока не применены к следующим публикациям." : "Все настройки публикации сохранены."}
-            </p>
-            <div className="flex shrink-0 gap-2">
-              <Button
-                variant="ghost"
-                size="sm"
-                className="min-h-11"
-                disabled={!hasPendingChanges || saving}
-                onClick={() => {
-                  setDraft(persisted);
-                  setAutomaticSelectionPending(false);
-                  setOpen(false);
-                  triggerRef.current?.focus();
-                }}
-              >
-                Отмена
-              </Button>
-              <Button
-                variant="brand"
-                size="sm"
-                className="min-h-11"
-                disabled={!hasPendingChanges || saving}
-                onClick={() => {
-                  onChange(settings);
-                  setAutomaticSelectionPending(false);
-                  setOpen(false);
-                  triggerRef.current?.focus();
-                }}
-              >
-                <Check className="h-4 w-4" aria-hidden />
-                Сохранить настройки
-              </Button>
+          >
+            {/* ШАПКА: что настраиваем и в каком состоянии */}
+            <div className="flex items-start justify-between gap-4 border-b border-line px-4 py-3.5 sm:px-5">
+              <div className="min-w-0">
+                <p className="text-[15px] font-extrabold text-text">Как написать публикацию</p>
+                <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
+                  <span className="rounded-full bg-surface-inset px-2 py-0.5 text-[11px] font-semibold text-text-2">{rule.label}</span>
+                  <span className="rounded-full bg-surface-inset px-2 py-0.5 text-[11px] font-semibold text-text-2">
+                    {minChars}–{maxChars} знаков
+                  </span>
+                  <span className="rounded-full bg-surface-inset px-2 py-0.5 text-[11px] font-semibold text-text-2">
+                    {settings.qualityMode === "maximum" ? "Максимум" : settings.qualityMode === "balanced" ? "Качественно" : "Быстро"}
+                  </span>
+                </div>
+              </div>
+              <div className="flex shrink-0 items-center gap-2">
+                <span role="status" aria-live="polite" className="inline-flex items-center gap-1 text-[10px] font-semibold text-text-3">
+                  {!saving && !hasPendingChanges && <Check className="h-3.5 w-3.5 text-success-text" aria-hidden />}
+                  {saving ? "Сохраняю…" : hasPendingChanges ? "Есть изменения" : "Сохранено"}
+                </span>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setOpen(false);
+                    triggerRef.current?.focus();
+                  }}
+                  aria-label="Закрыть настройки публикации"
+                  className="grid h-11 w-11 place-items-center rounded-sm text-text-3 hover:bg-surface-inset hover:text-text"
+                >
+                  <X className="h-4 w-4" aria-hidden />
+                </button>
+              </div>
             </div>
-          </div>
-        </div>,
-        document.body,
-      )}
+
+            {/* ПАНЕЛЬ: режим и поиск */}
+            <div className="flex flex-col gap-2 border-b border-line px-4 py-2.5 sm:flex-row sm:items-center sm:px-5">
+              <div
+                className="grid grid-cols-2 gap-1 rounded-sm bg-surface-inset p-1 sm:w-[320px]"
+                role="group"
+                aria-label="Режим настроек публикации"
+              >
+                {(["quick", "advanced"] as const).map((item) => (
+                  <button
+                    key={item}
+                    type="button"
+                    onClick={() => setTab(item)}
+                    aria-pressed={tab === item}
+                    className={cn(
+                      "min-h-10 rounded-xs px-3 text-[12px] font-bold transition-colors",
+                      tab === item ? "bg-surface text-text shadow-sm" : "text-text-3 hover:text-text",
+                    )}
+                  >
+                    {item === "quick" ? "Простой режим" : "Все настройки"}
+                  </button>
+                ))}
+              </div>
+              <div className="relative min-w-0 flex-1">
+                <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-text-3" aria-hidden />
+                <input
+                  type="search"
+                  value={query}
+                  onChange={(event) => setQuery(event.target.value)}
+                  placeholder="Найти настройку — например «эмодзи» или «цена»"
+                  aria-label="Поиск по настройкам публикации"
+                  className="h-11 w-full rounded-sm border border-line bg-surface pl-9 pr-9 text-[13px] text-text outline-none placeholder:text-text-3 focus:border-brand focus:ring-2 focus:ring-brand/15"
+                />
+                {query ? (
+                  <button
+                    type="button"
+                    onClick={() => setQuery("")}
+                    aria-label="Очистить поиск"
+                    className="absolute right-2 top-1/2 grid h-7 w-7 -translate-y-1/2 place-items-center rounded-full text-text-3 hover:bg-surface-inset hover:text-text"
+                  >
+                    <X className="h-3.5 w-3.5" aria-hidden />
+                  </button>
+                ) : null}
+              </div>
+            </div>
+
+            {/* ТЕЛО: навигация по группам и содержимое */}
+            <div className="flex min-h-0 flex-1 flex-col sm:flex-row">
+              {tab === "advanced" && !query ? (
+                <nav
+                  aria-label="Разделы настроек"
+                  className="flex shrink-0 gap-1 overflow-x-auto border-b border-line px-2 py-2 sm:w-[236px] sm:flex-col sm:overflow-y-auto sm:border-b-0 sm:border-r sm:px-2.5 sm:py-3"
+                >
+                  {POST_SETTINGS_GROUPS.map((item) => {
+                    const count = groupOverrideCount(settings, item.id);
+                    const active = item.id === activeGroup;
+                    return (
+                      <button
+                        key={item.id}
+                        type="button"
+                        onClick={() => setActiveGroup(item.id)}
+                        aria-current={active ? "true" : undefined}
+                        className={cn(
+                          "flex min-h-11 shrink-0 items-center justify-between gap-2 rounded-sm px-2.5 text-left transition-colors sm:w-full",
+                          active ? "bg-brand/10 text-text" : "text-text-2 hover:bg-surface-inset hover:text-text",
+                        )}
+                      >
+                        <span className="min-w-0">
+                          <span className="block truncate text-[12px] font-bold">{item.title}</span>
+                          <span className="hidden truncate text-[10px] text-text-3 sm:block">{item.caption}</span>
+                        </span>
+                        {count > 0 ? (
+                          <span className="shrink-0 rounded-full bg-brand/12 px-1.5 text-[10px] font-bold text-brand">{count}</span>
+                        ) : null}
+                      </button>
+                    );
+                  })}
+                </nav>
+              ) : null}
+
+              <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-4 py-4 sm:px-5">
+                {query ? (
+                  <div className="grid gap-3">
+                    <p className="text-[11px] leading-relaxed text-text-3">
+                      {results.length > 0
+                        ? `Найдено настроек: ${results.length}. Показаны только подходящие поля.`
+                        : "Ничего не нашлось. Попробуй другое слово — например «хэштеги», «тон» или «цена»."}
+                    </p>
+                    <div className="grid gap-4 sm:grid-cols-2">{results.map(renderField)}</div>
+                  </div>
+                ) : tab === "quick" ? (
+                  <div className="grid gap-4">
+                    <AutomaticSettingsAction
+                      pending={automaticSelectionPending && automatic}
+                      saved={automaticSaved}
+                      saving={saving}
+                      onSelect={useAutomaticQuickSettings}
+                    />
+
+                    <div className="grid gap-3.5 sm:grid-cols-2">
+                      {POST_SETTINGS_FIELDS.filter(
+                        (field) => field.simple && !isTechnicalField(field) && (!field.visibleWhen || field.visibleWhen(settings)),
+                      ).map(renderField)}
+                    </div>
+
+                    <div className="rounded-md border border-line bg-surface px-3.5 py-3">
+                      <p className="text-[11px] font-extrabold text-text">Что получится</p>
+                      <p className="mt-1 text-[11px] leading-relaxed text-text-2">{summary}</p>
+                    </div>
+
+                    <p className="text-[11px] leading-relaxed text-text-3">
+                      Здесь только то, что чаще всего меняет результат. Все остальные{" "}
+                      {visibleCount - POST_SETTINGS_FIELDS.filter((field) => field.simple).length} настроек — во вкладке «Все настройки» или
+                      через поиск. Свои формулировки, точные числа и доказательства тоже там.
+                    </p>
+                  </div>
+                ) : (
+                  <div className="grid gap-4">
+                    <AutomaticSettingsAction
+                      pending={automaticSelectionPending && automatic}
+                      saved={automaticSaved}
+                      saving={saving}
+                      advanced
+                      onSelect={useAutomaticQuickSettings}
+                    />
+
+                    <section aria-label={group.title} className="grid gap-3">
+                      <header>
+                        <h3 className="text-[13px] font-extrabold text-text">{group.title}</h3>
+                        <p className="mt-0.5 text-[11px] leading-relaxed text-text-3">{group.lead}</p>
+                      </header>
+                      <div className="grid gap-3.5 sm:grid-cols-2">{fieldsForGroup(group.id, settings).map(renderField)}</div>
+                      {fieldsForGroup(group.id, settings).length === 0 ? (
+                        <p className="rounded-sm bg-surface-inset px-3 py-2.5 text-[11px] text-text-3">
+                          В этом разделе сейчас нет применимых настроек — они появятся при других значениях.
+                        </p>
+                      ) : null}
+                    </section>
+                  </div>
+                )}
+              </div>
+            </div>
+
+            {/* ПОДВАЛ: конфликты, итог и действия */}
+            <div className="border-t border-line bg-surface">
+              {conflicts.length > 0 ? (
+                <div
+                  className={cn(
+                    "mx-4 mt-3 rounded-sm px-3 py-2.5 text-[11px] leading-relaxed sm:mx-5",
+                    blockers.length ? "bg-danger-soft text-danger-text" : "bg-info-soft text-info-text",
+                  )}
+                >
+                  <p className="flex items-center gap-1.5 font-bold">
+                    <AlertTriangle className="h-3.5 w-3.5" aria-hidden />
+                    {blockers.length > 0 ? `Генерация заблокирована: ${blockers.length}` : "Проверка брифа"}
+                  </p>
+                  <ul className="mt-1.5 grid gap-1">
+                    {conflicts.map((item) => (
+                      <li key={item.code}>• {item.message}</li>
+                    ))}
+                  </ul>
+                </div>
+              ) : null}
+              <div className="flex flex-col gap-2 px-4 py-3 sm:flex-row sm:items-center sm:justify-between sm:px-5">
+                {footerSummary}
+                <div className="flex w-full shrink-0 flex-col gap-2 sm:w-auto sm:flex-row sm:items-center">
+                  {overridden.length > 0 ? (
+                    <Button variant="ghost" size="sm" className="min-h-11 w-full sm:w-auto" disabled={saving} onClick={resetAllToAuto}>
+                      <RotateCcw className="h-4 w-4" aria-hidden />
+                      Сбросить к авто
+                    </Button>
+                  ) : null}
+                  <div className="grid grid-cols-2 gap-2 sm:flex sm:gap-2">
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      className="min-h-11 w-full sm:w-auto"
+                      disabled={!hasPendingChanges || saving}
+                      onClick={() => {
+                        setDraft(persisted);
+                        setAutomaticSelectionPending(false);
+                        setOpen(false);
+                        triggerRef.current?.focus();
+                      }}
+                    >
+                      Отмена
+                    </Button>
+                    <Button
+                      variant="brand"
+                      size="sm"
+                      className="min-h-11 w-full sm:w-auto"
+                      disabled={!hasPendingChanges || saving}
+                      onClick={() => {
+                        onChange(settings);
+                        setAutomaticSelectionPending(false);
+                        setOpen(false);
+                        triggerRef.current?.focus();
+                      }}
+                    >
+                      <Check className="h-4 w-4" aria-hidden />
+                      Сохранить настройки
+                    </Button>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>,
+          document.body,
+        )}
     </div>
   );
 }
