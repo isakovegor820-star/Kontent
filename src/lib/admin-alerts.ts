@@ -1,5 +1,6 @@
 import type { Pool } from "pg";
 
+import { adminEmailAccessEnabled } from "./admin-access";
 import { probeRedisAndPublicationWorker } from "./readiness-probes";
 
 export type AdminAlertId = "database" | "redis" | "publication_worker" | "telegram_worker" | "overdue_publications";
@@ -184,7 +185,11 @@ export async function adminAlertRecipients(
   env: Record<string, string | undefined> = process.env,
 ): Promise<Array<{ userId: number; chatId: string }>> {
   const ids = String(env.AURORA_ADMIN_USER_IDS || "").split(",").map((item) => Number(item.trim())).filter((item) => Number.isSafeInteger(item) && item > 0);
-  const emails = String(env.AURORA_ADMIN_EMAILS || "").split(",").map((item) => item.trim().toLowerCase()).filter((item) => item.includes("@"));
+  // Email-путь алертов подчиняется тому же fail-closed флагу, что и админ-доступ:
+  // без явного операторского opt-in по email никому не пишем.
+  const emails = adminEmailAccessEnabled(env)
+    ? String(env.AURORA_ADMIN_EMAILS || "").split(",").map((item) => item.trim().toLowerCase()).filter((item) => item.includes("@"))
+    : [];
   if (ids.length === 0 && emails.length === 0) return [];
   const result = await pool.query<{ id: number | string; tg_chat_id: number | string }>(
     `select id, tg_chat_id from users

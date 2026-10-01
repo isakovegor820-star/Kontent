@@ -1,6 +1,7 @@
 // Вход по почте и паролю. Проверяем пароль по хешу, при успехе — сессия на 30 дней.
 // На неверную почту и неверный пароль отвечаем одинаково — не подсказываем, что именно не так.
 
+import { createHash } from "node:crypto";
 import { JsonBodyReadError, readJsonBodyValue } from "@/lib/bounded-request-body";
 import { NextRequest, NextResponse } from "next/server";
 import { getPool } from "@/lib/db";
@@ -35,10 +36,12 @@ export async function POST(req: NextRequest) {
 
   // Два потолка сразу: по IP (режем брутфорс с одного источника) и по аккаунту
   // (режем распределённую атаку на одну почту с разных IP). Окно 15 минут.
+  // Почта хешируется в ключе: Redis не должен хранить адреса открытым текстом.
   const ip = clientIp(req);
   const byIp = await checkRateLimit(`login:ip:${ip}`, 10, 900, { failureMode: "closed" });
   if (!byIp.allowed) return rateLimitResponse(byIp);
-  const byAccount = await checkRateLimit(`login:acct:${email}`, 5, 900, { failureMode: "closed" });
+  const accountKey = createHash("sha256").update(email, "utf8").digest("hex").slice(0, 32);
+  const byAccount = await checkRateLimit(`login:acct:${accountKey}`, 5, 900, { failureMode: "closed" });
   if (!byAccount.allowed) return rateLimitResponse(byAccount);
 
   if (!process.env.DATABASE_URL) {

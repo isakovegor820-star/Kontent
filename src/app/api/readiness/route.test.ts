@@ -251,6 +251,7 @@ describe("GET /api/readiness", () => {
 
   it("allows a global administrator session", async () => {
     vi.stubEnv("AURORA_ADMIN_EMAILS", "admin@example.test");
+    vi.stubEnv("AURORA_ADMIN_ALLOW_EMAILS", "1");
     mocks.getSessionUser.mockResolvedValue({ id: 9, email: "admin@example.test" });
     const response = await GET(new NextRequest("https://aurora.example/api/readiness", {
       headers: { cookie: "sid=admin-session" },

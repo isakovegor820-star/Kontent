@@ -1240,6 +1240,9 @@ const runtimeEnv = {
   SENTRY_PROJECT: "",
   SENTRY_URL: "",
   AURORA_ADMIN_EMAILS: "qa-e2e@aurora.test",
+  // Email-allowlist включён явным операторским флагом: в харнессе почта принадлежит
+  // fixture-пользователю, и admin-путь тестируется как в production с opt-in.
+  AURORA_ADMIN_ALLOW_EMAILS: "1",
   AURORA_RELEASE: "e2e-release",
   AURORA_RELEASE_SHA: "0123456789abcdef0123456789abcdef01234567",
   NEXT_PUBLIC_AURORA_APP_VERSION: "e2e-web",

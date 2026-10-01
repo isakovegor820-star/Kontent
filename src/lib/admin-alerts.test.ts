@@ -70,7 +70,7 @@ describe("admin alert delivery", () => {
     const send: (url: string | URL | Request, init?: RequestInit) => Promise<Response> = async () => new Response("{}", { status: 200 });
     const fetchImpl = vi.fn(send);
     const logger = { error: vi.fn(), info: vi.fn() };
-    const env = { TG_BOT_TOKEN: "123:secret-token", AURORA_ADMIN_USER_IDS: "1,2", AURORA_ADMIN_EMAILS: "ops@example.com", APP_URL: "https://aurora.example" };
+    const env = { TG_BOT_TOKEN: "123:secret-token", AURORA_ADMIN_USER_IDS: "1,2", AURORA_ADMIN_EMAILS: "ops@example.com", AURORA_ADMIN_ALLOW_EMAILS: "1", APP_URL: "https://aurora.example" };
     const result = await deliverAdminAlerts({
       pool: pool as never,
       notifications: [{ id: "redis", kind: "fired", severity: "critical", detail: "PING не отвечает", sinceMs: 0 }],
@@ -84,6 +84,13 @@ describe("admin alert delivery", () => {
     const failed = await deliverAdminAlerts({ pool: pool as never, notifications: [{ id: "redis", kind: "fired", severity: "critical", detail: "x", sinceMs: 0 }], env, fetchImpl: fetchImpl as never, logger });
     expect(failed.failed).toBe(1);
     expect(JSON.stringify(logger.error.mock.calls)).not.toContain("secret-token");
+  });
+
+  it("excludes the email allowlist unless the operator explicitly opted in", async () => {
+    const pool = { query: vi.fn(async () => ({ rowCount: 0, rows: [] })) };
+    const env = { AURORA_ADMIN_USER_IDS: "1,2", AURORA_ADMIN_EMAILS: "ops@example.com" };
+    await adminAlertRecipients(pool as never, env);
+    expect(pool.query).toHaveBeenCalledWith(expect.any(String), [[1, 2], []]);
   });
 
   it("returns nobody when the allowlist is empty and reads bounded config", async () => {

@@ -57,14 +57,18 @@ describe("GET /api/auth/me", () => {
     const user = { id: 17, email: "ops@example.test" };
     mocks.sessionTokenHashFromRequest.mockReturnValue("b".repeat(64));
     mocks.getSessionUser.mockResolvedValue(user);
-    const previous = process.env.AURORA_ADMIN_EMAILS;
+    const previousEmails = process.env.AURORA_ADMIN_EMAILS;
+    const previousAllow = process.env.AURORA_ADMIN_ALLOW_EMAILS;
     process.env.AURORA_ADMIN_EMAILS = "ops@example.test";
+    process.env.AURORA_ADMIN_ALLOW_EMAILS = "1";
     try {
       const response = await GET(new NextRequest("http://localhost/api/auth/me", { headers: { cookie: "sid=active-session" } }));
       await expect(response.json()).resolves.toEqual({ user: { ...user, is_admin: true } });
     } finally {
-      if (previous === undefined) delete process.env.AURORA_ADMIN_EMAILS;
-      else process.env.AURORA_ADMIN_EMAILS = previous;
+      if (previousEmails === undefined) delete process.env.AURORA_ADMIN_EMAILS;
+      else process.env.AURORA_ADMIN_EMAILS = previousEmails;
+      if (previousAllow === undefined) delete process.env.AURORA_ADMIN_ALLOW_EMAILS;
+      else process.env.AURORA_ADMIN_ALLOW_EMAILS = previousAllow;
     }
   });
 
