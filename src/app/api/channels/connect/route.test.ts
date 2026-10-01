@@ -159,4 +159,30 @@ describe("POST /api/channels/connect", () => {
       },
     );
   });
+
+  it("distinguishes a Telegram access refusal from a provider outage", async () => {
+    vi.mocked(fetch).mockReset();
+    vi.mocked(fetch)
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        ok: false,
+        description: "Bad Request: chat not found",
+      })));
+
+    const response = await POST(request());
+
+    expect(response.status).toBe(422);
+    await expect(response.json()).resolves.toMatchObject({ error: "no_access" });
+    expect(mocks.saveVerifiedTelegramChannel).not.toHaveBeenCalled();
+  });
+
+  it("reports a provider outage as temporary instead of no access", async () => {
+    vi.mocked(fetch).mockReset();
+    vi.mocked(fetch).mockRejectedValueOnce(new Error("network down"));
+
+    const response = await POST(request());
+
+    expect(response.status).toBe(503);
+    await expect(response.json()).resolves.toMatchObject({ error: "provider_unavailable" });
+    expect(mocks.saveVerifiedTelegramChannel).not.toHaveBeenCalled();
+  });
 });
