@@ -17,6 +17,7 @@ import {
 } from "@/lib/publication-lifecycle.mjs";
 import { reconcilePublicationOutbox } from "@/lib/publication-outbox.mjs";
 import { getPublishQueue, jobIdForPostRevision } from "@/lib/queue";
+import { enqueuePublishJob } from "@/lib/publish-queue.mjs";
 import { hasTrustedMutationOrigin } from "@/lib/request-origin";
 import { getSessionUser } from "@/lib/session";
 import {
@@ -402,16 +403,11 @@ async function handlePATCH(
     const outbox = await reconcilePublicationOutbox({
       pool,
       operationId: id,
-      enqueue: (postId, scheduledAt, scheduleRevision, projectId) => getPublishQueue().add(
-        "publish",
+      enqueue: (postId, scheduledAt, scheduleRevision, projectId) => enqueuePublishJob(
+        getPublishQueue(),
         { postId, projectId, scheduleRevision },
-        {
-          delay: Math.max(0, scheduledAt.getTime() - Date.now()),
-          jobId: jobIdForPostRevision(postId, scheduleRevision),
-          removeOnComplete: true,
-          removeOnFail: false,
-        },
-      ),
+        scheduledAt,
+      ).then(() => undefined),
     });
     const operationStatus = outbox.statuses[id] ?? result.operationStatus ?? "pending";
     const queued = operationStatus === "queued";

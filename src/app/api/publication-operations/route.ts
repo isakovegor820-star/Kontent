@@ -35,7 +35,8 @@ import {
   persistPublicationExtraSpecs,
   persistPublicationReviewTask,
 } from "@/lib/publication-extra-operations.mjs";
-import { getPublishQueue, jobIdForPostRevision } from "@/lib/queue";
+import { getPublishQueue } from "@/lib/queue";
+import { enqueuePublishJob } from "@/lib/publish-queue.mjs";
 import { reconcilePublicationOutbox } from "@/lib/publication-outbox.mjs";
 import { probeRedisAndPublicationWorker } from "@/lib/readiness-probes";
 import { hasTrustedMutationOrigin } from "@/lib/request-origin";
@@ -313,16 +314,11 @@ async function dispatchPublicationOperation(operation: OperationRow): Promise<Op
   const result = await reconcilePublicationOutbox({
     pool,
     operationId: Number(operation.id),
-    enqueue: (postId, scheduledAt, scheduleRevision, projectId) => getPublishQueue().add(
-        "publish",
+    enqueue: (postId, scheduledAt, scheduleRevision, projectId) => enqueuePublishJob(
+        getPublishQueue(),
         { postId, projectId, scheduleRevision },
-        {
-          delay: Math.max(0, scheduledAt.getTime() - Date.now()),
-          jobId: jobIdForPostRevision(postId, scheduleRevision),
-          removeOnComplete: true,
-          removeOnFail: false,
-        },
-      ),
+        scheduledAt,
+      ).then(() => undefined),
   });
   return { ...operation, status: result.statuses[Number(operation.id)] ?? operation.status };
 }

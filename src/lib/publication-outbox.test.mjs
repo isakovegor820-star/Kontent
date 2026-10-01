@@ -159,4 +159,72 @@ describe("publication operation terminal reconciliation", () => {
     expect(result.statuses[9]).toBe("cancelled");
     expect(pool.status()).toBe("cancelled");
   });
+
+  it("replays a stale enqueued row for a post that still needs its delayed job", async () => {
+    let claimed = false;
+    let capturedSelect = "";
+    const enqueue = vi.fn(async () => ({ id: "accepted" }));
+    const query = vi.fn(async (sql) => {
+      if (sql.includes("select id from publication_operations")) {
+        return { rowCount: 1, rows: [{ id: 9 }] };
+      }
+      if (sql.includes("count(*)::int as total")) {
+        return {
+          rowCount: 1,
+          rows: [{
+            total: 1, pending: 0, enqueued: 1, failed: 0, dispatching: 0,
+            published: 0, unverified: 0, cancelled: 0, terminal_failed: 0, active: 1,
+          }],
+        };
+      }
+      if (sql.includes("update publication_outbox") && sql.includes("status = 'enqueued'")) {
+        return { rowCount: 1, rows: [] };
+      }
+      if (sql.includes("update publication_operations")) return { rowCount: 1, rows: [] };
+      return { rowCount: 0, rows: [] };
+    });
+    const pool = {
+      query,
+      connect: vi.fn(async () => ({
+        query: vi.fn(async (sql) => {
+          if (sql.includes("select o.id")) capturedSelect = sql;
+          if (sql.trim() === "begin" || sql.trim() === "commit" || sql.trim() === "rollback") {
+            return { rowCount: 0, rows: [] };
+          }
+          if (sql.includes("select o.id")) {
+            if (claimed) return { rowCount: 0, rows: [] };
+            claimed = true;
+            return {
+              rowCount: 1,
+              rows: [{
+                id: 5,
+                operation_id: 9,
+                post_id: 82,
+                attempts: 1,
+                project_id: 23,
+                schedule_revision: 3,
+                scheduled_at: "2099-09-01T08:00:00.000Z",
+              }],
+            };
+          }
+          return { rowCount: 1, rows: [] };
+        }),
+        release: vi.fn(),
+      })),
+    };
+
+    const result = await reconcilePublicationOutbox({ pool, enqueue, limit: 2 });
+
+    expect(result.enqueued).toBe(1);
+    expect(enqueue).toHaveBeenCalledWith(
+      82,
+      new Date("2099-09-01T08:00:00.000Z"),
+      3,
+      23,
+    );
+    // Переигрываются только посты, которым задача всё ещё нужна, — иначе
+    // завершённые публикации оживали бы новыми job каждые пять минут.
+    expect(capturedSelect).toContain("o.status = 'enqueued'");
+    expect(capturedSelect).toContain("p.status in ('scheduled', 'failed_retry')");
+  });
 });

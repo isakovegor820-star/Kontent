@@ -104,7 +104,16 @@ export async function reconcilePublicationOutbox({
            join publication_operations operation
              on operation.id = o.operation_id
             and operation.project_id = p.project_id
-          where o.status in ('pending','failed') and o.next_attempt_at <= $2
+          where (
+                  (o.status in ('pending','failed') and o.next_attempt_at <= $2)
+                  or (
+                    o.status = 'enqueued'
+                    and o.updated_at <= $2 - interval '5 minutes'
+                    -- Redis мог потерять delayed-job; переигрываем только посты,
+                    -- которым задача всё ещё нужна (иначе оживят завершённые).
+                    and p.status in ('scheduled', 'failed_retry')
+                  )
+                )
             and ($1::bigint is null or o.operation_id = $1)
           order by o.next_attempt_at, o.id
           limit 1 for update of o skip locked`,

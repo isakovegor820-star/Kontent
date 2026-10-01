@@ -8,7 +8,7 @@
     "dev:web-only": "next dev",
     "build": "node scripts/build.mjs",
     "start": "node scripts/start.mjs",
-    "start:web": "AURORA_RUNTIME_ROLE=web next start",
+    "start:web": "AURORA_RUNTIME_ROLE=web node scripts/start-web.mjs",
     "start:worker": "AURORA_RUNTIME_ROLE=worker NODE_ENV=production node worker.mjs",
     "lint": "eslint",
     "test": "vitest run",
