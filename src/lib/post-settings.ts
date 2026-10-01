@@ -971,6 +971,45 @@ const BRIEF_LABELS = {
   quality: { fast: "быстро: один проход и минимальная проверка", balanced: "сбалансированно: черновик, проверка и редактура", maximum: "максимальное качество: три концепции, выбор лучшей и финальная редактура" },
 } as const;
 
+/**
+ * Подписи для настроек, которые раньше уходили в промпт машинными слагами
+ * («угол подачи: personal_story», «сленг high»). Модель читает русский контракт —
+ * значит и значения должны быть на русском: одинаковые слаги у разных полей
+ * (high/medium/low) без подписи не различить.
+ */
+const EXTRA_LABELS = {
+  salesAngle: { auto: "определи по задаче", problem: "через проблему", desired_result: "через желаемый результат", mistake: "через ошибку", lost_opportunity: "через потерянную возможность", saving: "через экономию", speed: "через скорость", simplicity: "через простоту", safety: "через безопасность", status: "через статус", novelty: "через новизну", comparison: "через сравнение", case: "через кейс", objection: "через возражение", demo: "через демонстрацию", personal_story: "через личную историю" },
+  persuasionFormula: { auto: "выбери по задаче", aida: "внимание → интерес → желание → действие", pas: "проблема → усиление → решение", problem_consequence_solution: "проблема → последствия → решение", before_after_bridge: "до → после → мост", story_insight_offer: "история → вывод → предложение", objection_proof_offer: "возражение → доказательство → предложение", mistake_approach_product: "ошибка → подход → продукт", result_mechanism_cta: "результат → механизм → призыв", alternatives: "сравнение альтернатив", demo_benefit_action: "демонстрация → выгода → действие" },
+  riskReducer: { none: "не использовать", guarantee: "гарантия", trial: "пробный период", consultation: "бесплатная консультация", refund: "возврат", demo: "демонстрация" },
+  seriesStage: { none: "вне серии", start: "начало серии", middle: "середина серии", finish: "завершение серии" },
+  trafficType: { auto: "определи по задаче", organic: "органический", paid: "рекламный" },
+  audienceTemperature: { auto: "определи по контексту", cold: "холодная", warm: "тёплая", hot: "горячая" },
+  funnelStage: { auto: "определи по задаче", awareness: "знакомство", problem: "проблема", solution: "решение", trust: "доверие", objection: "возражение", offer: "предложение", close: "завершение" },
+  touchType: { auto: "определи по контексту", first: "первое касание", repeat: "повторное касание", final: "финальное касание" },
+  relevance: { evergreen: "вечнозелёная", temporary: "временная", news: "новостная" },
+  emojiPlacement: { auto: "нативно площадке", inline: "внутри строк", line_end: "в конце строк", bullets: "маркерами списка" },
+  styleMatch: { light: "лёгкое сходство", recognizable: "узнаваемый голос", maximum: "максимально близко к образцам" },
+  sentenceLength: { auto: "по материалу", short: "короткие", mixed: "разный ритм", long: "развёрнутые" },
+  level: { none: "не использовать", low: "низкий", medium: "средний", high: "высокий" },
+  rhetoricalQuestions: { none: "запрещены", low: "редко", medium: "умеренно", high: "допустимы" },
+  provocationLevel: { none: "без провокации", low: "низкий", medium: "средний", high: "высокий, без хамства" },
+  anglicisms: { none: "не использовать", low: "редко", medium: "умеренно", high: "свободно" },
+  originalityDepth: { "10": "последними 10 публикациями", "30": "последними 30 публикациями", "100": "последними 100 публикациями", all: "всеми доступными публикациями" },
+  similarityLevel: { strict: "строгая", moderate: "умеренная", allow: "повторы допустимы" },
+  variantChange: { full: "полностью другая концепция", hook: "новое начало", sales_angle: "новый угол продажи", structure: "новая структура", emotional: "более эмоциональный тон", expert: "более экспертный тон", native: "более естественная подача" },
+  urgency: { none: "не использовать", deadline: "реальный дедлайн", event: "привязка к событию", price_increase: "повышение цены", enrollment_end: "окончание набора" },
+  proofType: { number: "цифра", statistic: "статистика", case: "кейс", review: "отзыв", quote: "цитата", experience: "личный опыт", research: "исследование", certificate: "сертификат", demo: "демонстрация", comparison: "сравнение", product_fact: "факт о продукте" },
+} as const;
+
+const REPETITION_LABELS: Record<RepetitionPart, string> = {
+  hooks: "начала постов",
+  cta: "призывы",
+  stories: "истории",
+  examples: "примеры",
+  structure: "структуру",
+  phrases: "ключевые формулировки",
+};
+
 const OUTPUT_LABELS: Record<OutputPart, string> = {
   main: "основной текст",
   hooks: "5 вариантов начала",
@@ -1060,26 +1099,26 @@ export function buildPostSettingsPrompt(raw: unknown, context: { network?: strin
 
   section("5. ДОКАЗАТЕЛЬСТВА И МЕХАНИКА УБЕЖДЕНИЯ", [
     settings.proofs.length ? `используй доказательств: ${settings.proofCount === "auto" ? "по необходимости" : settings.proofCount}` : "не имитируй доказательства, если они не переданы",
-    ...settings.proofs.filter((proof) => proof.text).map((proof) => `${proof.required ? "обязательно" : "по возможности"} [${proof.type}]: ${proof.text}${proof.source ? `; источник ${proof.source}` : ""}${proof.validAt ? `; актуально ${proof.validAt}` : ""}; ${proof.allowParaphrase ? "можно аккуратно перефразировать" : "используй дословно"}; ${proof.allowClientName ? "имя разрешено" : "имя клиента не раскрывать"}`),
-    `угол подачи: ${settings.salesAngle}`,
-    `формула убеждения: ${settings.persuasionFormula}`,
+    ...settings.proofs.filter((proof) => proof.text).map((proof) => `${proof.required ? "обязательно" : "по возможности"} [${EXTRA_LABELS.proofType[proof.type]}]: ${proof.text}${proof.source ? `; источник ${proof.source}` : ""}${proof.validAt ? `; актуально ${proof.validAt}` : ""}; ${proof.allowParaphrase ? "можно аккуратно перефразировать" : "используй дословно"}; ${proof.allowClientName ? "имя разрешено" : "имя клиента не раскрывать"}`),
+    `угол подачи: ${EXTRA_LABELS.salesAngle[settings.salesAngle]}`,
+    `формула убеждения: ${EXTRA_LABELS.persuasionFormula[settings.persuasionFormula]}`,
     settings.objectionToHandle ? `закрыть возражение: ${settings.objectionToHandle}` : null,
     `давление: ${LABELS.strength[settings.salesPressure]}`,
     settings.scarcity === "real_quantity" ? `дефицит допустим только на основании: ${settings.urgencyReason}` : "дефицит не использовать",
-    settings.urgency !== "none" ? `срочность ${settings.urgency}; реальная причина: ${settings.urgencyReason || settings.eventDate}` : "срочность не использовать",
-    settings.riskReducer !== "none" ? `снижение риска: ${settings.riskReducer}; не выдумывай условия` : null,
+    settings.urgency !== "none" ? `срочность: ${EXTRA_LABELS.urgency[settings.urgency]}; реальная причина: ${settings.urgencyReason || settings.eventDate}` : "срочность не использовать",
+    settings.riskReducer !== "none" ? `снижение риска: ${EXTRA_LABELS.riskReducer[settings.riskReducer]}; не выдумывай условия` : null,
   ]);
 
   section("6. КОНТЕКСТ КАМПАНИИ И ПЛОЩАДКА", [
     `площадка и формат: ${rule.label} (${rule.format})`,
-    `трафик: ${settings.trafficType}; температура: ${settings.audienceTemperature}; этап воронки: ${settings.funnelStage}; касание: ${settings.touchType}`,
+    `трафик: ${EXTRA_LABELS.trafficType[settings.trafficType]}; температура аудитории: ${EXTRA_LABELS.audienceTemperature[settings.audienceTemperature]}; этап воронки: ${EXTRA_LABELS.funnelStage[settings.funnelStage]}; тип касания: ${EXTRA_LABELS.touchType[settings.touchType]}`,
     settings.campaign ? `кампания: ${settings.campaign}` : null,
-    settings.seriesStage !== "none" ? `серия: ${settings.seriesStage}` : null,
+    settings.seriesStage !== "none" ? `серия: ${EXTRA_LABELS.seriesStage[settings.seriesStage]}` : null,
     settings.previousPost ? `до этого было: ${settings.previousPost}; не повторяй его объяснение` : null,
     settings.nextPost ? `дальше будет: ${settings.nextPost}` : null,
     settings.audienceKnows ? `аудитория уже знает: ${settings.audienceKnows}` : null,
     settings.eventDate ? `дата или событие: ${settings.eventDate}` : null,
-    `актуальность: ${settings.relevance}`,
+    `актуальность: ${EXTRA_LABELS.relevance[settings.relevance]}`,
     ...rule.guidance,
   ]);
 
@@ -1096,7 +1135,7 @@ export function buildPostSettingsPrompt(raw: unknown, context: { network?: strin
         ? "ОБЯЗАТЕЛЬНО используй ровно одно уместное матерное выражение с частичной цензурой звёздочками; прямой мат запрещён; не оскорбляй читателя"
         : "ОБЯЗАТЕЛЬНО используй в готовом посте минимум одно прямое матерное выражение без цензуры; верхнего количественного лимита нет. Мат должен усиливать конкретную мысль: из того же предложения должно быть понятно, какой риск, ошибка, абсурд, польза или эмоция автора так оценивается и почему. Не вставляй отдельную дежурную фразу ради выполнения правила, не искажай матерным словом юридический факт, название или цитату, не оскорбляй читателя и не заменяй мат звёздочками или нейтральными эвфемизмами",
     `начало: ${LABELS.hook[settings.hook]}; структура: ${LABELS.structure[settings.structure]}; абзацы: ${LABELS.paragraphs[settings.paragraphs]}; списки: ${LABELS.lists[settings.lists]}`,
-    `эмодзи: ${minEmojis === maxEmojis ? `ровно ${maxEmojis}` : `${minEmojis}–${maxEmojis}`}; расположение: ${settings.emojiPlacement}; хэштеги: ${minHashtags === maxHashtags ? `ровно ${maxHashtags}` : `${minHashtags}–${maxHashtags}`}; креативность: ${LABELS.creativity[settings.creativity]}`,
+    `эмодзи: ${minEmojis === maxEmojis ? `ровно ${maxEmojis}` : `${minEmojis}–${maxEmojis}`}; расположение: ${EXTRA_LABELS.emojiPlacement[settings.emojiPlacement]}; хэштеги: ${minHashtags === maxHashtags ? `ровно ${maxHashtags}` : `${minHashtags}–${maxHashtags}`}; креативность: ${LABELS.creativity[settings.creativity]}`,
     settings.allowedEmojis.length ? `только допустимые эмодзи: ${settings.allowedEmojis.join(" ")}` : null,
     settings.forbiddenEmojis.length ? `запрещённые эмодзи: ${settings.forbiddenEmojis.join(" ")}` : null,
     settings.keywords.length ? `ключевые слова: ${settings.keywords.join(", ")}` : null,
@@ -1107,9 +1146,9 @@ export function buildPostSettingsPrompt(raw: unknown, context: { network?: strin
     settings.neverEnd.length ? `никогда не заканчивай: ${settings.neverEnd.join("; ")}` : null,
     settings.punctuationNotes ? `пунктуация: ${settings.punctuationNotes}` : null,
     settings.capitalsAllowed ? "заглавные слова допустимы как редкий смысловой акцент" : "не используй слова целиком ЗАГЛАВНЫМИ буквами, кроме общепринятых аббревиатур",
-    `если создаёшь ещё один вариант, измени его так: ${settings.variantChange}`,
-    `сходство с голосом: ${settings.styleMatch}; длина предложений: ${settings.sentenceLength}; сленг ${settings.slangLevel}; метафоры ${settings.metaphorLevel}; англицизмы ${settings.anglicisms}; риторические вопросы ${settings.rhetoricalQuestions}; провокация ${settings.provocationLevel}`,
-    settings.requireNewAngle ? `найди новый угол и не повторяй ${settings.avoidRepetitions.join(", ") || "прошлые публикации"}; сравни с ${settings.originalityDepth} последними публикациями; допустимая похожесть: ${settings.similarityLevel}` : null,
+    `если создаёшь ещё один вариант, измени его так: ${EXTRA_LABELS.variantChange[settings.variantChange]}`,
+    `сходство с голосом: ${EXTRA_LABELS.styleMatch[settings.styleMatch]}; длина предложений: ${EXTRA_LABELS.sentenceLength[settings.sentenceLength]}; сленг: ${EXTRA_LABELS.level[settings.slangLevel]}; метафоры: ${EXTRA_LABELS.level[settings.metaphorLevel]}; англицизмы: ${EXTRA_LABELS.anglicisms[settings.anglicisms]}; риторические вопросы: ${EXTRA_LABELS.rhetoricalQuestions[settings.rhetoricalQuestions]}; провокация: ${EXTRA_LABELS.provocationLevel[settings.provocationLevel]}`,
+    settings.requireNewAngle ? `найди новый угол и не повторяй ${settings.avoidRepetitions.map((part) => REPETITION_LABELS[part]).join(", ") || "прошлые публикации"}; сравни с ${EXTRA_LABELS.originalityDepth[settings.originalityDepth]}; допустимая похожесть: ${EXTRA_LABELS.similarityLevel[settings.similarityLevel]}` : null,
     settings.blockGenericPhrases ? "убери общие фразы, которые не добавляют факта, примера или полезного вывода" : null,
     settings.requireConcreteExample ? "добавь минимум один конкретный пример только из переданных данных" : null,
   ]);
@@ -1662,7 +1701,34 @@ export function finalizePostSettingsDeterministically(
     value = placeMissingEmojis(value, missing, settings.emojiPlacement);
   }
 
-  if (settings.hashtags !== "auto") {
+  if (settings.hashtags === "auto") {
+    // «Авто» — это норма площадки, а не свобода. Модель иногда дописывает хэштеги сама:
+    // на площадке, где их быть не должно (Telegram: предел 0), это нарушение канала,
+    // и раньше оно доезжало до пользователя нетронутым. Здесь доводим до нормы.
+    const existing = value.match(hashtagTokenPattern) ?? [];
+    const unique = [...new Set(existing)];
+    if (maxHashtags === 0 && unique.length > 0) {
+      value = value
+        .replace(hashtagPattern, "$1")
+        .replace(/[ \t]+\n/g, "\n")
+        .replace(/\n{3,}/g, "\n\n")
+        .trim();
+    } else if (unique.length > maxHashtags) {
+      const allowed = new Set(unique.slice(0, maxHashtags));
+      const seen = new Set<string>();
+      value = value
+        .replace(hashtagPattern, (match: string, prefix: string) => {
+          // У шаблона всего одна группа захвата (префикс), поэтому сам тег берём срезом:
+          // третий аргумент колбэка — это offset, а не токен.
+          const token = match.slice(prefix.length);
+          if (!allowed.has(token) || seen.has(token)) return prefix;
+          seen.add(token);
+          return match;
+        })
+        .replace(/[ \t]+\n/g, "\n")
+        .trim();
+    }
+  } else {
     const existing = value.match(hashtagTokenPattern) ?? [];
     value = value.replace(hashtagPattern, "$1").replace(/[ \t]+\n/g, "\n").trim();
     if (maxHashtags > 0) {
