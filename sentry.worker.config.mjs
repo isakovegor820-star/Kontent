@@ -1,4 +1,5 @@
 import * as Sentry from "@sentry/node";
+import { redactBotCredentialsDeep } from "./sentry-redaction.mjs";
 
 const isProduction = process.env.NODE_ENV === "production";
 const sentryDisabled = process.env.AURORA_SENTRY_DISABLED === "1";
@@ -15,6 +16,9 @@ Sentry.init({
   environment: process.env.SENTRY_ENVIRONMENT ?? (isProduction ? "prod" : "development"),
   tracesSampleRate,
   sendDefaultPii: false,
+  // Credential общего Telegram-бота не должен покидать процесс (breadcrumbs/errors).
+  beforeBreadcrumb: (breadcrumb) => redactBotCredentialsDeep(breadcrumb),
+  beforeSend: (event) => redactBotCredentialsDeep(event),
   // Политикой падения процесса владеют worker/crash-guards.mjs (ревью P0): Sentry
   // только репортит uncaught/unhandled, выход — за guard-обработчиком с дренажем
   // и детерминированным exit(1) для рестарта супервизором.

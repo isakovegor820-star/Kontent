@@ -1,4 +1,5 @@
 import * as Sentry from "@sentry/nextjs";
+import { redactBotCredentialsDeep } from "./sentry-redaction.mjs";
 
 const isProduction = process.env.NODE_ENV === "production";
 const sentryDisabled = process.env.AURORA_SENTRY_DISABLED === "1";
@@ -15,6 +16,9 @@ Sentry.init({
   environment: process.env.SENTRY_ENVIRONMENT ?? (isProduction ? "prod" : "development"),
   tracesSampleRate,
   sendDefaultPii: false,
+  // Credential общего Telegram-бота не должен покидать процесс (breadcrumbs/errors).
+  beforeBreadcrumb: (breadcrumb) => redactBotCredentialsDeep(breadcrumb),
+  beforeSend: (event) => redactBotCredentialsDeep(event),
   dataCollection: {
     userInfo: false,
     httpBodies: [],
