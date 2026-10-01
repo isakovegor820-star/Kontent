@@ -24,6 +24,13 @@ Restart=always
 RestartSec=5
 KillSignal=SIGTERM
 TimeoutStopSec=30
+# Ресурсные пределы (ревью 2026-09-30): без них утечка/OOM Next-процесса могла
+# съесть весь хост. Лимиты — стартовые ориентиры, сверяйте с фактическим
+# потреблением и при росте нагрузки меняйте только через репозиторий.
+MemoryMax=4G
+MemoryHigh=3G
+CPUQuota=200%
+TasksMax=512
 # Эти hardening-опции совместимы с npm/node и не ломают доступ к release-каталогу.
 NoNewPrivileges=true
 PrivateTmp=true
