@@ -201,4 +201,23 @@ describe("Autopilot ready-plan generation contract", () => {
     expect(source).toContain("set artifact_autopilot_plan_id = $4, updated_at = now()");
     expect(source).toContain("growth move plan lineage changed during generation");
   });
+
+  // Плейсхолдер `building` — это строка, которую человек видит как «Готово 5 из 5».
+  // Если её не закрыть в той же транзакции, что и готовый план, страница опрашивает
+  // завершённую сборку бесконечно, а reconciler каждые 30 секунд заказывает её заново.
+  it("closes the build placeholder in the same commit as the finished plan", () => {
+    const finalizeIndex = source.indexOf("const finalizedPlaceholder = await finalizeAutopilotBuildPlaceholder(tx, {");
+    expect(finalizeIndex).toBeGreaterThan(0);
+    expect(source.indexOf('await tx.query("commit");', finalizeIndex)).toBeGreaterThan(finalizeIndex);
+    expect(source).toContain("resultPlanId: Number(ins.rows[0].id)");
+    expect(source).toContain("const supersededAttempts = await supersedeAutopilotAttempts(tx, {");
+    expect(source).toContain("keepPlanId: Number(ins.rows[0].id)");
+  });
+
+  it("does not rebuild a placeholder whose plan is already committed", () => {
+    expect(source).toContain('committedAutopilotResultExistsSql("autopilot_plan")');
+    expect(source).toContain("if (expected.rows[0].result_committed === true)");
+    expect(source).toContain("superseded_by_committed_result");
+    expect(source).toContain("повторная сборка пропущена");
+  });
 });

@@ -7,6 +7,10 @@ import {
 } from "./autopilot-config.mjs";
 import { autopilotCandidateCount } from "./autopilot-candidate-selection.mjs";
 import { autopilotRetryableItemIndexes } from "./autopilot-build-progress.mjs";
+import {
+  committedAutopilotResultExistsSql,
+  finalizeAutopilotBuildPlaceholder,
+} from "./autopilot-build-finalize.mjs";
 import { normalizeAutopilotQuickSettings } from "./autopilot-style.mjs";
 import { randomUUID } from "node:crypto";
 
@@ -338,7 +342,8 @@ export async function reconcileBuildingAutopilotPlans({ pool, queue, limit = 250
       `select plan.id, plan.project_id, plan.user_id, plan.channel_id, plan.status,
               plan.items, plan.publication_target_count, plan.expected_post_count,
               plan.build_report, plan.repair_strategy, plan.repair_attempt,
-              settings.enabled
+              settings.enabled,
+              ${committedAutopilotResultExistsSql("plan")} as result_committed
          from autopilot_plan plan
          join channels channel
            on channel.id = plan.channel_id and channel.project_id = plan.project_id
@@ -363,9 +368,22 @@ export async function reconcileBuildingAutopilotPlans({ pool, queue, limit = 250
       [boundedLimit],
     )
   ).rows;
-  const result = { scanned: rows.length, enqueued: 0, pending: 0 };
+  const result = { scanned: rows.length, enqueued: 0, finalized: 0, pending: 0 };
   for (const row of rows) {
     try {
+      // A `building` row whose plan was already committed is a leftover, not work in
+      // progress. Replaying it costs a full generation every 30 seconds and never ends,
+      // because each pass commits another plan and leaves the placeholder behind again.
+      // Close it instead of dispatching it.
+      if (row.status === "building" && row.result_committed === true) {
+        const finalized = await finalizeAutopilotBuildPlaceholder(pool, {
+          projectId: row.project_id,
+          channelId: row.channel_id,
+          planId: row.id,
+        });
+        if (finalized.finalized) result.finalized++;
+        continue;
+      }
       if (row.status === "partial" || row.build_report?.autoRecovery?.jobId) {
         const prepared = row.status === "partial"
           ? await ensurePartialRecoveryState(pool, row)

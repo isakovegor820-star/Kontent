@@ -478,6 +478,7 @@ describe("weekly Autopilot queue dispatch", () => {
     await expect(reconcileBuildingAutopilotPlans({ pool, queue, limit: 50 })).resolves.toEqual({
       scanned: 2,
       enqueued: 2,
+      finalized: 0,
       pending: 0,
     });
     expect(pool.query).toHaveBeenCalledWith(expect.stringContaining("plan.status = 'building'"), [50]);
@@ -487,6 +488,50 @@ describe("weekly Autopilot queue dispatch", () => {
       { projectId: 4, userId: 9, channelId: 13, planId: 702 },
       expect.objectContaining({ jobId: "autopilot-plan-702" }),
     );
+  });
+
+  // Плейсхолдер, чей план уже сохранён, — это не работа, а хвост завершённой сборки.
+  // Пока его переотправляли, Аврора собирала одну и ту же неделю заново каждые 30 секунд,
+  // а страница всё это время показывала «Готово 5 из 5» с бесконечной загрузкой.
+  it("finalizes a placeholder whose plan was already committed instead of rebuilding it", async () => {
+    const rows = [
+      {
+        id: "707",
+        project_id: "4",
+        user_id: "9",
+        channel_id: "12",
+        status: "building",
+        result_committed: true,
+      },
+      {
+        id: "708",
+        project_id: "4",
+        user_id: "9",
+        channel_id: "13",
+        status: "building",
+        result_committed: false,
+      },
+    ];
+    const pool = { query: vi.fn(async () => ({ rows, rowCount: rows.length })) };
+    const queue = { add: vi.fn(async () => ({})) };
+
+    await expect(reconcileBuildingAutopilotPlans({ pool, queue })).resolves.toEqual({
+      scanned: 2,
+      enqueued: 1,
+      finalized: 1,
+      pending: 0,
+    });
+    expect(queue.add).toHaveBeenCalledTimes(1);
+    expect(queue.add).toHaveBeenCalledWith(
+      "autopilot-plan",
+      { projectId: 4, userId: 9, channelId: 13, planId: 708 },
+      expect.objectContaining({ jobId: "autopilot-plan-708" }),
+    );
+    expect(pool.query).toHaveBeenCalledWith(
+      expect.stringContaining("set status = 'done', terminal_outcome = 'complete'"),
+      [707, 4, 12, "{}"],
+    );
+    expect(pool.query.mock.calls[0][0]).toContain("from autopilot_plan committed");
   });
 
   it("reconciles a recoverable partial plan as a continuation", async () => {
@@ -510,6 +555,7 @@ describe("weekly Autopilot queue dispatch", () => {
     await expect(reconcileBuildingAutopilotPlans({ pool, queue })).resolves.toEqual({
       scanned: 1,
       enqueued: 1,
+      finalized: 0,
       pending: 0,
     });
     expect(queue.add).toHaveBeenCalledWith(
@@ -540,6 +586,7 @@ describe("weekly Autopilot queue dispatch", () => {
     await expect(reconcileBuildingAutopilotPlans({ pool, queue })).resolves.toEqual({
       scanned: 1,
       enqueued: 1,
+      finalized: 0,
       pending: 0,
     });
     expect(queue.add).toHaveBeenCalledWith(
@@ -573,6 +620,7 @@ describe("weekly Autopilot queue dispatch", () => {
     await expect(reconcileBuildingAutopilotPlans({ pool, queue })).resolves.toEqual({
       scanned: 1,
       enqueued: 1,
+      finalized: 0,
       pending: 0,
     });
     expect(queue.add).toHaveBeenCalledWith(
@@ -603,6 +651,7 @@ describe("weekly Autopilot queue dispatch", () => {
     await expect(reconcileBuildingAutopilotPlans({ pool, queue })).resolves.toEqual({
       scanned: 1,
       enqueued: 0,
+      finalized: 0,
       pending: 0,
     });
     expect(queue.add).not.toHaveBeenCalled();
@@ -620,6 +669,7 @@ describe("weekly Autopilot queue dispatch", () => {
     await expect(reconcileBuildingAutopilotPlans({ pool, queue })).resolves.toEqual({
       scanned: 1,
       enqueued: 0,
+      finalized: 0,
       pending: 1,
     });
   });

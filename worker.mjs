@@ -217,6 +217,11 @@ import {
   reconcileBuildingAutopilotPlans,
 } from "./src/lib/autopilot-weekly-queue.mjs";
 import {
+  committedAutopilotResultExistsSql,
+  finalizeAutopilotBuildPlaceholder,
+  supersedeAutopilotAttempts,
+} from "./src/lib/autopilot-build-finalize.mjs";
+import {
   AiCompletionError,
   completeAiText,
   isRetryableAiCompletionError,
@@ -6330,7 +6335,8 @@ async function buildAutopilotPlan(
       `select generation_engine, generation_post_frequency, expected_post_count,
               publication_target_count, candidate_count,
               planning_months, planning_weeks, monthly_campaign_plan_id, items, quick_settings,
-              repair_attempt, build_report, schedule_mode, coverage_until
+              repair_attempt, build_report, schedule_mode, coverage_until,
+              ${committedAutopilotResultExistsSql("autopilot_plan")} as result_committed
          from autopilot_plan
         where id = $1 and project_id = $2 and channel_id = $3 and status = 'building'`,
       [expectedPlanId, projectId, channelId],
@@ -6338,6 +6344,33 @@ async function buildAutopilotPlan(
     if (!expected.rowCount) {
       console.log(`[auto] plan ${expectedPlanId}: задача устарела — пропускаю`);
       return { superseded: true };
+    }
+    // This placeholder already delivered its plan: the result row exists and is newer. The
+    // build must stop here instead of paying for the same week a second time. Without this
+    // check a leftover `building` row (and the reconciler that keeps replaying it) turned a
+    // finished plan into an endless generation loop.
+    if (expected.rows[0].result_committed === true) {
+      const finalized = await finalizeAutopilotBuildPlaceholder(pool, {
+        projectId,
+        channelId,
+        planId: expectedPlanId,
+      });
+      if (repairOperationId != null) {
+        await pool.query(
+          `update autopilot_repair_operations
+              set status = 'failed', terminal_outcome = 'cancelled',
+                  diagnostic = '{"code":"superseded_by_committed_result"}'::jsonb,
+                  completed_at = now(), updated_at = now()
+            where id = $1 and project_id = $2 and channel_id = $3
+              and status in ('queued', 'processing')`,
+          [repairOperationId, projectId, channelId],
+        ).catch(() => {});
+      }
+      console.log(
+        `[auto] plan ${expectedPlanId}: результат уже сохранён — повторная сборка пропущена`,
+        { finalized: finalized.finalized },
+      );
+      return { superseded: true, placeholderFinalized: finalized.finalized };
     }
     expectedPlan = expected.rows[0];
   }
@@ -7754,6 +7787,38 @@ async function buildAutopilotPlan(
         expectedPlan?.coverage_until ?? null,
       ],
     );
+    // The placeholder is the row the person watches («Готово 5 из 5»). Its whole contract is
+    // "the worker replaces it with the ready plan", and that replacement has to be part of
+    // this commit: a placeholder left in `building` keeps the page spinning on a finished
+    // build and makes the 30-second reconciler order the very same plan again — forever.
+    if (expectedPlanId != null) {
+      const finalizedPlaceholder = await finalizeAutopilotBuildPlaceholder(tx, {
+        projectId,
+        channelId,
+        planId: expectedPlanId,
+        resultPlanId: Number(ins.rows[0].id),
+      });
+      if (!finalizedPlaceholder.finalized) {
+        // Only a concurrent cancel (which takes the same settings lock) or the API deadline
+        // can close this row first. The plan itself is committed either way.
+        console.warn(`[auto] plan ${expectedPlanId}: плейсхолдер уже закрыт извне`);
+      }
+    }
+    // Earlier unfinished attempts of this channel are history now: they stay as archive
+    // instead of resurfacing as an «Сборка остановилась» card above the fresh plan.
+    const supersededAttempts = await supersedeAutopilotAttempts(tx, {
+      projectId,
+      channelId,
+      keepPlanId: Number(ins.rows[0].id),
+    });
+    if (supersededAttempts.superseded > 0) {
+      console.log("[auto] прежние попытки сборки закрыты", {
+        projectId,
+        channelId,
+        planId: Number(ins.rows[0].id),
+        superseded: supersededAttempts.superseded,
+      });
+    }
     if (linkedGrowthMoveIds.length) {
       const transferredGrowthMoves = await tx.query(
         `update growth_moves
@@ -12159,12 +12224,15 @@ async function reconcileLegalVisualRenders(operationId = null) {
 }
 
 async function reconcileAutopilotBuildQueue() {
-  if (!autopilotQueue) return { scanned: 0, enqueued: 0, pending: 0 };
+  if (!autopilotQueue) return { scanned: 0, enqueued: 0, finalized: 0, pending: 0 };
   const result = await reconcileBuildingAutopilotPlans({
     pool,
     queue: autopilotQueue,
     limit: 250,
   });
+  if (result.finalized) {
+    console.log("[autopilot] закрыты плейсхолдеры завершённых сборок", result);
+  }
   if (result.pending) {
     console.warn("[autopilot] build queue reconciliation pending", result);
   }
