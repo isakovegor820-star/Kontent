@@ -19,6 +19,7 @@
     "test:db-pool:integration": "node scripts/test-database-pool-integration.mjs",
     "test:publication-quarantine:integration": "node scripts/test-publication-quarantine-integration.mjs",
     "test:autopilot-confirmation:integration": "node scripts/test-autopilot-confirmation-integration.mjs",
+    "test:autopilot-placeholder:integration": "vitest run --config vitest.integration.config.ts src/e2e/autopilot-build-placeholder.integration.ts --maxWorkers=1",
     "test:semantic-publication:integration": "node scripts/test-semantic-publication-integration.mjs",
     "test:ai-orchestration:integration": "vitest run --config vitest.integration.config.ts src/e2e/ai-orchestration.integration.ts",
     "test:audience-delivery:integration": "vitest run --config vitest.integration.config.ts src/e2e/audience-delivery.integration.ts",
