@@ -17,7 +17,7 @@ import { GET } from "@/app/api/posts/route";
 import { POST as openEditor } from "@/app/api/autopilot/item/draft/route";
 
 const target = new URL(String(process.env.DATABASE_URL));
-if (target.hostname !== "127.0.0.1" || target.port !== "55437") throw new Error("Isolated local PostgreSQL required");
+if (target.hostname !== "127.0.0.1" || !["55437", "5432"].includes(target.port)) throw new Error("Isolated local PostgreSQL required");
 const admin = new pg.Pool({ connectionString: target.href });
 const database = `aurora_calendar_${randomUUID().replaceAll("-", "")}`;
 target.pathname = `/${database}`;
@@ -182,7 +182,25 @@ describe.sequential("Autopilot calendar dates through PostgreSQL and Redis", () 
     mock.enqueue.mockRejectedValueOnce(new Error("Redis unavailable"));
     expect(await (await move()).json()).toMatchObject({ ok: true, queuePending: true, scheduleRevision: 2 });
     const name = `calendar-drag-${randomUUID()}`;
-    const connection = { host: "127.0.0.1", port: 56437, maxRetriesPerRequest: null };
+    const redisUrl = String(process.env.AUTOPILOT_RESCHEDULE_TEST_REDIS_URL || "").trim();
+    let connection;
+    if (redisUrl) {
+      const parsed = new URL(redisUrl);
+      if (!["127.0.0.1", "localhost"].includes(parsed.hostname) || !["redis:", "rediss:"].includes(parsed.protocol)) {
+        throw new Error("isolated loopback Redis required");
+      }
+      connection = {
+        host: parsed.hostname,
+        port: Number(parsed.port || 6379),
+        db: Number(parsed.pathname.replace(/^\//u, "") || 0),
+        username: parsed.username ? decodeURIComponent(parsed.username) : undefined,
+        password: parsed.password ? decodeURIComponent(parsed.password) : undefined,
+        tls: parsed.protocol === "rediss:" ? {} : undefined,
+        maxRetriesPerRequest: null,
+      };
+    } else {
+      connection = { host: "127.0.0.1", port: 56437, maxRetriesPerRequest: null };
+    }
     const queue = new Queue(name, { connection });
     let worker: Worker | undefined;
     try {

@@ -1,10 +1,16 @@
 import { randomUUID } from "node:crypto";
 import pg, { type PoolClient } from "pg";
+import Redis from "ioredis";
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+
+import {
+  PUBLICATION_HEARTBEAT_KEY,
+  serializePublicationHeartbeat,
+} from "../../worker/publication-heartbeat.mjs";
 
 const testDatabaseUrl = process.env.SYSTEM_TEST_DATABASE_URL || "";
 const target = new URL(testDatabaseUrl);
-if (target.hostname !== "127.0.0.1" || target.port !== "57641" || !["/aurora_system_test", "/aurora_system_release_test"].includes(target.pathname)) {
+if (target.hostname !== "127.0.0.1" || !((target.port === "57641" && ["/aurora_system_test", "/aurora_system_release_test"].includes(target.pathname)) || (target.port === "5432" && target.pathname === "/aurora_admin_integrity_test"))) {
   throw new Error("Requires the dedicated loopback aurora_system_test database on port 57641");
 }
 const db = new pg.Pool({ connectionString: testDatabaseUrl, max: 1 });
@@ -15,12 +21,14 @@ import { loadAdminSystemDiagnostics } from "@/lib/admin-system-diagnostics";
 let client: PoolClient;
 let projectId: number;
 let channelId: number;
+let fixtureUserId: number;
+let redis: Redis | null = null;
 const now = Date.now();
 const at = (offsetMs = 0) => new Date(now + offsetMs).toISOString();
 
 beforeEach(async () => {
   vi.stubEnv("DATABASE_URL", testDatabaseUrl);
-  vi.stubEnv("REDIS_URL", "redis://127.0.0.1:57642/0");
+  vi.stubEnv("REDIS_URL", String(process.env.SYSTEM_TEST_REDIS_URL || "redis://127.0.0.1:57642/0"));
   vi.stubEnv("AI_SERVICE_ENGINE", "local");
   vi.stubEnv("RESEND_API_KEY", "synthetic-config-only-no-request");
   vi.stubEnv("PASSWORD_RESET_FROM", "system-audit@aurora.test");
@@ -29,26 +37,43 @@ beforeEach(async () => {
   vi.stubEnv("TG_BOT_TOKEN", "");
   client = await db.connect();
   await client.query("begin");
+  // Диагностика считает воркер публикаций «вниз» без свежего heartbeat; в CI нет
+  // живого воркера, поэтому тест сеет собственный heartbeat в изолированный Redis.
+  redis = new Redis(String(process.env.SYSTEM_TEST_REDIS_URL || "redis://127.0.0.1:57642/0"), {
+    maxRetriesPerRequest: 1,
+    lazyConnect: true,
+  });
+  await redis.set(PUBLICATION_HEARTBEAT_KEY, serializePublicationHeartbeat(now), "EX", 300).catch(() => {});
   let tail: Promise<unknown> = Promise.resolve();
   state.query.mockImplementation((...args: Parameters<PoolClient["query"]>) => {
     const result = tail.then(() => client.query(...args));
     tail = result.catch(() => undefined);
     return result;
   });
-  projectId = Number((await client.query("insert into projects(name,created_by_user_id) values ('System integrity transaction fixture',1) returning id")).rows[0].id);
-  await client.query("insert into project_members(project_id,user_id,role,status) values($1,1,'owner','active')", [projectId]);
-  channelId = Number((await client.query("insert into channels(user_id,project_id,network,vk_group_id,title) values(1,$1,'vk',123,'Transaction fixture') returning id", [projectId])).rows[0].id);
+  // Собственный fixture-пользователь: users.id генерируется identity, и в CI базе
+  // (бутстрап schema.sql) пользователя с id=1 нет.
+  fixtureUserId = Number((await client.query(
+    "insert into users(email,name) values('system-integrity-fixture@aurora.test','System fixture') returning id",
+  )).rows[0].id);
+  projectId = Number((await client.query("insert into projects(name,created_by_user_id) values ('System integrity transaction fixture',$1) returning id", [fixtureUserId])).rows[0].id);
+  await client.query("insert into project_members(project_id,user_id,role,status) values($1,$2,'owner','active')", [projectId, fixtureUserId]);
+  channelId = Number((await client.query("insert into channels(user_id,project_id,network,vk_group_id,title) values($1,$2,'vk',123,'Transaction fixture') returning id", [fixtureUserId, projectId])).rows[0].id);
 });
-afterEach(async () => { await client.query("rollback"); client.release(); vi.unstubAllEnvs(); });
+afterEach(async () => {
+  await client.query("rollback");
+  client.release();
+  if (redis) { await redis.quit().catch(() => {}); redis = null; }
+  vi.unstubAllEnvs();
+});
 afterAll(async () => { await db.end(); });
 
 async function report() { return loadAdminSystemDiagnostics({ now: () => now }); }
 async function post(status: string, publishedAt: string | null = null) {
-  return Number((await client.query("insert into posts(user_id,channel_id,project_id,status,published_at,provider_started_at) values(1,$1,$2,$3,$4,$5) returning id", [channelId, projectId, status, publishedAt, publishedAt ? new Date(Date.parse(publishedAt) - 2500).toISOString() : null])).rows[0].id);
+  return Number((await client.query("insert into posts(user_id,channel_id,project_id,status,published_at,provider_started_at) values($1,$2,$3,$4,$5,$6) returning id", [fixtureUserId, channelId, projectId, status, publishedAt, publishedAt ? new Date(Date.parse(publishedAt) - 2500).toISOString() : null])).rows[0].id);
 }
 async function event(postId: number, offsetMs: number, eventId = randomUUID()) {
   await client.query(`insert into product_events(event_id,project_id,user_id,section_id,feature_id,action,stage,outcome,error_code,operation_id,occurred_at)
-    values($1,$2,1,'calendar','publication','scheduled','failed','failure','test_provider_timeout',$3,$4) on conflict do nothing`, [eventId, projectId, `post:${postId}`, at(offsetMs)]);
+    values($1,$2,$3,'calendar','publication','scheduled','failed','failure','test_provider_timeout',$4,$5) on conflict do nothing`, [eventId, projectId, fixtureUserId, `post:${postId}`, at(offsetMs)]);
 }
 
 describe.sequential("admin system SQL on the actual schema (transactional synthetic fixtures)", () => {
@@ -80,7 +105,7 @@ describe.sequential("admin system SQL on the actual schema (transactional synthe
   it("detects a current partial AI failure even when another route succeeded, then recovers without deleting history", async () => {
     async function attempt(provider: string, outcome: string, offset: number) {
       await client.query(`insert into ai_provider_attempts(user_id,logical_operation_id,phase,attempt_index,provider,model,input_tokens,output_tokens,usage_estimated,latency_ms,outcome,safe_error_code,request_correlation_id,created_at)
-        values(1,$1,'draft',1,$2,'fixture',1,1,false,100,$3,$4,$5,$6)`, [randomUUID(), provider, outcome, outcome === "failed" ? "test_provider_timeout" : null, randomUUID(), at(offset)]);
+        values($1,$2,'draft',1,$3,'fixture',1,1,false,100,$4,$5,$6,$7)`, [fixtureUserId, randomUUID(), provider, outcome, outcome === "failed" ? "test_provider_timeout" : null, randomUUID(), at(offset)]);
     }
     await attempt("route-a", "succeeded", -120_000);
     await attempt("route-b", "failed", -60_000);
