@@ -77,7 +77,7 @@ export function buildMonthlySummary({ site, profile, period, publications, probe
  * Ежемесячный отчёт: профиль + публикации за период + зонд + дельта к предыдущему отчёту.
  * Свободной генерации нет — формулировки собираются из шаблонов по данным.
  */
-export function buildMonthlyReport({ site, profile, period, publications, probe = null, previousReport = null, generatedAt = null, kind = "monthly" } = {}) {
+export function buildMonthlyReport({ site, profile, period, publications, probe = null, previousReport = null, competitors = null, generatedAt = null, kind = "monthly" } = {}) {
   if (!site?.confirmedDomain) throw new TypeError("site_report_site_required");
   if (!profile || profile.profileVersion !== "site-profile-v1") throw new TypeError("site_report_profile_required");
   if (!period?.start || !period?.end) throw new TypeError("site_report_period_required");
@@ -157,6 +157,15 @@ export function buildMonthlyReport({ site, profile, period, publications, probe 
     }),
     publications: Object.freeze(normalizedPublications),
     recommendations: recommendations.items,
+    competitors: competitors
+      ? Object.freeze({
+          status: "ready",
+          own: competitors.own ?? null,
+          rows: Object.freeze(competitors.rows || []),
+          missingThemes: Object.freeze(competitors.missingThemes || []),
+          deeperCompetitors: Object.freeze(competitors.deeperCompetitors || []),
+        })
+      : Object.freeze({ status: "not_configured", own: null, rows: Object.freeze([]), missingThemes: Object.freeze([]), deeperCompetitors: Object.freeze([]) }),
     recommendationSummary: Object.freeze({ open: recommendations.openCount, done: recommendations.doneCount, carried: recommendations.carriedCount }),
     limitations: Object.freeze([
       ...(Number(profile?.technical?.clientRenderedPages || 0) > 0
@@ -165,6 +174,7 @@ export function buildMonthlyReport({ site, profile, period, publications, probe 
       "Позиции в поиске и трафик не измерялись: интеграции Яндекс.Вебмастер и Google Search Console не подключены.",
       "Зонд видимости опрашивает подключённые движки одинаковыми вопросами; это воспроизводимая динамика, а не замер реальной выдачи Perplexity или Яндекс-Нейро.",
       "Оценки относятся только к проверенному публичному срезу страниц.",
+      ...(competitors ? ["Сравнение с конкурентами опирается на открытые страницы, которые Аврора прочитала сама: это не рейтинг и не замер позиций в поиске."] : []),
     ]),
   });
   const summaryRu = buildMonthlySummary({ site, profile, period: payload.period, publications: normalizedPublications, probe: probePayload.status === "not_run" ? null : { ...probe, engines: probePayload.engines, answers: probe.answers ?? probe.questions }, previousProbe, recommendations });

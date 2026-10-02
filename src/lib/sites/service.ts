@@ -222,6 +222,26 @@ export function reportInsights(payload: unknown) {
         : recommendations.filter((item) => item.status === "done").length,
     },
     recommendations,
+    competitors: asRecord(data.competitors) && asRecord(data.competitors)?.status === "ready"
+      ? {
+          own: asRecord(asRecord(data.competitors)?.own),
+          rows: (Array.isArray(asRecord(data.competitors)?.rows) ? asRecord(data.competitors)!.rows as unknown[] : []).slice(0, 5).map((item) => {
+            const row = asRecord(item) || {};
+            return {
+              domain: String(row.domain ?? ""),
+              pages: Number(row.pages ?? 0),
+              avgWords: Number(row.avgWords ?? 0),
+              pagesWithSchema: Number(row.pagesWithSchema ?? 0),
+              hasOrganization: row.hasOrganization === true,
+              hasFaq: row.hasFaq === true,
+            };
+          }),
+          missingThemes: (Array.isArray(asRecord(data.competitors)?.missingThemes) ? asRecord(data.competitors)!.missingThemes as unknown[] : []).slice(0, 8).map((item) => {
+            const theme = asRecord(item) || {};
+            return { theme: String(theme.theme ?? ""), competitor: String(theme.competitor ?? "") };
+          }),
+        }
+      : null,
     limitations: (Array.isArray(data.limitations) ? data.limitations : []).map((item) => String(item)).slice(0, 6),
   };
 }

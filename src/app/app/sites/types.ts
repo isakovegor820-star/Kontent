@@ -121,6 +121,11 @@ export type ReportView = {
     doneRecommendations: number;
   } | null;
   recommendations?: ReportRecommendation[];
+  competitors?: {
+    own: { pages?: number; avgWords?: number; pagesWithSchema?: number; hasOrganization?: boolean; hasFaq?: boolean } | null;
+    rows: Array<{ domain: string; pages: number; avgWords: number; pagesWithSchema: number; hasOrganization: boolean; hasFaq: boolean }>;
+    missingThemes: Array<{ theme: string; competitor: string }>;
+  } | null;
   limitations?: string[];
 };
 

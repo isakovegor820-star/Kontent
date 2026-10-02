@@ -17,13 +17,14 @@ function siteRow(overrides = {}) {
   };
 }
 
-function clientWith({ site = siteRow(), previousReport = null } = {}) {
+function clientWith({ site = siteRow(), previousReport = null, competitors = [] } = {}) {
   const calls = [];
   const query = vi.fn(async (sql, params) => {
     calls.push({ sql: String(sql), params });
     if (String(sql).includes("from sites")) return { rows: site ? [site] : [] };
     if (String(sql).includes("insert into site_profiles")) return { rows: [{ id: 77 }] };
     if (String(sql).includes("from site_reports")) return { rows: previousReport ? [{ id: previousReport }] : [] };
+    if (String(sql).includes("from site_competitors")) return { rows: competitors };
     if (String(sql).includes("insert into site_reports")) return { rows: [{ id: 91 }] };
     return { rows: [] };
   });
@@ -63,7 +64,7 @@ describe("persistSiteProfileForAnalysis", () => {
     expect(result).toEqual({ siteId: 5, profileId: 77, reportId: 91, reportKind: "initial_audit", pageCount: 1, gaps: result.gaps, indexedPages: 0 });
     expect(result.gaps).toBeGreaterThan(0);
 
-    const [lock, profile, previous, report, site, knowledgeReset] = client.calls;
+    const [lock, profile, previous, competitorRows, report, site, knowledgeReset] = client.calls;
     expect(lock.sql).toContain("for update");
     expect(lock.params).toEqual([5]);
 
@@ -76,11 +77,15 @@ describe("persistSiteProfileForAnalysis", () => {
     expect(technical.pageTypeCounts.home).toBe(1);
 
     expect(previous.sql).toContain("from site_reports");
+    // Снимки конкурентов читаются в той же транзакции: без них в отчёте нечего сравнивать.
+    expect(competitorRows.sql).toContain("from site_competitors");
+    expect(competitorRows.params).toEqual([5]);
     expect(report.sql).toContain("insert into site_reports");
     expect(report.params[1]).toBe("initial_audit");
     expect(report.params[2]).toBe(77);
     expect(report.params[3]).toBeNull();
     const payload = JSON.parse(report.params[4]);
+    expect(payload.competitors.status).toBe("not_configured");
     expect(payload.kind).toBe("initial_audit");
     expect(payload.analysis).toMatchObject({ analysisId: 41, runRevision: 2, snapshotHash: input.snapshotHash });
     expect(payload.generatedAt).toBe("2026-09-02T12:00:00.000Z");
@@ -112,5 +117,23 @@ describe("persistSiteProfileForAnalysis", () => {
     expect(report.params[1]).toBe("on_demand");
     expect(report.params[3]).toBe(60);
     expect(JSON.parse(report.params[4]).kind).toBe("on_demand");
+  });
+
+  it("кладёт сравнение с конкурентами в отчёт, когда снимки собраны", async () => {
+    const client = clientWith({
+      competitors: [
+        { domain: "rival.ru", status: "ready", summary: { pages: 8, avgWords: 420, pagesWithSchema: 2, hasOrganization: true, hasFaq: true, themes: [{ theme: "налоги", occurrences: 4 }] } },
+        { domain: "pending.ru", status: "pending", summary: null },
+      ],
+    });
+    await persistSiteProfileForAnalysis(client, input);
+
+    const report = client.calls.find((call) => call.sql.includes("insert into site_reports"));
+    const payload = JSON.parse(report.params[4]);
+    expect(payload.competitors.status).toBe("ready");
+    expect(payload.competitors.rows).toHaveLength(1);
+    expect(payload.competitors.rows[0].domain).toBe("rival.ru");
+    expect(payload.competitors.own.pages).toBe(1);
+    expect(payload.limitations.join(" ")).toMatch(/не замер позиций/);
   });
 });

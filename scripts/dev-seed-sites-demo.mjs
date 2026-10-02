@@ -18,7 +18,7 @@ import pg from "pg";
 
 import { buildSiteAnalysisReport, extractSitePage, DEFAULT_SITE_CRAWL_LIMITS } from "../src/lib/site-crawler.mjs";
 import { buildSiteProfile } from "../src/lib/site-profile/profile.mjs";
-import { buildCompetitorSummary } from "../src/lib/site-competitors/summary.mjs";
+import { buildCompetitorSummary, compareWithCompetitors } from "../src/lib/site-competitors/summary.mjs";
 import { buildMonthlyReport } from "../src/lib/site-report/monthly.mjs";
 import { persistSiteProfileForAnalysis } from "../worker/site-profile-persistence.mjs";
 
@@ -407,6 +407,15 @@ async function seedSite(site, pages, { withArticles }) {
     });
   }
 
+  // Конкуренты добавляются до текущего прогона: иначе в отчёте не будет сравнения,
+  // ведь снимки читаются в момент сборки отчёта.
+  if (withArticles) {
+    await seedCompetitors(site, [
+      { domain: "rival-bankrot.ru", pages: 8, words: 420, schema: true },
+      { domain: "pravo-help.ru", pages: 4, words: 180, schema: false },
+    ]);
+  }
+
   const current = await seedAnalysisRun(site, pages, { checkedAt, runRevision: withArticles ? 2 : 1 });
   const { profile } = current;
 
@@ -416,10 +425,17 @@ async function seedSite(site, pages, { withArticles }) {
     [site.id],
   );
   const period = { start: checkedAt.toISOString(), end: new Date(checkedAt.getTime() + 7 * 24 * 60 * 60 * 1000).toISOString() };
+  const competitorRows = await client.query(
+    "select domain, status, summary from site_competitors where site_id = $1 order by created_at asc, id asc",
+    [site.id],
+  );
   const monthly = buildMonthlyReport({
     site: { confirmedDomain: site.confirmed_domain, canonicalUrl: site.canonical_url, verificationState: site.verification_state },
     profile,
     period,
+    competitors: competitorRows.rows.length > 0
+      ? compareWithCompetitors(profile, competitorRows.rows.map((item) => ({ domain: item.domain, status: item.status, summary: item.summary })))
+      : null,
     publications: withArticles ? { published: 0, rejectedDuplicates: 0, pendingReview: ARTICLES.length, failed: 0 } : {},
     probe: null,
     previousReport: previous.rows[0] ? { id: Number(previous.rows[0].id), payload: previous.rows[0].payload } : null,
@@ -449,14 +465,6 @@ async function seedSite(site, pages, { withArticles }) {
         ],
       );
     }
-  }
-
-  if (withArticles) {
-    // Конкуренты: один крупнее и с разметкой, второй слабее — сравнение должно быть наглядным.
-    await seedCompetitors(site, [
-      { domain: "rival-bankrot.ru", pages: 8, words: 420, schema: true },
-      { domain: "pravo-help.ru", pages: 4, words: 180, schema: false },
-    ]);
   }
 
   return { analysisId: current.analysisId, profileId: current.profileId, reportId: current.reportId, monthlyReportId: Number(monthlyRow.rows[0].id), profile };

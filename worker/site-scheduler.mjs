@@ -3,6 +3,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { normalizeSiteLimits } from "../src/lib/site-crawler.mjs";
 import { renderSiteReportMarkdown } from "../src/lib/site-report/export.mjs";
 import { buildMonthlyReport } from "../src/lib/site-report/monthly.mjs";
+import { compareWithCompetitors } from "../src/lib/site-competitors/summary.mjs";
 import { enqueuePendingInterpretations } from "./site-ai-worker.mjs";
 import { SITE_ARTICLE_JOBS, enqueueSiteArticleJob, planSiteArticles, reconcileSitePublication } from "./site-articles-worker.mjs";
 import { SITE_PROBE_INTERVAL_DAYS, latestProbeSummary, runSiteVisibilityProbe } from "./site-visibility-probe.mjs";
@@ -213,7 +214,7 @@ export async function runSiteMonthlyReports(pool, { now = new Date(), period = n
       );
       if (existing.rows[0]) continue;
     }
-    const [publications, byTypeRows, previous, probe] = await Promise.all([
+    const [publications, byTypeRows, previous, probe, competitorRows] = await Promise.all([
       pool.query(
         `select
            count(*) filter (where status = 'published' and published_at >= $2::timestamptz and published_at < $3::timestamptz)::int as published,
@@ -234,6 +235,10 @@ export async function runSiteMonthlyReports(pool, { now = new Date(), period = n
         [row.id],
       ),
       latestProbeSummary(pool, Number(row.id)),
+      pool.query(
+        `select domain, status, summary from site_competitors where site_id = $1 order by created_at asc, id asc`,
+        [Number(row.id)],
+      ),
     ]);
     const stats = publications.rows[0] || {};
     const byType = Object.fromEntries(byTypeRows.rows.map((item) => [item.article_type, Number(item.n)]));
@@ -244,6 +249,10 @@ export async function runSiteMonthlyReports(pool, { now = new Date(), period = n
       publications: { published: Number(stats.published || 0), byType, rejectedDuplicates: Number(stats.rejected || 0), pendingReview: Number(stats.pending || 0), failed: Number(stats.failed || 0) },
       probe: probe ? { ...probe, answers: probe.answers } : null,
       previousReport: previous.rows[0] ? { id: Number(previous.rows[0].id), payload: previous.rows[0].payload } : null,
+      // Снимки конкурентов уже собраны предыдущими аудитами: в отчёт идёт то, что есть.
+      competitors: competitorRows.rows.length > 0
+        ? compareWithCompetitors(profileFromRow(row), competitorRows.rows.map((item) => ({ domain: item.domain, status: item.status, summary: item.summary })))
+        : null,
       generatedAt: now,
       kind,
     });

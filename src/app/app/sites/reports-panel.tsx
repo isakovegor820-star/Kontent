@@ -178,6 +178,27 @@ export function ReportsPanel({ siteId, profile, reports, reportRequested, retryi
                 </>
               )}
 
+              {latest.competitors && latest.competitors.rows.length > 0 && (
+                <>
+                  <p className="type-label mt-5 text-text-2">Сравнение с конкурентами</p>
+                  <ul className="mt-2 space-y-1.5">
+                    <li className="type-caption text-text-2">
+                      Ваш сайт: {latest.competitors.own?.pages ?? "—"} стр. · {latest.competitors.own?.avgWords ?? "—"} слов · разметка {latest.competitors.own?.pagesWithSchema ?? 0} из {latest.competitors.own?.pages ?? 0}
+                    </li>
+                    {latest.competitors.rows.map((row) => (
+                      <li key={row.domain} className="type-caption text-text-2">
+                        {row.domain}: {row.pages} стр. · {row.avgWords} слов · разметка {row.pagesWithSchema} из {row.pages} · Organization {row.hasOrganization ? "есть" : "нет"}
+                      </li>
+                    ))}
+                  </ul>
+                  {latest.competitors.missingThemes.length > 0 && (
+                    <p className="type-caption mt-2 text-text-3">
+                      Темы, которых у вас нет: {latest.competitors.missingThemes.map((item) => `${item.theme} (${item.competitor})`).join(", ")}
+                    </p>
+                  )}
+                </>
+              )}
+
               {latest.limitations && latest.limitations.length > 0 && (
                 <div className="mt-5 rounded-sm bg-surface-2 p-3">
                   <p className="type-caption font-semibold text-text-3">Что этот отчёт не измеряет</p>

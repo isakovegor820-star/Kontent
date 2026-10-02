@@ -1,5 +1,6 @@
 import { buildSiteProfile } from "../src/lib/site-profile/profile.mjs";
 import { buildInitialAuditReport } from "../src/lib/site-report/initial-audit.mjs";
+import { compareWithCompetitors } from "../src/lib/site-competitors/summary.mjs";
 
 /**
  * Достраивает профиль сайта и стартовый отчёт для прогона анализа, запущенного от имени
@@ -81,6 +82,20 @@ export async function persistSiteProfileForAnalysis(client, {
   const previousReportId = previous.rows[0] ? Number(previous.rows[0].id) : null;
   const hasReports = previousReportId !== null;
 
+  // Снимки конкурентов читаем в той же транзакции: в отчёт попадает то, что уже собрано,
+  // а обновление снимков идёт после коммита и не удлиняет транзакцию.
+  const competitorRows = await client.query(
+    `select domain, status, summary from site_competitors where site_id = $1 order by created_at asc, id asc`,
+    [id],
+  );
+  const competitors = competitorRows.rows.length > 0
+    ? compareWithCompetitors(profile, competitorRows.rows.map((row) => ({
+        domain: row.domain,
+        status: row.status,
+        summary: row.summary,
+      })))
+    : null;
+
   const report_ = buildInitialAuditReport({
     site: {
       confirmedDomain: site.confirmed_domain,
@@ -89,6 +104,7 @@ export async function persistSiteProfileForAnalysis(client, {
     },
     profile,
     analysis: { analysisId, runRevision, snapshotHash },
+    competitors,
     generatedAt: now,
   });
   const storedReport = await client.query(
