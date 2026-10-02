@@ -4,7 +4,7 @@ import { NextRequest, NextResponse } from "next/server";
 
 import { readJsonBodyValue } from "@/lib/bounded-request-body";
 import { getPool } from "@/lib/db";
-import { findPurgeBlockers, purgeAccount, recordDataRequest } from "@/lib/personal-data";
+import { findPurgeBlockers, findTransferCandidates, purgeAccount, recordDataRequest } from "@/lib/personal-data";
 import { checkRateLimit, clientIp, rateLimitResponse } from "@/lib/rate-limit";
 import { hasTrustedMutationOrigin } from "@/lib/request-origin";
 import { getSessionUser } from "@/lib/session";
@@ -37,12 +37,34 @@ export async function GET(req: NextRequest) {
       ),
       findPurgeBlockers(pool, user.id),
     ]);
+    // Кандидатов на передачу считает сервер: клиент не должен решать, кому
+    // можно отдать проект, и не должен знать состав участников заранее.
+    const transferableIds = blockers.filter((project) => project.hasOtherMembers).map((project) => project.id);
+    const candidatesByProject: Record<number, Array<{ userId: number; name: string | null; role: string }>> = {};
+    for (const projectId of transferableIds) {
+      candidatesByProject[projectId] = await findTransferCandidates(pool, projectId, user.id);
+    }
+    // Один преемник должен подходить каждому проекту: оставляем тех, кто есть
+    // во всех списках. Иначе интерфейс предложил бы выбор, который сервер
+    // отклонит как неоднозначный.
+    const commonCandidates = transferableIds.length
+      ? (candidatesByProject[transferableIds[0]] ?? []).filter((candidate) =>
+          transferableIds.every((projectId) =>
+            (candidatesByProject[projectId] ?? []).some((item) => item.userId === candidate.userId),
+          ),
+        )
+      : [];
+
     return json(requestId, {
       ok: true,
       personalProjects: Number(personal.rows[0]?.count ?? 0),
-      // Командные проекты, где пользователь единственный владелец: их нельзя
-      // осиротить, поэтому удаление потребует передачи или отказа.
-      blockers,
+      // Проекты, где пользователь единственный владелец и есть кому передать:
+      // без выбора преемника удаление невозможно.
+      blockers: blockers.filter((project) => project.hasOtherMembers),
+      // Проекты без других участников: уйдут вместе с аккаунтом.
+      orphanedProjects: blockers.filter((project) => !project.hasOtherMembers),
+      transferCandidates: commonCandidates,
+      transferCandidatesByProject: candidatesByProject,
     });
   } catch (error) {
     console.error("[/api/settings/account-deletion]", {
@@ -93,6 +115,9 @@ export async function POST(req: NextRequest) {
     const result = await purgeAccount(client, user.id, { transferSharedTo });
     if (!result.ok) {
       await client.query("rollback");
+      // Разные причины — разные ответы: 409 когда нужна передача, 422 когда
+      // выбрана неподходящая цель. Интерфейсу важно их различать.
+      const status = result.error === "invalid_transfer_target" ? 422 : 409;
       return json(
         requestId,
         {
@@ -101,7 +126,7 @@ export async function POST(req: NextRequest) {
           // Интерфейс покажет эти проекты и предложит передать их участнику.
           projects: result.projects,
         },
-        409,
+        status,
       );
     }
     await recordDataRequest(client, {
@@ -119,6 +144,9 @@ export async function POST(req: NextRequest) {
       ok: true,
       deleted: true,
       deletedPersonalProjects: result.deletedPersonalProjects,
+      // Командные проекты без других участников тоже уходят с аккаунтом:
+      // передать их некому, а держать не для кого.
+      deletedSharedProjects: result.deletedSharedProjects,
       transferredSharedProjects: result.transferredSharedProjects,
     });
   } catch (error) {

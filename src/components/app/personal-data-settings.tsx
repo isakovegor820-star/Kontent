@@ -25,10 +25,13 @@ type Preview = {
   ok?: boolean;
   error?: string;
   personalProjects?: number;
+  /** Проекты, где нужен выбор преемника: без него проект останется без владельца. */
   blockers?: Array<{ id: number; name: string }>;
+  /** Проекты без других участников: уйдут вместе с аккаунтом. */
+  orphanedProjects?: Array<{ id: number; name: string }>;
+  /** Кандидатов считает сервер: передать проект можно только участнику. */
+  transferCandidates?: Array<{ userId: number; name: string | null; role: string }>;
 };
-
-type Members = { ok?: boolean; members?: Array<{ userId: number; name: string | null; role: string }> };
 
 export function PersonalDataSettings() {
   const router = useRouter();
@@ -43,8 +46,10 @@ export function PersonalDataSettings() {
   const [transferTo, setTransferTo] = useState<number | null>(null);
   const [transferOptions, setTransferOptions] = useState<Array<{ userId: number; name: string | null }>>([]);
 
-  const loadPreview = useCallback(async () => {
-    setError(undefined);
+  const loadPreview = useCallback(async (options: { keepMessage?: boolean } = {}) => {
+    // При обновлении после ошибки сообщение не сбрасываем: иначе пользователь
+    // видит «ничего не произошло» и повторяет бессмысленное действие.
+    if (!options.keepMessage) setError(undefined);
     try {
       const response = await fetch("/api/settings/account-deletion", { headers: { accept: "application/json" } });
       const body = (await response.json().catch(() => null)) as Preview | null;
@@ -53,18 +58,7 @@ export function PersonalDataSettings() {
         return;
       }
       setPreview(body);
-      // Участники командного проекта, которым можно передать владение.
-      if (body.blockers?.length) {
-        const membersResponse = await fetch(`/api/projects/${body.blockers[0].id}/members`, {
-          headers: { accept: "application/json" },
-        }).catch(() => null);
-        const members = (await membersResponse?.json().catch(() => null)) as Members | null;
-        setTransferOptions(
-          (members?.members ?? [])
-            .filter((member) => member.role !== "owner")
-            .map((member) => ({ userId: member.userId, name: member.name })),
-        );
-      }
+      setTransferOptions(body.transferCandidates ?? []);
     } catch {
       setError("Не удалось получить состояние аккаунта. Проверьте соединение.");
     } finally {
@@ -123,7 +117,12 @@ export function PersonalDataSettings() {
       }
       if (response.status === 409 && body?.error === "shared_project_owner") {
         setError("Сначала передайте командный проект другому участнику — иначе он останется без владельца.");
-        await loadPreview();
+        await loadPreview({ keepMessage: true });
+      } else if (response.status === 422 && body?.error === "invalid_transfer_target") {
+        // Повтор не поможет: состав участников изменился, нужен новый выбор.
+        setError("Выбранный участник больше не подходит для передачи. Обновите список и выберите заново.");
+        setTransferTo(null);
+        await loadPreview({ keepMessage: true });
       } else {
         setError("Не удалось удалить аккаунт. Попробуйте позже или напишите в поддержку.");
       }
@@ -136,6 +135,7 @@ export function PersonalDataSettings() {
   }, [loadPreview, router, transferTo]);
 
   const blockers = preview?.blockers ?? [];
+  const orphaned = preview?.orphanedProjects ?? [];
   // Кнопка активна, только когда человек подтвердил последствия и, если нужно,
   // выбрал, кому передать командный проект.
   const canDelete = consequencesAccepted && (blockers.length === 0 || transferTo !== null);
@@ -185,14 +185,20 @@ export function PersonalDataSettings() {
                 </li>
                 {blockers.length ? (
                   <li className="text-danger-text">
-                    Командные проекты без других владельцев: {blockers.map((item) => item.name).join(", ")}.
-                    Их нужно передать участнику.
+                    Командные проекты без другого владельца: {blockers.map((item) => item.name).join(", ")}.
+                    Нужно выбрать, кому передать владение.
+                  </li>
+                ) : null}
+                {orphaned.length ? (
+                  <li>
+                    Командные проекты без других участников: {orphaned.map((item) => item.name).join(", ")}. Других
+                    участников в них нет, поэтому они удалятся вместе с аккаунтом.
                   </li>
                 ) : null}
               </ul>
             )}
 
-            {blockers.length ? (
+            {blockers.length && transferOptions.length ? (
               <label className="mt-3 block text-[13px] text-text-2">
                 Передать владение
                 <select
@@ -208,6 +214,14 @@ export function PersonalDataSettings() {
                   ))}
                 </select>
               </label>
+            ) : null}
+
+            {blockers.length && !transferOptions.length && !loadingPreview ? (
+              <p className="mt-3 rounded-sm bg-fire-soft p-3 text-[13px] leading-relaxed text-fire-text">
+                В проектах, которым нужен новый владелец, нет общего участника, которому можно передать все сразу.
+                Пригласите участника в каждый такой проект («Настройки → Проект») или передайте проекты по одному
+                через раздел команды, а затем возвращайтесь к удалению аккаунта.
+              </p>
             ) : null}
 
             <label className="mt-4 flex cursor-pointer items-start gap-2.5 text-[13px] leading-relaxed text-text-2">

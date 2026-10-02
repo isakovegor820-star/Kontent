@@ -8,6 +8,7 @@ const mocks = vi.hoisted(() => ({
   rateLimit: vi.fn(),
   purge: vi.fn(),
   blockers: vi.fn(),
+  candidates: vi.fn(),
   record: vi.fn(),
 }));
 
@@ -20,7 +21,13 @@ vi.mock("@/lib/rate-limit", () => ({
 }));
 vi.mock("@/lib/personal-data", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/lib/personal-data")>();
-  return { ...actual, purgeAccount: mocks.purge, findPurgeBlockers: mocks.blockers, recordDataRequest: mocks.record };
+  return {
+    ...actual,
+    purgeAccount: mocks.purge,
+    findPurgeBlockers: mocks.blockers,
+    findTransferCandidates: mocks.candidates,
+    recordDataRequest: mocks.record,
+  };
 });
 
 import { GET, POST } from "./route";
@@ -43,8 +50,15 @@ describe("account deletion route", () => {
     mocks.rateLimit.mockResolvedValue({ allowed: true });
     mocks.poolQuery.mockResolvedValue({ rows: [{ count: 1 }] });
     mocks.blockers.mockResolvedValue([]);
+    mocks.candidates.mockResolvedValue([]);
     mocks.record.mockResolvedValue(undefined);
-    mocks.purge.mockResolvedValue({ ok: true, deletedPersonalProjects: 1, transferredSharedProjects: [], anonymizedEmail: "deleted-user-7@deleted.invalid" });
+    mocks.purge.mockResolvedValue({
+      ok: true,
+      deletedPersonalProjects: 1,
+      deletedSharedProjects: [],
+      transferredSharedProjects: [],
+      anonymizedEmail: "deleted-user-7@deleted.invalid",
+    });
     mocks.connect.mockResolvedValue(client);
   });
   afterEach(() => {
@@ -103,5 +117,63 @@ describe("account deletion route", () => {
   it("passes the chosen successor to the purge", async () => {
     await POST(request("http://localhost", { confirm: true, transferSharedTo: 9 }));
     expect(mocks.purge).toHaveBeenCalledWith(expect.anything(), 7, { transferSharedTo: 9 });
+  });
+
+  it("offers transfer candidates from the server, not from the client", async () => {
+    mocks.blockers.mockResolvedValue([{ id: 5, name: "Командный", hasOtherMembers: true }]);
+    mocks.candidates.mockResolvedValue([{ userId: 9, name: "Коллега", role: "author" }]);
+
+    const response = await GET(new NextRequest("http://localhost/api/settings/account-deletion"));
+    const body = await response.json();
+    expect(body.transferCandidates).toEqual([{ userId: 9, name: "Коллега", role: "author" }]);
+    // Кандидатов считает сервер: клиент не решает, кому можно отдать проект.
+    expect(mocks.candidates).toHaveBeenCalledWith(expect.anything(), 5, 7);
+    expect(body.blockers).toHaveLength(1);
+    expect(body.orphanedProjects).toEqual([]);
+  });
+
+  it("separates projects that need a successor from those that will be deleted", async () => {
+    mocks.blockers.mockResolvedValue([
+      { id: 5, name: "С коллегой", hasOtherMembers: true },
+      { id: 6, name: "Одинокий", hasOtherMembers: false },
+    ]);
+    mocks.candidates.mockResolvedValue([{ userId: 9, name: "Коллега", role: "author" }]);
+
+    const body = await (await GET(new NextRequest("http://localhost/api/settings/account-deletion"))).json();
+    // Требуют выбора преемника — только те, где есть кому передать.
+    expect(body.blockers.map((item: { id: number }) => item.id)).toEqual([5]);
+    // Осиротевшие уйдут вместе с аккаунтом: иначе владелец заперт.
+    expect(body.orphanedProjects.map((item: { id: number }) => item.id)).toEqual([6]);
+    // Кандидатов считаем только для проектов, требующих передачи.
+    expect(mocks.candidates).toHaveBeenCalledTimes(1);
+  });
+
+  it("offers only candidates who fit every project needing a successor", async () => {
+    mocks.blockers.mockResolvedValue([
+      { id: 5, name: "Первый", hasOtherMembers: true },
+      { id: 6, name: "Второй", hasOtherMembers: true },
+    ]);
+    mocks.candidates.mockImplementation(async (_db: unknown, projectId: number) =>
+      projectId === 5
+        ? [{ userId: 9, name: "Общий", role: "author" }, { userId: 10, name: "Только первый", role: "author" }]
+        : [{ userId: 9, name: "Общий", role: "author" }, { userId: 11, name: "Только второй", role: "author" }],
+    );
+
+    const body = await (await GET(new NextRequest("http://localhost/api/settings/account-deletion"))).json();
+    // Один преемник должен подойти каждому проекту, иначе выбор неоднозначен.
+    expect(body.transferCandidates.map((item: { userId: number }) => item.userId)).toEqual([9]);
+  });
+
+  it("answers 422 when the chosen successor is not a member", async () => {
+    mocks.purge.mockResolvedValue({
+      ok: false,
+      error: "invalid_transfer_target",
+      projects: [{ id: 5, name: "Командный" }],
+    });
+    const response = await POST(request("http://localhost", { confirm: true, transferSharedTo: 99 }));
+    expect(response.status).toBe(422);
+    await expect(response.json()).resolves.toMatchObject({ error: "invalid_transfer_target" });
+    const statements = (client.query.mock.calls as unknown as Array<[string]>).map(([sql]) => String(sql));
+    expect(statements).toContain("rollback");
   });
 });

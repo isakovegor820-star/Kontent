@@ -1,6 +1,13 @@
 import { describe, expect, it, vi } from "vitest";
 
-import { DATA_EXPORT_EXCLUDED, collectUserData, findPurgeBlockers, purgeAccount, recordDataRequest } from "./personal-data";
+import {
+  DATA_EXPORT_EXCLUDED,
+  collectUserData,
+  findPurgeBlockers,
+  findTransferCandidates,
+  purgeAccount,
+  recordDataRequest,
+} from "./personal-data";
 
 /** Мок клиента БД: маршрутизирует запросы по подстроке, как это делал бы pool. */
 function client(routes: Array<{ match: string; rows?: unknown[]; rowCount?: number }>) {
@@ -47,14 +54,24 @@ describe("personal data export", () => {
 
 describe("account deletion", () => {
   it("lists shared projects that would be left without an owner", async () => {
-    const { client: query, query: queryMock } = client([{ match: "from projects p", rows: [{ id: 5, name: "Командный" }] }]);
-    await expect(findPurgeBlockers(query as never, 7)).resolves.toEqual([{ id: 5, name: "Командный" }]);
+    const { client: query } = client([
+      { match: "from projects p", rows: [{ id: 5, name: "Командный", has_other_members: true }] },
+    ]);
+    await expect(findPurgeBlockers(query as never, 7)).resolves.toEqual([
+      { id: 5, name: "Командный", hasOtherMembers: true },
+    ]);
   });
 
-  it("refuses to delete while a shared project has no other owner", async () => {
-    const { client: query, query: queryMock } = client([{ match: "from projects p", rows: [{ id: 5, name: "Командный" }] }]);
+  it("refuses to delete while a shared project has someone to hand it to", async () => {
+    const { client: query, query: queryMock } = client([
+      { match: "from projects p", rows: [{ id: 5, name: "Командный", has_other_members: true }] },
+    ]);
     const result = await purgeAccount(query as never, 7);
-    expect(result).toEqual({ ok: false, error: "shared_project_owner", projects: [{ id: 5, name: "Командный" }] });
+    expect(result).toEqual({
+      ok: false,
+      error: "shared_project_owner",
+      projects: [{ id: 5, name: "Командный", hasOtherMembers: true }],
+    });
     // Никаких изменений до устранения причины.
     const statements = queryMock.mock.calls.map(([sql]: [string]) => String(sql)).join("\n");
     expect(statements).not.toContain("update users");
@@ -86,7 +103,9 @@ describe("account deletion", () => {
 
   it("transfers a shared project when the owner chooses the successor", async () => {
     const { client: query, query: queryMock } = client([
-      { match: "from projects p", rows: [{ id: 5, name: "Командный" }] },
+      { match: "from projects p", rows: [{ id: 5, name: "Командный", has_other_members: true }] },
+      // Цель передачи — действующий участник проекта.
+      { match: "from project_members member", rows: [{ user_id: 9, name: "Коллега", role: "author" }] },
       { match: "select id from projects", rows: [] },
       { match: "update project_members", rowCount: 1 },
       { match: "update users", rowCount: 1 },
@@ -110,5 +129,106 @@ describe("account deletion", () => {
     expect(sql).toContain("insert into data_requests");
     expect(values[1]).toBe("deletion");
     expect(values[2]).toBe("completed");
+  });
+
+  it("refuses a transfer target who is not an active member of the project", async () => {
+    const { client: query, query: queryMock } = client([
+      { match: "from projects p", rows: [{ id: 5, name: "Командный", has_other_members: true }] },
+      // Кандидат один — 9, а просят передать 99.
+      { match: "from project_members member", rows: [{ user_id: 9, name: "Коллега", role: "author" }] },
+      { match: "select id from projects", rows: [{ id: 1 }] },
+    ]);
+
+    const result = await purgeAccount(query as never, 7, { transferSharedTo: 99 });
+
+    expect(result).toEqual({
+      ok: false,
+      error: "invalid_transfer_target",
+      projects: [{ id: 5, name: "Командный", hasOtherMembers: true }],
+    });
+    // Ничего не удалено и не изменено: проверка стоит до удаления личных проектов.
+    const statements = (queryMock.mock.calls as unknown as Array<[string]>).map(([sql]) => String(sql)).join("\n");
+    expect(statements).not.toContain("update users");
+    expect(statements).not.toContain("delete from sessions");
+    expect(statements).not.toContain("delete from projects");
+  });
+
+  it("does not allow handing a project to the leaving owner", async () => {
+    const { client: dbClient } = client([
+      { match: "from projects p", rows: [{ id: 5, name: "Командный", has_other_members: true }] },
+      // Запрос кандидатов исключает самого уходящего (member.user_id <> $2),
+      // поэтому попытка передать себе не находит цель.
+      { match: "from project_members member", rows: [] },
+    ]);
+
+    const result = await purgeAccount(dbClient as never, 7, { transferSharedTo: 7 });
+    expect(result).toMatchObject({ ok: false, error: "invalid_transfer_target" });
+  });
+
+  it("lists candidates by role, excluding the leaving owner", async () => {
+    const queryMock = vi.fn(async () => ({
+      rows: [
+        { user_id: 11, name: "Публикатор", role: "publisher" },
+        { user_id: 9, name: "Автор", role: "author" },
+      ],
+    }));
+    const candidates = await findTransferCandidates({ query: queryMock } as never, 5, 7);
+
+    expect(candidates).toEqual([
+      { userId: 11, name: "Публикатор", role: "publisher" },
+      { userId: 9, name: "Автор", role: "author" },
+    ]);
+    expect((queryMock.mock.calls[0] as unknown as [string, unknown[]])[1]).toEqual([5, 7]);
+  });
+
+  it("deletes a shared project that has no other members instead of trapping the owner", async () => {
+    // Единственный участник проекта: передать некому, поэтому проект уходит
+    // вместе с аккаунтом. Иначе человек не мог бы воспользоваться правом на
+    // удаление — это и был тупик первой версии.
+    const { client: query, query: queryMock } = client([
+      { match: "from projects p", rows: [{ id: 5, name: "Командный", has_other_members: false }] },
+      { match: "select id from projects", rows: [{ id: 1 }] },
+      { match: "update users", rowCount: 1 },
+      { match: "delete from sessions", rowCount: 0 },
+      { match: "update consents", rowCount: 0 },
+    ]);
+
+    const result = await purgeAccount(query as never, 7);
+
+    expect(result).toMatchObject({ ok: true, deletedSharedProjects: [5], transferredSharedProjects: [] });
+    const statements = (queryMock.mock.calls as unknown as Array<[string]>).map(([sql]) => String(sql)).join("\n");
+    expect(statements).not.toContain("update project_members set role");
+  });
+
+  it("revokes the leaving membership so no ghost owner remains", async () => {
+    const { client: query, query: queryMock } = client([
+      { match: "from projects p", rows: [] },
+      { match: "select id from projects", rows: [] },
+      { match: "update users", rowCount: 1 },
+      { match: "delete from sessions", rowCount: 0 },
+      { match: "update consents", rowCount: 0 },
+    ]);
+
+    await purgeAccount(query as never, 7);
+
+    // Без отзыва членства проект остаётся с обезличенным «владельцем»: войти
+    // нельзя, а members.manage есть только у владельца — проект неуправляем.
+    const statements = (queryMock.mock.calls as unknown as Array<[string]>).map(([sql]) => String(sql));
+    const revoke = statements.find((sql) => sql.includes("set status = 'revoked'"));
+    expect(revoke).toBeTruthy();
+    expect(revoke).toContain("where user_id = $1 and status = 'active'");
+  });
+
+  it("refuses when the successor was revoked between validation and update", async () => {
+    const { client: query } = client([
+      { match: "from projects p", rows: [{ id: 5, name: "Командный", has_other_members: true }] },
+      { match: "from project_members member", rows: [{ user_id: 9, name: "Коллега", role: "author" }] },
+      { match: "select id from projects", rows: [{ id: 1 }] },
+      // UPDATE не затронул ни одной строки: участника отозвали.
+      { match: "update project_members set role", rowCount: 0 },
+    ]);
+
+    const result = await purgeAccount(query as never, 7, { transferSharedTo: 9 });
+    expect(result).toMatchObject({ ok: false, error: "invalid_transfer_target" });
   });
 });

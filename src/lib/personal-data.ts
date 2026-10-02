@@ -173,39 +173,97 @@ export async function collectUserData(client: Queryable, userId: number): Promis
   };
 }
 
-export type PurgeBlockReason = "shared_project_owner";
+/**
+ * Участники, которым можно передать проект.
+ *
+ * Передать проект можно только действующему участнику: `project_members` с
+ * ролью и статусом active. Это же ограничение проверяет серверная сторона —
+ * иначе через тело запроса можно было бы назначить владельцем произвольный
+ * идентификатор пользователя.
+ */
+export async function findTransferCandidates(
+  client: Queryable,
+  projectId: number,
+  exceptUserId: number,
+): Promise<Array<{ userId: number; name: string | null; role: string }>> {
+  const result = await client.query<{ user_id: number; name: string | null; role: string }>(
+    `select member.user_id, app_user.name, member.role
+       from project_members member
+       join users app_user on app_user.id = member.user_id
+      where member.project_id = $1
+        and member.user_id <> $2
+        and member.status = 'active'
+      order by case member.role when 'owner' then 0 when 'publisher' then 1 when 'author' then 2 else 3 end,
+               member.joined_at asc`,
+    [projectId, exceptUserId],
+  );
+  return result.rows.map((row) => ({ userId: Number(row.user_id), name: row.name, role: row.role }));
+}
+
+export type PurgeBlockReason = "shared_project_owner" | "invalid_transfer_target";
 
 export type PurgeResult =
   | {
       ok: true;
       deletedPersonalProjects: number;
+      /** Командные проекты, оставшиеся без участников: удалены вместе с аккаунтом. */
+      deletedSharedProjects: number[];
       transferredSharedProjects: number[];
       anonymizedEmail: string;
     }
   | { ok: false; error: PurgeBlockReason; projects: Array<{ id: number; name: string }> };
 
-/** Проверяет, можно ли удалить аккаунт прямо сейчас. */
-export async function findPurgeBlockers(
-  client: Queryable,
-  userId: number,
-): Promise<Array<{ id: number; name: string }>> {
-  // Командный проект нельзя осиротить: если владелец уходит, а других
-  // владельцев и участников нет — сначала нужно передать проект или удалить его.
-  const result = await client.query<{ id: number; name: string }>(
-    `select p.id, p.name
+export type PurgeBlocker = {
+  id: number;
+  name: string;
+  /** Есть ли кому передать владение: другие действующие участники проекта. */
+  hasOtherMembers: boolean;
+};
+
+/**
+ * Проекты, которые мешают удалить аккаунт.
+ *
+ * Блокер — командный проект, где уходящий единственный действующий владелец:
+ * платформа держит инвариант «в проекте всегда есть активный владелец»
+ * (changeProjectMembership бросает last_owner), поэтому такой проект нельзя
+ * оставить без присмотра. Личные проекты не блокируют: они уходят вместе с
+ * аккаунтом.
+ *
+ * Первая версия этой проверки требовала «нет других участников вообще» — и это
+ * было ошибкой: множество блокеров не пересекалось с множеством кандидатов на
+ * передачу, поэтому передача не могла сработать ни разу, а удаление аккаунта
+ * единственного владельца превращалось в тупик.
+ */
+export async function findPurgeBlockers(client: Queryable, userId: number): Promise<PurgeBlocker[]> {
+  const result = await client.query<{ id: number; name: string; has_other_members: boolean }>(
+    `select p.id,
+            p.name,
+            exists (
+              select 1 from project_members other
+               where other.project_id = p.id
+                 and other.user_id <> $1
+                 and other.status = 'active'
+            ) as has_other_members
        from projects p
        join project_members m on m.project_id = p.id and m.user_id = $1
       where p.personal_owner_user_id is null
         and m.role = 'owner'
         and m.status = 'active'
         and not exists (
-          select 1 from project_members other
-           where other.project_id = p.id and other.user_id <> $1 and other.status = 'active'
+          select 1 from project_members co_owner
+           where co_owner.project_id = p.id
+             and co_owner.user_id <> $1
+             and co_owner.role = 'owner'
+             and co_owner.status = 'active'
         )
       order by p.id`,
     [userId],
   );
-  return result.rows;
+  return result.rows.map((row) => ({
+    id: Number(row.id),
+    name: String(row.name),
+    hasOtherMembers: row.has_other_members === true,
+  }));
 }
 
 /**
@@ -285,6 +343,47 @@ async function resolveBlockingConstraint(
     await client.query(`update ${table} set ${column} = null where ${column} = $1`, [projectId]);
     return true;
   }
+
+  // Особый случай: «выбранный проект» в настройках пользователя. Ссылка
+  // обязательная, но удалять всю строку нельзя — она хранит ещё и предпочтения
+  // человека, который к удаляемому проекту отношения не имеет. Поэтому
+  // переводим выбор на любой другой доступный ему проект.
+  if (target.table_name === "user_project_preferences") {
+    await client.query(
+      `update user_project_preferences prefs
+          set selected_project_id = (
+                select candidate.id
+                  from projects candidate
+                 where candidate.id <> $1
+                   and (candidate.personal_owner_user_id = prefs.user_id
+                        or exists (select 1 from project_members member
+                                    where member.project_id = candidate.id
+                                      and member.user_id = prefs.user_id
+                                      and member.status = 'active'))
+                 order by candidate.id
+                 limit 1
+              ),
+              updated_at = now()
+        where prefs.selected_project_id = $1
+          and exists (
+                select 1 from projects candidate
+                 where candidate.id <> $1
+                   and (candidate.personal_owner_user_id = prefs.user_id
+                        or exists (select 1 from project_members member
+                                    where member.project_id = candidate.id
+                                      and member.user_id = prefs.user_id
+                                      and member.status = 'active'))
+              )`,
+      [projectId],
+    );
+    // Если другого проекта нет, выбора не остаётся — тогда строку убираем.
+    await client.query(`delete from ${table} where ${column} = $1`, [projectId]);
+    return true;
+  }
+
+  // Журналы проекта (например, audit_events) удаляются целиком, включая
+  // действия других людей: проект личный, и его следы уходят по запросу
+  // субъекта. Сам факт удаления и его время остаются в data_requests.
   await client.query(`delete from ${table} where ${column} = $1`, [projectId]);
   return true;
 }
@@ -302,8 +401,30 @@ export async function purgeAccount(
   options: { transferSharedTo?: number | null } = {},
 ): Promise<PurgeResult> {
   const blockers = await findPurgeBlockers(client, userId);
-  if (blockers.length > 0 && !options.transferSharedTo) {
-    return { ok: false, error: "shared_project_owner", projects: blockers };
+  // Проекты, где есть кому передать владение: без выбора преемника удаление
+  // оставило бы их без владельца, а это ломает инвариант платформы.
+  const transferable = blockers.filter((project) => project.hasOtherMembers);
+  // Проекты, где участников больше нет: они существуют только ради уходящего,
+  // поэтому уходят вместе с аккаунтом — как личные. Иначе человек оказывался бы
+  // в тупике: передать некому, а удалить аккаунт нельзя.
+  const orphaned = blockers.filter((project) => !project.hasOtherMembers);
+
+  if (transferable.length > 0 && !options.transferSharedTo) {
+    return { ok: false, error: "shared_project_owner", projects: transferable };
+  }
+
+  // Проверяем цель передачи ДО удаления личных проектов: получить проект может
+  // только действующий участник этого проекта. Иначе через тело запроса можно
+  // было бы назначить владельцем произвольный идентификатор, а транзакция
+  // успела бы удалить данные пользователя. Один преемник должен подходить
+  // каждому проекту, иначе выбор неоднозначен и запрос отклоняется.
+  if (transferable.length > 0 && options.transferSharedTo) {
+    for (const project of transferable) {
+      const candidates = await findTransferCandidates(client, project.id, userId);
+      if (!candidates.some((candidate) => candidate.userId === options.transferSharedTo)) {
+        return { ok: false, error: "invalid_transfer_target", projects: [project] };
+      }
+    }
   }
 
   // Личные проекты уходят целиком вместе с каналами, черновиками и публикациями:
@@ -318,15 +439,40 @@ export async function purgeAccount(
 
   const transferred: number[] = [];
   if (options.transferSharedTo) {
-    for (const project of blockers) {
-      await client.query(
+    for (const project of transferable) {
+      // rowCount проверяем: между выбором кандидатов и этим UPDATE участника
+      // могли отозвать (revokeProjectMember ставит status='revoked'). Тогда
+      // проект остался бы без обещанного владельца, а аккаунт уже обезличен.
+      const updated = await client.query(
         `update project_members set role = 'owner', version = version + 1, updated_at = now()
-          where project_id = $1 and user_id = $2`,
+          where project_id = $1 and user_id = $2 and status = 'active'`,
         [project.id, options.transferSharedTo],
       );
+      if ((updated.rowCount ?? 0) === 0) {
+        return { ok: false, error: "invalid_transfer_target", projects: [project] };
+      }
       transferred.push(project.id);
     }
   }
+
+  // Осиротевшие командные проекты уходят вместе с аккаунтом: участников в них
+  // не осталось, и держать их не для кого.
+  for (const project of orphaned) {
+    await resolveProjectBlockers(client, project.id);
+  }
+
+  // Членство уходящего отзываем во всех проектах, включая те, где владение
+  // передано. Иначе остаётся «призрачный» active-owner: аккаунт обезличен,
+  // войти нельзя, а платформа считает, что владелец на месте, — и проект
+  // нельзя ни переименовать, ни передать, потому что members.manage есть
+  // только у владельца. Штатный выход из проекта делает то же самое
+  // (revokeProjectMember: status='revoked', revoked_at).
+  await client.query(
+    `update project_members
+        set status = 'revoked', revoked_at = now(), version = version + 1, updated_at = now()
+      where user_id = $1 and status = 'active'`,
+    [userId],
+  );
 
   // Обезличивание: сведения о человеке стираются, идентификатор остаётся
   // технической ссылкой для журналов, которые закон требует хранить.
@@ -359,6 +505,7 @@ export async function purgeAccount(
   return {
     ok: true,
     deletedPersonalProjects: personalProjects.rows.length,
+    deletedSharedProjects: orphaned.map((project) => project.id),
     transferredSharedProjects: transferred,
     anonymizedEmail,
   };

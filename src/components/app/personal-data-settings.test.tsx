@@ -102,7 +102,13 @@ describe("personal data settings section", () => {
         return jsonResponse({ ok: false, error: "shared_project_owner" }, 409);
       }
       if (String(url).includes("account-deletion")) {
-        return jsonResponse({ ok: true, personalProjects: 0, blockers: [{ id: 5, name: "Командный" }] });
+        return jsonResponse({
+          ok: true,
+          personalProjects: 0,
+          blockers: [{ id: 5, name: "Командный" }],
+          orphanedProjects: [],
+          transferCandidates: [],
+        });
       }
       return jsonResponse({ ok: true });
     });
@@ -112,5 +118,129 @@ describe("personal data settings section", () => {
     expect(await screen.findByText(/Командный/)).toBeTruthy();
     const remove = screen.getByRole("button", { name: "Удалить аккаунт" }) as HTMLButtonElement;
     expect(remove.disabled).toBe(true);
+  });
+
+  it("offers the project members to hand the project over to", async () => {
+    fetchMock.mockImplementation((url: string, init?: RequestInit) => {
+      if (String(url).includes("account-deletion") && init?.method === "POST") {
+        return jsonResponse({ ok: true, deleted: true });
+      }
+      if (String(url).includes("account-deletion")) {
+        return jsonResponse({
+          ok: true,
+          personalProjects: 0,
+          blockers: [{ id: 5, name: "Командный" }],
+          orphanedProjects: [],
+          transferCandidates: [{ userId: 9, name: "Коллега", role: "author" }],
+        });
+      }
+      return jsonResponse({ ok: true });
+    });
+    render(<PersonalDataSettings />);
+
+    // Кандидатов отдаёт сервер, и самого владельца в списке нет.
+    const select = await screen.findByRole("combobox");
+    const options = Array.from((select as HTMLSelectElement).options).map((option) => option.textContent);
+    expect(options).toEqual(["Выберите участника", "Коллега"]);
+
+    fireEvent.click(screen.getByRole("checkbox"));
+    const remove = screen.getByRole("button", { name: "Удалить аккаунт" }) as HTMLButtonElement;
+    // Без выбранного участника удаление недоступно: проект нельзя осиротить.
+    expect(remove.disabled).toBe(true);
+
+    fireEvent.change(select, { target: { value: "9" } });
+    await waitFor(() => {
+      expect((screen.getByRole("button", { name: "Удалить аккаунт" }) as HTMLButtonElement).disabled).toBe(false);
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "Удалить аккаунт" }));
+    const dialogConfirm = screen.getAllByRole("button", { name: "Удалить аккаунт" }).at(-1) as HTMLButtonElement;
+    fireEvent.click(dialogConfirm);
+    await waitFor(() => {
+      const posts = fetchMock.mock.calls.filter(([, init]) => (init as RequestInit)?.method === "POST");
+      expect(JSON.parse(String((posts[0][1] as RequestInit).body))).toEqual({ confirm: true, transferSharedTo: 9 });
+    });
+  });
+
+  it("explains when there is nobody to hand the project over to", async () => {
+    fetchMock.mockImplementation((url: string, init?: RequestInit) => {
+      if (String(url).includes("account-deletion")) {
+        return jsonResponse({
+          ok: true,
+          personalProjects: 0,
+          blockers: [{ id: 5, name: "Командный" }],
+          orphanedProjects: [],
+          // Общего кандидата нет: передать все проекты одному человеку нельзя.
+          transferCandidates: [],
+        });
+      }
+      return jsonResponse({ ok: true });
+    });
+    render(<PersonalDataSettings />);
+
+    // Единственный участник — сам владелец: передать некому, и об этом сказано.
+    expect(await screen.findByText(/нет общего участника/u)).toBeTruthy();
+    // Селектора передачи нет: выбирать не из кого.
+    expect(screen.queryByRole("combobox")).toBeNull();
+  });
+
+  it("does not offer a transfer when there is no blocker", async () => {
+    render(<PersonalDataSettings />);
+    await screen.findByText("Выгрузка данных");
+    // Личный проект удаляется целиком, передавать нечего — выбора участника нет.
+    expect(screen.queryByRole("combobox")).toBeNull();
+  });
+
+  it("says out loud that projects without other members will be deleted", async () => {
+    fetchMock.mockImplementation((url: string) => {
+      if (String(url).includes("account-deletion")) {
+        return jsonResponse({
+          ok: true,
+          personalProjects: 2,
+          blockers: [],
+          orphanedProjects: [{ id: 6, name: "Одинокий проект" }],
+          transferCandidates: [],
+        });
+      }
+      return jsonResponse({ ok: true });
+    });
+    render(<PersonalDataSettings />);
+
+    // Человек должен видеть, что проект уйдёт вместе с аккаунтом: это часть
+    // последствий, а не сюрприз после подтверждения.
+    expect(await screen.findByText(/Одинокий проект/u)).toBeTruthy();
+    expect(screen.getByText(/удалятся вместе с аккаунтом/u)).toBeTruthy();
+    // Передавать нечего — селекта нет, но удаление доступно.
+    expect(screen.queryByRole("combobox")).toBeNull();
+    fireEvent.click(screen.getByRole("checkbox"));
+    expect((screen.getByRole("button", { name: "Удалить аккаунт" }) as HTMLButtonElement).disabled).toBe(false);
+  });
+
+  it("explains a stale transfer choice instead of blaming the network", async () => {
+    fetchMock.mockImplementation((url: string, init?: RequestInit) => {
+      if (String(url).includes("account-deletion") && init?.method === "POST") {
+        return jsonResponse({ ok: false, error: "invalid_transfer_target" }, 422);
+      }
+      if (String(url).includes("account-deletion")) {
+        return jsonResponse({
+          ok: true,
+          personalProjects: 0,
+          blockers: [{ id: 5, name: "Командный" }],
+          orphanedProjects: [],
+          transferCandidates: [{ userId: 9, name: "Коллега", role: "author" }],
+        });
+      }
+      return jsonResponse({ ok: true });
+    });
+    render(<PersonalDataSettings />);
+    const select = await screen.findByRole("combobox");
+    fireEvent.change(select, { target: { value: "9" } });
+    fireEvent.click(screen.getByRole("checkbox"));
+    fireEvent.click(screen.getByRole("button", { name: "Удалить аккаунт" }));
+    fireEvent.click(screen.getAllByRole("button", { name: "Удалить аккаунт" }).at(-1) as HTMLButtonElement);
+
+    // Повторять запрос бессмысленно: состав участников изменился.
+    const alert = await screen.findByRole("alert");
+    expect(alert.textContent).toMatch(/обновите список/iu);
   });
 });
