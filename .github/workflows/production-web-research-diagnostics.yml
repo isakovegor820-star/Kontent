@@ -1,0 +1,89 @@
+# Read-only probe for Aurora's internet research in production.
+#
+# The scheduled research runs inside the worker, and the Studio research runs inside the
+# web process. Neither leaves anything a human can read from outside: a worker that finds
+# nothing looks exactly like a worker that never ran. This workflow answers that with
+# evidence — did runs happen, did anything pass the trust gates, did the verified facts
+# reach the channel surfaces, and what do the search providers actually return from the
+# production host's own egress.
+#
+# It never restarts a service, never switches the release symlink and never writes to the
+# database.
+name: Production internet research diagnostics
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# Never read half-swapped state: serialize against releases and rollbacks.
+concurrency:
+  group: production-deploy
+  cancel-in-progress: false
+
+jobs:
+  diagnose:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment: production
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Configure SSH
+        env:
+          PRODUCTION_SSH_KEY: ${{ secrets.PRODUCTION_SSH_KEY }}
+          PRODUCTION_SSH_HOST: ${{ secrets.PRODUCTION_SSH_HOST }}
+          PRODUCTION_SSH_KNOWN_HOSTS: ${{ secrets.PRODUCTION_SSH_KNOWN_HOSTS }}
+          PRODUCTION_SSH_HOST_FINGERPRINT: ${{ secrets.PRODUCTION_SSH_HOST_FINGERPRINT }}
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test -n "$PRODUCTION_SSH_KEY"
+          test -n "$PRODUCTION_SSH_HOST"
+          test -n "$PRODUCTION_SSH_KNOWN_HOSTS"
+          test -n "$PRODUCTION_SSH_HOST_FINGERPRINT"
+          umask 077
+          mkdir -p ~/.ssh
+          printf '%s\n' "$PRODUCTION_SSH_KEY" > ~/.ssh/deploy_key
+          printf '%s\n' "$PRODUCTION_SSH_KNOWN_HOSTS" > ~/.ssh/known_hosts
+          bash scripts/verify-ssh-host-identity.sh \
+            ~/.ssh/known_hosts \
+            "$PRODUCTION_SSH_HOST" \
+            "$PRODUCTION_SSH_HOST_FINGERPRINT"
+
+      - name: Collect redacted research diagnostics
+        env:
+          PRODUCTION_SSH_HOST: ${{ secrets.PRODUCTION_SSH_HOST }}
+          PRODUCTION_SSH_USER: ${{ secrets.PRODUCTION_SSH_USER }}
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test -n "$PRODUCTION_SSH_HOST"
+          test -n "$PRODUCTION_SSH_USER"
+          diag_sql_b64="$(base64 -w0 < scripts/production-web-research-diagnostics.sql)"
+          timeout 300 ssh -i ~/.ssh/deploy_key \
+            -o StrictHostKeyChecking=yes \
+            -o BatchMode=yes \
+            -o IdentitiesOnly=yes \
+            -o ServerAliveInterval=15 \
+            -o ServerAliveCountMax=8 \
+            "${PRODUCTION_SSH_USER}@${PRODUCTION_SSH_HOST}" \
+            "AURORA_DIAG_SQL_B64=${diag_sql_b64} bash -s" \
+            < scripts/production-web-research-diagnostics.sh \
+            > research-diagnostics.txt
+
+          test -s research-diagnostics.txt
+          echo "::group::Production internet research diagnostics"
+          cat research-diagnostics.txt
+          echo "::endgroup::"
+
+      - name: Upload diagnostics report
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: research-diagnostics
+          path: research-diagnostics.txt
+          if-no-files-found: warn
+          retention-days: 7
