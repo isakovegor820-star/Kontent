@@ -135,6 +135,19 @@ if [[ -n "$current_path" && -f "$current_path/.env.production" ]]; then
         "$(redis-cli -u "$REDIS_URL" --raw keys 'bull:cron:repeat:*' 2>/dev/null | wc -l)"
       printf 'web_research_marker_present=%s\n' \
         "$(redis-cli -u "$REDIS_URL" --raw keys 'bull:cron:repeat:*' 2>/dev/null | grep -c 'web-research' || true)"
+      # Восемьдесят восемь тысяч ключей повторов при шестнадцати расписаниях — это
+      # накопление, а не норма. Печатаем образец: по нему видно, дубли это одного
+      # расписания или остатки старого API повторяющихся задач.
+      printf 'repeat_keys_sample=%s\n' \
+        "$(redis-cli -u "$REDIS_URL" --raw keys 'bull:cron:repeat:*' 2>/dev/null | head -8 | tr '\n' ' ')"
+      printf 'repeat_keys_web_research=%s\n' \
+        "$(redis-cli -u "$REDIS_URL" --raw keys 'bull:cron:repeat:*' 2>/dev/null | grep 'web-research' | head -6 | tr '\n' ' ')"
+      printf 'repeat_keys_distinct_suffixes=%s\n' \
+        "$(redis-cli -u "$REDIS_URL" --raw keys 'bull:cron:repeat:*' 2>/dev/null | sed 's/.*:repeat://' | sed 's/:.*//' | sort -u | paste -sd, - | cut -c1-300)"
+      printf 'cron_queue_wait=%s active=%s delayed=%s\n' \
+        "$(redis-cli -u "$REDIS_URL" llen 'bull:cron:wait' 2>/dev/null)" \
+        "$(redis-cli -u "$REDIS_URL" llen 'bull:cron:active' 2>/dev/null)" \
+        "$(redis-cli -u "$REDIS_URL" zcard 'bull:cron:delayed' 2>/dev/null)"
       printf 'stats_queue_wait=%s active=%s failed=%s\n' \
         "$(redis-cli -u "$REDIS_URL" llen 'bull:stats:wait' 2>/dev/null)" \
         "$(redis-cli -u "$REDIS_URL" llen 'bull:stats:active' 2>/dev/null)" \
