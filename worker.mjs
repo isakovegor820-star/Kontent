@@ -12162,6 +12162,23 @@ async function runWebResearchJob(runId) {
  * приносить поводы сама, а не ждать нажатия кнопки.
  */
 async function runScheduledWebResearch() {
+  // Запуск, чья задача потерялась (перезапуск воркера, падение процесса), навсегда
+  // остаётся в статусе «идёт»: интерфейс вечно показывает незавершённое исследование,
+  // а планировщик считает канал обслуженным и не трогает его ещё три часа. Поэтому
+  // перед обходом закрываем провалом всё, что висит дольше разумного бюджета.
+  const abandoned = await pool.query(
+    `update web_research_runs
+        set status = 'failed', finished_at = now(),
+            error = coalesce(error, 'abandoned_before_completion')
+      where status = 'running' and started_at < now() - interval '15 minutes'
+      returning id`,
+  ).catch(() => ({ rows: [] }));
+  if (abandoned.rows?.length) {
+    console.warn("[web-research] закрыты зависшие запуски", {
+      runIds: abandoned.rows.map((row) => Number(row.id)).slice(0, 10).join(","),
+    });
+  }
+
   const rows = (await pool.query(
     `select channel.project_id, channel.id as channel_id
        from channels channel
