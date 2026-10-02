@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 
 import { LegalDocument, type LegalSection } from "@/components/legal/legal-document";
+import { LEGAL_EMAIL } from "@/lib/contact";
 
 export const metadata: Metadata = {
   title: "Политика конфиденциальности",
@@ -11,7 +12,7 @@ const sections: LegalSection[] = [
   {
     title: "Кто обрабатывает данные",
     paragraphs: [
-      "Оператор сервиса Аврора обрабатывает данные, необходимые для регистрации, работы проектов и защиты платформы. Запросы о данных и реквизитах оператора принимаются по адресу legal@avrora.app.",
+      `Оператор сервиса Аврора обрабатывает данные, необходимые для регистрации, работы проектов и защиты платформы. Запросы о данных и реквизитах оператора принимаются по адресу ${LEGAL_EMAIL}.`,
     ],
   },
   {

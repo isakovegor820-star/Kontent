@@ -11,6 +11,7 @@ import { Logo } from "@/components/brand";
 import { AirWave } from "@/components/landing/air-wave";
 import { buttonClassName } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
+import { PRODUCT_TAGLINE } from "@/lib/product";
 
 const EASE = [0.22, 1, 0.36, 1] as const;
 
@@ -78,7 +79,7 @@ export function Hero() {
             {...rise(0.08)}
             className="mt-7 text-[13px] font-bold tracking-[0.12em] text-brand uppercase sm:text-[14px]"
           >
-            SMM-платформа для юридического бизнеса
+            {PRODUCT_TAGLINE}
           </motion.p>
 
           <h1 className="display mt-4 max-w-[720px] text-[clamp(2.75rem,6.6vw,5.8rem)] text-text text-balance">

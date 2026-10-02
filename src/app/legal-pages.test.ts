@@ -2,6 +2,7 @@ import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 
+import { LEGAL_EMAIL } from "@/lib/contact";
 import PrivacyPage from "./privacy/page";
 import TermsPage from "./terms/page";
 
@@ -11,7 +12,8 @@ describe("public legal pages", () => {
     expect(markup).toContain("Условия использования");
     expect(markup).toContain("Допустимое использование");
     expect(markup).toContain("Это не является обещанием бессрочного бесплатного тарифа");
-    expect(markup).toContain("legal@avrora.app");
+    // Адрес берётся из lib/contact, а не из литерала: смена домена — правка в одном месте.
+    expect(markup).toContain(LEGAL_EMAIL);
   });
 
   it("explains collected data, processors, retention and user requests", () => {

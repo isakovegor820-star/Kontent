@@ -2956,7 +2956,9 @@
 
 .footerLinks {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  /* auto-fit вместо жёстких четырёх колонок: столбцов стало пять, и список
+     должен переносить их сам, а не сжимать до нечитаемого. */
+  grid-template-columns: repeat(auto-fit, minmax(9rem, 1fr));
   gap: 1.5rem;
 }
 
@@ -3609,4 +3611,366 @@
   .planButton {
     transition-duration: 0.01ms;
   }
+}
+
+/* ---------------------------------------------------------------------------
+   Блоки для поиска и генеративных ответов: короткий ответ, кому подходит,
+   сравнение, частые вопросы, автор. Добавлены отдельным слоем, чтобы не трогать
+   существующую вёрстку: те же токены и та же типографика, ноль анимаций —
+   содержимое должно читаться и без JavaScript.
+   --------------------------------------------------------------------------- */
+
+.answerSection {
+  padding-block: clamp(2rem, 4vw, 3rem);
+  background: var(--landing-surface);
+  border-block: 1px solid var(--landing-line);
+}
+
+.answerInner {
+  width: min(100% - 2rem, 48rem);
+  margin-inline: auto;
+}
+
+.answerLabel {
+  margin: 0 0 0.75rem;
+  font-size: 0.8rem;
+  font-weight: 800;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--landing-blue);
+}
+
+.answerText {
+  margin: 0;
+  padding-inline-start: 1.25rem;
+  border-inline-start: 3px solid var(--landing-blue);
+  font-size: clamp(1.05rem, 1.7vw, 1.25rem);
+  font-weight: 500;
+  line-height: 1.6;
+  color: var(--landing-ink);
+  text-wrap: pretty;
+}
+
+.answerDisclaimer {
+  margin: 1rem 0 0;
+  font-size: 0.85rem;
+  line-height: 1.5;
+  color: var(--landing-muted);
+}
+
+.fitGrid {
+  display: grid;
+  gap: 1.25rem;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.fitColumn {
+  padding: clamp(1.25rem, 2.4vw, 1.75rem);
+  border: 1px solid var(--landing-line);
+  border-radius: 1.25rem;
+  background: #fff;
+}
+
+.fitColumnNo {
+  background: var(--landing-surface);
+}
+
+.fitTitle {
+  margin: 0 0 1rem;
+  font-size: 1.05rem;
+  font-weight: 800;
+  letter-spacing: -0.02em;
+  color: var(--landing-ink);
+}
+
+.fitList {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: grid;
+  gap: 0.85rem;
+}
+
+.fitItem {
+  display: grid;
+  grid-template-columns: 1.25rem 1fr;
+  gap: 0.65rem;
+  font-size: 0.98rem;
+  line-height: 1.55;
+  color: var(--landing-muted);
+}
+
+.fitMarkYes {
+  color: var(--landing-blue);
+  font-weight: 800;
+}
+
+.fitMarkNo {
+  color: var(--landing-muted);
+  font-weight: 800;
+}
+
+/* Горизонтальная прокрутка вместо сжатия: таблица из шести колонок на телефоне
+   превращается в нечитаемую кашу, а обрезанная таблица не читается вообще. */
+.compareScroll {
+  overflow-x: auto;
+  border: 1px solid var(--landing-line);
+  border-radius: 1.25rem;
+  background: #fff;
+  -webkit-overflow-scrolling: touch;
+}
+
+.compareTable {
+  width: 100%;
+  min-width: 46rem;
+  border-collapse: collapse;
+  font-size: 0.95rem;
+}
+
+.compareCaption {
+  padding: 0.9rem 1.1rem;
+  text-align: start;
+  font-size: 0.82rem;
+  color: var(--landing-muted);
+  border-block-end: 1px solid var(--landing-line);
+}
+
+.compareTable th,
+.compareTable td {
+  padding: 0.85rem 1.1rem;
+  text-align: start;
+  vertical-align: top;
+  border-block-end: 1px solid var(--landing-line);
+  line-height: 1.45;
+}
+
+.compareTable thead th {
+  font-size: 0.85rem;
+  font-weight: 800;
+  letter-spacing: 0.02em;
+  color: var(--landing-ink);
+  background: var(--landing-surface);
+  white-space: nowrap;
+}
+
+.compareTable tbody th {
+  font-weight: 600;
+  color: var(--landing-ink);
+}
+
+.compareTable tbody td {
+  color: var(--landing-muted);
+}
+
+.compareTable tbody tr:last-child th,
+.compareTable tbody tr:last-child td {
+  border-block-end: 0;
+}
+
+.compareEmpty {
+  color: rgb(93 107 130 / 0.55);
+}
+
+.compareLegend {
+  margin: 0.9rem 0 0;
+  font-size: 0.85rem;
+  line-height: 1.5;
+  color: var(--landing-muted);
+}
+
+.compareNotes {
+  margin: 1rem 0 0;
+  padding-inline-start: 1.1rem;
+  display: grid;
+  gap: 0.6rem;
+  font-size: 0.9rem;
+  line-height: 1.55;
+  color: var(--landing-muted);
+}
+
+.faqList {
+  display: grid;
+  gap: 0.9rem;
+  max-width: 54rem;
+  margin-inline: auto;
+}
+
+.faqItem {
+  padding: clamp(1.1rem, 2.2vw, 1.5rem);
+  border: 1px solid var(--landing-line);
+  border-radius: 1.1rem;
+  background: #fff;
+}
+
+.faqQuestion {
+  margin: 0 0 0.55rem;
+  font-size: clamp(1.05rem, 1.8vw, 1.2rem);
+  font-weight: 800;
+  letter-spacing: -0.02em;
+  line-height: 1.3;
+  color: var(--landing-ink);
+}
+
+.faqAnswer {
+  margin: 0;
+  font-size: 0.98rem;
+  line-height: 1.6;
+  color: var(--landing-muted);
+  text-wrap: pretty;
+}
+
+.authorSection {
+  padding-block: clamp(2.5rem, 5vw, 4rem);
+  background: var(--landing-surface);
+  border-block-start: 1px solid var(--landing-line);
+}
+
+.authorInner {
+  width: min(100% - 2rem, 48rem);
+  margin-inline: auto;
+}
+
+.authorHeading {
+  margin: 0 0 1rem;
+  font-size: clamp(1.35rem, 2.4vw, 1.75rem);
+  font-weight: 800;
+  letter-spacing: -0.03em;
+  color: var(--landing-ink);
+}
+
+.authorCard {
+  padding: 1.25rem;
+  border: 1px solid var(--landing-line);
+  border-radius: 1.1rem;
+  background: #fff;
+}
+
+.authorName {
+  margin: 0;
+  font-size: 1.1rem;
+  font-weight: 800;
+  color: var(--landing-ink);
+}
+
+.authorRole {
+  margin: 0.2rem 0 0;
+  font-size: 0.9rem;
+  font-weight: 600;
+  color: var(--landing-blue);
+}
+
+.authorCredential {
+  margin: 0.6rem 0 0;
+  font-size: 0.95rem;
+  line-height: 1.55;
+  color: var(--landing-muted);
+}
+
+.authorLink {
+  display: inline-block;
+  margin-block-start: 0.75rem;
+  font-size: 0.92rem;
+  font-weight: 600;
+  color: var(--landing-blue);
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+.authorPending {
+  margin: 0;
+  font-size: 0.98rem;
+  line-height: 1.6;
+  color: var(--landing-muted);
+  max-width: 42rem;
+}
+
+.authorUpdated {
+  margin: 1rem 0 0;
+  font-size: 0.85rem;
+  color: var(--landing-muted);
+}
+
+@media (max-width: 48rem) {
+  .fitGrid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+/* Якорные ссылки: без отступа заголовок уезжает под липкую шапку.
+   Селекторы по id здесь не работают — CSS-модуль хэширует и их (#fit превращается
+   в #reference-landing-module__…__fit и не совпадает с id в разметке). Поэтому
+   отступ вешается на классы секций. */
+.section,
+.analyticsSection,
+.trustBar,
+.socialSection,
+.ctaSection,
+.answerSection,
+.authorSection {
+  scroll-margin-block-start: 5.5rem;
+}
+
+/* Таблица «что входит и сколько стоит». Секция не рендерится, пока цена не задана,
+   поэтому стили живут здесь заранее и включаются вместе с данными. */
+.pricingGrid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(16rem, 1fr));
+  gap: 1.25rem;
+  max-width: 54rem;
+  margin-inline: auto;
+}
+
+.pricingCard {
+  padding: clamp(1.25rem, 2.4vw, 1.75rem);
+  border: 1px solid var(--landing-line);
+  border-radius: 1.25rem;
+  background: #fff;
+}
+
+.pricingName {
+  margin: 0;
+  font-size: 1.05rem;
+  font-weight: 800;
+  letter-spacing: -0.02em;
+  color: var(--landing-ink);
+}
+
+.pricingPrice {
+  margin: 0.6rem 0 0;
+  font-size: clamp(1.6rem, 3vw, 2.1rem);
+  font-weight: 800;
+  letter-spacing: -0.035em;
+  color: var(--landing-blue);
+}
+
+.pricingAudience {
+  margin: 0.5rem 0 0;
+  font-size: 0.92rem;
+  line-height: 1.5;
+  color: var(--landing-muted);
+}
+
+.pricingIncludes {
+  margin: 1.1rem 0 0;
+  padding: 0;
+  list-style: none;
+  display: grid;
+  gap: 0.6rem;
+}
+
+.pricingIncludes li {
+  display: grid;
+  grid-template-columns: 1.1rem 1fr;
+  gap: 0.55rem;
+  font-size: 0.95rem;
+  line-height: 1.5;
+  color: var(--landing-muted);
+}
+
+.pricingNote {
+  margin: 1.25rem auto 0;
+  max-width: 54rem;
+  font-size: 0.85rem;
+  line-height: 1.5;
+  color: var(--landing-muted);
 }
