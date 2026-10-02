@@ -126,12 +126,25 @@ export type ReportView = {
 
 export type ArticleStats = { total: number; pending: number; published: number };
 
+export type SiteAuditRun = {
+  id: number;
+  runRevision: number;
+  status: string;
+  createdAt: string | null;
+  completedAt: string | null;
+  pageCount: number | null;
+  gapCount: number | null;
+  seoScore: number | null;
+  geoScore: number | null;
+};
+
 export type SiteDetails = {
   site: SiteSummary;
   latestAnalysis: AnalysisView | null;
   profile: ProfileView | null;
   reports: ReportView[];
   articleStats?: ArticleStats | null;
+  audits?: SiteAuditRun[];
 };
 
 export const REPORT_KIND_LABEL: Record<ReportView["kind"], string> = {

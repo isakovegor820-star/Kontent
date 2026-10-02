@@ -325,12 +325,11 @@ function sessionToken() {
   return { token, hash: createHash("sha256").update(token, "utf8").digest("hex") };
 }
 
-async function seedSite(site, pages, { withArticles }) {
+/** Один прогон аудита: задание, профиль и стартовый отчёт — теми же функциями, что в worker'е. */
+async function seedAnalysisRun(site, pages, { checkedAt, runRevision }) {
   const target = new URL(site.canonical_url);
   const report = buildSiteAnalysisReport(target, pages, DEFAULT_SITE_CRAWL_LIMITS, {});
-  const checkedAt = new Date(Date.now() - 8 * 24 * 60 * 60 * 1000);
   const snapshotHash = "sha256:" + createHash("sha256").update(JSON.stringify(pages.map((page) => page.url))).digest("hex");
-
   const job = await client.query(
     `insert into site_analysis_jobs
        (user_id, project_id, request_id, idempotency_key, request_fingerprint, target_url, confirmed_domain,
@@ -340,18 +339,33 @@ async function seedSite(site, pages, { withArticles }) {
      returning id`,
     [
       site.user_id, site.project_id, `demo-${randomUUID()}`, `demo-${randomUUID()}`, "demo-fingerprint",
-      site.canonical_url, site.confirmed_domain, new Date(Date.now() - 9 * 24 * 60 * 60 * 1000),
-      JSON.stringify(DEFAULT_SITE_CRAWL_LIMITS), JSON.stringify(report), site.id, 1, snapshotHash,
+      site.canonical_url, site.confirmed_domain, new Date(checkedAt.getTime() - 24 * 60 * 60 * 1000),
+      JSON.stringify(DEFAULT_SITE_CRAWL_LIMITS), JSON.stringify(report), site.id, runRevision, snapshotHash,
       51, report?.interview?.answeredCount ?? 38, checkedAt, checkedAt,
     ],
   );
   const analysisId = Number(job.rows[0].id);
-
   const persisted = await persistSiteProfileForAnalysis(client, {
-    analysisId, runRevision: 1, siteId: site.id, pages, report, snapshotHash, checkedAt, now: checkedAt,
+    analysisId, runRevision, siteId: site.id, pages, report, snapshotHash, checkedAt, now: checkedAt,
   });
-
   const profile = buildSiteProfile({ confirmedDomain: site.confirmed_domain, pages, report, checkedAt });
+  return { analysisId, profileId: persisted.profileId, reportId: persisted.reportId, profile };
+}
+
+async function seedSite(site, pages, { withArticles }) {
+  const checkedAt = new Date(Date.now() - 8 * 24 * 60 * 60 * 1000);
+
+  // Первый прогон — по части страниц и раньше по времени: в истории аудитов должно быть
+  // с чем сравнивать, иначе блок «что изменилось» нечем проверить.
+  if (withArticles) {
+    await seedAnalysisRun(site, pages.slice(0, 5), {
+      checkedAt: new Date(Date.now() - 15 * 24 * 60 * 60 * 1000),
+      runRevision: 1,
+    });
+  }
+
+  const current = await seedAnalysisRun(site, pages, { checkedAt, runRevision: withArticles ? 2 : 1 });
+  const { profile } = current;
 
   // Ежемесячный отчёт: тот же builder, что и в планировщике сайта.
   const previous = await client.query(
@@ -372,7 +386,7 @@ async function seedSite(site, pages, { withArticles }) {
     `insert into site_reports (site_id, kind, profile_id, previous_report_id, payload, summary_ru, status, created_at)
      values ($1,'monthly',$2,$3,$4::jsonb,$5,'ready',$6) returning id`,
     [
-      site.id, persisted.profileId, previous.rows[0]?.id ?? null, JSON.stringify(monthly.payload), monthly.summaryRu,
+      site.id, current.profileId, previous.rows[0]?.id ?? null, JSON.stringify(monthly.payload), monthly.summaryRu,
       new Date(checkedAt.getTime() + 7 * 24 * 60 * 60 * 1000),
     ],
   );
@@ -394,7 +408,7 @@ async function seedSite(site, pages, { withArticles }) {
     }
   }
 
-  return { analysisId, profileId: persisted.profileId, reportId: persisted.reportId, monthlyReportId: Number(monthlyRow.rows[0].id), profile, report };
+  return { analysisId: current.analysisId, profileId: current.profileId, reportId: current.reportId, monthlyReportId: Number(monthlyRow.rows[0].id), profile };
 }
 
 async function main() {

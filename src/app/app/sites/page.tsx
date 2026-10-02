@@ -139,7 +139,7 @@ export default function SitesPage() {
       const { status, body } = await requestJson<SiteDetails & { error?: string }>(`/api/sites/${id}`);
       if (request !== detailsRequest.current) return null;
       if (status !== 200 || !body.site) throw Object.assign(new Error("details_failed"), { code: body.error });
-      setDetails({ site: body.site, latestAnalysis: body.latestAnalysis, profile: body.profile, reports: body.reports });
+      setDetails({ site: body.site, latestAnalysis: body.latestAnalysis, profile: body.profile, reports: body.reports, audits: body.audits ?? [] });
       if (body.articleStats) setArticleStats(body.articleStats);
       void requestJson<{ destinations?: Array<{ status: string; readyToPublish: boolean }> }>(`/api/sites/${id}/destinations`)
         .then((result) => {
@@ -264,7 +264,7 @@ export default function SitesPage() {
     setConnectOpen(false);
     await loadSites();
     setSelectedId(body.site.id);
-    setDetails({ site: body.site, latestAnalysis: body.latestAnalysis, profile: body.profile, reports: body.reports, articleStats: body.articleStats });
+    setDetails({ site: body.site, latestAnalysis: body.latestAnalysis, profile: body.profile, reports: body.reports, audits: body.audits ?? [], articleStats: body.articleStats });
     if (body.articleStats) setArticleStats(body.articleStats);
     if (body.analysisError) setActionError(errorMessage(body.analysisError, "Сайт подключён, но анализ не запустился."));
   }, [consent, requestJson, url, loadSites]);
@@ -848,6 +848,7 @@ export default function SitesPage() {
                 reanalyzing={reanalyzing}
                 analysisActive={analysisActive}
                 maxPages={maxPages}
+                audits={current?.audits ?? []}
                 onMaxPagesChange={setMaxPages}
                 onReanalyze={reanalyze}
                 onCreateMaterial={(input) => {

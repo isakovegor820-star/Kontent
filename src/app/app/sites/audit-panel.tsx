@@ -9,7 +9,7 @@ import { cn } from "@/lib/utils";
 
 import { formatDate } from "./client";
 import { ProbePanel } from "./probe-panel";
-import { SEVERITY_LABEL, SEVERITY_TONE, plural, type AnalysisView, type Gap, type Issue, type ProfileView } from "./types";
+import { SEVERITY_LABEL, SEVERITY_TONE, analysisLabel, plural, type AnalysisView, type Gap, type Issue, type ProfileView, type SiteAuditRun } from "./types";
 
 /** Из вида пробела понятно, какой материал его закрывает. */
 function articleTypeForGap(gap: Gap): string {
@@ -43,6 +43,7 @@ type Props = {
   reanalyzing: boolean;
   analysisActive: boolean;
   maxPages: number;
+  audits: SiteAuditRun[];
   onMaxPagesChange: (value: number) => void;
   onReanalyze: () => void;
   /** Пробел превращается в задание на материал: тема и тип уже выбраны. */
@@ -78,6 +79,7 @@ export function AuditPanel({
   reanalyzing,
   analysisActive,
   maxPages,
+  audits,
   onMaxPagesChange,
   onReanalyze,
   onCreateMaterial,
@@ -356,6 +358,63 @@ export function AuditPanel({
           <p className="type-caption border-t border-line px-5 py-3 text-text-3 sm:px-6">
             Показаны 8 из {profile.gaps.length}. Остальные закроются по мере выхода материалов.
           </p>
+        )}
+      </Card>
+
+      {/* История прогонов: раньше она жила в отдельном разделе без привязки к сайту */}
+      <Card>
+        <div className="flex flex-wrap items-center justify-between gap-3 border-b border-line px-5 py-4 sm:px-6">
+          <div>
+            <h3 className="type-h3 text-text">История аудитов · {audits.length}</h3>
+            <p className="type-caption mt-0.5 text-text-3">Что менялось между прогонами: страницы, пробелы, оценки</p>
+          </div>
+          <span className="type-caption text-text-3">Обновление аудита добавляет новую запись</span>
+        </div>
+        {audits.length === 0 ? (
+          <p className="type-secondary px-5 py-5 text-text-2 sm:px-6">Прогонов пока не было.</p>
+        ) : (
+          <ul>
+            {audits.map((run, index) => {
+              const previous = audits[index + 1] ?? null;
+              const gapsDelta = previous && run.gapCount !== null && previous.gapCount !== null ? run.gapCount - previous.gapCount : null;
+              const pagesDelta = previous && run.pageCount !== null && previous.pageCount !== null ? run.pageCount - previous.pageCount : null;
+              return (
+                <li key={run.id} className={cn("flex flex-wrap items-center gap-x-4 gap-y-2 px-5 py-4 sm:px-6", index > 0 && "border-t border-line")}>
+                  <span className={cn(
+                    "grid h-9 w-9 shrink-0 place-items-center rounded-sm",
+                    run.status === "ready" ? "bg-success-soft text-success-text" : run.status === "failed" ? "bg-danger-soft text-danger-text" : "bg-surface-inset text-text-2",
+                  )}>
+                    {run.status === "ready" ? <Check className="h-4 w-4" aria-hidden /> : <RefreshCw className="h-4 w-4" aria-hidden />}
+                  </span>
+                  <span className="min-w-0 flex-1">
+                    <span className="type-body-strong block text-text">
+                      {index === 0 ? "Текущий прогон" : "Прогон"} · ревизия {run.runRevision}
+                    </span>
+                    <span className="type-caption text-text-3">
+                      {formatDate(run.completedAt || run.createdAt, true)} · {analysisLabel(run.status)}
+                      {run.pageCount !== null ? ` · страниц: ${run.pageCount}` : ""}
+                      {run.gapCount !== null ? ` · пробелов: ${run.gapCount}` : ""}
+                    </span>
+                  </span>
+                  <span className="flex flex-wrap items-center gap-2">
+                    {pagesDelta !== null && pagesDelta !== 0 && (
+                      <Badge tone={pagesDelta > 0 ? "success" : "neutral"}>
+                        страниц {pagesDelta > 0 ? "+" : ""}{pagesDelta}
+                      </Badge>
+                    )}
+                    {gapsDelta !== null && gapsDelta !== 0 && (
+                      <Badge tone={gapsDelta < 0 ? "success" : "fire"}>
+                        пробелов {gapsDelta > 0 ? "+" : ""}{gapsDelta}
+                      </Badge>
+                    )}
+                    {run.seoScore !== null && (
+                      <Badge tone="neutral">SEO {run.seoScore}{run.geoScore !== null ? ` · ИИ ${run.geoScore}` : ""}</Badge>
+                    )}
+                  </span>
+                </li>
+              );
+            })}
+          </ul>
         )}
       </Card>
 
