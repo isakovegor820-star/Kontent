@@ -149,7 +149,79 @@ export function serializeSiteReport(row: SiteReportRow, includePayload = false) 
     interpretation: row.interpretation_status === "ready" ? row.interpretation ?? null : null,
     interpretationStatus: row.interpretation_status ?? "pending",
     createdAt: iso(row.created_at),
+    ...reportInsights(row.payload),
     ...(includePayload ? { payload: row.payload ?? null } : {}),
+  };
+}
+
+type ReportRecommendation = {
+  key: string;
+  title: string;
+  rationale: string;
+  priority: string;
+  source: string;
+  status: string;
+  evidenceUrls: string[];
+};
+
+function asRecord(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : null;
+}
+
+function reportRecommendations(payload: Record<string, unknown> | null): ReportRecommendation[] {
+  const raw = Array.isArray(payload?.recommendations) ? payload.recommendations : [];
+  return raw.slice(0, 80).map((item) => {
+    const entry = asRecord(item) || {};
+    return {
+      key: String(entry.key ?? ""),
+      title: String(entry.title ?? "").slice(0, 300),
+      rationale: String(entry.rationale ?? "").slice(0, 600),
+      priority: String(entry.priority ?? "P2"),
+      source: String(entry.source ?? "content"),
+      status: entry.status === "done" ? "done" : "open",
+      evidenceUrls: (Array.isArray(entry.evidenceUrls) ? entry.evidenceUrls : [])
+        .map((url) => String(url))
+        .filter((url) => url.startsWith("http"))
+        .slice(0, 10),
+    };
+  });
+}
+
+/**
+ * Отчёт отдаётся интерфейсу не сырым payload'ом, а готовыми срезами: цифры периода,
+ * рекомендации со статусами и границы измерения. Это то, что раздел показывает человеку.
+ */
+export function reportInsights(payload: unknown) {
+  const data = asRecord(payload);
+  if (!data) return { period: null, scores: null, metrics: null, recommendations: [] as ReportRecommendation[], limitations: [] as string[] };
+  const period = asRecord(data.period);
+  const seo = asRecord(data.seo);
+  const geo = asRecord(data.geo);
+  const content = asRecord(data.content);
+  const publications = asRecord(data.publications);
+  const recommendationSummary = asRecord(data.recommendationSummary);
+  const recommendations = reportRecommendations(data);
+  return {
+    period: period?.start && period?.end ? { start: iso(period.start as string), end: iso(period.end as string) } : null,
+    scores: {
+      seo: Number.isFinite(Number(seo?.score)) ? Number(seo?.score) : null,
+      geo: Number.isFinite(Number(geo?.score)) ? Number(geo?.score) : null,
+    },
+    metrics: {
+      pageCount: Number.isFinite(Number(content?.pageCount)) ? Number(content?.pageCount) : null,
+      gaps: Array.isArray(content?.gaps) ? content.gaps.length : null,
+      // Стартовый аудит не содержит раздела публикаций: не выдаём отсутствие данных за ноль.
+      published: Number.isFinite(Number(publications?.published)) ? Number(publications?.published) : null,
+      pendingReview: Number.isFinite(Number(publications?.pendingReview)) ? Number(publications?.pendingReview) : null,
+      openRecommendations: Number.isFinite(Number(recommendationSummary?.open))
+        ? Number(recommendationSummary?.open)
+        : recommendations.filter((item) => item.status === "open").length,
+      doneRecommendations: Number.isFinite(Number(recommendationSummary?.done))
+        ? Number(recommendationSummary?.done)
+        : recommendations.filter((item) => item.status === "done").length,
+    },
+    recommendations,
+    limitations: (Array.isArray(data.limitations) ? data.limitations : []).map((item) => String(item)).slice(0, 6),
   };
 }
 
@@ -220,10 +292,13 @@ export async function startSiteAnalysis(pool: Pool, input: {
   userId: number;
   requestId: string;
   clientKey: string;
+  maxPages?: number | null;
 }): Promise<{ analysis: ReturnType<typeof serializeSiteAnalysis>; replayed: boolean }> {
   const projectId = Number(input.site.project_id);
   const siteId = Number(input.site.id);
-  const limits = normalizeSiteLimits({});
+  // Лимит обхода настраивается: 20 страниц — это выборка, а не сайт. Больше страниц
+  // дороже по времени, поэтому решение остаётся за пользователем.
+  const limits = normalizeSiteLimits({ maxPages: input.maxPages ?? undefined });
   const fingerprint = siteAnalysisFingerprint({
     targetUrl: input.site.canonical_url,
     confirmedDomain: input.site.confirmed_domain,
@@ -311,7 +386,7 @@ export async function startSiteAnalysis(pool: Pool, input: {
 
 export async function loadSiteDetails(db: Queryable, site: SiteRow) {
   const siteId = Number(site.id);
-  const [analysis, profile, reports] = await Promise.all([
+  const [analysis, profile, reports, articles] = await Promise.all([
     db.query<SiteAnalysisRow>(
       `select ${SITE_ANALYSIS_FIELDS}
          from site_analysis_jobs
@@ -330,19 +405,34 @@ export async function loadSiteDetails(db: Queryable, site: SiteRow) {
         [site.latest_profile_id, siteId],
       ),
     db.query<SiteReportRow>(
-      `select id, site_id, kind, profile_id, previous_report_id, summary_ru, status, interpretation, interpretation_status, created_at
+      `select id, site_id, kind, profile_id, previous_report_id, payload, summary_ru, status, interpretation, interpretation_status, created_at
          from site_reports
         where site_id = $1
         order by created_at desc, id desc
         limit 24`,
       [siteId],
     ),
+    // Счётчики материалов нужны шапке раздела и экрану «Обзор» ещё до открытия вкладки.
+    db.query<{ total: string | number; pending: string | number; published: string | number }>(
+      `select count(*) as total,
+              count(*) filter (where status = 'needs_review') as pending,
+              count(*) filter (where status = 'published') as published
+         from site_articles
+        where site_id = $1`,
+      [siteId],
+    ),
   ]);
+  const articleRow = articles.rows[0];
   return {
     site: serializeSite(site),
     latestAnalysis: analysis.rows[0] ? serializeSiteAnalysis(analysis.rows[0]) : null,
     profile: profile.rows[0] ? serializeSiteProfile(profile.rows[0]) : null,
     reports: reports.rows.map((row) => serializeSiteReport(row)),
+    articleStats: {
+      total: Number(articleRow?.total ?? 0),
+      pending: Number(articleRow?.pending ?? 0),
+      published: Number(articleRow?.published ?? 0),
+    },
   };
 }
 
@@ -381,4 +471,87 @@ export async function listSitesForProject(db: Queryable, projectId: number) {
       : null,
     reportCount: Number(row.report_count ?? 0),
   }));
+}
+
+/* --------------------------------------------------- ЖИЗНЕННЫЙ ЦИКЛ САЙТА */
+
+/** Проверяет, что новый адрес свободен внутри проекта, и не даёт занять чужой домен. */
+async function assertDomainAvailable(db: Queryable, projectId: number, domain: string, siteId: number) {
+  const taken = await db.query<{ id: string | number }>(
+    "select id from sites where project_id = $1 and confirmed_domain = $2 and id <> $3",
+    [projectId, domain, siteId],
+  );
+  if (taken.rows[0]) throw new SiteServiceError("domain_taken", 409);
+}
+
+/**
+ * Меняет адрес сайта. Домен — часть личности сайта: после смены владение
+ * подтверждается заново новым токеном, а профили и отчёты остаются историей прежнего домена.
+ */
+export async function updateSiteDomain(db: Queryable, input: {
+  siteId: number;
+  projectId: number;
+  url: unknown;
+}): Promise<{ site: SiteRow; domainChanged: boolean }> {
+  // Согласие уже дано при подключении сайта; здесь проверяется только адрес.
+  const target = normalizeSiteInput(input.url, true);
+  const current = await findSiteForProject(db, input.siteId, input.projectId, true);
+  if (!current) throw new SiteServiceError("site_not_found", 404);
+  if (current.confirmed_domain === target.confirmedDomain) return { site: current, domainChanged: false };
+  await assertDomainAvailable(db, input.projectId, target.confirmedDomain, input.siteId);
+  const updated = await db.query<SiteRow>(
+    `update sites
+        set confirmed_domain = $2, canonical_url = $3,
+            verification_state = 'unverified', verification_method = null, verified_at = null,
+            verification_token = $4, updated_at = now()
+      where id = $1 and project_id = $5
+      returning ${SITE_FIELDS}`,
+    [input.siteId, target.confirmedDomain, target.canonicalUrl, generateSiteVerificationToken(), input.projectId],
+  );
+  if (!updated.rows[0]) throw new SiteServiceError("site_not_found", 404);
+  return { site: updated.rows[0], domainChanged: true };
+}
+
+/** Пауза и отключение: сайт остаётся в проекте, но планировщик его больше не трогает. */
+export async function setSiteStatus(db: Queryable, input: {
+  siteId: number;
+  projectId: number;
+  status: "active" | "paused" | "disconnected";
+}): Promise<SiteRow> {
+  const updated = await db.query<SiteRow>(
+    `update sites set status = $2, updated_at = now()
+      where id = $1 and project_id = $3
+      returning ${SITE_FIELDS}`,
+    [input.siteId, input.status, input.projectId],
+  );
+  if (!updated.rows[0]) throw new SiteServiceError("site_not_found", 404);
+  return updated.rows[0];
+}
+
+/**
+ * Удаляет сайт вместе с профилями, материалами, отчётами и зондами (каскад схемы).
+ * Прогоны анализа остаются в истории проекта: они больше не привязаны к сайту,
+ * поэтому «Анализ сайта» не теряет прошлые аудиты.
+ */
+export async function deleteSite(db: Queryable, input: { siteId: number; projectId: number }): Promise<{ deleted: boolean }> {
+  const removed = await db.query<{ id: string | number }>(
+    "delete from sites where id = $1 and project_id = $2 returning id",
+    [input.siteId, input.projectId],
+  );
+  if (!removed.rows[0]) throw new SiteServiceError("site_not_found", 404);
+  return { deleted: true };
+}
+
+/** Отзыв подтверждения владения: публикация, hosted-раздел и зонд закрываются снова. */
+export async function revokeSiteVerification(db: Queryable, input: { siteId: number; projectId: number }): Promise<SiteRow> {
+  const updated = await db.query<SiteRow>(
+    `update sites
+        set verification_state = 'revoked', verification_method = null, verified_at = null,
+            verification_token = $3, updated_at = now()
+      where id = $1 and project_id = $2
+      returning ${SITE_FIELDS}`,
+    [input.siteId, input.projectId, generateSiteVerificationToken()],
+  );
+  if (!updated.rows[0]) throw new SiteServiceError("site_not_found", 404);
+  return updated.rows[0];
 }

@@ -1,0 +1,800 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Мои сайты — новый UX/UI (прототип)</title>
+<link rel="stylesheet" href="app.css" />
+</head>
+<body class="app-v3" data-theme="light">
+
+<svg width="0" height="0" style="position:absolute" aria-hidden="true"><defs>
+<symbol id="i-search" viewBox="0 0 24 24"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></symbol>
+<symbol id="i-bell" viewBox="0 0 24 24"><path d="M10.3 21a2 2 0 0 0 3.4 0"/><path d="M3.3 15.3A1 1 0 0 0 4 17h16a1 1 0 0 0 .7-1.7C19.4 14 18 12.5 18 8A6 6 0 0 0 6 8c0 4.5-1.4 6-2.7 7.3"/></symbol>
+<symbol id="i-plus" viewBox="0 0 24 24"><path d="M5 12h14"/><path d="M12 5v14"/></symbol>
+<symbol id="i-refresh" viewBox="0 0 24 24"><path d="M3 12a9 9 0 0 1 9-9 9.8 9.8 0 0 1 6.7 2.7L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-9 9 9.8 9.8 0 0 1-6.7-2.7L3 16"/><path d="M8 16H3v5"/></symbol>
+<symbol id="i-shield" viewBox="0 0 24 24"><path d="M20 13c0 5-3.5 7.5-7.7 9a1 1 0 0 1-.6 0C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.2-2.7a1.2 1.2 0 0 1 1.6 0C14.5 3.8 17 5 19 5a1 1 0 0 1 1 1z"/><path d="m9 12 2 2 4-4"/></symbol>
+<symbol id="i-shield-alert" viewBox="0 0 24 24"><path d="M20 13c0 5-3.5 7.5-7.7 9a1 1 0 0 1-.6 0C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.2-2.7a1.2 1.2 0 0 1 1.6 0C14.5 3.8 17 5 19 5a1 1 0 0 1 1 1z"/><path d="M12 8v4"/><path d="M12 16h.01"/></symbol>
+<symbol id="i-check" viewBox="0 0 24 24"><path d="M20 6 9 17l-5-5"/></symbol>
+<symbol id="i-check-circle" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><path d="m9 12 2 2 4-4"/></symbol>
+<symbol id="i-alert" viewBox="0 0 24 24"><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0"/><path d="M12 9v4"/><path d="M12 17h.01"/></symbol>
+<symbol id="i-clock" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/></symbol>
+<symbol id="i-x-circle" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><path d="m15 9-6 6"/><path d="m9 9 6 6"/></symbol>
+<symbol id="i-globe" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><path d="M12 2a14.5 14.5 0 0 0 0 20 14.5 14.5 0 0 0 0-20"/><path d="M2 12h20"/></symbol>
+<symbol id="i-external" viewBox="0 0 24 24"><path d="M15 3h6v6"/><path d="M10 14 21 3"/><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/></symbol>
+<symbol id="i-download" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="m7 10 5 5 5-5"/><path d="M12 15V3"/></symbol>
+<symbol id="i-sparkle" viewBox="0 0 24 24"><path d="M12 3l1.6 5.4L19 10l-5.4 1.6L12 17l-1.6-5.4L5 10l5.4-1.6z"/><path d="M19 15l.8 2.2L22 18l-2.2.8L19 21l-.8-2.2L16 18l2.2-.8z"/></symbol>
+<symbol id="i-file" viewBox="0 0 24 24"><path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7z"/><path d="M14 2v4a2 2 0 0 0 2 2h4"/><path d="M16 13H8"/><path d="M16 17H8"/></symbol>
+<symbol id="i-chart" viewBox="0 0 24 24"><path d="M3 3v18h18"/><path d="M7 16v-5"/><path d="M12 16V8"/><path d="M17 16v-8"/></symbol>
+<symbol id="i-send" viewBox="0 0 24 24"><path d="M14.5 21.7a.5.5 0 0 0 .9 0l6.5-19a.5.5 0 0 0-.6-.6l-19 6.5a.5.5 0 0 0 0 .9l7.9 3.2a2 2 0 0 1 1.1 1.1z"/><path d="M21.9 2.1 11 13"/></symbol>
+<symbol id="i-target" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="6"/><circle cx="12" cy="12" r="2"/></symbol>
+<symbol id="i-link" viewBox="0 0 24 24"><path d="M10 13a5 5 0 0 0 7.5.5l3-3a5 5 0 0 0-7-7L11.8 5.2"/><path d="M14 11a5 5 0 0 0-7.5-.5l-3 3a5 5 0 0 0 7 7l1.7-1.7"/></symbol>
+<symbol id="i-copy" viewBox="0 0 24 24"><rect width="14" height="14" x="8" y="8" rx="2"/><path d="M4 16a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2"/></symbol>
+<symbol id="i-edit" viewBox="0 0 24 24"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.1 2.1 0 0 1 3 3L12 15l-4 1 1-4z"/></symbol>
+<symbol id="i-eye" viewBox="0 0 24 24"><path d="M2 12s3.6-7 10-7 10 7 10 7-3.6 7-10 7-10-7-10-7"/><circle cx="12" cy="12" r="3"/></symbol>
+<symbol id="i-more" viewBox="0 0 24 24"><circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/><circle cx="5" cy="12" r="1"/></symbol>
+<symbol id="i-arrow-right" viewBox="0 0 24 24"><path d="M5 12h14"/><path d="m12 5 7 7-7 7"/></symbol>
+<symbol id="i-chevron" viewBox="0 0 24 24"><path d="m9 18 6-6-6-6"/></symbol>
+<symbol id="i-bot" viewBox="0 0 24 24"><rect width="18" height="12" x="3" y="8" rx="3"/><path d="M12 4v4"/><circle cx="8.5" cy="14" r="1"/><circle cx="15.5" cy="14" r="1"/></symbol>
+<symbol id="i-code" viewBox="0 0 24 24"><path d="m16 18 6-6-6-6"/><path d="m8 6-6 6 6 6"/></symbol>
+<symbol id="i-users" viewBox="0 0 24 24"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.9"/><path d="M16 3.1a4 4 0 0 1 0 7.8"/></symbol>
+<symbol id="i-plug" viewBox="0 0 24 24"><path d="M12 22v-5"/><path d="M9 8V2"/><path d="M15 8V2"/><path d="M6 8h12v4a6 6 0 0 1-12 0z"/></symbol>
+</defs></svg>
+
+<!-- ============================== КАРКАС ПРИЛОЖЕНИЯ ============================== -->
+<header class="sticky top-0 z-30 border-b border-line bg-surface/80 backdrop-blur-xl">
+  <div class="p-shell p-page flex h-16 items-center gap-4">
+    <div class="flex items-center gap-2.5">
+      <span class="grid h-8 w-8 place-items-center rounded-xs bg-brand-gradient text-[13px] font-bold text-white">A</span>
+      <span class="type-body-strong hidden sm:block">Аврора</span>
+    </div>
+    <div class="mx-auto hidden w-full max-w-[560px] md:block">
+      <div class="flex min-h-11 items-center gap-2.5 rounded-sm border border-line bg-surface-2 px-3.5 text-text-3">
+        <svg class="p-i h-[18px] w-[18px]"><use href="#i-search"/></svg>
+        <span class="type-secondary">Поиск по Авроре</span>
+        <span class="type-caption ml-auto">⌘ / Ctrl K</span>
+      </div>
+    </div>
+    <div class="ml-auto flex items-center gap-3 md:ml-0">
+      <span class="relative grid h-11 w-11 place-items-center rounded-xs border border-line text-text-2">
+        <svg class="p-i h-[18px] w-[18px]"><use href="#i-bell"/></svg>
+        <span class="absolute -top-1.5 -right-1.5 rounded-full bg-brand px-1.5 text-[10px] font-bold text-white">99+</span>
+      </span>
+      <span class="flex items-center gap-2">
+        <span class="grid h-10 w-10 place-items-center rounded-full bg-info-soft text-info-text"><svg class="p-i h-[18px] w-[18px]"><use href="#i-bot"/></svg></span>
+        <span class="hidden leading-tight sm:block">
+          <span class="type-caption block font-semibold text-text">Гид Авроры</span>
+          <span class="type-caption block">Объяснить экран</span>
+        </span>
+      </span>
+    </div>
+  </div>
+</header>
+
+<main class="p-shell p-page pt-6 pb-16">
+
+  <!-- ============================== ШАПКА РАЗДЕЛА ============================== -->
+  <div class="flex flex-wrap items-end justify-between gap-x-6 gap-y-4">
+    <div class="min-w-0">
+      <h1 class="type-h1">Мои сайты</h1>
+      <p class="type-secondary mt-1.5 max-w-[760px] text-text-2">
+        Сайт — такая же площадка, как канал: Аврора изучает страницы, предлагает материалы,
+        публикует их после вашего одобрения и раз в месяц показывает, что изменилось.
+      </p>
+    </div>
+    <div class="flex flex-wrap items-center gap-2">
+      <button class="p-btn p-btn-primary"><svg class="p-i h-4 w-4"><use href="#i-plus"/></svg>Добавить сайт</button>
+    </div>
+  </div>
+
+  <!-- ============ ПЕРЕКЛЮЧАТЕЛЬ САЙТОВ: заменяет пустую левую колонку ============ -->
+  <div class="mt-5 flex flex-wrap items-center gap-2" role="tablist" aria-label="Сайты проекта">
+    <button class="p-chip p-chip-active" aria-current="true">
+      <span class="p-dot bg-success"></span>
+      <span class="type-body-strong">aspb-partners.ru</span>
+      <span class="type-caption text-text-3">11 стр. · 4 на одобрении</span>
+    </button>
+    <button class="p-chip">
+      <span class="p-dot bg-text-3"></span>
+      <span class="type-body-strong">tech-pravo.ru</span>
+      <span class="type-caption text-text-3">20 стр. · 0 на одобрении</span>
+    </button>
+    <button class="p-chip p-chip-add"><svg class="p-i h-4 w-4"><use href="#i-plus"/></svg><span class="type-secondary">Подключить ещё сайт</span></button>
+  </div>
+
+  <!-- ============ КАРТОЧКА САЙТА: одна полоса состояния вместо трёх карточек ============ -->
+  <section class="p-card mt-4 overflow-hidden">
+    <div class="flex flex-wrap items-center gap-x-6 gap-y-4 p-5 sm:p-6">
+      <span class="p-ico p-ico-brand h-12 w-12"><svg class="p-i h-6 w-6"><use href="#i-globe"/></svg></span>
+      <div class="min-w-0">
+        <div class="flex flex-wrap items-center gap-2">
+          <h2 class="type-h2">aspb-partners.ru</h2>
+          <span class="p-pill p-pill-fire"><svg class="p-i h-3.5 w-3.5"><use href="#i-shield-alert"/></svg>домен не подтверждён</span>
+          <span class="p-pill p-pill-neutral">режим: с подтверждением</span>
+        </div>
+        <a class="type-caption mt-1 inline-flex items-center gap-1.5 p-link" href="#">https://aspb-partners.ru/<svg class="p-i h-3.5 w-3.5"><use href="#i-external"/></svg></a>
+      </div>
+      <div class="ml-auto flex flex-wrap items-center gap-2">
+        <button class="p-btn p-btn-secondary"><svg class="p-i h-4 w-4"><use href="#i-refresh"/></svg>Обновить аудит</button>
+        <button class="p-btn p-btn-ghost p-btn-icon" aria-label="Действия с сайтом"><svg class="p-i h-4 w-4"><use href="#i-more"/></svg></button>
+      </div>
+    </div>
+
+    <!-- Полоса состояния: три равные ячейки, у каждой есть действие — пустых окон нет -->
+    <dl class="grid border-t border-line sm:grid-cols-3 [&>div+div]:border-t sm:[&>div+div]:border-t-0 sm:[&>div+div]:border-l border-line">
+      <div class="flex items-center gap-3 px-5 py-4">
+        <span class="p-ico p-ico-success"><svg class="p-i h-4 w-4"><use href="#i-check-circle"/></svg></span>
+        <span class="min-w-0">
+          <dt class="type-caption text-text-3">Аудит</dt>
+          <dd class="type-body-strong">Готово · 24 сентября</dd>
+        </span>
+        <button class="p-btn p-btn-ghost p-btn-sm ml-auto">Профиль<svg class="p-i h-3.5 w-3.5"><use href="#i-chevron"/></svg></button>
+      </div>
+      <div class="flex items-center gap-3 px-5 py-4">
+        <span class="p-ico p-ico-fire"><svg class="p-i h-4 w-4"><use href="#i-shield-alert"/></svg></span>
+        <span class="min-w-0">
+          <dt class="type-caption text-text-3">Владение доменом</dt>
+          <dd class="type-body-strong">Не подтверждён</dd>
+        </span>
+        <button class="p-btn p-btn-secondary p-btn-sm ml-auto">Подтвердить</button>
+      </div>
+      <div class="flex items-center gap-3 px-5 py-4">
+        <span class="p-ico"><svg class="p-i h-4 w-4"><use href="#i-send"/></svg></span>
+        <span class="min-w-0">
+          <dt class="type-caption text-text-3">Публикация</dt>
+          <dd class="type-body-strong">Назначение не подключено</dd>
+        </span>
+        <button class="p-btn p-btn-secondary p-btn-sm ml-auto">Настроить</button>
+      </div>
+    </dl>
+  </section>
+
+  <!-- ============================== ТАБЫ ============================== -->
+  <nav class="p-seg mt-4" aria-label="Разделы сайта">
+    <button class="p-tab p-tab-active" data-tab="overview">Обзор</button>
+    <button class="p-tab" data-tab="audit">Аудит и видимость</button>
+    <button class="p-tab" data-tab="materials">Материалы<span class="p-tab-count">4</span></button>
+    <button class="p-tab" data-tab="publishing">Публикация</button>
+    <button class="p-tab" data-tab="reports">Отчёты<span class="p-tab-count">3</span></button>
+  </nav>
+
+  <!-- ======================================================================= -->
+  <!-- ЭКРАН 1 · ОБЗОР                                                         -->
+  <!-- ======================================================================= -->
+  <section class="p-screen p-screen-active mt-5" data-screen="overview">
+
+    <div class="grid items-start gap-5 lg:grid-cols-12">
+      <!-- Что делать дальше — главный блок экрана -->
+      <div class="p-card lg:col-span-7">
+        <div class="flex items-center justify-between gap-3 border-b border-line px-6 py-4">
+          <div>
+            <h3 class="type-h3">Что делать дальше</h3>
+            <p class="type-caption mt-0.5 text-text-3">Порядок собран из состояния сайта: сначала то, что разблокирует остальное.</p>
+          </div>
+          <span class="p-pill p-pill-brand">4 шага</span>
+        </div>
+        <ol class="p-fill-body">
+          <li class="p-row">
+            <span class="p-num p-num-danger">1</span>            <span class="min-w-0 flex-1">
+              <span class="type-body-strong block">Подтвердить домен</span>
+              <span class="type-caption mt-1 block text-text-2">Пока домен не подтверждён, публикация и зонд видимости в ИИ закрыты. Это 2 минуты: TXT-запись или meta-тег.</span>
+              <span class="mt-3 flex flex-wrap gap-2">
+                <button class="p-btn p-btn-primary p-btn-sm">Показать 2 способа</button>
+                <button class="p-btn p-btn-ghost p-btn-sm">Уже добавил — проверить</button>
+              </span>
+            </span>
+          </li>
+          <li class="p-row">
+            <span class="p-num p-num-danger">2</span>
+            <span class="min-w-0 flex-1">
+              <span class="type-body-strong block">Закрыть 4 критичных пробела в темах</span>
+              <span class="type-caption mt-1 block text-text-2">Аудит нашёл 12 пробелов, 4 из них критичные: нет страницы «О компании», нет структурированных данных Organization и Service, 4 страницы закрыты от индексации.</span>
+              <span class="mt-3 flex flex-wrap gap-2">
+                <button class="p-btn p-btn-secondary p-btn-sm">Открыть пробелы</button>
+                <button class="p-btn p-btn-ghost p-btn-sm">Предложить материалы</button>
+              </span>
+            </span>
+          </li>
+          <li class="p-row">
+            <span class="p-num">3</span>
+            <span class="min-w-0 flex-1">
+              <span class="type-body-strong block">Одобрить 4 материала, которые ждут решения</span>
+              <span class="type-caption mt-1 block text-text-2">Самый старый ждёт с 9 сентября. Публикация откроется после подтверждения домена, но одобрить можно уже сейчас.</span>
+              <span class="mt-3"><button class="p-btn p-btn-secondary p-btn-sm">Перейти к материалам</button></span>
+            </span>
+          </li>
+          <li class="p-row">
+            <span class="p-num">4</span>
+            <span class="min-w-0 flex-1">
+              <span class="type-body-strong block">Подключить назначение публикации</span>
+              <span class="type-caption mt-1 block text-text-2">WordPress по REST API или раздел Авроры на вашем домене. Без назначения материалы останутся внутри Авроры.</span>
+              <span class="mt-3"><button class="p-btn p-btn-secondary p-btn-sm">Выбрать назначение</button></span>
+            </span>
+          </li>
+        </ol>
+        <div class="border-t border-line bg-surface-2 px-6 py-4">
+          <p class="type-label text-text-2">Уже сделано</p>
+          <ul class="mt-2 flex flex-wrap gap-x-6 gap-y-2">
+            <li class="type-caption flex items-center gap-1.5 text-text-2"><svg class="p-i h-3.5 w-3.5 text-success-text"><use href="#i-check"/></svg>Сайт подключён 20 сентября</li>
+            <li class="type-caption flex items-center gap-1.5 text-text-2"><svg class="p-i h-3.5 w-3.5 text-success-text"><use href="#i-check"/></svg>Стартовый аудит и профиль готовы</li>
+            <li class="type-caption flex items-center gap-1.5 text-text-2"><svg class="p-i h-3.5 w-3.5 text-success-text"><use href="#i-check"/></svg>Отчётов собрано: 3</li>
+            <li class="type-caption flex items-center gap-1.5 text-text-2"><svg class="p-i h-3.5 w-3.5 text-success-text"><use href="#i-check"/></svg>Материалов сгенерировано: 6</li>
+          </ul>
+        </div>
+        <div class="flex flex-wrap items-center justify-between gap-3 border-t border-line px-6 py-3">
+          <span class="type-caption text-text-3">Всего в плане 12 задач: 4 сейчас, 8 после подтверждения домена</span>
+          <button class="p-btn p-btn-ghost p-btn-sm">Весь план<svg class="p-i h-3.5 w-3.5"><use href="#i-chevron"/></svg></button>
+        </div>
+      </div>
+
+      <!-- Состояние сайта: плотный список метрик + честные ограничения -->
+      <div class="p-fill flex flex-col gap-5 lg:col-span-5">
+        <div class="p-card p-fill">
+          <div class="border-b border-line px-6 py-4">
+            <h3 class="type-h3">Состояние сайта</h3>
+            <p class="type-caption mt-0.5 text-text-3">По последнему аудиту от 24 сентября 2026</p>
+          </div>
+          <ul class="p-fill-body grid grid-cols-2 [&>li]:border-t [&>li]:border-line [&>li:nth-child(-n+2)]:border-t-0 [&>li:nth-child(even)]:border-l">
+            <li class="p-kpi"><span class="type-caption block text-text-3">Страниц в профиле</span><span class="type-h2 mt-1 block">11</span><span class="type-caption block text-text-3">проверено полностью</span></li>
+            <li class="p-kpi"><span class="type-caption block text-text-3">Тем сайта</span><span class="type-h2 mt-1 block">10</span><span class="type-caption block text-text-3">6 раскрыты глубоко</span></li>
+            <li class="p-kpi"><span class="type-caption block text-text-3">Пробелов</span><span class="type-h2 mt-1 block text-danger-text">12</span><span class="type-caption block text-text-3">4 критичных</span></li>
+            <li class="p-kpi"><span class="type-caption block text-text-3">Вопросов без ответа</span><span class="type-h2 mt-1 block">1</span><span class="type-caption block text-text-3">из реестра клиентов</span></li>
+          </ul>
+          <div class="border-t border-line px-6 py-4">
+            <p class="type-label">Чего Аврора пока не измеряет</p>
+            <ul class="type-caption mt-2 space-y-1.5 text-text-2">
+              <li class="flex gap-2"><span class="text-danger-text">✗</span>Позиции в поиске и трафик — нет интеграций с Яндекс.Вебмастером и Search Console</li>
+              <li class="flex gap-2"><span class="text-danger-text">✗</span>Ссылочный профиль и упоминания на чужих сайтах</li>
+              <li class="flex gap-2"><span class="text-success-text">✓</span>Всё видимое на страницах: темы, пробелы, canonical, schema.org, скорость отдачи</li>
+            </ul>
+            <button class="p-btn p-btn-ghost p-btn-sm mt-2 -ml-1">Подключить Вебмастер и Search Console<svg class="p-i h-3.5 w-3.5"><use href="#i-chevron"/></svg></button>
+          </div>
+        </div>
+
+        <div class="p-card p-fill">
+          <div class="border-b border-line px-6 py-4">
+            <h3 class="type-h3">Последний отчёт · 1 октября</h3>
+          </div>
+          <div class="p-fill-body space-y-3 px-6 py-4">
+            <p class="type-secondary text-text-2">
+              Опубликовано материалов: 0 · ждут одобрения: 4 · из 23 рекомендаций выполнено 0, открыто 23.
+              Позиции и трафик не измерялись.
+            </p>
+            <div class="p-note">
+              <p class="type-caption font-semibold text-text">Интерпретация Авроры</p>
+              <p class="type-caption mt-1 text-text-2">
+                Тематическое покрытие сильное, но сайт технически закрыт для генеративного поиска:
+                нет разметки Organization и Service, нет страницы «О компании», 4 страницы не индексируются.
+              </p>
+            </div>
+          </div>
+          <div class="p-fill-foot flex flex-wrap gap-2 border-t border-line px-6 py-4">
+            <button class="p-btn p-btn-secondary p-btn-sm"><svg class="p-i h-3.5 w-3.5"><use href="#i-download"/></svg>PDF</button>
+            <button class="p-btn p-btn-secondary p-btn-sm"><svg class="p-i h-3.5 w-3.5"><use href="#i-download"/></svg>Markdown</button>
+            <button class="p-btn p-btn-ghost p-btn-sm ml-auto">Все отчёты<svg class="p-i h-3.5 w-3.5"><use href="#i-chevron"/></svg></button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ======================================================================= -->
+  <!-- ЭКРАН 2 · АУДИТ И ВИДИМОСТЬ                                             -->
+  <!-- ======================================================================= -->
+  <section class="p-screen mt-5" data-screen="audit">
+    <!-- Одна полоса метрик вместо россыпи карточек -->
+    <div class="p-card grid border-line sm:grid-cols-2 lg:grid-cols-4 [&>div+div]:border-t sm:[&>div+div]:border-t-0 sm:[&>div+div]:border-l">
+      <div class="p-kpi">
+        <span class="type-caption block text-text-3">On-page SEO</span>
+        <span class="type-h2 mt-1 block">62<span class="type-caption font-normal text-text-3"> / 100</span></span>
+        <span class="p-bar mt-3 block"><span style="width:62%"></span></span>
+        <span class="type-caption mt-2 block text-text-3">15 проверок, 1 не измеряется</span>
+      </div>
+      <div class="p-kpi">
+        <span class="type-caption block text-text-3">Готовность к генеративному поиску</span>
+        <span class="type-h2 mt-1 block">34<span class="type-caption font-normal text-text-3"> / 100</span></span>
+        <span class="p-bar p-bar-bad mt-3 block"><span style="width:34%"></span></span>
+        <span class="type-caption mt-2 block text-text-3">9 проверок: разметка, сущности, ответы</span>
+      </div>
+      <div class="p-kpi">
+        <span class="type-caption block text-text-3">Страниц прочитано</span>
+        <span class="type-h2 mt-1 block">11</span>
+        <span class="p-bar mt-3 block"><span style="width:55%"></span></span>
+        <span class="type-caption mt-2 block text-text-3">из 20, которые разрешил лимит обхода</span>
+      </div>
+      <div class="p-kpi">
+        <span class="type-caption block text-text-3">Темы и пробелы</span>
+        <span class="type-h2 mt-1 block">10 <span class="text-danger-text">/ 12</span></span>
+        <span class="p-bar p-bar-warn mt-3 block"><span style="width:45%"></span></span>
+        <span class="type-caption mt-2 block text-text-3">4 пробела критичные</span>
+      </div>
+    </div>
+
+    <div class="mt-5 grid items-start gap-5 lg:grid-cols-12">
+      <div class="p-card lg:col-span-5">
+        <div class="border-b border-line px-6 py-4">
+          <h3 class="type-h3">Темы сайта</h3>
+          <p class="type-caption mt-0.5 text-text-3">Сколько страниц раскрывают тему и насколько глубоко</p>
+        </div>
+        <ul class="space-y-4 px-6 py-5">
+          <li>
+            <div class="flex items-center justify-between gap-3"><span class="type-body-strong">Банкротство физлиц</span><span class="type-caption text-text-3">4 страницы · глубоко</span></div>
+            <span class="p-bar p-bar-ok mt-2 block"><span style="width:86%"></span></span>
+          </li>
+          <li>
+            <div class="flex items-center justify-between gap-3"><span class="type-body-strong">Юридическая поддержка бизнеса</span><span class="type-caption text-text-3">3 страницы · глубоко</span></div>
+            <span class="p-bar p-bar-ok mt-2 block"><span style="width:72%"></span></span>
+          </li>
+          <li>
+            <div class="flex items-center justify-between gap-3"><span class="type-body-strong">Вебинары и конференции</span><span class="type-caption text-text-3">2 страницы · тонко</span></div>
+            <span class="p-bar p-bar-warn mt-2 block"><span style="width:38%"></span></span>
+          </li>
+          <li>
+            <div class="flex items-center justify-between gap-3"><span class="type-body-strong">Экономика кризиса</span><span class="type-caption text-text-3">2 страницы · тонко</span></div>
+            <span class="p-bar p-bar-warn mt-2 block"><span style="width:31%"></span></span>
+          </li>
+          <li>
+            <div class="flex items-center justify-between gap-3"><span class="type-body-strong">Стоимость услуг</span><span class="type-caption text-text-3">нет отдельных страниц</span></div>
+            <span class="p-bar p-bar-bad mt-2 block"><span style="width:12%"></span></span>
+          </li>
+        </ul>
+      </div>
+
+      <div class="p-card lg:col-span-7">
+        <div class="border-b border-line px-6 py-4">
+          <h3 class="type-h3">Технические замечания</h3>
+          <p class="type-caption mt-0.5 text-text-3">Проверено на 11 страницах · у каждой строки указано, где смотреть</p>
+        </div>
+        <table class="w-full">
+          <thead>
+            <tr class="type-caption text-text-3">
+              <th class="px-6 py-3 text-left font-semibold">Что не так</th>
+              <th class="px-3 py-3 text-left font-semibold">Где</th>
+              <th class="px-6 py-3 text-left font-semibold">Что делать</th>
+            </tr>
+          </thead>
+          <tbody class="type-caption">
+            <tr class="border-t border-line">
+              <td class="px-6 py-3"><span class="p-pill p-pill-danger">критично</span><p class="type-body-strong mt-2">Нет canonical</p></td>
+              <td class="px-3 py-3 text-text-2">11 из 11 страниц</td>
+              <td class="px-6 py-3 text-text-2">Добавить &lt;link rel="canonical"&gt; с абсолютным адресом</td>
+            </tr>
+            <tr class="border-t border-line">
+              <td class="px-6 py-3"><span class="p-pill p-pill-danger">критично</span><p class="type-body-strong mt-2">Страницы закрыты от индексации</p></td>
+              <td class="px-3 py-3 text-text-2">4 страницы</td>
+              <td class="px-6 py-3 text-text-2">Снять noindex либо убрать страницы из sitemap</td>
+            </tr>
+            <tr class="border-t border-line">
+              <td class="px-6 py-3"><span class="p-pill p-pill-danger">критично</span><p class="type-body-strong mt-2">Нет разметки Organization</p></td>
+              <td class="px-3 py-3 text-text-2">0 из 11 страниц</td>
+              <td class="px-6 py-3 text-text-2">Добавить JSON-LD Organization с названием, адресом, контактами</td>
+            </tr>
+            <tr class="border-t border-line">
+              <td class="px-6 py-3"><span class="p-pill p-pill-fire">важно</span><p class="type-body-strong mt-2">Заголовок H1 отличается от title</p></td>
+              <td class="px-3 py-3 text-text-2">7 страниц</td>
+              <td class="px-6 py-3 text-text-2">Свести H1 и title к одной формулировке</td>
+            </tr>
+            <tr class="border-t border-line">
+              <td class="px-6 py-3"><span class="p-pill p-pill-fire">важно</span><p class="type-body-strong mt-2">Нет FAQ-разметки</p></td>
+              <td class="px-3 py-3 text-text-2">0 из 11 страниц</td>
+              <td class="px-6 py-3 text-text-2">Разметить вопросы из реестра клиентов через FAQPage</td>
+            </tr>
+          </tbody>
+        </table>
+        <div class="flex items-center justify-between border-t border-line px-6 py-4">
+          <span class="type-caption text-text-3">Показаны 5 из 23 замечаний</span>
+          <button class="p-btn p-btn-secondary p-btn-sm">Все замечания<svg class="p-i h-3.5 w-3.5"><use href="#i-chevron"/></svg></button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Пробелы: каждая карточка ведёт в материалы -->
+    <div class="p-card mt-5">
+      <div class="flex flex-wrap items-center justify-between gap-3 border-b border-line px-6 py-4">
+        <div>
+          <h3 class="type-h3">Пробелы в темах · 12</h3>
+          <p class="type-caption mt-0.5 text-text-3">Из пробела можно сразу поставить материал — Аврора подставит тему и источники</p>
+        </div>
+        <button class="p-btn p-btn-primary p-btn-sm"><svg class="p-i h-4 w-4"><use href="#i-sparkle"/></svg>Предложить 4 материала</button>
+      </div>
+      <div class="grid gap-4 p-6 md:grid-cols-2">
+        <div class="p-card-flat p-4">
+          <div class="flex flex-wrap items-center gap-2">
+            <span class="p-pill p-pill-danger">критично</span><span class="type-caption text-text-3">страница типа «О компании»</span>
+          </div>
+          <p class="type-body-strong mt-2">Нет страницы о компании</p>
+          <p class="type-caption mt-1 text-text-2">Ни на одной странице нет состава команды, реквизитов и подтверждённого опыта — ИИ-ассистентам нечего цитировать.</p>
+          <div class="mt-3 flex flex-wrap items-center gap-2">
+            <button class="p-btn p-btn-secondary p-btn-sm">Создать материал</button>
+            <span class="type-caption text-text-3">Доказательство: /o-nas — 404</span>
+          </div>
+        </div>
+        <div class="p-card-flat p-4">
+          <div class="flex flex-wrap items-center gap-2">
+            <span class="p-pill p-pill-danger">критично</span><span class="type-caption text-text-3">структурированные данные</span>
+          </div>
+          <p class="type-body-strong mt-2">Нет разметки Organization и Service</p>
+          <p class="type-caption mt-1 text-text-2">Без сущностей поисковые системы не связывают сайт с компанией и услугами.</p>
+          <div class="mt-3 flex flex-wrap items-center gap-2">
+            <button class="p-btn p-btn-secondary p-btn-sm">Создать материал</button>
+            <span class="type-caption text-text-3">Доказательство: 0 из 11 страниц</span>
+          </div>
+        </div>
+        <div class="p-card-flat p-4">
+          <div class="flex flex-wrap items-center gap-2">
+            <span class="p-pill p-pill-fire">важно</span><span class="type-caption text-text-3">вопрос без ответа</span>
+          </div>
+          <p class="type-body-strong mt-2">Нет страницы про сроки и стоимость</p>
+          <p class="type-caption mt-1 text-text-2">В реестре вопросов клиентов тема повторяется 6 раз, отдельной страницы нет.</p>
+          <div class="mt-3 flex flex-wrap items-center gap-2">
+            <button class="p-btn p-btn-secondary p-btn-sm">Создать материал</button>
+            <span class="type-caption text-text-3">6 обращений клиентов</span>
+          </div>
+        </div>
+        <div class="p-card-flat p-4">
+          <div class="flex flex-wrap items-center gap-2">
+            <span class="p-pill p-pill-fire">важно</span><span class="type-caption text-text-3">тонкая тема</span>
+          </div>
+          <p class="type-body-strong mt-2">Тема «Экономика кризиса» раскрыта на 2 страницах</p>
+          <p class="type-caption mt-1 text-text-2">По теме есть спрос, но нет ни одного разбора с примерами и цифрами.</p>
+          <div class="mt-3 flex flex-wrap items-center gap-2">
+            <button class="p-btn p-btn-secondary p-btn-sm">Создать материал</button>
+            <span class="type-caption text-text-3">Доказательство: /blog/krizis</span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="mt-5 grid items-start gap-5 lg:grid-cols-12">
+      <div class="p-card lg:col-span-7">
+        <div class="flex flex-wrap items-center justify-between gap-3 border-b border-line px-6 py-4">
+          <div>
+            <h3 class="type-h3">Видимость в ответах ИИ</h3>
+            <p class="type-caption mt-0.5 text-text-3">Что движки отвечают на вопросы вашей аудитории · прогон 28 сентября</p>
+          </div>
+          <button class="p-btn p-btn-secondary p-btn-sm" disabled><svg class="p-i h-4 w-4"><use href="#i-eye"/></svg>Зонд недоступен</button>
+        </div>
+        <table class="w-full">
+          <thead><tr class="type-caption text-text-3"><th class="px-6 py-3 text-left font-semibold">Вопрос клиента</th><th class="px-3 py-3 text-left font-semibold">Ответов</th><th class="px-6 py-3 text-left font-semibold">Бренд</th></tr></thead>
+          <tbody class="type-caption">
+            <tr class="border-t border-line"><td class="px-6 py-3 text-text">Кто помогает списать долги по 127-ФЗ</td><td class="px-3 py-3 text-text-2">0 из 3</td><td class="px-6 py-3"><span class="p-pill p-pill-neutral">не упомянут</span></td></tr>
+            <tr class="border-t border-line"><td class="px-6 py-3 text-text">Сколько стоит банкротство физлица</td><td class="px-3 py-3 text-text-2">0 из 3</td><td class="px-6 py-3"><span class="p-pill p-pill-neutral">не упомянут</span></td></tr>
+            <tr class="border-t border-line"><td class="px-6 py-3 text-text">Как выбрать юриста по банкротству</td><td class="px-3 py-3 text-text-2">0 из 3</td><td class="px-6 py-3"><span class="p-pill p-pill-neutral">не упомянут</span></td></tr>
+          </tbody>
+        </table>
+        <div class="border-t border-line bg-fire-soft px-6 py-4">
+          <p class="type-caption text-fire-text">Зонд выполняется только для подтверждённого домена. Пока домен не подтверждён, Аврора не тратит ИИ-бюджет и не показывает выдуманные цифры.</p>
+        </div>
+      </div>
+
+      <div class="p-card lg:col-span-5">
+        <div class="border-b border-line px-6 py-4">
+          <h3 class="type-h3">Границы этого аудита</h3>
+          <p class="type-caption mt-0.5 text-text-3">Честный список того, чего в отчёте нет</p>
+        </div>
+        <ul class="space-y-3 px-6 py-5">
+          <li class="flex gap-3"><span class="p-ico p-ico-danger h-8 w-8"><svg class="p-i h-4 w-4"><use href="#i-x-circle"/></svg></span><span><span class="type-body-strong block">Позиции и трафик</span><span class="type-caption text-text-2">Нужны Яндекс.Вебмастер и Search Console — подключение в 2 клика.</span></span></li>
+          <li class="flex gap-3"><span class="p-ico p-ico-danger h-8 w-8"><svg class="p-i h-4 w-4"><use href="#i-x-circle"/></svg></span><span><span class="type-body-strong block">Ссылки и упоминания на других сайтах</span><span class="type-caption text-text-2">Аврора читает только ваш сайт, чужие площадки не обходит.</span></span></li>
+          <li class="flex gap-3"><span class="p-ico p-ico-fire h-8 w-8"><svg class="p-i h-4 w-4"><use href="#i-alert"/></svg></span><span><span class="type-body-strong block">Страницы на JavaScript</span><span class="type-caption text-text-2">Обход читает HTML без исполнения скриптов: одностраничные приложения могут показаться пустыми.</span></span></li>
+          <li class="flex gap-3"><span class="p-ico p-ico-fire h-8 w-8"><svg class="p-i h-4 w-4"><use href="#i-alert"/></svg></span><span><span class="type-body-strong block">Только первые 20 страниц</span><span class="type-caption text-text-2">Лимит обхода можно поднять до 50 — попросите, если сайт больше.</span></span></li>
+          <li class="flex gap-3"><span class="p-ico p-ico-success h-8 w-8"><svg class="p-i h-4 w-4"><use href="#i-check"/></svg></span><span><span class="type-body-strong block">Что читается точно</span><span class="type-caption text-text-2">Заголовки, тексты, canonical, noindex, schema.org, alt, ссылки, формы, контакты.</span></span></li>
+        </ul>
+      </div>
+    </div>
+  </section>
+
+  <!-- ======================================================================= -->
+  <!-- ЭКРАН 3 · МАТЕРИАЛЫ: список и карточка всегда заполнены                  -->
+  <!-- ======================================================================= -->
+  <section class="p-screen mt-5" data-screen="materials">
+    <div class="flex flex-wrap items-center gap-3">
+      <div class="p-seg w-auto">
+        <button class="p-tab p-tab-active">Все<span class="p-tab-count">6</span></button>
+        <button class="p-tab">Ждут одобрения<span class="p-tab-count">4</span></button>
+        <button class="p-tab">Опубликованные<span class="p-tab-count">0</span></button>
+      </div>
+      <div class="ml-auto flex flex-wrap items-center gap-2">
+        <button class="p-btn p-btn-secondary"><svg class="p-i h-4 w-4"><use href="#i-sparkle"/></svg>Спланировать сейчас</button>
+        <button class="p-btn p-btn-primary"><svg class="p-i h-4 w-4"><use href="#i-plus"/></svg>Новый материал</button>
+      </div>
+    </div>
+
+    <div class="mt-4 grid items-start gap-5 lg:grid-cols-[380px_minmax(0,1fr)]">
+      <!-- Список: первый материал выбран сразу, поэтому правая часть никогда не пустая -->
+      <div class="p-card overflow-hidden">
+        <div class="flex items-center justify-between gap-3 border-b border-line px-5 py-4">
+          <span class="type-label text-text-2">Материалы сайта</span>
+          <span class="type-caption text-text-3">4 ждут одобрения</span>
+        </div>
+        <ul>
+          <li class="p-row p-row-hover p-row-active">
+            <span class="min-w-0 flex-1">
+              <span class="flex flex-wrap items-center gap-2"><span class="p-pill p-pill-fire">ждёт одобрения</span><span class="type-caption text-text-3">Страница о компании</span></span>
+              <span class="type-body-strong mt-1.5 block">АСПБ — Экономика кризиса | Юридическая поддержка</span>
+              <span class="type-caption mt-1 block text-text-2">АСПБ — Экономика кризиса. На странице представлены материалы и вебинары, посвящённые правовым аспектам…</span>
+              <span class="type-caption mt-1.5 block text-text-3">v1 · 14 сентября, 04:20 · 640 слов</span>
+            </span>
+          </li>
+          <li class="p-row p-row-hover">
+            <span class="min-w-0 flex-1">
+              <span class="flex flex-wrap items-center gap-2"><span class="p-pill p-pill-fire">ждёт одобрения</span><span class="type-caption text-text-3">Новость компании</span></span>
+              <span class="type-body-strong mt-1.5 block">Вайб-кодинг: как меняется роль разработчика и что это значит для бизнеса</span>
+              <span class="type-caption mt-1 block text-text-2">Вайб-кодинг — это не просто модный термин, а смена парадигмы в разработке…</span>
+              <span class="type-caption mt-1.5 block text-text-3">v1 · 9 сентября, 16:53</span>
+            </span>
+          </li>
+          <li class="p-row p-row-hover">
+            <span class="min-w-0 flex-1">
+              <span class="flex flex-wrap items-center gap-2"><span class="p-pill p-pill-fire">ждёт одобрения</span><span class="type-caption text-text-3">Новость компании</span></span>
+              <span class="type-body-strong mt-1.5 block">АСПБ: один маршрут вместо параллельных залов — программа конференции 2026</span>
+              <span class="type-caption mt-1.5 block text-text-3">v1 · 8 сентября, 11:02</span>
+            </span>
+          </li>
+          <li class="p-row p-row-hover">
+            <span class="min-w-0 flex-1">
+              <span class="flex flex-wrap items-center gap-2"><span class="p-pill p-pill-fire">ждёт одобрения</span><span class="type-caption text-text-3">Ответ на вопрос</span></span>
+              <span class="type-body-strong mt-1.5 block">Как выбрать юриста по банкротству: 7 вопросов к кандидату</span>
+              <span class="type-caption mt-1.5 block text-text-3">v1 · 5 сентября, 09:40</span>
+            </span>
+          </li>
+        </ul>
+      </div>
+
+      <!-- Карточка материала: текст, проверки и действия в одном окне -->
+      <div class="p-card p-fill">
+        <div class="flex flex-wrap items-start justify-between gap-3 border-b border-line px-6 py-4">
+          <div class="min-w-0">
+            <div class="flex flex-wrap items-center gap-2">
+              <span class="p-pill p-pill-fire">ждёт одобрения</span>
+              <span class="p-pill p-pill-neutral">Страница о компании · v1</span>
+              <span class="p-pill p-pill-neutral">640 слов</span>
+            </div>
+            <h3 class="type-h3 mt-2">АСПБ — Экономика кризиса | Юридическая поддержка</h3>
+            <p class="type-caption mt-1 text-text-3">Сгенерирован по профилю сайта 14 сентября, источники: 3 страницы сайта · 1 новость партнёра</p>
+          </div>
+          <button class="p-btn p-btn-ghost p-btn-sm"><svg class="p-i h-4 w-4"><use href="#i-external"/></svg>Открыть в редакторе</button>
+        </div>
+
+        <div class="p-fill-body grid gap-0 lg:grid-cols-[minmax(0,1fr)_260px] [&>div+div]:border-t lg:[&>div+div]:border-t-0 lg:[&>div+div]:border-l border-line">
+          <div class="px-6 py-5">
+            <p class="type-label text-text-2">Как это будет выглядеть на сайте</p>
+            <p class="type-secondary mt-3 text-text-2"><span class="font-semibold text-text">Title:</span> АСПБ — Экономика кризиса | Юридическая поддержка</p>
+            <p class="type-secondary mt-1 text-text-2"><span class="font-semibold text-text">Description:</span> Разбираем, что меняется в экономике кризиса и как юридическая поддержка помогает бизнесу удержать устойчивость.</p>
+            <div class="p-inset p-scroll mt-4 max-h-[300px] p-4">
+              <p class="p-body">Экономика кризиса — это не только про падение спроса. Это про скорость решений: чем раньше компания пересматривает договоры, обязательства и налоговую нагрузку, тем дешевле обходится выход из кризиса.
+
+Мы собрали практику АСПБ по сопровождению бизнеса в кризисных периодах: реструктуризация долгов, работа с контрагентами, налоговые споры и защита активов.
+
+## Что меняется первым
+
+1. Договорная база: условия расторжения и штрафы становятся главным риском.
+2. Кассовый разрыв: отсрочки по обязательствам требуют юридического оформления.
+3. Ответственность руководителя: решения периода кризиса проверяются отдельно.
+
+## Как мы работаем
+
+Мы начинаем с аудита обязательств и заканчиваем сопровождением спора. Каждый этап фиксируется письменно, чтобы у бизнеса оставался след решений.</p>
+            </div>
+          </div>
+
+          <div class="px-6 py-5">
+            <p class="type-label text-text-2">Проверки перед публикацией</p>
+            <ul class="mt-3 space-y-3">
+              <li class="flex gap-2"><span class="p-ico p-ico-success h-7 w-7"><svg class="p-i h-3.5 w-3.5"><use href="#i-check"/></svg></span><span class="type-caption text-text-2">Нет дублей: близость к существующим страницам 0,18</span></li>
+              <li class="flex gap-2"><span class="p-ico p-ico-fire h-7 w-7"><svg class="p-i h-3.5 w-3.5"><use href="#i-alert"/></svg></span><span class="type-caption text-text-2">Нет ссылок на страницы сайта: добавьте 2–3 перелинковки</span></li>
+              <li class="flex gap-2"><span class="p-ico p-ico-success h-7 w-7"><svg class="p-i h-3.5 w-3.5"><use href="#i-check"/></svg></span><span class="type-caption text-text-2">Нет обещаний результата и гарантий</span></li>
+              <li class="flex gap-2"><span class="p-ico p-ico-success h-7 w-7"><svg class="p-i h-3.5 w-3.5"><use href="#i-check"/></svg></span><span class="type-caption text-text-2">Факты взяты из базы знаний сайта, не из модели</span></li>
+            </ul>
+            <p class="type-label mt-5 text-text-2">Источники</p>
+            <ul class="mt-2 space-y-1.5">
+              <li><a class="type-caption p-link" href="#">/uslugi/bankrotstvo</a></li>
+              <li><a class="type-caption p-link" href="#">/blog/ekonomika-krizisa</a></li>
+              <li><a class="type-caption p-link" href="#">/o-kompanii</a></li>
+            </ul>
+          </div>
+        </div>
+
+        <div class="p-fill-foot flex flex-wrap items-center gap-2 border-t border-line px-6 py-4">
+          <button class="p-btn p-btn-primary"><svg class="p-i h-4 w-4"><use href="#i-check"/></svg>Одобрить и поставить в очередь</button>
+          <button class="p-btn p-btn-secondary"><svg class="p-i h-4 w-4"><use href="#i-edit"/></svg>Править текст</button>
+          <button class="p-btn p-btn-ghost">Отклонить</button>
+          <span class="type-caption ml-auto text-text-3">Одобрение на неподтверждённом домене только готовит материал — публикация начнётся после подтверждения</span>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ======================================================================= -->
+  <!-- ЭКРАН 4 · ПУБЛИКАЦИЯ                                                    -->
+  <!-- ======================================================================= -->
+  <section class="p-screen mt-5" data-screen="publishing">
+    <div class="p-note flex flex-wrap items-center gap-3">
+      <svg class="p-i h-5 w-5 text-fire-text"><use href="#i-shield-alert"/></svg>
+      <span class="type-secondary text-text-2">Домен не подтверждён: материалы можно одобрять, но отправка на сайт включится после подтверждения владения.</span>
+      <button class="p-btn p-btn-secondary p-btn-sm ml-auto">Подтвердить домен</button>
+    </div>
+
+    <div class="mt-5 grid items-start gap-5 lg:grid-cols-12">
+      <!-- Куда публикуем: варианты — строки одной карточки, поэтому «дыр» между ними нет -->
+      <div class="p-card lg:col-span-7">
+        <div class="border-b border-line px-6 py-4">
+          <h3 class="type-h3">Куда публикуем</h3>
+          <p class="type-caption mt-0.5 text-text-3">Выберите один или оба варианта — материалы уйдут в оба места</p>
+        </div>
+        <ul>
+          <li class="p-row">
+            <span class="p-ico p-ico-brand h-11 w-11"><svg class="p-i h-5 w-5"><use href="#i-plug"/></svg></span>
+            <span class="min-w-0 flex-1">
+              <span class="flex flex-wrap items-center gap-2">
+                <span class="type-body-strong">WordPress на вашем сайте</span>
+                <span class="p-pill p-pill-neutral">не подключено</span>
+              </span>
+              <span class="type-caption mt-1 block text-text-2">Материалы приходят как обычные записи WordPress: свой URL, заголовок, description. Нужен пользователь с правом публикации записей.</span>
+              <span class="type-caption mt-1.5 block text-text-3">Понадобится: адрес сайта · логин · пароль приложения</span>
+            </span>
+            <span class="ml-auto shrink-0"><button class="p-btn p-btn-primary p-btn-sm">Подключить</button></span>
+          </li>
+          <li class="p-row">
+            <span class="p-ico p-ico-brand h-11 w-11"><svg class="p-i h-5 w-5"><use href="#i-globe"/></svg></span>
+            <span class="min-w-0 flex-1">
+              <span class="flex flex-wrap items-center gap-2">
+                <span class="type-body-strong">Раздел с материалами на домене Авроры</span>
+                <span class="p-pill p-pill-neutral">не включено</span>
+              </span>
+              <span class="type-caption mt-1 block text-text-2">Готовый раздел, если нет WordPress: адреса, разметка, sitemap и canonical уже настроены. Позже раздел можно повесить на свой поддомен через CNAME.</span>
+              <span class="type-caption mt-1.5 block text-text-3">Адрес раздела: aspb-partners.sites.aurora.app — индексируется, но не наследует авторитет вашего домена</span>
+            </span>
+            <span class="ml-auto shrink-0"><button class="p-btn p-btn-secondary p-btn-sm">Включить</button></span>
+          </li>
+        </ul>
+        <div class="border-t border-line px-6 py-4">
+          <p class="type-caption text-text-3">Проверка перед публикацией: Аврора публикует материал только после вашего одобрения и только если домен подтверждён.</p>
+        </div>
+      </div>
+
+      <div class="flex flex-col gap-5 lg:col-span-5">
+        <div class="p-card">
+          <div class="border-b border-line px-6 py-4"><h3 class="type-h3">Режим публикации</h3><p class="type-caption mt-0.5 text-text-3">Кто решает, что уходит на сайт</p></div>
+          <div class="space-y-3 px-6 py-5">
+            <div class="flex items-center gap-3 rounded-sm border border-line bg-surface-2 p-4">
+              <span class="p-ico p-ico-brand"><svg class="p-i h-5 w-5"><use href="#i-users"/></svg></span>
+              <div><p class="type-body-strong">С подтверждением</p><p class="type-caption text-text-2">Каждый материал одобряет человек</p></div>
+              <span class="p-pill p-pill-brand ml-auto">включено</span>
+            </div>
+            <div class="rounded-sm border border-line p-4">
+              <div class="flex items-center gap-3">
+                <span class="p-ico"><svg class="p-i h-5 w-5"><use href="#i-bot"/></svg></span>
+                <div><p class="type-body-strong">Полный автомат</p><p class="type-caption text-text-2">Публикация без одобрения человека</p></div>
+                <span class="p-pill p-pill-neutral ml-auto">закрыто</span>
+              </div>
+              <p class="type-caption mt-3 text-text-3">Откроется после 10 материалов, одобренных без правок. Сейчас: 0 из 10.</p>
+              <span class="p-bar mt-2 block"><span style="width:0%"></span></span>
+            </div>
+          </div>
+        </div>
+
+        <div class="p-card">
+          <div class="border-b border-line px-6 py-4"><h3 class="type-h3">Что и когда публикуется</h3><p class="type-caption mt-0.5 text-text-3">Расписание планировщика</p></div>
+          <ul>
+            <li class="flex items-center gap-3 px-6 py-4"><span class="p-ico"><svg class="p-i h-4 w-4"><use href="#i-clock"/></svg></span><span><span class="type-body-strong block">Планирование материалов</span><span class="type-caption text-text-2">раз в день по профилю сайта</span></span><span class="p-pill p-pill-success ml-auto">включено</span></li>
+            <li class="flex items-center gap-3 border-t border-line px-6 py-4"><span class="p-ico"><svg class="p-i h-4 w-4"><use href="#i-eye"/></svg></span><span><span class="type-body-strong block">Зонд видимости в ИИ</span><span class="type-caption text-text-2">раз в 30 дней, 12 вопросов × 3 движка</span></span><span class="p-pill p-pill-neutral ml-auto">ждёт домена</span></li>
+            <li class="flex items-center gap-3 border-t border-line px-6 py-4"><span class="p-ico"><svg class="p-i h-4 w-4"><use href="#i-chart"/></svg></span><span><span class="type-body-strong block">Ежемесячный отчёт</span><span class="type-caption text-text-2">1-го числа, с динамикой к прошлому</span></span><span class="p-pill p-pill-success ml-auto">включено</span></li>
+          </ul>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ======================================================================= -->
+  <!-- ЭКРАН 5 · ОТЧЁТЫ                                                        -->
+  <!-- ======================================================================= -->
+  <section class="p-screen mt-5" data-screen="reports">
+    <div class="flex flex-wrap items-end justify-between gap-3">
+      <div>
+        <h3 class="type-h3">Отчёты сайта · 3</h3>
+        <p class="type-caption mt-1 text-text-3">Ежемесячный отчёт собирается 1-го числа, Markdown-версия попадает в базу знаний сайта — следующий отчёт сравнивает рекомендации с прошлыми.</p>
+      </div>
+      <button class="p-btn p-btn-secondary"><svg class="p-i h-4 w-4"><use href="#i-chart"/></svg>Собрать отчёт за 30 дней</button>
+    </div>
+
+    <div class="p-card mt-4">
+      <div class="flex flex-wrap items-center gap-3 border-b border-line px-6 py-4">
+        <span class="p-ico p-ico-brand"><svg class="p-i h-5 w-5"><use href="#i-file"/></svg></span>
+        <div><h4 class="type-body-strong">Ежемесячный отчёт · 1 октября 2026</h4><p class="type-caption text-text-3">Период 1 сентября — 1 октября 2026</p></div>
+        <div class="ml-auto flex flex-wrap gap-2">
+          <button class="p-btn p-btn-secondary p-btn-sm"><svg class="p-i h-3.5 w-3.5"><use href="#i-download"/></svg>PDF</button>
+          <button class="p-btn p-btn-secondary p-btn-sm"><svg class="p-i h-3.5 w-3.5"><use href="#i-download"/></svg>Markdown</button>
+          <button class="p-btn p-btn-secondary p-btn-sm"><svg class="p-i h-3.5 w-3.5"><use href="#i-download"/></svg>HTML</button>
+        </div>
+      </div>
+      <div class="grid lg:grid-cols-[minmax(0,1fr)_minmax(0,1fr)] [&>div+div]:border-t lg:[&>div+div]:border-t-0 lg:[&>div+div]:border-l border-line">
+        <div class="px-6 py-5">
+          <p class="type-label text-text-2">Цифры периода</p>
+          <p class="type-secondary mt-3 text-text-2">Опубликовано материалов: 0 · отклонено как дубли: 0 · ждут одобрения: 4. Зонд видимости не запускался: домен не подтверждён. Профиль: 11 страниц, 10 тем, 12 пробелов. Из 23 рекомендаций выполнено 0, открыто 23.</p>
+          <div class="mt-4 grid grid-cols-3 gap-3">
+            <div class="p-inset p-3"><span class="type-caption block text-text-3">Материалов</span><span class="type-h3 block">0</span></div>
+            <div class="p-inset p-3"><span class="type-caption block text-text-3">Пробелов закрыто</span><span class="type-h3 block">0 из 12</span></div>
+            <div class="p-inset p-3"><span class="type-caption block text-text-3">Рекомендаций</span><span class="type-h3 block">0 из 23</span></div>
+          </div>
+          <p class="type-label mt-5 text-text-2">Изменения к прошлому отчёту</p>
+          <ul class="mt-2">
+            <li class="flex items-center justify-between gap-3 border-t border-line py-2.5"><span class="type-caption text-text-2">Опубликовано материалов</span><span class="type-caption text-text-3">0 → 0</span></li>
+            <li class="flex items-center justify-between gap-3 border-t border-line py-2.5"><span class="type-caption text-text-2">Пробелов закрыто</span><span class="type-caption text-text-3">0 → 0</span></li>
+            <li class="flex items-center justify-between gap-3 border-t border-line py-2.5"><span class="type-caption text-text-2">Рекомендаций закрыто</span><span class="type-caption text-success-text">0 → 1</span></li>
+            <li class="flex items-center justify-between gap-3 border-t border-line py-2.5"><span class="type-caption text-text-2">Упоминаний бренда в ответах ИИ</span><span class="type-caption text-text-3">не измерялось</span></li>
+            <li class="flex items-center justify-between gap-3 border-y border-line py-2.5"><span class="type-caption text-text-2">Позиций в поиске</span><span class="type-caption text-text-3">нет интеграции</span></li>
+          </ul>
+        </div>
+        <div class="px-6 py-5">
+          <div class="flex items-center gap-2">
+            <span class="p-ico p-ico-brand h-7 w-7"><svg class="p-i h-3.5 w-3.5"><use href="#i-sparkle"/></svg></span>
+            <p class="type-label text-text-2">Интерпретация Авроры</p>
+            <span class="p-pill p-pill-neutral ml-auto">модель</span>
+          </div>
+          <p class="type-secondary mt-3 text-text-2">Тематическое покрытие сильное, но сайт закрыт для генеративного поиска: нет разметки Organization и Service, нет страницы «О компании», 4 страницы не индексируются. Даже при хорошем контенте ИИ-ассистентам нечего цитировать.</p>
+          <p class="type-label mt-4 text-text-2">С чего начать</p>
+          <ol class="mt-2 space-y-1.5">
+            <li class="type-caption flex gap-2 text-text-2"><span class="text-brand">1.</span>Подтвердить домен — это открывает публикацию и зонд</li>
+            <li class="type-caption flex gap-2 text-text-2"><span class="text-brand">2.</span>Добавить canonical на 11 страниц</li>
+            <li class="type-caption flex gap-2 text-text-2"><span class="text-brand">3.</span>Создать страницу «О компании» и разметку Organization</li>
+          </ol>
+          <p class="type-caption mt-4 rounded-sm bg-surface-2 p-3 text-text-3">Цифры выше — источник истины. Интерпретация объясняет их, но не заменяет данные аудита.</p>
+        </div>
+      </div>
+    </div>
+
+    <div class="mt-5 grid items-start gap-5 lg:grid-cols-12">
+      <div class="p-card lg:col-span-7">
+        <div class="border-b border-line px-6 py-4">
+          <h3 class="type-h3">Рекомендации · 23 открыто</h3>
+          <p class="type-caption mt-0.5 text-text-3">Статус обновляется сам: рекомендация закрывается, когда проблема исчезает из нового аудита</p>
+        </div>
+        <ul>
+          <li class="flex items-start gap-3 px-6 py-4">
+            <span class="p-ico p-ico-danger h-8 w-8"><svg class="p-i h-4 w-4"><use href="#i-alert"/></svg></span>
+            <span class="min-w-0 flex-1"><span class="type-body-strong block">Добавить canonical на 11 страниц</span><span class="type-caption text-text-2">Открыта с 24 сентября · критично · доказательство: 11 URL</span></span>
+            <button class="p-btn p-btn-ghost p-btn-sm">Создать материал</button>
+          </li>
+          <li class="flex items-start gap-3 border-t border-line px-6 py-4">
+            <span class="p-ico p-ico-danger h-8 w-8"><svg class="p-i h-4 w-4"><use href="#i-alert"/></svg></span>
+            <span class="min-w-0 flex-1"><span class="type-body-strong block">Снять noindex с 4 страниц</span><span class="type-caption text-text-2">Открыта с 24 сентября · критично · доказательство: 4 URL</span></span>
+            <button class="p-btn p-btn-ghost p-btn-sm">Показать URL</button>
+          </li>
+          <li class="flex items-start gap-3 border-t border-line px-6 py-4">
+            <span class="p-ico p-ico-fire h-8 w-8"><svg class="p-i h-4 w-4"><use href="#i-alert"/></svg></span>
+            <span class="min-w-0 flex-1"><span class="type-body-strong block">Разметить Organization и Service</span><span class="type-caption text-text-2">Открыта с 24 сентября · важно · доказательство: 0 из 11 страниц</span></span>
+            <button class="p-btn p-btn-ghost p-btn-sm">Создать материал</button>
+          </li>
+          <li class="flex items-start gap-3 border-t border-line px-6 py-4">
+            <span class="p-ico p-ico-success h-8 w-8"><svg class="p-i h-4 w-4"><use href="#i-check"/></svg></span>
+            <span class="min-w-0 flex-1"><span class="type-body-strong block">Заполнить description на главной</span><span class="type-caption text-text-2">Закрыта 1 октября · была открыта с 24 сентября</span></span>
+          </li>
+        </ul>
+      </div>
+
+      <div class="p-card lg:col-span-5">
+        <div class="border-b border-line px-6 py-4"><h3 class="type-h3">История отчётов</h3></div>
+        <ul>
+          <li class="flex items-center gap-3 px-6 py-4"><span class="p-ico"><svg class="p-i h-4 w-4"><use href="#i-file"/></svg></span><span class="min-w-0 flex-1"><span class="type-body-strong block">Стартовый аудит</span><span class="type-caption text-text-3">24 сентября · 23 рекомендации</span></span><button class="p-btn p-btn-ghost p-btn-sm">Открыть</button></li>
+          <li class="flex items-center gap-3 border-t border-line px-6 py-4"><span class="p-ico"><svg class="p-i h-4 w-4"><use href="#i-file"/></svg></span><span class="min-w-0 flex-1"><span class="type-body-strong block">Повторный аудит</span><span class="type-caption text-text-3">28 сентября · без изменений</span></span><button class="p-btn p-btn-ghost p-btn-sm">Открыть</button></li>
+          <li class="flex items-center gap-3 border-t border-line px-6 py-4"><span class="p-ico"><svg class="p-i h-4 w-4"><use href="#i-file"/></svg></span><span class="min-w-0 flex-1"><span class="type-body-strong block">Ежемесячный отчёт</span><span class="type-caption text-text-3">1 октября · 1 рекомендация закрыта</span></span><button class="p-btn p-btn-ghost p-btn-sm">Открыть</button></li>
+        </ul>
+        <div class="border-t border-line px-6 py-4">
+          <p class="type-caption text-text-3">История прогонов аудита (когда и что изменилось) переезжает сюда из раздела «Анализ сайта» — чтобы не искать её в другом месте.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+</main>
+
+<script>
+  const tabs = document.querySelectorAll("[data-tab]");
+  const screens = document.querySelectorAll("[data-screen]");
+  tabs.forEach((tab) => tab.addEventListener("click", () => {
+    tabs.forEach((item) => item.classList.toggle("p-tab-active", item === tab));
+    screens.forEach((screen) => screen.classList.toggle("p-screen-active", screen.dataset.screen === tab.dataset.tab));
+    window.scrollTo({ top: 0 });
+  }));
+</script>
+</body>
+</html>

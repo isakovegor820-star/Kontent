@@ -13,6 +13,11 @@ name: Production internet research diagnostics
 
 on:
   workflow_dispatch:
+    inputs:
+      trigger_research:
+        description: "Run one real research pass on the host and wait for the outcome"
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -79,11 +84,40 @@ jobs:
           cat research-diagnostics.txt
           echo "::endgroup::"
 
+      - name: Trigger one research pass and wait for the outcome
+        if: ${{ inputs.trigger_research }}
+        env:
+          PRODUCTION_SSH_HOST: ${{ secrets.PRODUCTION_SSH_HOST }}
+          PRODUCTION_SSH_USER: ${{ secrets.PRODUCTION_SSH_USER }}
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test -n "$PRODUCTION_SSH_HOST"
+          test -n "$PRODUCTION_SSH_USER"
+          # Only the operator can ask for this: it writes exactly one run row and
+          # enqueues exactly one job, then waits (bounded) for the worker to finish it.
+          ssh -i ~/.ssh/deploy_key \
+            -o StrictHostKeyChecking=yes \
+            -o BatchMode=yes \
+            -o IdentitiesOnly=yes \
+            -o ServerAliveInterval=15 \
+            -o ServerAliveCountMax=8 \
+            "${PRODUCTION_SSH_USER}@${PRODUCTION_SSH_HOST}" \
+            'set -Eeuo pipefail; current_path="$(readlink -f /opt/aurora-current)"; cd "$current_path"; set -a; . ./.env.production; set +a; AURORA_TRIGGER_WAIT_SECONDS=180 node scripts/production-trigger-web-research.mjs' \
+            > research-trigger.txt 2>&1 || true
+
+          test -s research-trigger.txt
+          echo "::group::Research trigger outcome"
+          cat research-trigger.txt
+          echo "::endgroup::"
+
       - name: Upload diagnostics report
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: research-diagnostics
-          path: research-diagnostics.txt
+          path: |
+            research-diagnostics.txt
+            research-trigger.txt
           if-no-files-found: warn
           retention-days: 7

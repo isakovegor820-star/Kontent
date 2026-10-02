@@ -7,6 +7,10 @@ vi.mock("@/lib/request-origin", () => ({ hasTrustedMutationOrigin: mocks.origin 
 vi.mock("@/lib/db", () => ({ getPool: () => ({ query: mocks.query }) }));
 vi.mock("@/lib/project-permissions", async (original) => ({ ...await original<typeof import("@/lib/project-permissions")>(), requireSelectedProjectPermission: mocks.permission }));
 vi.mock("@/lib/site-articles-queue", () => ({ enqueueSiteArticleJob: mocks.enqueue, hasSiteArticlesWorker: mocks.worker }));
+vi.mock("@/lib/rate-limit", async (importOriginal) => ({
+  ...await importOriginal<typeof import("@/lib/rate-limit")>(),
+  checkRateLimit: vi.fn(async () => ({ allowed: true, limit: 100, remaining: 99, retryAfter: 0 })),
+}));
 import { POST } from "./route";
 const site = { id: 5, project_id: 31, user_id: 7, latest_profile_id: 77, status: "active" };
 const run = (body: unknown) => POST(new ProjectRequest(31, "http://localhost/api/sites/5/ai/retry", {

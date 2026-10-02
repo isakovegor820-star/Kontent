@@ -1,0 +1,173 @@
+/* Прототип нового раздела «Мои сайты».
+   CSS собирается из НАСТОЯЩЕЙ дизайн-системы продукта (globals.css + app-v3.css),
+   поэтому цвета, радиусы, тени и типографика здесь ровно те же, что в приложении.
+   Компонентный слой ниже — только сокращения для читаемости прототипа. */
+
+@import "../../../src/app/globals.css";
+@import "../../../src/app/app/app-v3.css";
+
+@source "./index.html";
+
+/* --------------------------------------------------------------- КАРКАС */
+.p-page { padding-inline: 24px; }
+@media (min-width: 1024px) { .p-page { padding-inline: 32px; } }
+
+/* Единый стандарт ширины: контент всегда одной колонки, без боковых рельсов. */
+.p-shell { width: 100%; max-width: 1400px; margin-inline: auto; }
+
+/* --------------------------------------------------------------- КАРТОЧКИ */
+.p-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  box-shadow: var(--shadow-sm);
+  border-radius: var(--radius-md);
+}
+.p-card-flat { background: var(--surface-2); border-radius: var(--radius-sm); border: 1px solid var(--border); }
+.p-inset { background: var(--surface-inset); border-radius: var(--radius-sm); }
+
+/* Карточка, которая тянется по высоте строки без «дыры» внутри:
+   контент прижат к верху, а футер — к низу. */
+.p-fill { display: flex; flex-direction: column; height: 100%; }
+.p-fill > .p-fill-body { flex: 1 1 auto; }
+.p-fill > .p-fill-foot { margin-top: auto; }
+
+/* --------------------------------------------------------------- КНОПКИ */
+.p-btn {
+  font-size: var(--type-button-size);
+  font-weight: var(--type-button-weight);
+  line-height: var(--type-button-line);
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  min-height: 44px;
+  padding: 8px 14px;
+  border-radius: 10px;
+  border: 1px solid transparent;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background-color .15s, color .15s, border-color .15s, box-shadow .15s, transform .15s;
+}
+.p-btn:active { transform: scale(.96); }
+.p-btn-primary { background: var(--brand-1); color: #fff; border-color: rgb(255 255 255 / .1); box-shadow: var(--shadow-brand); }
+.p-btn-primary:hover { background: var(--brand-hover); }
+.p-btn-secondary { background: var(--surface); color: var(--text); border-color: var(--border-strong); }
+.p-btn-secondary:hover { background: var(--surface-inset); }
+.p-btn-ghost { background: transparent; color: var(--text-2); }
+.p-btn-ghost:hover { background: var(--surface-inset); color: var(--text); }
+.p-btn-lg { min-height: 52px; padding: 12px 22px; border-radius: var(--radius-sm); }
+.p-btn-sm { min-height: 36px; padding: 6px 10px; border-radius: 9px; }
+.p-btn-icon { width: 44px; min-height: 44px; padding: 0; }
+
+/* --------------------------------------------------------- САЙТ-ПЕРЕКЛЮЧАТЕЛЬ */
+.p-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 44px;
+  padding: 8px 16px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text);
+  cursor: pointer;
+  transition: border-color .15s, background-color .15s, box-shadow .15s;
+}
+.p-chip:hover { border-color: var(--border-strong); }
+.p-chip-active { border-color: color-mix(in oklab, var(--brand-1) 45%, transparent); background: var(--info-soft); box-shadow: var(--shadow-xs); }
+.p-chip-add { border-style: dashed; color: var(--text-2); background: transparent; }
+.p-chip-add:hover { color: var(--brand-1); border-color: color-mix(in oklab, var(--brand-1) 45%, transparent); }
+
+/* --------------------------------------------------------------- ТАБЫ */
+.p-seg { display: flex; gap: 4px; padding: 4px; border: 1px solid var(--border); background: var(--surface); border-radius: var(--radius-md); box-shadow: var(--shadow-xs); }
+.p-tab {
+  flex: 1 1 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  min-height: 44px;
+  padding: 8px 14px;
+  border-radius: var(--radius-sm);
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--text-2);
+  font-size: var(--type-button-size);
+  font-weight: 600;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background-color .15s, color .15s, border-color .15s;
+}
+.p-tab:hover { background: var(--surface-inset); color: var(--text); }
+.p-tab-active { background: var(--surface); color: var(--text); border-color: var(--border-strong); box-shadow: var(--shadow-xs); }
+.p-tab-count { font-size: 12px; font-weight: 700; padding: 1px 7px; border-radius: 999px; background: var(--surface-inset); color: var(--text-2); }
+.p-tab-active .p-tab-count { background: var(--info-soft); color: var(--info-text); }
+
+/* --------------------------------------------------------------- ПИЛЮЛИ/БЕЙДЖИ */
+.p-pill { display: inline-flex; align-items: center; gap: 6px; padding: 3px 10px; border-radius: 999px; font-size: 12px; font-weight: 600; line-height: 1.5; }
+.p-pill-neutral { background: var(--surface-inset); color: var(--text-2); }
+.p-pill-brand { background: var(--info-soft); color: var(--info-text); }
+.p-pill-success { background: var(--success-soft); color: var(--success-text); }
+.p-pill-danger { background: var(--danger-soft); color: var(--danger-text); }
+.p-pill-fire { background: var(--fire-soft); color: var(--fire-text); }
+.p-dot { width: 8px; height: 8px; border-radius: 999px; flex: 0 0 auto; }
+
+/* --------------------------------------------------------------- ФОРМЫ */
+.p-input {
+  width: 100%;
+  min-height: 44px;
+  padding: 10px 14px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text);
+  font-size: var(--type-input-size);
+}
+.p-input::placeholder { color: var(--text-3); }
+.p-input:hover { border-color: var(--border-strong); }
+.p-input:focus { border-color: var(--brand-1); outline: none; box-shadow: 0 0 0 4px rgb(37 99 255 / .15); }
+
+/* --------------------------------------------------------------- ДАННЫЕ */
+.p-kpi { padding: 16px 18px; }
+.p-bar { height: 6px; border-radius: 999px; background: var(--surface-inset); overflow: hidden; }
+.p-bar > span { display: block; height: 100%; border-radius: 999px; background: var(--brand-1); }
+.p-bar-warn > span { background: var(--fire); }
+.p-bar-bad > span { background: var(--danger); }
+.p-bar-ok > span { background: var(--success); }
+
+.p-row { display: flex; align-items: flex-start; gap: 12px; padding: 14px 20px; border-top: 1px solid var(--border); }
+.p-row:first-child { border-top: 0; }
+.p-row-hover:hover { background: var(--surface-2); }
+.p-row-active { background: var(--info-soft); box-shadow: inset 3px 0 0 0 var(--brand-1); }
+
+.p-num {
+  display: grid; place-items: center; flex: 0 0 auto;
+  width: 28px; height: 28px; border-radius: 999px;
+  background: var(--surface-inset); color: var(--text-2);
+  font-size: 13px; font-weight: 700;
+}
+.p-num-brand { background: var(--info-soft); color: var(--info-text); }
+.p-num-danger { background: var(--danger-soft); color: var(--danger-text); }
+
+.p-ico { display: grid; place-items: center; width: 36px; height: 36px; border-radius: var(--radius-xs); background: var(--surface-inset); color: var(--text-2); flex: 0 0 auto; }
+.p-ico-brand { background: var(--info-soft); color: var(--info-text); }
+.p-ico-success { background: var(--success-soft); color: var(--success-text); }
+.p-ico-danger { background: var(--danger-soft); color: var(--danger-text); }
+.p-ico-fire { background: var(--fire-soft); color: var(--fire-text); }
+
+.p-code { font-family: var(--font-mono); font-size: 12px; background: var(--surface-inset); border-radius: 8px; padding: 7px 10px; word-break: break-all; color: var(--text); }
+.p-body { white-space: pre-wrap; font-size: var(--type-secondary-size); line-height: 1.7; color: var(--text); }
+.p-scroll { overflow: auto; }
+.p-scroll::-webkit-scrollbar { width: 8px; }
+
+.p-link { color: var(--brand-1); font-weight: 600; }
+.p-link:hover { text-decoration: underline; }
+
+/* Иконки: спрайт из lucide-подобных символов, размер задаётся утилитами. */
+.p-i { flex: 0 0 auto; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+
+/* Прототип: экраны переключаются кнопками табов. */
+.p-screen { display: none; }
+.p-screen-active { display: block; }
+.p-note { border-left: 3px solid var(--brand-1); background: var(--surface-2); border-radius: 0 var(--radius-sm) var(--radius-sm) 0; padding: 12px 16px; }

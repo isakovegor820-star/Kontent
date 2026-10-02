@@ -12164,7 +12164,11 @@ async function runScheduledWebResearch() {
         and not exists (
           select 1 from web_research_runs recent
            where recent.project_id = channel.project_id and recent.channel_id = channel.id
-             and recent.started_at >= now() - interval '6 hours'
+             -- Окно чуть меньше периода крона (каждые 3 часа в :40). С прежними шестью
+             -- часами каждый второй тик не делал ничего: расписание обещало обход раз в
+             -- три часа, а фактически канал обслуживался раз в шесть, и первый запуск
+             -- после деплоя просто не появлялся.
+             and recent.started_at >= now() - interval '170 minutes'
         )
       order by channel.id
       limit 40`,

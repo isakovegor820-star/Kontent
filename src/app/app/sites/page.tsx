@@ -1,186 +1,56 @@
 "use client";
 import { useProjectCall } from "@/lib/use-project-transport";
-import { projectUrl } from "@/lib/project-transport";
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   AlertTriangle,
   CheckCircle2,
   Clock3,
-  Download,
-  ExternalLink,
-  FileSearch,
   Globe2,
+  MoreHorizontal,
   Plus,
   RefreshCw,
-  Send,
   ShieldCheck,
   XCircle,
 } from "lucide-react";
 
 import { AppShell } from "@/components/app/shell";
 import { Button } from "@/components/ui/button";
+import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import { Badge, Card, Checkbox, EmptyState, Field, Input, Tabs } from "@/components/ui/primitives";
-import { siteAnalysisErrorMessage, type SiteAnalysisStatus } from "@/lib/site-analysis-contract";
+import { siteAnalysisErrorMessage } from "@/lib/site-analysis-contract";
 import { createSiteAnalysisUuid } from "@/lib/site-analysis-client-key";
 import { cn } from "@/lib/utils";
 
 import { ArticlesPanel } from "./articles-panel";
+import { AuditPanel } from "./audit-panel";
 import { errorMessage, formatDate, requestJson as unscopedRequestJson } from "./client";
 import { DestinationsPanel } from "./destinations-panel";
-import { ProbePanel } from "./probe-panel";
+import { OverviewPanel } from "./overview-panel";
+import { ReportsPanel } from "./reports-panel";
+import {
+  ACTIVE_STATUSES,
+  analysisLabel,
+  verificationReason,
+  type ArticleStats,
+  type SiteDetails,
+  type SiteListItem,
+  type SiteTab,
+} from "./types";
 
-type VerificationState = "unverified" | "verified" | "revoked";
-
-type SiteSummary = {
-  id: number;
-  confirmedDomain: string;
-  canonicalUrl: string;
-  verification: {
-    state: VerificationState;
-    method: "dns_txt" | "meta_tag" | null;
-    verifiedAt: string | null;
-    token: string;
-    instructions: {
-      dns: { recordName: string; recordType: string; recordValue: string };
-      meta: { name: string; content: string; tag: string };
-    };
-  };
-  publishingMode: "confirm" | "auto";
-  approvedStreak: number;
-  autoUnlockStreak: number;
-  autoModeUnlocked: boolean;
-  hostedSlug: string | null;
-  hostedOrigin: string | null;
-  brandName: string | null;
-  latestProfileId: number | null;
-  status: "active" | "paused" | "disconnected";
-  createdAt: string | null;
-};
-
-type SiteTab = "profile" | "articles" | "publishing" | "visibility" | "reports";
-
-type SiteListItem = SiteSummary & {
-  latestAnalysis: { status: string; progress: number } | null;
-  profile: { summary: string | null; pageCount: number; gapCount: number } | null;
-  reportCount: number;
-};
-
-type AnalysisView = {
-  id: number;
-  status: SiteAnalysisStatus;
-  stage: string;
-  progress: number;
-  detail: string | null;
-  runRevision: number;
-  error: { code: string; message: string; retryable: boolean } | null;
-  completedAt: string | null;
-};
-
-type Topic = { key: string; label: string; pageCount: number; coverage: "strong" | "thin" };
-type Gap = { key: string; kind: string; severity: "high" | "medium" | "low"; label: string; detail: string; evidenceUrls: string[] };
-type Issue = { id: string; label: string; status: "critical" | "warning"; detail: string; recommendation: string };
-
-type ProfileView = {
-  id: number;
-  pageCount: number;
-  publicationCount: number;
-  topics: Topic[];
-  gaps: Gap[];
-  technical: {
-    seoScore: number | null;
-    geoScore: number | null;
-    seoIssues: Issue[];
-    geoIssues: Issue[];
-    pagesChecked: number;
-    questions?: { unansweredQuestions: number; faqSchemaPages: number };
-  };
-  linkablePages: Array<{ url: string; title: string; pageType: string }>;
-  summary: string | null;
-  refinedAt: string | null;
-  aiClassification: { status: string; engine: string | null; pageTypeOverrides: number; topicClusters: number } | null;
-  createdAt: string | null;
-};
-
-type Interpretation = {
-  summary: string;
-  whatItMeans: string[];
-  startWith: Array<{ key: string; title: string; priority: string | null; why: string }>;
-  watchOut: string[];
-  disclaimer: string;
-  engine: string | null;
-};
-
-type ReportView = {
-  id: number;
-  kind: "initial_audit" | "monthly" | "on_demand";
-  status: string;
-  summaryRu: string;
-  interpretation: Interpretation | null;
-  interpretationStatus: "pending" | "ready" | "skipped" | "failed";
-  createdAt: string | null;
-};
-
-type SiteDetails = {
-  site: SiteSummary;
-  latestAnalysis: AnalysisView | null;
-  profile: ProfileView | null;
-  reports: ReportView[];
-};
-
-const ACTIVE_STATUSES: ReadonlySet<string> = new Set(["queued", "crawling", "analyzing", "planning", "saving"]);
-const REPORT_FORMATS = [
-  ["pdf", "PDF"],
-  ["markdown", "Markdown"],
-  ["html", "HTML"],
-  ["json", "JSON"],
-] as const;
-const REPORT_KIND_LABEL: Record<ReportView["kind"], string> = {
-  initial_audit: "Стартовый аудит",
-  monthly: "Ежемесячный отчёт",
-  on_demand: "Повторный аудит",
-};
-const SEVERITY_TONE = { high: "danger", medium: "fire", low: "neutral" } as const;
-const SEVERITY_LABEL = { high: "Критично", medium: "Важно", low: "Желательно" } as const;
-
-function siteCountLabel(count: number) {
-  const lastTwo = count % 100;
-  const last = count % 10;
-  if (lastTwo >= 11 && lastTwo <= 14) return `${count} сайтов`;
-  if (last === 1) return `${count} сайт`;
-  if (last >= 2 && last <= 4) return `${count} сайта`;
-  return `${count} сайтов`;
-}
-
-function analysisLabel(status: string | null | undefined) {
-  switch (status) {
-    case "queued": return "В очереди";
-    case "crawling": return "Читаем страницы";
-    case "analyzing": return "Анализируем";
-    case "planning": return "Собираем выводы";
-    case "saving": return "Сохраняем";
-    case "ready": return "Готово";
-    case "failed": return "Ошибка";
-    default: return "Не запускался";
-  }
-}
-
-function verificationReason(reason: string | undefined) {
-  switch (reason) {
-    case "dns_txt_missing": return "TXT-запись пока не найдена. DNS-изменения могут применяться до нескольких часов.";
-    case "dns_txt_mismatch": return "TXT-запись найдена, но значение не совпадает с токеном.";
-    case "dns_txt_unavailable": return "DNS не ответил. Попробуй ещё раз через минуту.";
-    case "meta_tag_mismatch": return "Главная страница открылась, но подтверждающего meta-тега на ней нет.";
-    case "meta_tag_unavailable": return "Не удалось загрузить главную страницу сайта для проверки meta-тега.";
-    default: return "Подтверждение пока не найдено ни одним способом.";
-  }
-}
+const SITE_TABS: Array<{ value: SiteTab; label: string }> = [
+  { value: "overview", label: "Обзор" },
+  { value: "audit", label: "Аудит и видимость" },
+  { value: "materials", label: "Материалы" },
+  { value: "publishing", label: "Публикация" },
+  { value: "reports", label: "Отчёты" },
+];
 
 function CopyValue({ value, label }: { value: string; label: string }) {
   const [copied, setCopied] = useState(false);
   return (
     <div className="flex flex-wrap items-center gap-2">
-      <code className="min-w-0 flex-1 break-all rounded-sm bg-surface-inset px-2.5 py-1.5 text-[12px] text-text">{value}</code>
+      <code className="type-caption min-w-0 flex-1 break-all rounded-sm bg-surface-inset px-2.5 py-1.5 text-text">{value}</code>
       <Button
         type="button"
         size="sm"
@@ -198,62 +68,6 @@ function CopyValue({ value, label }: { value: string; label: string }) {
       >
         {copied ? "Скопировано" : "Копировать"}
       </Button>
-    </div>
-  );
-}
-
-function InterpretationBlock({ interpretation, status, compact = false, onRetry, retrying = false }: { interpretation: Interpretation | null; status: ReportView["interpretationStatus"]; compact?: boolean; onRetry?: () => void; retrying?: boolean }) {
-  if (!interpretation) {
-    if (status === "pending") return <p className="type-caption mt-3 text-text-3">Интерпретация Авроры готовится…</p>;
-    if (status === "failed") return <div className="mt-3"><p className="type-caption text-text-3">Интерпретация не удалась — цифры и рекомендации выше остаются в силе.</p>{onRetry && <Button type="button" size="sm" variant="secondary" className="mt-2" disabled={retrying} onClick={onRetry}>{retrying ? "Запускаем…" : "Повторить интерпретацию"}</Button>}</div>;
-    return null;
-  }
-  return (
-    <section className={cn("rounded-sm border border-brand/20 bg-info-soft/40 p-4", compact ? "mt-3" : "mt-5")} aria-label="Интерпретация Авроры">
-      <div className="flex flex-wrap items-center gap-2">
-        <Badge tone="brand">Интерпретация Авроры</Badge>
-        {interpretation.engine && <span className="type-caption text-text-3">{interpretation.engine}</span>}
-      </div>
-      <p className="type-secondary mt-2 text-text">{interpretation.summary}</p>
-      {interpretation.whatItMeans.length > 0 && (
-        <ul className="mt-3 space-y-1">
-          {interpretation.whatItMeans.map((item, index) => <li key={index} className="type-caption text-text-2">• {item}</li>)}
-        </ul>
-      )}
-      {interpretation.startWith.length > 0 && (
-        <div className="mt-3">
-          <p className="type-label text-text">С чего начать</p>
-          <ol className="mt-1 space-y-1.5">
-            {interpretation.startWith.map((item, index) => (
-              <li key={item.key} className="type-caption text-text-2">
-                <span className="font-semibold text-text">{index + 1}. {item.title || item.key}</span>
-                {item.priority && <Badge tone={item.priority === "P0" ? "danger" : item.priority === "P1" ? "fire" : "neutral"} className="ml-2">{item.priority}</Badge>}
-                <span className="block text-text-3">{item.why}</span>
-              </li>
-            ))}
-          </ol>
-        </div>
-      )}
-      {interpretation.watchOut.length > 0 && (
-        <p className="type-caption mt-3 text-text-3">Ограничения: {interpretation.watchOut.join(" ")}</p>
-      )}
-      <p className="type-caption mt-2 text-text-3">{interpretation.disclaimer}</p>
-    </section>
-  );
-}
-
-function Score({ label, value }: { label: string; value: number | null }) {
-  const tone = value === null ? "neutral" : value >= 85 ? "success" : value >= 60 ? "fire" : "danger";
-  return (
-    <div className="rounded-sm border border-line bg-surface-2 p-4">
-      <p className="type-caption text-text-3">{label}</p>
-      <div className="mt-1 flex items-baseline gap-2">
-        <span className="text-[28px] font-semibold leading-none text-text">{value === null ? "—" : value}</span>
-        <span className="type-caption text-text-3">/100</span>
-        <Badge tone={tone} className="ml-auto">
-          {value === null ? "не измерено" : value >= 85 ? "сильно" : value >= 60 ? "средне" : "слабо"}
-        </Badge>
-      </div>
     </div>
   );
 }
@@ -277,13 +91,22 @@ export default function SitesPage() {
 
   const [verifying, setVerifying] = useState(false);
   const [verifyMessage, setVerifyMessage] = useState<{ tone: "success" | "danger"; text: string } | null>(null);
+  const [verificationOpen, setVerificationOpen] = useState(false);
   const [reanalyzing, setReanalyzing] = useState(false);
+  const [maxPages, setMaxPages] = useState(20);
   const [actionError, setActionError] = useState<string | null>(null);
-  const [tab, setTab] = useState<SiteTab>("profile");
+  const [actionNotice, setActionNotice] = useState<string | null>(null);
+  const [tab, setTab] = useState<SiteTab>("overview");
   const [destinationCount, setDestinationCount] = useState(0);
   const [destinationsLoaded, setDestinationsLoaded] = useState(false);
   const [reportRequested, setReportRequested] = useState(false);
   const [retryingAi, setRetryingAi] = useState<string | null>(null);
+  const [articleStats, setArticleStats] = useState<ArticleStats | null>(null);
+  const [menuOpen, setMenuOpen] = useState(false);
+  const [editOpen, setEditOpen] = useState(false);
+  const [editUrl, setEditUrl] = useState("");
+  const [siteBusy, setSiteBusy] = useState<string | null>(null);
+  const [deleteOpen, setDeleteOpen] = useState(false);
   const detailsRequest = useRef(0);
   const activeSiteId = useRef<number | null>(null);
 
@@ -315,15 +138,22 @@ export default function SitesPage() {
       if (request !== detailsRequest.current) return null;
       if (status !== 200 || !body.site) throw Object.assign(new Error("details_failed"), { code: body.error });
       setDetails({ site: body.site, latestAnalysis: body.latestAnalysis, profile: body.profile, reports: body.reports });
+      if (body.articleStats) setArticleStats(body.articleStats);
       void requestJson<{ destinations?: Array<{ status: string; readyToPublish: boolean }> }>(`/api/sites/${id}/destinations`)
         .then((result) => {
           if (request !== detailsRequest.current) return;
+          setDestinationsLoaded(true);
           if (result.status === 200 && result.body.destinations) {
             setDestinationCount(result.body.destinations.filter((item) => item.status === "active" && item.readyToPublish).length);
-            setDestinationsLoaded(true);
           }
         })
-        .catch(() => {}); // Смена проекта отменяет запрос; старое состояние уже размонтировано.
+        .catch(() => {
+          // Сбой запроса назначений не должен оставлять экран в вечном «Проверяем…».
+          if (request === detailsRequest.current) {
+            setDestinationsLoaded(true);
+            setDestinationCount(0);
+          }
+        });
       return body;
     } catch (error) {
       if (request === detailsRequest.current) {
@@ -339,7 +169,6 @@ export default function SitesPage() {
   useEffect(() => { void loadSites(); }, [loadSites]);
 
   const activeId = selectedId ?? sites[0]?.id ?? null;
-  const activeSummary = sites.find((site) => site.id === activeId) ?? null;
   const current = details && details.site.id === activeId ? details : null;
 
   useEffect(() => {
@@ -355,11 +184,15 @@ export default function SitesPage() {
     detailsRequest.current += 1;
     setDestinationCount(0);
     setDestinationsLoaded(false);
+    setArticleStats(null);
     setDetailsLoading(true);
     setDetailsError(null);
     setVerifyMessage(null);
     setActionError(null);
-    setTab("profile");
+    setActionNotice(null);
+    setMenuOpen(false);
+    setEditOpen(false);
+    setTab("overview");
     setSelectedId(id);
   }, []);
 
@@ -429,7 +262,8 @@ export default function SitesPage() {
     setConnectOpen(false);
     await loadSites();
     setSelectedId(body.site.id);
-    setDetails({ site: body.site, latestAnalysis: body.latestAnalysis, profile: body.profile, reports: body.reports });
+    setDetails({ site: body.site, latestAnalysis: body.latestAnalysis, profile: body.profile, reports: body.reports, articleStats: body.articleStats });
+    if (body.articleStats) setArticleStats(body.articleStats);
     if (body.analysisError) setActionError(errorMessage(body.analysisError, "Сайт подключён, но анализ не запустился."));
   }, [consent, requestJson, url, loadSites]);
 
@@ -437,7 +271,7 @@ export default function SitesPage() {
     if (!details) return;
     setVerifying(true);
     setVerifyMessage(null);
-    const { status, body } = await requestJson<{ verified?: boolean; reason?: string; site?: SiteSummary; error?: string }>(
+    const { status, body } = await requestJson<{ verified?: boolean; reason?: string; site?: SiteDetails["site"]; error?: string }>(
       `/api/sites/${details.site.id}/verify`,
       { method: "POST", body: JSON.stringify({ method: "auto" }) },
     );
@@ -448,466 +282,616 @@ export default function SitesPage() {
     }
     if (body.verified && body.site) {
       setVerifyMessage({ tone: "success", text: "Домен подтверждён." });
-      setDetails((current) => (current ? { ...current, site: body.site as SiteSummary } : current));
+      setDetails((value) => (value ? { ...value, site: body.site as SiteDetails["site"] } : value));
       void loadSites();
     } else {
       setVerifyMessage({ tone: "danger", text: verificationReason(body.reason) });
     }
   }, [details, loadSites, requestJson]);
 
+  const revokeVerification = useCallback(async () => {
+    if (!details) return;
+    setSiteBusy("revoke");
+    setActionError(null);
+    const { status, body } = await requestJson<{ site?: SiteDetails["site"]; error?: string }>(
+      `/api/sites/${details.site.id}/verify`,
+      { method: "POST", body: JSON.stringify({ method: "revoke" }) },
+    );
+    setSiteBusy(null);
+    setMenuOpen(false);
+    if (status >= 400) {
+      setActionError(errorMessage(body.error, "Не удалось отозвать подтверждение."));
+      return;
+    }
+    if (body.site) setDetails((value) => (value ? { ...value, site: body.site as SiteDetails["site"] } : value));
+    setActionNotice("Подтверждение отозвано: публикация и зонд снова закрыты до новой проверки.");
+    void loadSites();
+  }, [details, loadSites, requestJson]);
+
+  const patchSite = useCallback(async (payload: Record<string, unknown>, key: string) => {
+    if (!details) return;
+    setSiteBusy(key);
+    setActionError(null);
+    setActionNotice(null);
+    const { status, body } = await requestJson<{ site?: SiteDetails["site"]; domainChanged?: boolean; error?: string }>(
+      `/api/sites/${details.site.id}`,
+      { method: "PATCH", body: JSON.stringify(payload) },
+    );
+    setSiteBusy(null);
+    if (status >= 400) {
+      setActionError(errorMessage(body.error, payload.url ? "Не удалось изменить адрес сайта." : "Не удалось изменить состояние сайта."));
+      return false;
+    }
+    if (body.site) setDetails((value) => (value ? { ...value, site: body.site as SiteDetails["site"] } : value));
+    if (body.domainChanged) {
+      setActionNotice("Адрес изменён. Подтверждение владения сброшено — пройдите проверку заново.");
+      setVerificationOpen(true);
+    }
+    setEditOpen(false);
+    setMenuOpen(false);
+    void loadSites();
+    return true;
+  }, [details, loadSites, requestJson]);
+
+  const deleteCurrentSite = useCallback(async () => {
+    if (!details) return;
+    setSiteBusy("delete");
+    setActionError(null);
+    const { status, body } = await requestJson<{ error?: string }>(`/api/sites/${details.site.id}`, { method: "DELETE" });
+    setSiteBusy(null);
+    if (status >= 400) {
+      setActionError(errorMessage(body.error, "Не удалось удалить сайт."));
+      setDeleteOpen(false);
+      return;
+    }
+    setDeleteOpen(false);
+    setDetails(null);
+    setSelectedId(null);
+    setActionNotice("Сайт удалён. Прошлые прогоны аудита остались в истории проекта.");
+    await loadSites();
+  }, [details, loadSites, requestJson]);
+
   const reanalyze = useCallback(async () => {
     if (!details) return;
     setReanalyzing(true);
     setActionError(null);
-    const { status, body } = await requestJson<{ analysis?: AnalysisView; error?: string }>(
+    const { status, body } = await requestJson<{ analysis?: SiteDetails["latestAnalysis"]; error?: string }>(
       `/api/sites/${details.site.id}/analyze`,
-      { method: "POST", headers: { "idempotency-key": createSiteAnalysisUuid() }, body: JSON.stringify({}) },
+      { method: "POST", headers: { "idempotency-key": createSiteAnalysisUuid() }, body: JSON.stringify({ maxPages }) },
     );
     setReanalyzing(false);
     if ((status !== 202 && status !== 200) || !body.analysis) {
       setActionError(errorMessage(body.error, "Не удалось запустить анализ."));
       return;
     }
-    setDetails((current) => (current ? { ...current, latestAnalysis: body.analysis as AnalysisView } : current));
-  }, [details, requestJson]);
+    setDetails((value) => (value ? { ...value, latestAnalysis: body.analysis ?? null } : value));
+    void loadSites();
+  }, [details, loadSites, maxPages, requestJson]);
+
+  const handleArticleStats = useCallback((stats: ArticleStats) => setArticleStats(stats), []);
 
   const selected = current?.site ?? null;
   const profile = current?.profile ?? null;
   const analysis = current?.latestAnalysis ?? null;
-  const highGaps = useMemo(() => profile?.gaps.filter((gap) => gap.severity === "high") ?? [], [profile]);
   const showConnectForm = connectOpen || (listLoaded && !listError && sites.length === 0);
+  const pendingArticles = articleStats?.pending ?? 0;
+
+  const tabItems = SITE_TABS.map((item) => ({
+    ...item,
+    badge: item.value === "materials" ? pendingArticles : item.value === "reports" ? (current?.reports.length ?? 0) : undefined,
+  }));
+
+  const analysisTone = analysis?.status === "ready" ? "success" : analysis?.status === "failed" ? "danger" : "neutral";
 
   return (
     <AppShell
       title="Мои сайты"
       subtitle="Подключи сайт, подтверди домен и получи стартовый аудит: что уже есть на сайте, какие темы не закрыты и что мешает поиску и ИИ-движкам вас находить."
+      action={(
+        <Button
+          type="button"
+          size="sm"
+          variant={showConnectForm ? "secondary" : "primary"}
+          onClick={() => { setConnectOpen((open) => !open); setFormError(null); }}
+          aria-expanded={showConnectForm}
+          aria-controls="connect-site-form"
+        >
+          <Plus className={cn("h-4 w-4 transition-transform", showConnectForm && "rotate-45")} aria-hidden />
+          {showConnectForm ? "Скрыть форму" : "Добавить сайт"}
+        </Button>
+      )}
     >
-      <div className="grid items-start gap-6 xl:grid-cols-[320px_minmax(0,1fr)]">
-        <div className="min-w-0">
-          <Card className="overflow-hidden">
-            <div className="flex items-center justify-between gap-3 border-b border-line px-5 py-4">
+      <ConfirmDialog
+        open={deleteOpen}
+        title="Удалить сайт?"
+        description={selected
+          ? `Сайт ${selected.confirmedDomain}, его профиль, материалы, отчёты и зонды будут удалены. Прошлые прогоны аудита останутся в истории проекта.`
+          : ""}
+        confirmLabel="Удалить сайт"
+        confirmVariant="danger"
+        busy={siteBusy === "delete"}
+        error={actionError ?? undefined}
+        onConfirm={() => void deleteCurrentSite()}
+        onCancel={() => setDeleteOpen(false)}
+      />
+
+      <div className="space-y-4">
+        {showConnectForm && (
+          <Card id="connect-site-form" className="p-5 sm:p-6" as="section">
+            <div className="flex items-start gap-3">
+              <span className="grid h-10 w-10 shrink-0 place-items-center rounded-sm bg-info-soft text-brand">
+                <Globe2 className="h-5 w-5" aria-hidden />
+              </span>
               <div>
-                <h2 className="type-body-strong text-text">Сайты проекта</h2>
-                {listLoaded && !listError && sites.length > 0 && (
-                  <p className="type-caption mt-0.5 text-text-3">{siteCountLabel(sites.length)}</p>
+                <h2 className="type-body-strong text-text">Подключить сайт</h2>
+                <p className="type-caption mt-1 text-text-3">
+                  Аврора прочитает только публичные страницы (по умолчанию 20, лимит можно поднять до 50 в аудите). Первый аудит обычно занимает несколько минут.
+                </p>
+              </div>
+            </div>
+            <form className="mt-4 grid gap-4 md:grid-cols-[minmax(0,1fr)_auto] md:items-end" onSubmit={submitConnect}>
+              <Field label="Адрес сайта" htmlFor="site-url" required error={formError ?? undefined} messageId="site-url-message">
+                <Input
+                  id="site-url"
+                  type="url"
+                  inputMode="url"
+                  placeholder="https://example.ru"
+                  value={url}
+                  onChange={(event) => setUrl(event.target.value)}
+                  required
+                  aria-describedby="site-url-message"
+                />
+              </Field>
+              <Button type="submit" disabled={submitting || !url.trim()}>
+                {submitting ? "Подключаем…" : "Подключить и запустить аудит"}
+              </Button>
+              <div className="md:col-span-2">
+                <Checkbox
+                  checked={consent}
+                  onChange={setConsent}
+                  label="У меня есть право анализировать этот сайт и публиковать на нём материалы"
+                />
+              </div>
+            </form>
+          </Card>
+        )}
+
+        {/* Переключатель сайтов вместо левой колонки: раньше под двумя строками пустовала треть экрана */}
+        {sites.length > 0 && (
+          <div className="flex flex-wrap items-center gap-2" role="tablist" aria-label="Сайты проекта">
+            {sites.map((item) => {
+              const active = item.id === activeId;
+              return (
+                <button
+                  key={item.id}
+                  type="button"
+                  role="tab"
+                  aria-selected={active}
+                  onClick={() => selectSite(item.id)}
+                  className={cn(
+                    "inline-flex min-h-11 items-center gap-2.5 rounded-full border px-4 py-2 transition-colors",
+                    "focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-brand/15",
+                    active ? "border-brand/40 bg-info-soft text-text shadow-soft" : "border-line bg-surface text-text hover:border-line-strong",
+                  )}
+                >
+                  <span className={cn("h-2 w-2 shrink-0 rounded-full", item.verification.state === "verified" ? "bg-success" : item.status !== "active" ? "bg-text-3" : "bg-fire")} aria-hidden />
+                  <span className="type-body-strong">{item.confirmedDomain}</span>
+                  <span className="type-caption text-text-3">
+                    {item.profile ? `${item.profile.pageCount} стр.` : analysisLabel(item.latestAnalysis?.status)}
+                    {item.profile && item.profile.gapCount ? ` · пробелов ${item.profile.gapCount}` : ""}
+                    {item.status !== "active" ? " · на паузе" : ""}
+                  </span>
+                </button>
+              );
+            })}
+            <button
+              type="button"
+              onClick={() => { setConnectOpen(true); setFormError(null); }}
+              className="type-secondary inline-flex min-h-11 items-center gap-2 rounded-full border border-dashed border-line px-4 py-2 text-text-2 transition-colors hover:border-brand/40 hover:text-brand"
+            >
+              <Plus className="h-4 w-4" aria-hidden />Подключить ещё сайт
+            </button>
+          </div>
+        )}
+
+        {!listLoaded ? (
+          <Card className="p-5"><p role="status" className="type-secondary text-text-2">Загружаем сайты…</p></Card>
+        ) : listError ? (
+          <Card className="p-5">
+            <p role="alert" className="type-secondary text-danger-text">{listError}</p>
+            <Button type="button" size="sm" variant="secondary" className="mt-3" onClick={() => void loadSites()}>
+              <RefreshCw className="h-4 w-4" aria-hidden />Повторить
+            </Button>
+          </Card>
+        ) : activeId === null ? (
+          <Card>
+            <EmptyState
+              icon={<Globe2 className="h-5 w-5" aria-hidden />}
+              title="Здесь появится ваш первый сайт"
+              body="Укажите адрес — Аврора прочитает публичные страницы, покажет темы и пробелы, предложит материалы и отчёт."
+            />
+          </Card>
+        ) : !selected ? (
+          <Card className="p-5 sm:p-6">
+            <div className="flex items-start gap-3">
+              <span className={cn(
+                "grid h-10 w-10 shrink-0 place-items-center rounded-sm",
+                detailsError ? "bg-danger-soft text-danger-text" : "bg-info-soft text-brand",
+              )}>
+                {detailsError ? <XCircle className="h-5 w-5" aria-hidden /> : <Globe2 className="h-5 w-5" aria-hidden />}
+              </span>
+              <div className="min-w-0">
+                <h2 className="type-h3 text-text">Сайт</h2>
+                {detailsError ? (
+                  <>
+                    <p role="alert" className="type-secondary mt-1 text-danger-text">{detailsError}</p>
+                    <Button type="button" size="sm" variant="secondary" className="mt-3" onClick={() => activeId !== null && void loadDetails(activeId)}>
+                      <RefreshCw className="h-4 w-4" aria-hidden />Повторить загрузку
+                    </Button>
+                  </>
+                ) : (
+                  <p role="status" className="type-secondary mt-1 text-text-2">
+                    {detailsLoading ? "Загружаем данные сайта…" : "Открываем сайт…"}
+                  </p>
                 )}
               </div>
-              {listLoaded && sites.length > 0 && (
-                <Button
-                  type="button"
-                  size="sm"
-                  variant={showConnectForm ? "ghost" : "secondary"}
-                  onClick={() => {
-                    setConnectOpen((open) => !open);
-                    setFormError(null);
-                  }}
-                  aria-expanded={showConnectForm}
-                  aria-controls="connect-site-form"
-                >
-                  <Plus className={cn("h-4 w-4 transition-transform", showConnectForm && "rotate-45")} aria-hidden />
-                  {showConnectForm ? "Скрыть" : "Добавить"}
-                </Button>
-              )}
             </div>
-
-            {showConnectForm && (
-              <section id="connect-site-form" className="border-b border-line bg-surface-2 p-5" aria-labelledby="connect-site-title">
-                <div className="flex items-start gap-3">
-                  <span className="grid h-10 w-10 shrink-0 place-items-center rounded-sm bg-info-soft text-brand">
-                    <Globe2 className="h-5 w-5" aria-hidden />
-                  </span>
-                  <div>
-                    <h3 id="connect-site-title" className="type-body-strong text-text">Подключить сайт</h3>
-                    <p className="type-caption mt-1 text-text-3">Аврора прочитает только публичные страницы. Первый аудит обычно занимает несколько минут.</p>
-                  </div>
-                </div>
-                <form className="mt-4 space-y-4" onSubmit={submitConnect}>
-                  <Field label="Адрес сайта" htmlFor="site-url" required error={formError ?? undefined} messageId="site-url-message">
-                    <Input
-                      id="site-url"
-                      type="url"
-                      inputMode="url"
-                      placeholder="https://example.ru"
-                      value={url}
-                      onChange={(event) => setUrl(event.target.value)}
-                      required
-                      aria-describedby="site-url-message"
-                    />
-                  </Field>
-                  <Checkbox
-                    checked={consent}
-                    onChange={setConsent}
-                    label="У меня есть право анализировать этот сайт и публиковать на нём материалы"
-                  />
-                  <Button type="submit" disabled={submitting || !url.trim()} className="w-full">
-                    {submitting ? "Подключаем…" : "Подключить и запустить аудит"}
-                  </Button>
-                </form>
-              </section>
-            )}
-
-            {!listLoaded ? (
-              <p role="status" className="type-secondary p-5 text-text-2">Загружаем сайты…</p>
-            ) : listError ? (
-              <div className="p-5">
-                <p role="alert" className="type-secondary text-danger-text">{listError}</p>
-                <Button type="button" size="sm" variant="secondary" className="mt-3" onClick={() => void loadSites()}>
-                  <RefreshCw className="h-4 w-4" aria-hidden />Повторить
-                </Button>
-              </div>
-            ) : sites.length === 0 ? (
-              <EmptyState icon={<FileSearch className="h-5 w-5" aria-hidden />} title="Это будет первый сайт проекта" body="Укажи адрес выше — Аврора сразу запустит стартовый аудит." />
-            ) : (
-              <ul className="divide-y divide-line">
-                {sites.map((item) => (
-                  <li key={item.id}>
-                    <button
-                      type="button"
-                      onClick={() => selectSite(item.id)}
-                      aria-current={item.id === activeId ? "true" : undefined}
-                      className={cn(
-                        "flex w-full flex-col gap-1.5 px-5 py-4 text-left transition hover:bg-surface-2 focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-brand/15",
-                        item.id === activeId && "bg-info-soft/60",
-                      )}
-                    >
-                      <span className="flex items-center gap-2">
-                        <span className="type-body-strong truncate text-text">{item.confirmedDomain}</span>
-                        {item.verification.state === "verified" ? (
-                          <Badge tone="success"><ShieldCheck className="h-3 w-3" aria-hidden />домен подтверждён</Badge>
-                        ) : (
-                          <Badge tone="neutral">не подтверждён</Badge>
-                        )}
-                      </span>
-                      <span className="type-caption text-text-3">
-                        {item.latestAnalysis ? analysisLabel(item.latestAnalysis.status) : "Анализ не запускался"}
-                        {item.profile ? ` · ${item.profile.pageCount} стр. · пробелов: ${item.profile.gapCount}` : ""}
-                        {item.reportCount ? ` · отчётов: ${item.reportCount}` : ""}
-                      </span>
-                    </button>
-                  </li>
-                ))}
-              </ul>
-            )}
           </Card>
-        </div>
+        ) : (
+          <>
+            {actionError && <p role="alert" className="type-secondary rounded-sm bg-danger-soft p-4 text-danger-text">{actionError}</p>}
+            {actionNotice && <p role="status" className="type-secondary rounded-sm bg-info-soft p-4 text-info-text">{actionNotice}</p>}
 
-        <div className="min-w-0 space-y-6">
-          {activeId === null ? (
-            <Card>
-              <EmptyState
-                icon={<Globe2 className="h-5 w-5" aria-hidden />}
-                title="Выбери сайт или подключи новый"
-                body="Справа появятся подтверждение домена, профиль сайта и отчёты для скачивания."
-              />
-            </Card>
-          ) : !selected ? (
-            <Card className="p-6">
-              <div className="flex items-start gap-3">
-                <span className={cn(
-                  "grid h-10 w-10 shrink-0 place-items-center rounded-sm",
-                  detailsError ? "bg-danger-soft text-danger-text" : "bg-info-soft text-brand",
-                )}>
-                  {detailsError ? <XCircle className="h-5 w-5" aria-hidden /> : <Globe2 className="h-5 w-5" aria-hidden />}
+            {/* Карточка сайта: домен, состояние и действия в одной полосе */}
+            <Card className="overflow-hidden">
+              <div className="flex flex-wrap items-center gap-x-5 gap-y-4 p-5 sm:p-6">
+                <span className="grid h-12 w-12 shrink-0 place-items-center rounded-sm bg-info-soft text-brand">
+                  <Globe2 className="h-6 w-6" aria-hidden />
                 </span>
                 <div className="min-w-0">
-                  <h2 className="type-h3 truncate text-text">{activeSummary?.confirmedDomain ?? "Сайт"}</h2>
-                  {detailsError ? (
-                    <>
-                      <p role="alert" className="type-secondary mt-1 text-danger-text">{detailsError}</p>
-                      <Button type="button" size="sm" variant="secondary" className="mt-3" onClick={() => void loadDetails(activeId)}>
-                        <RefreshCw className="h-4 w-4" aria-hidden />Повторить загрузку
-                      </Button>
-                    </>
-                  ) : (
-                    <p role="status" className="type-secondary mt-1 text-text-2">
-                      {detailsLoading ? "Загружаем данные сайта…" : "Открываем сайт…"}
-                    </p>
-                  )}
-                </div>
-              </div>
-            </Card>
-          ) : (
-            <>
-              {actionError && <p role="alert" className="type-secondary rounded-sm bg-danger-soft p-4 text-danger-text">{actionError}</p>}
-
-              <Card className="p-5 sm:p-6">
-                <div className="flex flex-wrap items-start justify-between gap-4">
-                  <div className="min-w-0">
-                    <h2 className="type-h3 truncate text-text">{selected.confirmedDomain}</h2>
-                    <a href={selected.canonicalUrl} target="_blank" rel="noopener noreferrer" className="type-caption mt-1 inline-flex items-center gap-1 text-brand">
-                      <ExternalLink className="h-3.5 w-3.5" aria-hidden />{selected.canonicalUrl}
-                    </a>
-                  </div>
-                  <div className="flex items-center gap-2">
-                    <Badge tone="neutral">режим: {selected.publishingMode === "confirm" ? "с подтверждением" : "автомат"}</Badge>
-                    <Button type="button" size="sm" variant="secondary" onClick={reanalyze} disabled={reanalyzing || analysisActive}>
-                      <RefreshCw className={cn("h-4 w-4", (reanalyzing || analysisActive) && "animate-spin")} aria-hidden />
-                      Обновить аудит
-                    </Button>
-                  </div>
-                </div>
-
-                <div className="mt-5 grid gap-4 lg:grid-cols-3">
-                  <section className="rounded-sm border border-line bg-surface-2 p-4" aria-labelledby="analysis-state">
-                    <h3 id="analysis-state" className="type-label text-text-2">Анализ</h3>
-                    <div className="mt-2 flex items-center gap-2">
-                      {analysis?.status === "ready" ? <CheckCircle2 className="h-4 w-4 text-success-text" aria-hidden />
-                        : analysis?.status === "failed" ? <XCircle className="h-4 w-4 text-danger-text" aria-hidden />
-                          : <Clock3 className="h-4 w-4 text-text-3" aria-hidden />}
-                      <span className="type-body-strong text-text">{analysisLabel(analysis?.status)}</span>
-                      {analysis && ACTIVE_STATUSES.has(analysis.status) && <span className="type-caption text-text-3">{analysis.progress}%</span>}
-                    </div>
-                    {analysis && ACTIVE_STATUSES.has(analysis.status) && (
-                      <div className="mt-3 h-1.5 overflow-hidden rounded-full bg-surface-inset" role="progressbar" aria-valuenow={analysis.progress} aria-valuemin={0} aria-valuemax={100}>
-                        <div className="h-full bg-brand transition-[width]" style={{ width: `${analysis.progress}%` }} />
-                      </div>
-                    )}
-                    {analysis?.detail && ACTIVE_STATUSES.has(analysis.status) && <p className="type-caption mt-2 text-text-3">{analysis.detail}</p>}
-                    {analysis?.status === "failed" && analysis.error && (
-                      <p className="type-caption mt-2 text-danger-text">{siteAnalysisErrorMessage(analysis.error.code)}</p>
-                    )}
-                    {analysis?.status === "ready" && <p className="type-caption mt-2 text-text-3">Завершён {formatDate(analysis.completedAt)}, ревизия {analysis.runRevision}.</p>}
-                  </section>
-
-                  <section className="rounded-sm border border-line bg-surface-2 p-4" aria-labelledby="verification-state">
-                    <h3 id="verification-state" className="type-label text-text-2">Владение доменом</h3>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <h2 className="type-h2 truncate text-text">{selected.confirmedDomain}</h2>
                     {selected.verification.state === "verified" ? (
-                      <div className="mt-2 flex items-center gap-2">
-                        <ShieldCheck className="h-4 w-4 text-success-text" aria-hidden />
-                        <span className="type-body-strong text-text">Подтверждено</span>
-                        <span className="type-caption text-text-3">
-                          {selected.verification.method === "dns_txt" ? "по DNS" : "по meta-тегу"} · {formatDate(selected.verification.verifiedAt)}
-                        </span>
-                      </div>
+                      <Badge tone="success"><ShieldCheck className="h-3 w-3" aria-hidden />домен подтверждён</Badge>
+                    ) : selected.verification.state === "revoked" ? (
+                      <Badge tone="danger"><AlertTriangle className="h-3 w-3" aria-hidden />подтверждение отозвано</Badge>
                     ) : (
+                      <Badge tone="fire">домен не подтверждён</Badge>
+                    )}
+                    <Badge tone="neutral">режим: {selected.publishingMode === "confirm" ? "с подтверждением" : "автомат"}</Badge>
+                    {selected.status !== "active" && <Badge tone="neutral">{selected.status === "paused" ? "на паузе" : "отключён"}</Badge>}
+                  </div>
+                  <a
+                    href={selected.canonicalUrl}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="type-caption mt-1 inline-flex items-center gap-1 text-brand hover:underline"
+                  >
+                    {selected.canonicalUrl}
+                  </a>
+                </div>
+                <div className="ml-auto flex flex-wrap items-center gap-2">
+                  <Button type="button" size="sm" variant="secondary" onClick={reanalyze} disabled={reanalyzing || analysisActive}>
+                    <RefreshCw className={cn("h-4 w-4", (reanalyzing || analysisActive) && "animate-spin")} aria-hidden />
+                    {analysisActive ? "Аудит идёт" : "Обновить аудит"}
+                  </Button>
+                  <div className="relative">
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="ghost"
+                      aria-label="Действия с сайтом"
+                      aria-expanded={menuOpen}
+                      onClick={() => setMenuOpen((value) => !value)}
+                    >
+                      <MoreHorizontal className="h-4 w-4" aria-hidden />
+                    </Button>
+                    {menuOpen && (
                       <>
-                        <p className="type-secondary mt-2 text-text-2">
-                          Публикация на сайт откроется после подтверждения. Добавь один из вариантов и нажми «Проверить».
-                        </p>
-                        <details className="mt-3">
-                          <summary className="type-caption cursor-pointer text-brand">Вариант 1 · TXT-запись в DNS</summary>
-                          <div className="mt-2 space-y-2">
-                            <p className="type-caption text-text-3">Имя записи</p>
-                            <CopyValue value={selected.verification.instructions.dns.recordName} label="имя записи" />
-                            <p className="type-caption text-text-3">Значение</p>
-                            <CopyValue value={selected.verification.instructions.dns.recordValue} label="значение записи" />
-                          </div>
-                        </details>
-                        <details className="mt-2">
-                          <summary className="type-caption cursor-pointer text-brand">Вариант 2 · meta-тег на главной</summary>
-                          <div className="mt-2">
-                            <CopyValue value={selected.verification.instructions.meta.tag} label="meta-тег" />
-                          </div>
-                        </details>
-                        <div className="mt-3 flex flex-wrap items-center gap-3">
-                          <Button type="button" size="sm" onClick={verify} disabled={verifying}>
-                            {verifying ? "Проверяем…" : "Проверить"}
-                          </Button>
-                          {verifyMessage && (
-                            <span role="status" className={cn("type-caption", verifyMessage.tone === "success" ? "text-success-text" : "text-danger-text")}>
-                              {verifyMessage.text}
-                            </span>
+                        <button type="button" aria-label="Закрыть меню" className="fixed inset-0 z-40 cursor-default" onClick={() => setMenuOpen(false)} />
+                        <div className="absolute right-0 top-full z-50 mt-1 w-64 rounded-sm border border-line bg-surface p-1.5 shadow-card">
+                          <button
+                            type="button"
+                            className="type-secondary block w-full rounded-sm px-3 py-2 text-left text-text hover:bg-surface-2"
+                            onClick={() => { setEditUrl(selected.canonicalUrl); setEditOpen((value) => !value); setMenuOpen(false); }}
+                          >
+                            Изменить адрес сайта
+                          </button>
+                          {selected.verification.state === "verified" && (
+                            <button
+                              type="button"
+                              className="type-secondary block w-full rounded-sm px-3 py-2 text-left text-text hover:bg-surface-2"
+                              disabled={siteBusy === "revoke"}
+                              onClick={() => void revokeVerification()}
+                            >
+                              Отозвать подтверждение домена
+                            </button>
                           )}
+                          <button
+                            type="button"
+                            className="type-secondary block w-full rounded-sm px-3 py-2 text-left text-text hover:bg-surface-2"
+                            disabled={siteBusy === "status"}
+                            onClick={() => void patchSite({ status: selected.status === "active" ? "paused" : "active" }, "status")}
+                          >
+                            {selected.status === "active" ? "Поставить на паузу" : "Возобновить работу"}
+                          </button>
+                          {selected.status !== "disconnected" && (
+                            <button
+                              type="button"
+                              className="type-secondary block w-full rounded-sm px-3 py-2 text-left text-text hover:bg-surface-2"
+                              disabled={siteBusy === "status"}
+                              onClick={() => void patchSite({ status: "disconnected" }, "status")}
+                            >
+                              Отключить от Авроры
+                            </button>
+                          )}
+                          <button
+                            type="button"
+                            className="type-secondary block w-full rounded-sm px-3 py-2 text-left text-danger-text hover:bg-danger-soft"
+                            onClick={() => { setDeleteOpen(true); setMenuOpen(false); }}
+                          >
+                            Удалить сайт
+                          </button>
                         </div>
                       </>
                     )}
-                  </section>
-
-                  <section className="rounded-sm border border-line bg-surface-2 p-4" aria-labelledby="publishing-state">
-                    <h3 id="publishing-state" className="type-label text-text-2">Публикация</h3>
-                    <div className="mt-2 flex items-center gap-2">
-                      <Send className={cn("h-4 w-4", destinationCount > 0 ? "text-success-text" : "text-text-3")} aria-hidden />
-                      <span className="type-body-strong text-text">
-                        {!destinationsLoaded ? "Проверяем…" : destinationCount > 0 ? "Готова" : "Не настроена"}
-                      </span>
-                    </div>
-                    {destinationsLoaded && destinationCount > 0 ? (
-                      <p className="type-caption mt-2 text-text-3">
-                        {destinationCount === 1 ? "Подключено одно назначение." : `Подключено назначений: ${destinationCount}.`}
-                      </p>
-                    ) : destinationsLoaded ? (
-                      <>
-                        <p className="type-caption mt-2 text-text-3">Подключи WordPress или раздел Авроры, чтобы отправлять одобренные материалы.</p>
-                        <Button type="button" size="sm" variant="secondary" className="mt-3" onClick={() => setTab("publishing")}>
-                          Настроить публикацию
-                        </Button>
-                      </>
-                    ) : (
-                      <p className="type-caption mt-2 text-text-3">Проверяем доступные назначения.</p>
-                    )}
-                  </section>
+                  </div>
                 </div>
-              </Card>
-
-              <div className="max-w-full overflow-x-auto pb-1">
-                <Tabs<SiteTab>
-                  value={tab}
-                  onChange={setTab}
-                  className="min-w-max"
-                  ariaLabel="Разделы сайта"
-                  items={[
-                    { value: "profile", label: "Профиль" },
-                    { value: "articles", label: "Материалы" },
-                    { value: "publishing", label: "Публикация" },
-                    { value: "visibility", label: "Видимость в ИИ" },
-                    { value: "reports", label: "Отчёты" },
-                  ]}
-                />
               </div>
 
-              {tab === "articles" && (
-                <ArticlesPanel
-                  siteId={selected.id}
-                  verified={selected.verification.state === "verified"}
-                  hasDestinations={destinationCount > 0}
-                  destinationsLoaded={destinationsLoaded}
-                  hasProfile={Boolean(profile)}
-                  onSiteChanged={refreshCurrent}
-                />
-              )}
-              {tab === "publishing" && (
-                <DestinationsPanel
-                  siteId={selected.id}
-                  verified={selected.verification.state === "verified"}
-                  publishingMode={selected.publishingMode}
-                  approvedStreak={selected.approvedStreak}
-                  autoUnlockStreak={selected.autoUnlockStreak}
-                  hostedOrigin={selected.hostedOrigin}
-                  brandName={selected.brandName}
-                  onChanged={refreshCurrent}
-                />
-              )}
-              {tab === "visibility" && (
-                <ProbePanel siteId={selected.id} verified={selected.verification.state === "verified"} hasProfile={Boolean(profile)} />
-              )}
-
-              {tab === "profile" && (profile ? (
-                <Card className="p-5 sm:p-6">
-                  <div className="flex flex-wrap items-center gap-2">
-                    <h3 className="type-h3 text-text">Профиль сайта</h3>
-                    {profile.aiClassification?.status === "ready" && (
-                      <Badge tone="brand">уточнён моделью{profile.aiClassification.topicClusters ? ` · тем объединено: ${profile.aiClassification.topicClusters}` : ""}</Badge>
-                    )}
-                    {profile.aiClassification?.status === "failed" ? <>
-                      <Badge tone="danger">уточнение не удалось</Badge>
-                      <Button type="button" size="sm" variant="secondary" disabled={retryingAi !== null} onClick={() => void retryAi("profile")}>{retryingAi === "profile" ? "Запускаем…" : "Повторить уточнение"}</Button>
-                    </> : profile.refinedAt === null && <Badge tone="neutral">{profile.aiClassification?.status === "processing" ? "уточняем профиль" : "уточнение ожидает запуска"}</Badge>}
+              {editOpen && (
+                <form
+                  className="grid gap-3 border-t border-line bg-surface-2 px-5 py-4 sm:px-6 md:grid-cols-[minmax(0,1fr)_auto]"
+                  onSubmit={(event) => { event.preventDefault(); void patchSite({ url: editUrl }, "domain"); }}
+                >
+                  <Field
+                    label="Новый адрес сайта"
+                    htmlFor="site-edit-url"
+                    hint="Смена домена сбрасывает подтверждение владения: проверку нужно пройти заново. Профиль и отчёты останутся историей прежнего адреса."
+                  >
+                    <Input id="site-edit-url" type="url" value={editUrl} onChange={(event) => setEditUrl(event.target.value)} required />
+                  </Field>
+                  <div className="flex items-end gap-2">
+                    <Button type="submit" size="sm" disabled={siteBusy === "domain" || editUrl.trim().length === 0}>
+                      {siteBusy === "domain" ? "Сохраняем…" : "Сохранить адрес"}
+                    </Button>
+                    <Button type="button" size="sm" variant="ghost" onClick={() => setEditOpen(false)}>Отмена</Button>
                   </div>
-                  <p className="type-secondary mt-2 text-text-2">{profile.summary}</p>
-                  {current?.reports[0] && <InterpretationBlock interpretation={current.reports[0].interpretation} status={current.reports[0].interpretationStatus} retrying={retryingAi !== null} onRetry={() => void retryAi("report", current.reports[0].id)} />}
-                  <div className="mt-5 grid gap-4 sm:grid-cols-2">
-                    <Score label="On-page SEO" value={profile.technical.seoScore} />
-                    <Score label="Готовность к генеративному поиску (GEO)" value={profile.technical.geoScore} />
-                  </div>
-                  <dl className="mt-5 grid gap-3 sm:grid-cols-4">
-                    <div className="rounded-sm bg-surface-inset p-3"><dt className="type-caption text-text-3">Страниц проверено</dt><dd className="type-body-strong text-text">{profile.technical.pagesChecked}</dd></div>
-                    <div className="rounded-sm bg-surface-inset p-3"><dt className="type-caption text-text-3">Публикаций</dt><dd className="type-body-strong text-text">{profile.publicationCount}</dd></div>
-                    <div className="rounded-sm bg-surface-inset p-3"><dt className="type-caption text-text-3">Вопросов без ответа</dt><dd className="type-body-strong text-text">{profile.technical.questions?.unansweredQuestions ?? 0}</dd></div>
-                    <div className="rounded-sm bg-surface-inset p-3"><dt className="type-caption text-text-3">Страниц для перелинковки</dt><dd className="type-body-strong text-text">{profile.linkablePages.length}</dd></div>
-                  </dl>
+                </form>
+              )}
 
-                  <section className="mt-6" aria-labelledby="topics-title">
-                    <h4 id="topics-title" className="type-body-strong text-text">Темы сайта</h4>
-                    {profile.topics.length ? (
-                      <ul className="mt-3 flex flex-wrap gap-2">
-                        {profile.topics.map((topic) => (
-                          <li key={topic.key}>
-                            <Badge tone={topic.coverage === "strong" ? "success" : "neutral"}>
-                              {topic.label} · {topic.pageCount}
-                            </Badge>
-                          </li>
-                        ))}
-                      </ul>
-                    ) : (
-                      <p className="type-secondary mt-2 text-text-2">Устойчивых тем между страницами не найдено.</p>
-                    )}
-                  </section>
-
-                  <section className="mt-6" aria-labelledby="gaps-title">
-                    <h4 id="gaps-title" className="type-body-strong text-text">
-                      Пробелы · {profile.gaps.length}{highGaps.length ? ` (критичных: ${highGaps.length})` : ""}
-                    </h4>
-                    {profile.gaps.length ? (
-                      <ul className="mt-3 space-y-2">
-                        {profile.gaps.map((gap) => (
-                          <li key={gap.key} className="rounded-sm border border-line bg-surface-2 p-3">
-                            <div className="flex flex-wrap items-center gap-2">
-                              <AlertTriangle className={cn("h-4 w-4", gap.severity === "high" ? "text-danger-text" : "text-fire-text")} aria-hidden />
-                              <p className="type-label text-text">{gap.label}</p>
-                              <Badge tone={SEVERITY_TONE[gap.severity]}>{SEVERITY_LABEL[gap.severity]}</Badge>
-                            </div>
-                            <p className="type-caption mt-1 text-text-2">{gap.detail}</p>
-                          </li>
-                        ))}
-                      </ul>
-                    ) : (
-                      <p className="type-secondary mt-2 rounded-sm bg-success-soft p-3 text-success-text">Пробелов не найдено.</p>
-                    )}
-                  </section>
-
-                  {(profile.technical.seoIssues.length > 0 || profile.technical.geoIssues.length > 0) && (
-                    <details className="mt-6 rounded-sm border border-line bg-surface-2 p-4">
-                      <summary className="type-body-strong cursor-pointer text-text">
-                        Технические замечания · {profile.technical.seoIssues.length + profile.technical.geoIssues.length}
-                      </summary>
-                      <ul className="mt-3 space-y-2">
-                        {[...profile.technical.seoIssues, ...profile.technical.geoIssues].map((issue) => (
-                          <li key={issue.id} className={cn("rounded-sm p-3", issue.status === "critical" ? "bg-danger-soft text-danger-text" : "bg-fire-soft text-fire-text")}>
-                            <p className="type-label">{issue.label}</p>
-                            <p className="type-caption mt-1 opacity-90">{issue.detail}</p>
-                            <p className="type-caption mt-1 font-semibold">{issue.recommendation}</p>
-                          </li>
-                        ))}
-                      </ul>
-                    </details>
-                  )}
-                </Card>
-              ) : analysis && ACTIVE_STATUSES.has(analysis.status) ? (
-                <Card className="p-6">
-                  <p className="type-secondary text-text-2">Профиль появится, как только анализ завершится.</p>
-                </Card>
-              ) : null)}
-
-              {tab === "reports" && <Card className="p-5 sm:p-6">
-                <div className="flex flex-wrap items-start justify-between gap-3">
-                  <h3 className="type-h3 text-text">Отчёты</h3>
-                  <Button type="button" size="sm" variant="secondary" onClick={requestReport} disabled={reportRequested || !profile}>
-                    {reportRequested ? "Собираем…" : "Отчёт за 30 дней"}
+              {/* Полоса состояния: три равные ячейки, у каждой есть действие */}
+              <dl className="grid border-t border-line sm:grid-cols-3 [&>div+div]:border-t sm:[&>div+div]:border-t-0 sm:[&>div+div]:border-l">
+                <div className="flex items-center gap-3 border-line px-5 py-4">
+                  <span className={cn(
+                    "grid h-9 w-9 shrink-0 place-items-center rounded-sm",
+                    analysisTone === "success" ? "bg-success-soft text-success-text" : analysisTone === "danger" ? "bg-danger-soft text-danger-text" : "bg-surface-inset text-text-2",
+                  )}>
+                    {analysisTone === "success" ? <CheckCircle2 className="h-4 w-4" aria-hidden />
+                      : analysisTone === "danger" ? <XCircle className="h-4 w-4" aria-hidden />
+                        : <Clock3 className="h-4 w-4" aria-hidden />}
+                  </span>
+                  <span className="min-w-0">
+                    <dt className="type-caption text-text-3">Аудит</dt>
+                    <dd className="type-body-strong text-text">
+                      {analysisLabel(analysis?.status)}
+                      {analysis && ACTIVE_STATUSES.has(analysis.status) ? ` · ${analysis.progress}%` : ""}
+                    </dd>
+                    <dd className="type-caption text-text-3">
+                      {analysis?.status === "ready"
+                        ? `завершён ${formatDate(analysis.completedAt)}`
+                        : analysis?.status === "failed" && analysis.error
+                          ? siteAnalysisErrorMessage(analysis.error.code)
+                          : profile ? `профиль от ${formatDate(profile.createdAt)}` : "профиля пока нет"}
+                    </dd>
+                  </span>
+                  <Button type="button" size="sm" variant="ghost" className="ml-auto" onClick={() => setTab("audit")}>
+                    Открыть
                   </Button>
                 </div>
-                <p className="type-caption mt-1 text-text-3">Ежемесячный отчёт с динамикой собирается автоматически 1-го числа; Markdown-версия попадает в базу знаний сайта.</p>
-                {current?.reports.length ? (
-                  <ul className="mt-4 space-y-3">
-                    {current.reports.map((report) => (
-                      <li key={report.id} className="rounded-sm border border-line bg-surface-2 p-4">
-                        <div className="flex flex-wrap items-center gap-2">
-                          <p className="type-body-strong text-text">{REPORT_KIND_LABEL[report.kind]}</p>
-                          <span className="type-caption text-text-3">{formatDate(report.createdAt)}</span>
-                        </div>
-                        <p className="type-secondary mt-2 text-text-2">{report.summaryRu}</p>
-                        <InterpretationBlock interpretation={report.interpretation} status={report.interpretationStatus} compact retrying={retryingAi !== null} onRetry={() => void retryAi("report", report.id)} />
-                        <div className="mt-3 flex flex-wrap gap-2">
-                          {REPORT_FORMATS.map(([format, label]) => (
-                            <a
-                              key={format}
-                              href={projectUrl(`/api/sites/${selected.id}/reports/${report.id}/export?format=${format}`)}
-                              download
-                              className="inline-flex min-h-9 items-center gap-1.5 rounded-sm border border-line px-2.5 py-1.5 text-[12px] font-semibold text-brand hover:border-brand/35 hover:bg-info-soft"
-                            >
-                              <Download className="h-3.5 w-3.5" aria-hidden />{label}
-                            </a>
-                          ))}
-                        </div>
-                      </li>
-                    ))}
-                  </ul>
+
+                <div className="flex items-center gap-3 border-t border-line px-5 py-4 sm:border-t-0">
+                  <span className={cn(
+                    "grid h-9 w-9 shrink-0 place-items-center rounded-sm",
+                    selected.verification.state === "verified" ? "bg-success-soft text-success-text" : "bg-fire-soft text-fire-text",
+                  )}>
+                    <ShieldCheck className="h-4 w-4" aria-hidden />
+                  </span>
+                  <span className="min-w-0">
+                    <dt className="type-caption text-text-3">Владение доменом</dt>
+                    <dd className="type-body-strong text-text">
+                      {selected.verification.state === "verified" ? "Подтверждено" : selected.verification.state === "revoked" ? "Отозвано" : "Не подтверждён"}
+                    </dd>
+                    <dd className="type-caption text-text-3">
+                      {selected.verification.state === "verified"
+                        ? `${selected.verification.method === "dns_txt" ? "по DNS-записи" : "по meta-тегу"} · ${formatDate(selected.verification.verifiedAt)}`
+                        : "публикация и зонд закрыты"}
+                    </dd>
+                  </span>
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant={selected.verification.state === "verified" ? "ghost" : "secondary"}
+                    className="ml-auto"
+                    onClick={() => setVerificationOpen((value) => !value)}
+                    aria-expanded={verificationOpen}
+                  >
+                    {selected.verification.state === "verified" ? "Подробнее" : "Подтвердить"}
+                  </Button>
+                </div>
+
+                <div className="flex items-center gap-3 border-t border-line px-5 py-4 sm:border-t-0">
+                  <span className={cn(
+                    "grid h-9 w-9 shrink-0 place-items-center rounded-sm",
+                    destinationCount > 0 ? "bg-success-soft text-success-text" : "bg-surface-inset text-text-2",
+                  )}>
+                    <Globe2 className="h-4 w-4" aria-hidden />
+                  </span>
+                  <span className="min-w-0">
+                    <dt className="type-caption text-text-3">Публикация</dt>
+                    <dd className="type-body-strong text-text">
+                      {!destinationsLoaded ? "Проверяем…" : destinationCount > 0 ? "Готова" : "Назначение не подключено"}
+                    </dd>
+                    <dd className="type-caption text-text-3">
+                      {!destinationsLoaded
+                        ? "загружаем назначения"
+                        : destinationCount > 0
+                          ? destinationCount === 1 ? "подключено одно назначение" : `подключено назначений: ${destinationCount}`
+                          : "материалы останутся в Авроре"}
+                    </dd>
+                  </span>
+                  <Button type="button" size="sm" variant={destinationCount > 0 ? "ghost" : "secondary"} className="ml-auto" onClick={() => setTab("publishing")}>
+                    {destinationCount > 0 ? "Настроить" : "Настроить"}
+                  </Button>
+                </div>
+              </dl>
+            </Card>
+
+            {/* Подтверждение домена: те же два способа, что и раньше, но по кнопке */}
+            {verificationOpen && (
+              <Card className="p-5 sm:p-6">
+                <div className="flex flex-wrap items-center justify-between gap-3">
+                  <div>
+                    <h3 className="type-h3 text-text">Подтверждение владения доменом</h3>
+                    <p className="type-caption mt-1 text-text-3">
+                      Достаточно одного способа. DNS-изменения могут применяться до нескольких часов, meta-тег проверяется сразу.
+                    </p>
+                  </div>
+                  <Button type="button" size="sm" variant="ghost" onClick={() => setVerificationOpen(false)}>Свернуть</Button>
+                </div>
+
+                {selected.verification.state === "verified" ? (
+                  <div className="mt-4 flex flex-wrap items-center gap-3 rounded-sm bg-success-soft p-4">
+                    <ShieldCheck className="h-5 w-5 text-success-text" aria-hidden />
+                    <span className="type-secondary text-success-text">
+                      Домен подтверждён {formatDate(selected.verification.verifiedAt)}
+                      {selected.verification.method ? ` (${selected.verification.method === "dns_txt" ? "DNS-запись" : "meta-тег"})` : ""}.
+                    </span>
+                    <Button type="button" size="sm" variant="ghost" className="ml-auto" disabled={siteBusy === "revoke"} onClick={() => void revokeVerification()}>
+                      Отозвать подтверждение
+                    </Button>
+                  </div>
                 ) : (
-                  <p className="type-secondary mt-2 text-text-2">Первый отчёт появится после завершения стартового аудита.</p>
+                  <div className="mt-4 grid gap-4 lg:grid-cols-2">
+                    <section className="rounded-sm border border-line bg-surface-2 p-4" aria-labelledby="verify-dns">
+                      <h4 id="verify-dns" className="type-label text-text">Вариант 1 · TXT-запись в DNS</h4>
+                      <p className="type-caption mt-2 text-text-3">Имя записи</p>
+                      <CopyValue value={selected.verification.instructions.dns.recordName} label="имя записи" />
+                      <p className="type-caption mt-3 text-text-3">Значение</p>
+                      <CopyValue value={selected.verification.instructions.dns.recordValue} label="значение записи" />
+                    </section>
+                    <section className="rounded-sm border border-line bg-surface-2 p-4" aria-labelledby="verify-meta">
+                      <h4 id="verify-meta" className="type-label text-text">Вариант 2 · meta-тег на главной</h4>
+                      <p className="type-caption mt-2 text-text-3">Вставьте в &lt;head&gt; главной страницы</p>
+                      <CopyValue value={selected.verification.instructions.meta.tag} label="meta-тег" />
+                      <p className="type-caption mt-3 text-text-3">
+                        Тег должен быть в первых 256 КБ HTML главной страницы. Если сайт закрыт защитой от ботов, используйте DNS-запись.
+                      </p>
+                    </section>
+                    <div className="flex flex-wrap items-center gap-3 lg:col-span-2">
+                      <Button type="button" size="sm" onClick={verify} disabled={verifying}>
+                        {verifying ? "Проверяем…" : "Проверить подтверждение"}
+                      </Button>
+                      {verifyMessage && (
+                        <span role="status" className={cn("type-caption", verifyMessage.tone === "success" ? "text-success-text" : "text-danger-text")}>
+                          {verifyMessage.text}
+                        </span>
+                      )}
+                    </div>
+                  </div>
                 )}
-              </Card>}
-            </>
-          )}
-        </div>
+              </Card>
+            )}
+
+            {/* На телефоне полоса табов прокручивается, на широком экране делит ширину поровну. */}
+            <div className="max-w-full overflow-x-auto pb-0.5">
+              <Tabs<SiteTab>
+                value={tab}
+                onChange={setTab}
+                fill
+                className="min-w-[660px] whitespace-nowrap sm:min-w-0"
+                ariaLabel="Разделы сайта"
+                items={tabItems}
+              />
+            </div>
+
+            {tab === "overview" && (
+              <OverviewPanel
+                site={selected}
+                profile={profile}
+                analysis={analysis}
+                reports={current?.reports ?? []}
+                articleStats={articleStats}
+                destinationCount={destinationCount}
+                destinationsLoaded={destinationsLoaded}
+                reanalyzing={reanalyzing}
+                analysisActive={analysisActive}
+                retryingAi={retryingAi}
+                onOpenVerification={() => setVerificationOpen(true)}
+                onVerify={verify}
+                onTab={setTab}
+                onReanalyze={reanalyze}
+                onRetryAi={retryAi}
+              />
+            )}
+
+            {tab === "audit" && (
+              <AuditPanel
+                siteId={selected.id}
+                retryingAi={retryingAi}
+                onRetryAi={retryAi}
+                verified={selected.verification.state === "verified"}
+                profile={profile}
+                analysis={analysis}
+                reanalyzing={reanalyzing}
+                analysisActive={analysisActive}
+                maxPages={maxPages}
+                onMaxPagesChange={setMaxPages}
+                onReanalyze={reanalyze}
+                onTab={setTab}
+              />
+            )}
+
+            {tab === "materials" && (
+              <ArticlesPanel
+                siteId={selected.id}
+                verified={selected.verification.state === "verified"}
+                hasDestinations={destinationCount > 0}
+                destinationsLoaded={destinationsLoaded}
+                hasProfile={Boolean(profile)}
+                onSiteChanged={refreshCurrent}
+                onStats={handleArticleStats}
+              />
+            )}
+
+            {tab === "publishing" && (
+              <DestinationsPanel
+                siteId={selected.id}
+                verified={selected.verification.state === "verified"}
+                publishingMode={selected.publishingMode}
+                approvedStreak={selected.approvedStreak}
+                autoUnlockStreak={selected.autoUnlockStreak}
+                hostedOrigin={selected.hostedOrigin}
+                brandName={selected.brandName}
+                onChanged={refreshCurrent}
+                onOpenVerification={() => { setVerificationOpen(true); window.scrollTo({ top: 0, behavior: "smooth" }); }}
+              />
+            )}
+
+            {tab === "reports" && (
+              <ReportsPanel
+                siteId={selected.id}
+                profile={profile}
+                reports={current?.reports ?? []}
+                reportRequested={reportRequested}
+                retryingAi={retryingAi}
+                onRequestReport={requestReport}
+                onRetryAi={retryAi}
+                onTab={setTab}
+              />
+            )}
+          </>
+        )}
       </div>
     </AppShell>
   );

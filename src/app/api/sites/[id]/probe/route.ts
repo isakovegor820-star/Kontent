@@ -1,4 +1,5 @@
 import { withProjectRoute } from "@/lib/project-route";
+import { checkRateLimit, rateLimitResponse } from "@/lib/rate-limit";
 import { NextRequest } from "next/server";
 
 import { enqueueSiteArticleJob, hasSiteArticlesWorker } from "@/lib/site-articles-queue";
@@ -64,6 +65,9 @@ async function handleGET(req: NextRequest, context: Context) {
 async function handlePOST(req: NextRequest, context: Context) {
   const resolved = await resolveSiteRoute(req, "content.create", { mutation: true, label: "/api/sites/:id/probe POST" });
   if (!resolved.ok) return resolved.response;
+
+  const probeRate = await checkRateLimit(`site:probe:user:${resolved.context.userId}`, 6, 86_400, { failureMode: "closed" });
+  if (!probeRate.allowed) return rateLimitResponse(probeRate);
   const { requestId } = resolved.context;
   try {
     const found = await requireSite(resolved.context, (await context.params).id);

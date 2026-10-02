@@ -27,6 +27,10 @@ vi.mock("@/lib/sites/verification", async (importOriginal) => ({
   ...await importOriginal<typeof import("@/lib/sites/verification")>(),
   verifySiteOwnership: mocks.verifySiteOwnership,
 }));
+vi.mock("@/lib/rate-limit", async (importOriginal) => ({
+  ...await importOriginal<typeof import("@/lib/rate-limit")>(),
+  checkRateLimit: vi.fn(async () => ({ allowed: true, limit: 100, remaining: 99, retryAfter: 0 })),
+}));
 
 import { POST } from "./route";
 

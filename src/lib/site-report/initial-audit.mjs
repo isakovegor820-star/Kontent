@@ -48,6 +48,8 @@ export function buildRecommendations(profile) {
       priority: issue.status === "critical" ? "P0" : "P1",
       title: issue.recommendation || issue.label,
       rationale: issue.detail,
+      // URL-доказательства из проверки: пользователь должен видеть, где именно проблема.
+      evidenceUrls: Object.freeze(Array.isArray(issue.evidenceUrls) ? [...issue.evidenceUrls] : []),
       status: "open",
     }));
   }
@@ -58,6 +60,7 @@ export function buildRecommendations(profile) {
       priority: GAP_PRIORITY[gap.severity] || "P2",
       title: gapRecommendation(gap),
       rationale: gap.detail,
+      evidenceUrls: Object.freeze(Array.isArray(gap.evidenceUrls) ? [...gap.evidenceUrls] : []),
       status: "open",
     }));
   }

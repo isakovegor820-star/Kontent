@@ -1315,6 +1315,16 @@
     "policy": "project"
   },
   {
+    "path": "/api/sites/[id]",
+    "method": "PATCH",
+    "policy": "project"
+  },
+  {
+    "path": "/api/sites/[id]",
+    "method": "DELETE",
+    "policy": "project"
+  },
+  {
     "path": "/api/sites/[id]/settings",
     "method": "PATCH",
     "policy": "project"

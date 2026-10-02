@@ -1,4 +1,5 @@
 import { withProjectRoute } from "@/lib/project-route";
+import { checkRateLimit, rateLimitResponse } from "@/lib/rate-limit";
 import { NextRequest } from "next/server";
 import { readJsonBodyValue } from "@/lib/bounded-request-body";
 import { enqueueSiteArticleJob, hasSiteArticlesWorker } from "@/lib/site-articles-queue";
@@ -10,6 +11,9 @@ type Context = { params: Promise<{ id: string }> };
 async function handlePOST(req: NextRequest, context: Context) {
   const resolved = await resolveSiteRoute(req, "content.create", { mutation: true, label: "/api/sites/:id/ai/retry POST" });
   if (!resolved.ok) return resolved.response;
+
+  const retryRate = await checkRateLimit(`site:ai-retry:user:${resolved.context.userId}`, 20, 3_600, { failureMode: "closed" });
+  if (!retryRate.allowed) return rateLimitResponse(retryRate);
   const { pool, requestId } = resolved.context;
   let body: Record<string, unknown>;
   try { body = await readJsonBodyValue(req); }

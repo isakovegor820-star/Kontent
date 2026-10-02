@@ -2,7 +2,8 @@ import { withProjectRoute } from "@/lib/project-route";
 import { NextRequest } from "next/server";
 
 import { readJsonBodyValue } from "@/lib/bounded-request-body";
-import { SITE_FIELDS, serializeSite, type SiteRow } from "@/lib/sites/service";
+import { checkRateLimit, rateLimitResponse } from "@/lib/rate-limit";
+import { SITE_FIELDS, revokeSiteVerification, serializeSite, type SiteRow } from "@/lib/sites/service";
 import {
   SITE_VERIFICATION_METHODS,
   verifySiteOwnership,
@@ -23,27 +24,54 @@ function parseMethod(value: unknown): SiteVerificationMethod | "auto" | null {
 }
 
 /**
- * Идемпотентная проверка владения доменом. Повторный вызов для уже подтверждённого
- * сайта ничего не меняет; отзыв подтверждения — отдельная операция (не в этом этапе).
+ * Идемпотентная проверка владения доменом, а также отзыв подтверждения
+ * (`method: "revoke"`). Отзыв закрывает публикацию, hosted-раздел и зонд,
+ * но не удаляет профиль и историю отчётов.
  */
 async function handlePOST(req: NextRequest, context: Context) {
-  const resolved = await resolveSiteRoute(req, "content.create", { mutation: true, label: "/api/sites/:id/verify POST" });
-  if (!resolved.ok) return resolved.response;
-  const { requestId, pool, userId, projectId } = resolved.context;
-
   let body: Record<string, unknown> = {};
   try {
     body = await readJsonBodyValue(req);
   } catch {
     body = {};
   }
-  const method = parseMethod(body.method);
-  if (!method) return jsonWithRequest({ error: "bad_request" }, 400, requestId);
+  const revoking = body.method === "revoke";
+  const resolved = await resolveSiteRoute(req, revoking ? "project.manage" : "content.create", {
+    mutation: true,
+    label: revoking ? "/api/sites/:id/verify POST revoke" : "/api/sites/:id/verify POST",
+  });
+  if (!resolved.ok) return resolved.response;
+  const { requestId, pool, userId, projectId } = resolved.context;
+
+  const rate = await checkRateLimit(`site:verify:user:${userId}`, 30, 3_600, { failureMode: "closed" });
+  if (!rate.allowed) return rateLimitResponse(rate);
 
   try {
     const found = await requireSite(resolved.context, (await context.params).id);
     if (!found.ok) return found.response;
     const site = found.site;
+
+    if (revoking) {
+      if (site.verification_state !== "verified") {
+        return jsonWithRequest({ ok: true, verified: false, revoked: false, replayed: true, site: serializeSite(site) }, 200, requestId);
+      }
+      const revoked = await revokeSiteVerification(pool, { siteId: Number(site.id), projectId });
+      await pool.query(
+        `insert into audit_events
+           (project_id, actor_user_id, action, entity_type, entity_id, safe_data, request_id, idempotency_key)
+         values ($1, $2, 'site.verification_revoked', 'site', $3, $4::jsonb, $5, $6)
+         on conflict (project_id, idempotency_key) where idempotency_key is not null do nothing`,
+        [
+          projectId, userId, String(site.id), JSON.stringify({ domain: site.confirmed_domain }),
+          requestId, `site-revoked:${projectId}:${site.id}:${new Date().toISOString().slice(0, 10)}`,
+        ],
+      ).catch(() => undefined);
+      return jsonWithRequest({ ok: true, verified: false, revoked: true, site: serializeSite(revoked) }, 200, requestId);
+    }
+
+    const method = parseMethod(body.method);
+    if (!method) return jsonWithRequest({ error: "bad_request" }, 400, requestId);
+
     if (site.verification_state === "verified") {
       return jsonWithRequest({ ok: true, verified: true, replayed: true, site: serializeSite(site) }, 200, requestId);
     }
