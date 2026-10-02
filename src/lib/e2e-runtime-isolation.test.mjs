@@ -193,6 +193,20 @@ describe("real E2E runtime isolation", () => {
     expect(nextConfig).toContain("disableSentryConfig: sentryDisabled");
   });
 
+  it("starts the real E2E run from a state where the cookie banner is already answered", () => {
+    // Cookie-баннер висит у нижней кромки экрана и перехватывает клики по формам,
+    // а сценарии кликают именно туда. Прогон должен начинаться так же, как у
+    // вернувшегося пользователя: выбор уже сделан. Сам баннер проверяется
+    // отдельным прогоном в чистом профиле (audit-localhost-3000/verify-track-a.mjs).
+    const harness = readFileSync(resolve("scripts/test-e2e-real.mjs"), "utf8");
+    expect(harness).toContain("async function seedCookieConsent(context)");
+    expect(harness).toContain('name: "aurora_cookie_consent"');
+    // Оба контекста — основной и ревьюерский: иначе флак вернётся в части сценариев.
+    expect(harness.match(/await seedCookieConsent\(/gu)?.length).toBe(2);
+    // Аналитику в E2E не включаем: согласие только на необходимые cookie.
+    expect(harness).toContain("analytics: false");
+  });
+
   it("captures the complete BLK-03 evidence set only through an explicit opt-in", () => {
     const source = readFileSync(resolve("scripts/test-e2e-real.mjs"), "utf8");
 
