@@ -161,8 +161,10 @@ describe("generateText", () => {
 
   it("снимает запрет на внешние источники ровно в границах проверенного блока", async () => {
     vi.stubEnv("NAVYAI_API_KEY", "navy-secret");
-    const fetchMock = vi.fn(async (_url: string, _init?: RequestInit) =>
-      new Response('data: {"choices":[{"delta":{"content":"Пост"}}]}\n\ndata: [DONE]\n\n', {
+    // Тип параметров задан у самого мока: реализация их не читает, а типизация
+    // нужна, чтобы достать отправленное провайдеру тело запроса из mock.calls.
+    const fetchMock = vi.fn<(url: string, init?: RequestInit) => Promise<Response>>(
+      async () => new Response('data: {"choices":[{"delta":{"content":"Пост"}}]}\n\ndata: [DONE]\n\n', {
         status: 200,
         headers: { "content-type": "text/event-stream" },
       }),
