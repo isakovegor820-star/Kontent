@@ -1,3 +1,5 @@
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import robots from "@/app/robots";
@@ -77,6 +79,18 @@ describe("robots.txt", () => {
   it("omits the sitemap line when APP_URL is missing instead of emitting localhost", () => {
     vi.stubEnv("APP_URL", "");
     expect(robots().sitemap).toBeUndefined();
+  });
+});
+
+describe("search routes render per request", () => {
+  it("declares request-time rendering so the build cannot freeze an empty sitemap", () => {
+    // Регрессия, найденная в проде: Next кэширует robots и sitemap и генерирует их
+    // на этапе сборки, где APP_URL ещё нет. Карта уходила пустой (`x-nextjs-cache: HIT`),
+    // а в robots.txt не было строки Sitemap — при том что canonical на странице был верный.
+    const read = (relative: string) => readFileSync(fileURLToPath(new URL(relative, import.meta.url)), "utf8");
+    for (const file of ["../../app/robots.ts", "../../app/sitemap.ts"]) {
+      expect(read(file), file).toContain('export const dynamic = "force-dynamic"');
+    }
   });
 });
 
