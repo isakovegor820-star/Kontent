@@ -1,6 +1,6 @@
 import type { Metadata } from "next";
 import { ReferenceLanding } from "@/components/landing/reference-landing";
-import { jsonLdHtml } from "@/lib/seo/json-ld-html";
+import { JsonLd } from "@/components/seo/json-ld";
 import { softwareApplicationJsonLd } from "@/lib/seo/product-json-ld";
 import { publicOrigin } from "@/lib/seo/public-routes";
 import { baseOpenGraph } from "@/lib/seo/open-graph";
@@ -25,12 +25,7 @@ export default function LandingPage() {
   const origin = publicOrigin();
   return (
     <>
-      {origin && (
-        <script
-          type="application/ld+json"
-          dangerouslySetInnerHTML={{ __html: jsonLdHtml(softwareApplicationJsonLd(origin)) }}
-        />
-      )}
+      {origin ? <JsonLd value={softwareApplicationJsonLd(origin)} /> : null}
       <ReferenceLanding />
     </>
   );
