@@ -56,7 +56,21 @@ const QUERY_STOP_EN = new Set([
   "will", "can", "not", "but", "you", "your", "our", "its", "into", "about", "over", "more",
 ]);
 
-/** Слова темы длиной от 4 символов, без стоп-слов, в порядке первого появления. */
+/**
+ * Основа слова для сопоставления русских словоформ.
+ *
+ * Без этого поиск по теме «маркировке рекламы» не находил страницу со словами
+ * «маркировка рекламы»: подстрочное совпадение не видит разные окончания. Отрезаем
+ * наиболее частые окончания, пока не останется основа не короче четырёх букв —
+ * этого достаточно, чтобы «маркировк» совпало со всеми формами, и мало, чтобы
+ * склеить разные слова.
+ */
+const RU_ENDINGS = [
+  "иями", "ями", "ами", "ией", "иях", "иям", "ого", "его", "ому", "ему", "ыми", "ими",
+  "ая", "яя", "ое", "ее", "ые", "ие", "ой", "ей", "ый", "ий", "ом", "ем", "ах", "ях",
+  "ам", "ям", "ов", "ев", "ы", "и", "а", "я", "о", "е", "у", "ю", "ь",
+];
+
 export function webResearchKeywords(value, limit = 8) {
   const tokens = String(value ?? "")
     .normalize("NFKC")
@@ -78,6 +92,28 @@ export function webResearchKeywords(value, limit = 8) {
   return keywords;
 }
 
+export function webResearchStem(value) {
+  let word = String(value ?? "").normalize("NFKC").toLocaleLowerCase("ru-RU").replace(/ё/gu, "е");
+  if (word.length <= 5) return word;
+  for (const ending of RU_ENDINGS) {
+    if (word.length - ending.length >= 4 && word.endsWith(ending)) {
+      word = word.slice(0, -ending.length);
+      break;
+    }
+  }
+  return word;
+}
+
+/** Основы ключевых слов темы — по ним сопоставляются словоформы в тексте. */
+export function webResearchStems(value, limit = 10) {
+  return [...new Set(webResearchKeywords(value, limit).map((keyword) => webResearchStem(keyword)))]
+    .filter((stem) => stem.length >= 4);
+}
+
+/** Есть ли в тексте хотя бы одна словоформа, начинающаяся с основы. */
+export function textHasStem(haystack, stem) {
+  return String(haystack ?? "").includes(stem);
+}
 export function webResearchTopic(value, options = {}) {
   const limit = Number(options.keywordLimit) || 8;
   const keywords = webResearchKeywords(value, limit);
@@ -142,7 +178,14 @@ export function planWebResearch(input = {}, options = {}) {
     ? input.categories.map((value) => String(value))
     : ["law"];
   const budget = normalizeWebResearchBudget(input.budget);
-  const includeScoped = input.includeScoped !== false;
+  // `site:` по умолчанию ВЫКЛЮЧЕН, и это результат замера, а не осторожность.
+  // Бесплатные движки, которыми пользуется Аврора (Bing RSS, DuckDuckGo HTML),
+  // оператор не поддерживают: на запрос `site:pravo.gov.ru маркировке рекламы`
+  // они возвращали словарные статьи о слове «site», Google Sites и казино-спам.
+  // Приоритетные `site:`-запросы забивали пул кандидатов мусором и обнуляли
+  // результат целиком. Доверие к источнику теперь даёт реестр доменов, а не
+  // оператор, которому поисковик не подчиняется.
+  const includeScoped = input.includeScoped === true;
 
   /** @type {Array<{id: string, text: string, category: string, language: string, siteScoped: boolean, priority: number}>} */
   const queries = [];
@@ -245,11 +288,11 @@ export function scoreWebResearchCandidate(candidate, plan) {
   });
   score += entry ? WEB_SOURCE_TIER_TRUST[entry.tier] * 0.4 : 8;
 
-  // Совпадение темы.
-  const keywords = webResearchKeywords(plan?.topic, 8);
+  // Совпадение темы по основам слов: русские словоформы иначе не совпадают.
+  const stems = webResearchStems(plan?.topic, 8);
   const haystack = `${title} ${snippet}`.toLocaleLowerCase("ru-RU").replace(/ё/gu, "е");
-  const matched = keywords.filter((keyword) => haystack.includes(keyword)).length;
-  score += keywords.length ? (matched / keywords.length) * 25 : 0;
+  const matched = stems.filter((stem) => haystack.includes(stem)).length;
+  score += stems.length ? (matched / stems.length) * 25 : 0;
 
   // Признаки нормы права усиливают кандидата для юридической категории.
   if ((plan?.categories || []).includes("law")) {

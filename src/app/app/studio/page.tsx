@@ -35,6 +35,7 @@ import {
   type MediaGeneration,
 } from "@/components/studio/media-generator";
 import { PostSettingsMenu } from "@/components/studio/post-settings-menu";
+import { StudioResearchProgress, StudioResearchSources } from "@/components/studio-research-sources";
 import { requiresBriefConfirmation } from "@/lib/brief-confirmation";
 import { type AiCommand } from "@/lib/ai";
 import { acknowledgeAiTerminal as unscopedAcknowledgeAiTerminal, AiTerminalAckError } from "@/lib/ai-client-idempotency";
@@ -100,13 +101,21 @@ import {
   ownsStudioStream,
   type StudioStreamBox,
 } from "@/lib/studio-stream-control";
+import {
+  parseStudioResearchHeaders,
+  studioResearchProgressLabel,
+  type StudioResearchView,
+} from "@/lib/studio-research-view";
 import { useStore } from "@/lib/store";
 import type { RealChannel } from "@/lib/types";
 import { cn, uid } from "@/lib/utils";
 
 /* --------------------------------------------------------------- ОСНОВЫ */
 
-type Msg = StudioChatMessage;
+// Результат исследования интернета приходит заголовками ответа и живёт на самом
+// сообщении: так он переживает перерисовки, пока текст стримится, и не теряется,
+// когда приходит готовый ответ.
+type Msg = StudioChatMessage & { research?: StudioResearchView | null };
 
 /** Что ИИ должен «помнить» для перегенерации ответа */
 type Gen = StudioChatGeneration & {
@@ -292,6 +301,12 @@ function MessageRow({
   }
 
   const ready = !msg.streaming && msg.text.trim().length > 0;
+  // Пока текста ещё нет, но Аврора уже вышла в интернет, показываем честную строку
+  // прогресса — с приходом первого токена её сменяет обычный стрим.
+  const researchProgress = studioResearchProgressLabel(msg.research, {
+    streaming: msg.streaming,
+    hasText: msg.text.trim().length > 0,
+  });
   const visibleErrorMessage = visibleStudioAiErrorRu(msg.errorMessage);
   let assistantStatus = "Ответ завершён";
   if (msg.streaming) assistantStatus = "Создаёт текст";
@@ -333,6 +348,8 @@ function MessageRow({
           </p>
         )}
 
+        {researchProgress ? <StudioResearchProgress label={researchProgress} /> : null}
+
         {msg.streaming && (
           <TaskStatus className="mt-2" label={msg.progressLabel} onStop={onStop} announce={false} />
         )}
@@ -352,6 +369,8 @@ function MessageRow({
           </p>
         )}
 
+
+        {msg.research ? <StudioResearchSources research={msg.research} /> : null}
 
         {!msg.streaming && msg.retryable && !msg.reviewable && (
           <div className="mt-2 flex flex-wrap gap-1.5">
@@ -1766,6 +1785,13 @@ function StudioPageInner() {
       });
       const responseRequestId = res.headers.get("x-ai-request-id") ?? undefined;
       if (responseRequestId) setMsg({ requestId: responseRequestId });
+      // Исследование интернета приходит заголовками раньше тела стрима. Разбираем
+      // defensively: битый заголовок не должен ронять чат, а «none» — не показывать ничего.
+      const research = parseStudioResearchHeaders(
+        res.headers.get("x-aurora-research-status"),
+        res.headers.get("x-aurora-research"),
+      );
+      setMsg({ research });
 
       if ([400, 401, 403, 409, 422, 429, 503].includes(res.status)) {
         const info = (await res.json().catch(() => null)) as

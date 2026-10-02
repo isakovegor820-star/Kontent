@@ -50,3 +50,8 @@ export function planWebResearch(
 ): WebResearchPlan;
 export function webResearchPlanFingerprint(topic: unknown, categories: string[] | null | undefined, queryTexts: string[] | null | undefined): string;
 export function scoreWebResearchCandidate(candidate: unknown, plan: Partial<WebResearchPlan> | null | undefined): number;
+
+/** Основа слова для сопоставления русских словоформ («маркировке» → «маркировк»). */
+export function webResearchStem(value: unknown): string;
+export function webResearchStems(value: unknown, limit?: number): string[];
+export function textHasStem(haystack: unknown, stem: string): boolean;
