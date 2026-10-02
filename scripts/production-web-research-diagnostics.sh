@@ -164,4 +164,35 @@ else
   echo "(no diagnostics SQL supplied)"
 fi
 
+section "SELF-HOSTED SEARCH READINESS (read-only)"
+# Answers one question: can a SearXNG instance live on this host? Nothing is started,
+# nothing is installed; the probe only reports what is already present.
+if command -v docker >/dev/null 2>&1; then
+  printf 'docker=%s\n' "$(docker --version 2>/dev/null || echo present-but-broken)"
+  printf 'docker_daemon=%s\n' "$(docker info >/dev/null 2>&1 && echo running || echo unavailable)"
+  printf 'docker_compose=%s\n' "$(docker compose version --short 2>/dev/null || echo missing)"
+  printf 'containers=%s\n' "$(docker ps -a --format '{{.Names}}:{{.Status}}' 2>/dev/null | paste -sd, - || echo none)"
+  printf 'searxng_container=%s\n' "$(docker ps -a --format '{{.Names}}' 2>/dev/null | grep -ci searxng || true)"
+else
+  echo "docker=absent"
+fi
+for tool in podman python3 pip3; do
+  if command -v "$tool" >/dev/null 2>&1; then
+    printf '%s=present\n' "$tool"
+  else
+    printf '%s=absent\n' "$tool"
+  fi
+done
+# Port 8080 first, then the usual fallbacks. Only the listening state matters.
+for port in 8080 8081 8888; do
+  if ss -ltn 2>/dev/null | grep -q ":${port} "; then
+    printf 'port_%s=busy\n' "$port"
+  else
+    printf 'port_%s=free\n' "$port"
+  fi
+done
+printf 'disk_root=%s\n' "$(df -h / 2>/dev/null | awk 'NR==2 {print $4" free of "$2}')"
+printf 'memory=%s\n' "$(free -m 2>/dev/null | awk 'NR==2 {print $7" MB available of "$2" MB"}')"
+printf 'load=%s\n' "$(cut -d' ' -f1-3 /proc/loadavg 2>/dev/null || echo unknown)"
+
 section "END OF REPORT"
