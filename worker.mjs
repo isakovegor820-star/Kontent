@@ -365,6 +365,7 @@ import {
   workerAiUsageKey,
 } from "./worker/ai-usage-reservation.mjs";
 import { assertWorkerAiCallPolicy } from "./worker/ai-call-policy.mjs";
+import { WEB_RESEARCH_USAGE_SCOPE, webResearchUsageKeyParts } from "./src/lib/web-research-usage-key.mjs";
 import { loadBotIdeaStyleSamples } from "./worker/bot-idea-context.mjs";
 import { retryFailedPostFromBot } from "./worker/bot-publication-retry.mjs";
 import {
@@ -12030,7 +12031,10 @@ async function extractWebResearchFacts({ page, plan, pageText, userId, runId }) 
   const usage = await acquireWorkerAiUsage(pool, {
     userId,
     kind: "web_research_extract",
-    key: workerAiUsageKey("web-research-extract", `${runId}:${page.url}`),
+    // Составной ключ, а не одиночный: `workerAiUsageKey` принимает только числовой id,
+    // а на строке с адресом страницы бросает TypeError. Именно это обнуляло первый
+    // боевой прогон — извлечение падало до обращения к модели.
+    key: workerAiUsageCompositeKey(WEB_RESEARCH_USAGE_SCOPE, webResearchUsageKeyParts(runId, page.url)),
   });
   if (usage.state !== "acquired") {
     throw new Error(usage.state === "limit" ? "quota_limit" : String(usage.state));
@@ -12117,8 +12121,17 @@ async function runWebResearchJob(runId) {
       console.warn("[web-research] sync signals failed", { runId, errorName: error?.name || "Error" });
       return { synchronized: 0, skipped: true };
     });
+    // Коды отказов в итоговой строке: без них «ноль фактов» неотличим от «не запускалось»,
+    // и причину приходится искать отдельной пробой по базе.
+    const rejectionCodes = [...result.rejections.reduce((acc, rejection) => {
+      const code = String(rejection?.code || "unknown");
+      acc.set(code, (acc.get(code) || 0) + 1);
+      return acc;
+    }, new Map())].sort((left, right) => right[1] - left[1]).slice(0, 5)
+      .map(([code, count]) => `${code}=${count}`).join(",");
     console.log("[web-research] готово", {
       runId, findings: result.findings.length, stored, rejections: result.rejections.length,
+      rejectionCodes: rejectionCodes || "none",
       signals: synced?.synchronized ?? 0, spentMs: result.stats.spentMs,
     });
     return { findings: result.findings.length, stored };
