@@ -14,6 +14,8 @@ import {
   UsersRound,
 } from "lucide-react";
 import { Logo } from "@/components/brand";
+import { CookieSettingsLink } from "@/components/legal/cookie-settings-link";
+import { LegalLinks } from "@/components/legal/legal-links";
 import { CONTACT_EMAIL, SUPPORT_EMAIL } from "@/lib/contact";
 import { PRODUCT_TAGLINE } from "@/lib/product";
 import { AnswerSection } from "./answer-section";
@@ -426,7 +428,11 @@ export function ReferenceLanding() {
               <Link href="/guide/vidimost-v-alise">Видимость в Алисе AI</Link>
               <Link href="/guide/pochemu-ne-citiruetsya">Почему не цитируют</Link>
             </div>
-            <div><strong>Документы</strong><a href="/terms">Условия использования</a><a href="/privacy">Конфиденциальность</a></div>
+            <div>
+              <strong>Документы</strong>
+              <LegalLinks className={styles.footerLinks} />
+              <CookieSettingsLink className="mt-3 text-left text-[13px] text-text-2 underline decoration-1 underline-offset-4 transition-colors hover:text-text" />
+            </div>
           </div>
           <div className={styles.footerSocial}>
             <strong>Статус интеграций</strong>

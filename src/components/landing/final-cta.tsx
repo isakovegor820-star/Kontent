@@ -11,6 +11,8 @@ import { AnimatePresence, motion, useReducedMotion, type Variants } from "motion
 import { ArrowRight, Send, Sparkles } from "lucide-react";
 import { AuroraBackground } from "@/components/aurora-background";
 import { Wordmark } from "@/components/brand";
+import { CookieSettingsLink } from "@/components/legal/cookie-settings-link";
+import { LegalLinks } from "@/components/legal/legal-links";
 import { Button } from "@/components/ui/button";
 import { Badge, Divider, Field, GlassCard, Input } from "@/components/ui/primitives";
 import { useStore } from "@/lib/store";
@@ -397,7 +399,6 @@ const PRODUCT: { label: string; href: string }[] = [
 ];
 
 const COMPANY = ["О нас", "Блог", "Контакты"];
-const LEGAL = ["Политика данных", "Условия"];
 
 function FooterCol({ title, children }: { title: string; children: React.ReactNode }) {
   return (
@@ -451,11 +452,15 @@ export function Footer() {
             </FooterCol>
 
             <FooterCol title="Правовое">
-              {LEGAL.map((l) => (
-                <li key={l}>
-                  <span className="text-[13px] text-text-3">{l}</span>
-                </li>
-              ))}
+              <li>
+                <LegalLinks
+                  className="flex flex-col gap-2.5"
+                  linkClassName="text-[13px] text-text-2 underline decoration-1 underline-offset-4 transition-colors duration-200 hover:text-text"
+                />
+              </li>
+              <li>
+                <CookieSettingsLink className="text-left text-[13px] text-text-2 underline decoration-1 underline-offset-4 transition-colors duration-200 hover:text-text" />
+              </li>
             </FooterCol>
           </nav>
         </div>

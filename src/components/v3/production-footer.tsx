@@ -1,5 +1,6 @@
 import Link from "next/link";
 import { Send } from "lucide-react";
+import { LegalLinks } from "@/components/legal/legal-links";
 import styles from "./production-footer.module.css";
 
 const SUPPORT_TG = "https://t.me/kontenfkv_bot";
@@ -26,6 +27,8 @@ export function V3ProductionFooter() {
           <a href="#quality">Контроль</a>
           <a href="#faq">Вопросы</a>
         </nav>
+        {/* Правовые документы — обычные ссылки: тест футера запрещает здесь кнопки. */}
+        <LegalLinks ariaLabel="Правовые документы" />
         <div className={styles.actions}>
           <Link href="/register">Запустить первый цикл</Link>
           <a href={SUPPORT_TG}>

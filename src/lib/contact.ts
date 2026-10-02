@@ -39,6 +39,50 @@ export const LEGAL_EMAIL = "legal@avrora.app";
  */
 export const CONTACT_DOMAIN_CONFIRMED = false;
 
+/**
+ * Реквизиты оператора персональных данных.
+ *
+ * Источник правды для правовых страниц и футера: наименование, ИНН, ОГРН и адрес
+ * должны совпадать везде, где упоминаются. Пока `confirmed` снят, страницы обязаны
+ * говорить, что сведения уточняются, а не подставлять выдуманные реквизиты:
+ * реквизит на юридической странице — это факт о компании, а не заглушка.
+ *
+ * Заполнение — трек B плана исправлений (`audit-localhost-3000/fix-plan.md`):
+ * меняются только значения ниже, структура страниц и тесты не переписываются.
+ */
+export const LEGAL_ENTITY = {
+  /** Полное наименование оператора (например, «ООО „Аврора“»). */
+  name: null,
+  /** ИНН. */
+  inn: null,
+  /** ОГРН (для ИП — ОГРНИП). */
+  ogrn: null,
+  /** Адрес в составе, требуемом ст. 18.1 152-ФЗ. */
+  address: null,
+  /** `true` только после подтверждения реквизитов владельцем. */
+  confirmed: false,
+} as const;
+
+/** Тип реквизитов: значения задаются в одном месте, потребители не дублируют поля. */
+export type LegalEntity = {
+  name: string | null;
+  inn: string | null;
+  ogrn: string | null;
+  address: string | null;
+  confirmed: boolean;
+};
+
+/**
+ * Есть ли утверждённые реквизиты оператора.
+ *
+ * Пока `false`, правовые страницы показывают нейтральную оговорку вместо строки
+ * с реквизитами. Это не заглушка в тексте документа, а честное состояние:
+ * реквизиты ещё не подтверждены (см. `CONTACT_DOMAIN_CONFIRMED`).
+ */
+export function hasOperatorDetails(entity: LegalEntity = LEGAL_ENTITY): boolean {
+  return entity.confirmed && Boolean(entity.name && entity.inn && entity.ogrn && entity.address);
+}
+
 /** Строка «Вопросы по документам: …» для юридических страниц. */
 export function legalContactSentence() {
   return `Вопросы по документам: ${LEGAL_EMAIL}.`;

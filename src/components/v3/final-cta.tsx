@@ -7,6 +7,7 @@ import { useRef, useState } from "react";
 import Link from "next/link";
 import { motion, useReducedMotion } from "motion/react";
 import { ArrowRight, Check, Send } from "lucide-react";
+import { LegalLinks } from "@/components/legal/legal-links";
 import { ERR_SHAPE, validateContact } from "@/lib/leads";
 import { V3Reveal } from "./reveal";
 
@@ -214,6 +215,13 @@ export function V3Footer({ legacyPricing = false }: { legacyPricing?: boolean })
             Вопросы
           </a>
         </nav>
+
+        {/* Правовые документы: доступ к политике нужен с каждой страницы сбора данных. */}
+        <LegalLinks
+          ariaLabel="Правовые документы"
+          className="v3-mono flex flex-col gap-3 text-[12px] tracking-[0.08em] uppercase"
+          linkClassName="opacity-80 transition-opacity hover:opacity-100 hover:underline hover:decoration-2 hover:underline-offset-4"
+        />
 
         <div className="v3-mono text-[12px] tracking-[0.08em] uppercase">
           <a

@@ -42,6 +42,7 @@ import { SidebarNavigation, type NavItem } from "./sidebar-navigation";
 import { NAV_CHILDREN } from "@/lib/sidebar-navigation";
 import { AuroraBackground } from "@/components/aurora-background";
 import { Wordmark } from "@/components/brand";
+import { LegalLinks } from "@/components/legal/legal-links";
 import { ProjectSwitcher } from "@/components/app/project-switcher";
 import { ProjectNotificationsInbox } from "@/components/app/project-notifications-inbox";
 import { AuroraDiscovery, DiscoveryToolbar } from "@/components/app/aurora-discovery";
@@ -339,6 +340,12 @@ function SidebarInner({
       <div className="shrink-0 space-y-3 border-t border-line p-3">
         <AiLimitCard />
         <UserRow user={user} onSignOut={onSignOut} />
+        {/* Правовые документы доступны из кабинета: пользователь работает с данными
+            и должен видеть политику и согласие, не выходя на публичный сайт. */}
+        <LegalLinks
+          className="flex flex-wrap gap-x-3 gap-y-1.5 px-1 pt-1 text-[11px] leading-4"
+          linkClassName="text-text-3 underline decoration-1 underline-offset-2 transition-colors hover:text-text-2"
+        />
       </div>
     </div>
   );
