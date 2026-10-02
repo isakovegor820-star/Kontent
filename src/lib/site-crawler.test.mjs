@@ -443,6 +443,36 @@ describe("site crawler security and extraction", () => {
     expect(report.limitations.join(" ")).toMatch(/Core Web Vitals/i);
   });
 
+  it("честно помечает страницы, содержимое которых рисует JavaScript", () => {
+    const spa = extractSitePage(
+      `<!doctype html><html><head><title>Магазин</title>
+       <script src="/static/app.js"></script><script src="/static/vendor.js"></script><script src="/static/chunk.js"></script>
+       </head><body><div id="root"></div></body></html>`,
+      "https://spa.example/",
+    );
+    expect(spa.technical.clientRendered).toBe(true);
+    expect(spa.technical.wordCount).toBe(0);
+
+    const report = buildSiteAnalysisReport("https://spa.example/", [spa], DEFAULT_SITE_CRAWL_LIMITS, {});
+    expect(report.rendering).toMatchObject({ clientRenderedPages: 1, urls: ["https://spa.example/"] });
+    const codes = report.geoAudit.map((finding) => finding.code);
+    expect(codes).toContain("client_rendered");
+    // Совет «добавь текст» здесь вреден: текст есть, его не видно без исполнения скриптов.
+    expect(codes).not.toContain("thin_content");
+    expect(report.limitations.join(" ")).toMatch(/JavaScript/);
+  });
+
+  it("не считает клиентским рендерингом короткую статичную страницу", () => {
+    const short = extractSitePage(
+      "<!doctype html><html><head><title>Короткая</title></head><body><main><h1>Мало</h1><p>Пара слов.</p></main></body></html>",
+      "https://static.example/",
+    );
+    expect(short.technical.clientRendered).toBe(false);
+    const report = buildSiteAnalysisReport("https://static.example/", [short], DEFAULT_SITE_CRAWL_LIMITS, {});
+    expect(report.rendering.clientRenderedPages).toBe(0);
+    expect(report.geoAudit.map((finding) => finding.code)).toContain("thin_content");
+  });
+
   it("never presents public crawl as traffic or hidden-comment data", () => {
     const page = extractSitePage("<html><head><title>A</title></head><body><main><h1>A</h1></main></body></html>", "https://example.com/");
     const report = buildSiteAnalysisReport("https://example.com/", [page]);

@@ -73,6 +73,7 @@ export type ProfileView = {
     geoIssues: Issue[];
     pagesChecked: number;
     failedPages?: number;
+    clientRenderedPages?: number;
     questions?: { unansweredQuestions: number; faqSchemaPages: number };
   };
   linkablePages: Array<{ url: string; title: string; pageType: string }>;

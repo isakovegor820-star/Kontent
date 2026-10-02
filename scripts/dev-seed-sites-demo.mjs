@@ -184,6 +184,17 @@ function aspbPages() {
       },
     },
     {
+      // Страница, которую рисует JavaScript: контент есть, но без исполнения скриптов его не видно.
+      path: "/magazin",
+      raw: `<!doctype html><html lang="ru"><head>
+<meta charset="utf-8"><title>Магазин юридических документов</title>
+<meta name="description" content="Конструктор документов для бизнеса: договоры, претензии, заявления.">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="stylesheet" href="/static/app.css">
+<script src="/static/vendor.js"></script><script src="/static/app.js"></script><script src="/static/chunk-3.js"></script>
+</head><body><div id="root"></div></body></html>`,
+    },
+    {
       path: "/politika",
       page: {
         title: "Политика конфиденциальности",
@@ -196,7 +207,7 @@ function aspbPages() {
       },
     },
   ];
-  return pages.map(({ path, page }) => extractSitePage(html(page), new URL(path, base), 200));
+  return pages.map(({ path, page, raw }) => extractSitePage(raw ?? html(page), new URL(path, base), 200));
 }
 
 function techPravoPages() {

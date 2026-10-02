@@ -65,6 +65,7 @@ export function AuditPanel({
   const maxTopicPages = Math.max(1, ...(profile?.topics.map((topic) => topic.pageCount) ?? [1]));
   const highGaps = profile?.gaps.filter((gap) => gap.severity === "high") ?? [];
   const otherGaps = profile?.gaps.filter((gap) => gap.severity !== "high") ?? [];
+  const clientRendered = profile?.technical.clientRenderedPages ?? 0;
 
   if (!profile) {
     return (
@@ -137,7 +138,10 @@ export function AuditPanel({
             <span className="mt-3 block h-1.5 overflow-hidden rounded-full bg-surface-inset">
               <span className="block h-full rounded-full bg-brand" style={{ width: `${Math.min(100, Math.round((profile.technical.pagesChecked / Math.max(1, maxPages)) * 100))}%` }} />
             </span>
-            <span className="type-caption mt-2 block text-text-3">из {maxPages}, которые разрешил лимит обхода</span>
+            <span className="type-caption mt-2 block text-text-3">
+              из {maxPages}, которые разрешил лимит обхода
+              {clientRendered > 0 ? ` · ${clientRendered} на JavaScript` : ""}
+            </span>
           </div>
           <div className="p-4 sm:p-5">
             <span className="type-caption block text-text-3">Темы и пробелы</span>
@@ -344,10 +348,21 @@ export function AuditPanel({
             </span>
           </li>
           <li className="flex gap-3">
-            <span className="grid h-8 w-8 shrink-0 place-items-center rounded-sm bg-fire-soft text-fire-text"><AlertTriangle className="h-4 w-4" aria-hidden /></span>
+            <span className={cn(
+              "grid h-8 w-8 shrink-0 place-items-center rounded-sm",
+              clientRendered > 0 ? "bg-fire-soft text-fire-text" : "bg-surface-inset text-text-2",
+            )}>
+              <AlertTriangle className="h-4 w-4" aria-hidden />
+            </span>
             <span>
-              <span className="type-body-strong block text-text">Страницы на JavaScript</span>
-              <span className="type-caption text-text-2">Обход читает HTML без исполнения скриптов: одностраничные приложения могут показаться пустыми.</span>
+              <span className="type-body-strong block text-text">
+                Страницы на JavaScript{clientRendered > 0 ? ` · ${clientRendered}` : ""}
+              </span>
+              <span className="type-caption text-text-2">
+                {clientRendered > 0
+                  ? `Обход читает HTML без исполнения скриптов: ${clientRendered} ${plural(clientRendered, "страница отдала", "страницы отдали", "страниц отдали")} пустой HTML, их содержимое не оценивалось. Нужен серверный рендеринг или пререндер.`
+                  : "Обход читает HTML без исполнения скриптов: если содержимое рисует JavaScript, оно не попадёт в оценку — таких страниц сейчас не найдено."}
+              </span>
             </span>
           </li>
           <li className="flex gap-3">

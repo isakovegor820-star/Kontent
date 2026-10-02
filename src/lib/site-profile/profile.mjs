@@ -114,6 +114,7 @@ export function classifySitePages(pages, classification = null) {
       words: pageWords(page),
       ok: isOkPage(page),
       schemaTypes: [...pageSchemas(page)],
+      clientRendered: page?.technical?.clientRendered === true,
       publishedAt: normalizeDate(page?.metadata?.publishedAt),
       headings: pageHeadings(page).map((heading) => ({ level: Number(heading.level || 0), text: cleanText(heading.text, 300) })),
     }));
@@ -310,6 +311,8 @@ function buildTechnical(report, inventory) {
     notChecked: [...(seo?.checks || []), ...(geo?.checks || [])]
       .filter((check) => check.status === "not_checked")
       .map((check) => String(check.id)),
+    // Граница измерения, а не дефект сайта: страницы, содержимое которых рисует JavaScript.
+    clientRenderedPages: inventory.filter((page) => page.ok && page.clientRendered).length,
     orphanCandidates: Array.isArray(report?.internalLinking?.orphanCandidates) ? report.internalLinking.orphanCandidates.length : null,
   });
 }
