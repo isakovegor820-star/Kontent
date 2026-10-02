@@ -3,9 +3,9 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 
 import { GuideArticle } from "@/components/guide/guide-article";
+import { JsonLd } from "@/components/seo/json-ld";
 import { GUIDES, guideBreadcrumb, guideBySlug, guideSlugs } from "@/lib/guides/articles";
 import { PRODUCT_NAME } from "@/lib/product";
-import { jsonLdHtml } from "@/lib/seo/json-ld-html";
 import { publicOrigin } from "@/lib/seo/public-routes";
 
 export const runtime = "nodejs";
@@ -92,11 +92,7 @@ export default async function GuidePage({ params }: Params) {
     <>
       {origin
         ? [articleJsonLd(guide, origin), breadcrumbJsonLd(guide, origin), faqJsonLd(guide)].map((value) => (
-          <script
-            key={String(value["@type"])}
-            type="application/ld+json"
-            dangerouslySetInnerHTML={{ __html: jsonLdHtml(value) }}
-          />
+          <JsonLd key={String(value["@type"])} value={value} />
         ))
         : null}
 

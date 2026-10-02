@@ -1,5 +1,5 @@
+import { JsonLd } from "@/components/seo/json-ld";
 import { FAQ_ITEMS, faqPageJsonLd } from "@/lib/seo/faq";
-import { jsonLdHtml } from "@/lib/seo/json-ld-html";
 import { publicOrigin } from "@/lib/seo/public-routes";
 import { SectionHeading } from "./section-heading";
 import styles from "./reference-landing.module.css";
@@ -22,12 +22,7 @@ export function FaqSection() {
   return (
     <section className={styles.section} id="faq" aria-labelledby="faq-title">
       <div className={styles.container}>
-        {origin ? (
-          <script
-            type="application/ld+json"
-            dangerouslySetInnerHTML={{ __html: jsonLdHtml(faqPageJsonLd(FAQ_ITEMS)) }}
-          />
-        ) : null}
+        {origin ? <JsonLd value={faqPageJsonLd(FAQ_ITEMS)} /> : null}
         <SectionHeading
           id="faq-title"
           title="Частые вопросы"

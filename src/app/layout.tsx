@@ -2,7 +2,7 @@ import type { Metadata, Viewport } from "next";
 import { connection } from "next/server";
 import { StoreProvider } from "@/lib/store";
 import { Toaster } from "@/components/ui/toaster";
-import { jsonLdHtml } from "@/lib/seo/json-ld-html";
+import { JsonLd } from "@/components/seo/json-ld";
 import { organizationJsonLd, webSiteJsonLd } from "@/lib/seo/product-json-ld";
 import { publicOrigin } from "@/lib/seo/public-routes";
 import { OG_IMAGE, baseOpenGraph } from "@/lib/seo/open-graph";
@@ -96,11 +96,7 @@ export default async function RootLayout({ children }: { children: React.ReactNo
     >
       <head>
         {entityJsonLd.map((value) => (
-          <script
-            key={String(value["@type"])}
-            type="application/ld+json"
-            dangerouslySetInnerHTML={{ __html: jsonLdHtml(value) }}
-          />
+          <JsonLd key={String(value["@type"])} value={value} />
         ))}
       </head>
       <body className="font-sans">

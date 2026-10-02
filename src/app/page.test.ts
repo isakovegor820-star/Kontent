@@ -18,6 +18,25 @@ afterEach(() => {
   vi.unstubAllEnvs();
 });
 
+/**
+ * JsonLd — асинхронный серверный компонент: он читает nonce запроса, а синхронный
+ * `renderToStaticMarkup` такие компоненты не рендерит (они suspending). В продакшене
+ * он работает — привязку nonce проверяет отдельный `components/seo/json-ld.test.tsx`
+ * и живая проверка `check-public-seo.mjs`. Здесь подменяем его синхронной заглушкой,
+ * чтобы этот файл проверял своё: что разметка FAQPage собирается из того же массива,
+ * который рендерит текст.
+ */
+vi.mock("@/components/seo/json-ld", async () => {
+  const { jsonLdHtml } = await import("@/lib/seo/json-ld-html");
+  return {
+    JsonLd: ({ value }: { value: Record<string, unknown> }) =>
+      createElement("script", {
+        type: "application/ld+json",
+        dangerouslySetInnerHTML: { __html: jsonLdHtml(value) },
+      }),
+  };
+});
+
 vi.mock("next/font/google", () => ({
   Dela_Gothic_One: () => ({ variable: "test-kinetic" }),
   Unbounded: () => ({ variable: "test-display" }),
