@@ -52,8 +52,12 @@ describe("project export worker runtime wiring", () => {
     const queue = await registeredJobs();
     // Ревью P2: планировщики и стартовые задачи cron идут с одной повторной попыткой через минуту.
     const retry = { attempts: 2, backoff: { type: "exponential", delay: 60_000 } };
+    // Хранение завершённых записей ограничено: идентификатор задачи планировщика
+    // содержит метку времени, поэтому без предела хеши копятся вечно (88 тысяч
+    // за два месяца при шестнадцати расписаниях).
+    const retention = { removeOnComplete: { count: 200 }, removeOnFail: { count: 200 } };
     expect(queue.upsertJobScheduler.mock.calls.filter(([name]) => name === "exports")).toEqual([
-      ["exports", { pattern: "* * * * *", tz: "Europe/Moscow" }, { name: "exports", ...retry }],
+      ["exports", { pattern: "* * * * *", tz: "Europe/Moscow" }, { name: "exports", ...retry, ...retention }],
     ]);
     expect(queue.add.mock.calls.map(([name]) => name)).toEqual([
       "stats", "recon", "trend", "market-signals", "today-opportunities", "knowledge-index", "discover", "exports",

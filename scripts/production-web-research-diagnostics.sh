@@ -131,18 +131,23 @@ if [[ -n "$current_path" && -f "$current_path/.env.production" ]]; then
     elif ! command -v redis-cli >/dev/null 2>&1; then
       echo "redis-cli not installed on host"
     else
-      printf 'cron_repeat_keys=%s\n' \
+      # ВНИМАНИЕ к названию: это НЕ ключи расписаний. Идентификатор задачи, которую
+      # создаёт планировщик, — `repeat:<имя>:<метка времени>`, поэтому хеш каждой
+      # завершённой задачи лежит под ключом `bull:cron:repeat:<имя>:<метка>`.
+      # Их число равно числу сохранённых записей о выполненных задачах, а не числу
+      # расписаний; самих расписаний ровно столько, сколько в scheduler_keys.
+      printf 'cron_job_hashes=%s\n' \
         "$(redis-cli -u "$REDIS_URL" --raw keys 'bull:cron:repeat:*' 2>/dev/null | wc -l)"
       printf 'web_research_marker_present=%s\n' \
         "$(redis-cli -u "$REDIS_URL" --raw keys 'bull:cron:repeat:*' 2>/dev/null | grep -c 'web-research' || true)"
       # Восемьдесят восемь тысяч ключей повторов при шестнадцати расписаниях — это
       # накопление, а не норма. Печатаем образец: по нему видно, дубли это одного
       # расписания или остатки старого API повторяющихся задач.
-      printf 'repeat_keys_sample=%s\n' \
+      printf 'cron_job_hashes_sample=%s\n' \
         "$(redis-cli -u "$REDIS_URL" --raw keys 'bull:cron:repeat:*' 2>/dev/null | head -8 | tr '\n' ' ')"
-      printf 'repeat_keys_web_research=%s\n' \
+      printf 'cron_job_hashes_web_research=%s\n' \
         "$(redis-cli -u "$REDIS_URL" --raw keys 'bull:cron:repeat:*' 2>/dev/null | grep 'web-research' | head -6 | tr '\n' ' ')"
-      printf 'repeat_keys_distinct_suffixes=%s\n' \
+      printf 'cron_job_hashes_distinct_names=%s\n' \
         "$(redis-cli -u "$REDIS_URL" --raw keys 'bull:cron:repeat:*' 2>/dev/null | sed 's/.*:repeat://' | sed 's/:.*//' | sort -u | paste -sd, - | cut -c1-300)"
       # Legacy-набор повторяющихся задач: если он непустой, значит старый механизм
       # жив и именно он плодит ключи с метками времени. Если пуст — 88 тысяч ключей

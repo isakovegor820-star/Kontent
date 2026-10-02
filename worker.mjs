@@ -12947,6 +12947,14 @@ for (const s of AUTOPILOT_ONLY || MEDIA_ONLY || PUBLICATION_ONLY ? [] : CRON_SCH
     name: s.name,
     attempts: 2,
     backoff: { type: "exponential", delay: 60_000 },
+    // Идентификатор задачи планировщика — `repeat:<имя>:<метка времени>`, поэтому
+    // хеш каждой завершённой задачи остаётся в Redis под ключом
+    // `bull:cron:repeat:<имя>:<метка>`. Без ограничения они копятся вечно: у расписания
+    // `exports`, которое идёт каждую минуту, это около 1440 записей в сутки и 88 тысяч
+    // за два месяца — при шестнадцати самих расписаниях. Держим последние двести
+    // записей на расписание: истории для разбора хватает, память не течёт.
+    removeOnComplete: { count: 200 },
+    removeOnFail: { count: 200 },
   });
 }
 if (!AUTOPILOT_ONLY && !MEDIA_ONLY && !PUBLICATION_ONLY) {
