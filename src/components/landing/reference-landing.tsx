@@ -1,4 +1,5 @@
 import type { ReactNode } from "react";
+import Link from "next/link";
 import "@fontsource-variable/onest/wght.css";
 import {
   ArrowRight,
@@ -13,6 +14,15 @@ import {
   UsersRound,
 } from "lucide-react";
 import { Logo } from "@/components/brand";
+import { CONTACT_EMAIL, SUPPORT_EMAIL } from "@/lib/contact";
+import { PRODUCT_TAGLINE } from "@/lib/product";
+import { AnswerSection } from "./answer-section";
+import { AuthorSection } from "./author-section";
+import { ComparisonSection } from "./comparison-section";
+import { FaqSection } from "./faq-section";
+import { FitSection } from "./fit-section";
+import { PricingSection } from "./pricing-section";
+import { SectionHeading } from "./section-heading";
 import { AccessStatusCards } from "./access-status-cards";
 import { EditorCapabilityCards } from "./editor-capability-cards";
 import { HeroProductScene } from "./hero-product-scene";
@@ -92,23 +102,6 @@ const steps = [
 const processRoutePath =
   "M 150 74 C 250 22 350 126 450 74 S 650 22 750 74 S 950 126 1050 74";
 
-function SectionHeading({
-  id,
-  title,
-  description,
-}: {
-  id: string;
-  title: string;
-  description?: string;
-}) {
-  return (
-    <div className={styles.sectionHeading}>
-      <h2 id={id}>{title}</h2>
-      {description ? <p>{description}</p> : null}
-    </div>
-  );
-}
-
 function BrandLockup() {
   return (
     <span className={styles.brandLockup}>
@@ -146,7 +139,7 @@ export function ReferenceLanding() {
           <div className={styles.heroGlow} aria-hidden="true" />
           <div className={styles.heroInner}>
             <div className={styles.heroCopy}>
-              <h1 id="hero-title">Юридический контент с проверкой рисков и доказательств</h1>
+              <h1 id="hero-title">{PRODUCT_TAGLINE}</h1>
               <p className={styles.heroLead}>
                 Планируйте публикации, фиксируйте источники, согласовывайте формулировки
                 и отправляйте готовые материалы в Telegram.
@@ -171,6 +164,8 @@ export function ReferenceLanding() {
           </div>
         </section>
 
+        <AnswerSection />
+
         <section className={styles.trustBar} aria-label="Фактические возможности Авроры">
           <div className={styles.brandMarquee}>
             <span>Контент-план</span>
@@ -180,6 +175,8 @@ export function ReferenceLanding() {
             <span>VK после настройки</span>
           </div>
         </section>
+
+        <FitSection />
 
         <section className={styles.section} id="features" aria-labelledby="features-title">
           <div className={styles.container}>
@@ -371,6 +368,8 @@ export function ReferenceLanding() {
           </div>
         </section>
 
+        <ComparisonSection />
+
         <section className={`${styles.section} ${styles.pricingSection}`} id="access" aria-labelledby="access-title">
           <div className={styles.container}>
             <SectionHeading
@@ -388,6 +387,10 @@ export function ReferenceLanding() {
             </div>
           </div>
         </section>
+
+        <PricingSection />
+        <FaqSection />
+        <AuthorSection />
 
         <section className={styles.ctaSection} aria-labelledby="cta-title">
           <div className={`${styles.container} ${styles.ctaCard}`}>
@@ -415,7 +418,14 @@ export function ReferenceLanding() {
           <div className={styles.footerLinks}>
             <div><strong>Продукт</strong><a href="#features">Возможности</a><a href="#how">Как работает</a><a href="#access">Доступность</a></div>
             <div><strong>Интеграции</strong><a href="#integrations">Telegram и VK</a><a href="#product">Контроль материала</a></div>
-            <div><strong>Связь</strong><a href="mailto:hello@avrora.app">Контакты</a><a href="mailto:help@avrora.app">Сообщить об ошибке</a></div>
+            <div><strong>Связь</strong><a href={`mailto:${CONTACT_EMAIL}`}>Контакты</a><a href={`mailto:${SUPPORT_EMAIL}`}>Сообщить об ошибке</a></div>
+            <div>
+              <strong>Разборы</strong>
+              <Link href="/guide">Все разборы</Link>
+              <Link href="/guide/vidimost-v-chatgpt">Видимость в ChatGPT</Link>
+              <Link href="/guide/vidimost-v-alise">Видимость в Алисе AI</Link>
+              <Link href="/guide/pochemu-ne-citiruetsya">Почему не цитируют</Link>
+            </div>
             <div><strong>Документы</strong><a href="/terms">Условия использования</a><a href="/privacy">Конфиденциальность</a></div>
           </div>
           <div className={styles.footerSocial}>

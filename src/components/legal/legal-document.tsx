@@ -1,6 +1,7 @@
 import Link from "next/link";
 
 import { Logo } from "@/components/brand";
+import { LEGAL_EMAIL } from "@/lib/contact";
 
 export type LegalSection = {
   title: string;
@@ -60,7 +61,7 @@ export function LegalDocument({
         </div>
 
         <footer className="mt-10 border-t border-border pt-7 text-sm leading-6 text-text-2">
-          Вопросы по документам: <a className="font-semibold text-info underline underline-offset-4" href="mailto:legal@avrora.app">legal@avrora.app</a>.
+          Вопросы по документам: <a className="font-semibold text-info underline underline-offset-4" href={`mailto:${LEGAL_EMAIL}`}>{LEGAL_EMAIL}</a>.
         </footer>
       </article>
     </main>
