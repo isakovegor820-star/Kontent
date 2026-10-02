@@ -16,4 +16,13 @@ describe("settings discovery", () => {
     expect(new Set(SETTINGS_SEARCH_ENTRIES.map((entry) => entry.id)).size).toBe(SETTINGS_SEARCH_ENTRIES.length);
     expect(SETTINGS_SEARCH_ENTRIES.find((entry) => entry.id === "channel-autopilot-enabled")?.section).toBe("autopilot");
   });
+
+  it("keeps the consents section reachable from settings search", () => {
+    // Раздел с отзывом согласия обязан находиться поиском: пользователь ищет
+    // «согласие», а не «Согласия» в списке разделов.
+    const entry = SETTINGS_SEARCH_ENTRIES.find((item) => item.id === "consents");
+    expect(entry?.section).toBe("consents");
+    expect(entry?.target).toBe('[data-setting-target="consents"]');
+    expect(entry?.aliases).toContain("отзыв");
+  });
 });

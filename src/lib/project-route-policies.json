@@ -1185,6 +1185,16 @@
     "policy": "account"
   },
   {
+    "path": "/api/settings/consents",
+    "method": "GET",
+    "policy": "account"
+  },
+  {
+    "path": "/api/settings/consents",
+    "method": "POST",
+    "policy": "account"
+  },
+  {
     "path": "/api/settings/profile",
     "method": "GET",
     "policy": "account"

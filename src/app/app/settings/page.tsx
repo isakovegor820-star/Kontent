@@ -41,10 +41,12 @@ import {
   Sparkles,
   TriangleAlert,
   UserRound,
+  ShieldCheck,
 } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 import { AppShell } from "@/components/app/shell";
 import { AccountProfileSettings } from "@/components/app/account-profile-settings";
+import { ConsentsSettings } from "@/components/app/consents-settings";
 import { WritingSettingsSection } from "@/components/app/writing-settings-section";
 import { ChannelSettingsCenter } from "@/components/app/channel-settings-center";
 import { LegalSourcesSection } from "@/components/app/legal-sources-section";
@@ -1232,6 +1234,7 @@ const SETTINGS_SECTIONS: Array<{
   { id: "dictionary", label: "Правила текста", description: "Названия, запреты и шаблоны", icon: BookOpen },
   { id: "integrations", label: "Интеграции", description: "Проект · UTM, сайт и бот", icon: Plug },
   { id: "notifications", label: "Уведомления и безопасность", description: "Email, Telegram, пароль и выход", icon: Bell },
+  { id: "consents", label: "Согласия", description: "Что разрешено и как отозвать", icon: ShieldCheck },
 ];
 
 const SETTINGS_SECTION_IDS = new Set<SettingsSectionId>(SETTINGS_SECTIONS.map((item) => item.id));
@@ -1406,6 +1409,7 @@ function SettingsContent() {
             {activeSection === "dictionary" ? <WritingSettingsSection key={targetId === "blocks" ? "templates" : "rules"} initialView={targetId === "blocks" ? "templates" : "rules"} /> : null}
             {activeSection === "integrations" ? <div className="space-y-5"><TrackingSettingsSection /><div data-setting-target="legal"><LegalSourcesSection /></div><div data-setting-target="bot"><BotSection index={2} /></div></div> : null}
             {activeSection === "notifications" ? <div className="space-y-5"><NotificationSecuritySettings /><div data-setting-target="quiet"><QuietSection index={2} /></div></div> : null}
+            {activeSection === "consents" ? <ConsentsSettings /> : null}
           </section>
         </div>
       )}
