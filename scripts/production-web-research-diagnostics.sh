@@ -144,6 +144,19 @@ if [[ -n "$current_path" && -f "$current_path/.env.production" ]]; then
         "$(redis-cli -u "$REDIS_URL" --raw keys 'bull:cron:repeat:*' 2>/dev/null | grep 'web-research' | head -6 | tr '\n' ' ')"
       printf 'repeat_keys_distinct_suffixes=%s\n' \
         "$(redis-cli -u "$REDIS_URL" --raw keys 'bull:cron:repeat:*' 2>/dev/null | sed 's/.*:repeat://' | sed 's/:.*//' | sort -u | paste -sd, - | cut -c1-300)"
+      # Legacy-набор повторяющихся задач: если он непустой, значит старый механизм
+      # жив и именно он плодит ключи с метками времени. Если пуст — 88 тысяч ключей
+      # это осиротевшие остатки, и они не могут быть причиной несрабатывания крона.
+      printf 'legacy_repeat_zset=%s\n' \
+        "$(redis-cli -u "$REDIS_URL" zcard 'bull:cron:repeat' 2>/dev/null)"
+      printf 'legacy_repeat_members=%s\n' \
+        "$(redis-cli -u "$REDIS_URL" --raw zrange 'bull:cron:repeat' 0 7 2>/dev/null | tr '\n' ' ')"
+      printf 'scheduler_keys=%s\n' \
+        "$(redis-cli -u "$REDIS_URL" --raw keys 'bull:cron:repeat:*' 2>/dev/null | grep -vE ':[0-9]{13}$' | tr '\n' ' ')"
+      # Сколько задач крон реально выполнил: по счётчику завершённых в очереди cron.
+      printf 'cron_completed=%s failed=%s\n' \
+        "$(redis-cli -u "$REDIS_URL" zcard 'bull:cron:completed' 2>/dev/null)" \
+        "$(redis-cli -u "$REDIS_URL" zcard 'bull:cron:failed' 2>/dev/null)"
       printf 'cron_queue_wait=%s active=%s delayed=%s\n' \
         "$(redis-cli -u "$REDIS_URL" llen 'bull:cron:wait' 2>/dev/null)" \
         "$(redis-cli -u "$REDIS_URL" llen 'bull:cron:active' 2>/dev/null)" \
