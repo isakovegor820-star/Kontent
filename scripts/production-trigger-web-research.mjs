@@ -116,9 +116,14 @@ try {
     } else {
       const rejections = final.stats?.rejections;
       const codes = {};
+      // Домены, отклонённые как недостаточно надёжные, печатаем отдельно: это прямой
+      // список кандидатов в реестр доверенных источников, и без него непонятно,
+      // каких именно издателей Аврора не пускает.
+      const weakDomains = new Set();
       for (const rejection of Array.isArray(rejections) ? rejections : []) {
         const code = String(rejection?.code ?? "unknown");
         codes[code] = (codes[code] || 0) + 1;
+        if (code === "weak_source" && rejection?.domain) weakDomains.add(String(rejection.domain));
       }
       const findings = (await pool.query(
         `select left(claim, 90) as claim, source_domain, source_tier,
@@ -132,6 +137,7 @@ try {
         findings: Number(final.findings_count) || 0,
         rejections: Number(final.rejections_count) || 0,
         rejectionCodes: codes,
+        weakSourceDomains: [...weakDomains].slice(0, 20),
         queries: final.stats?.queries ?? null,
         pages: final.stats?.pages ?? null,
         candidates: final.stats?.candidates ?? null,
