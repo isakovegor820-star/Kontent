@@ -128,6 +128,8 @@ describe("account deletion route", () => {
     expect(body.transferCandidates).toEqual([{ userId: 9, name: "Коллега", role: "author" }]);
     // Кандидатов считает сервер: клиент не решает, кому можно отдать проект.
     expect(mocks.candidates).toHaveBeenCalledWith(expect.anything(), 5, 7);
+    // Состав участников по проектам наружу не отдаём — только общий список.
+    expect(body.transferCandidatesByProject).toBeUndefined();
     expect(body.blockers).toHaveLength(1);
     expect(body.orphanedProjects).toEqual([]);
   });
@@ -175,5 +177,27 @@ describe("account deletion route", () => {
     await expect(response.json()).resolves.toMatchObject({ error: "invalid_transfer_target" });
     const statements = (client.query.mock.calls as unknown as Array<[string]>).map(([sql]) => String(sql));
     expect(statements).toContain("rollback");
+  });
+
+  it("records which shared projects were destroyed in the evidence journal", async () => {
+    mocks.purge.mockResolvedValue({
+      ok: true,
+      deletedPersonalProjects: 1,
+      deletedSharedProjects: [6],
+      transferredSharedProjects: [5],
+      anonymizedEmail: "deleted-user-7@deleted.invalid",
+    });
+
+    await POST(request());
+
+    // По журналу должно быть видно, что ушло вместе с аккаунтом: у командного
+    // проекта было содержимое, и «просто удалили аккаунт» это не описывает.
+    expect(mocks.record).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        kind: "deletion",
+        result: expect.objectContaining({ deletedSharedProjects: [6], transferredSharedProjects: [5] }),
+      }),
+    );
   });
 });

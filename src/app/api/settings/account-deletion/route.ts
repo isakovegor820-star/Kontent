@@ -40,17 +40,17 @@ export async function GET(req: NextRequest) {
     // Кандидатов на передачу считает сервер: клиент не должен решать, кому
     // можно отдать проект, и не должен знать состав участников заранее.
     const transferableIds = blockers.filter((project) => project.hasOtherMembers).map((project) => project.id);
-    const candidatesByProject: Record<number, Array<{ userId: number; name: string | null; role: string }>> = {};
+    const candidatesByProject = new Map<number, Array<{ userId: number; name: string | null; role: string }>>();
     for (const projectId of transferableIds) {
-      candidatesByProject[projectId] = await findTransferCandidates(pool, projectId, user.id);
+      candidatesByProject.set(projectId, await findTransferCandidates(pool, projectId, user.id));
     }
     // Один преемник должен подходить каждому проекту: оставляем тех, кто есть
     // во всех списках. Иначе интерфейс предложил бы выбор, который сервер
     // отклонит как неоднозначный.
     const commonCandidates = transferableIds.length
-      ? (candidatesByProject[transferableIds[0]] ?? []).filter((candidate) =>
+      ? (candidatesByProject.get(transferableIds[0]) ?? []).filter((candidate) =>
           transferableIds.every((projectId) =>
-            (candidatesByProject[projectId] ?? []).some((item) => item.userId === candidate.userId),
+            (candidatesByProject.get(projectId) ?? []).some((item) => item.userId === candidate.userId),
           ),
         )
       : [];
@@ -63,8 +63,9 @@ export async function GET(req: NextRequest) {
       blockers: blockers.filter((project) => project.hasOtherMembers),
       // Проекты без других участников: уйдут вместе с аккаунтом.
       orphanedProjects: blockers.filter((project) => !project.hasOtherMembers),
+      // Состав участников по проектам наружу не отдаём: кандидатов считает
+      // сервер, и клиенту достаточно общего списка.
       transferCandidates: commonCandidates,
-      transferCandidatesByProject: candidatesByProject,
     });
   } catch (error) {
     console.error("[/api/settings/account-deletion]", {
@@ -135,6 +136,9 @@ export async function POST(req: NextRequest) {
       state: "completed",
       result: {
         deletedPersonalProjects: result.deletedPersonalProjects,
+        // Удалённые командные проекты фиксируем: у них было содержимое, и по
+        // журналу должно быть видно, что именно ушло вместе с аккаунтом.
+        deletedSharedProjects: result.deletedSharedProjects,
         transferredSharedProjects: result.transferredSharedProjects,
         ip: clientIp(req),
       },

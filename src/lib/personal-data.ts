@@ -267,7 +267,8 @@ export async function findPurgeBlockers(client: Queryable, userId: number): Prom
 }
 
 /**
- * Удаляет личный проект вместе со всем, что на него ссылается.
+ * Удаляет проект вместе со всем, что на него ссылается: и личный, и осиротевший
+ * командный (в котором не осталось участников).
  *
  * Почему не списком таблиц: на `projects` ссылаются десятки таблиц с запретом
  * удаления, и список пришлось бы догонять после каждой новой миграции — ровно
@@ -400,6 +401,12 @@ export async function purgeAccount(
   userId: number,
   options: { transferSharedTo?: number | null } = {},
 ): Promise<PurgeResult> {
+  // Блокируем членство уходящего на время транзакции. Без этого остаётся
+  // гонка: пока идёт удаление, третье лицо может отозвать со-владельца и
+  // проект останется без активного владельца. Advisory-lock маршрута
+  // ключуется парой (пользователь) и чужие изменения не сериализует.
+  await client.query(`select 1 from project_members where user_id = $1 for update`, [userId]);
+
   const blockers = await findPurgeBlockers(client, userId);
   // Проекты, где есть кому передать владение: без выбора преемника удаление
   // оставило бы их без владельца, а это ломает инвариант платформы.
@@ -442,7 +449,8 @@ export async function purgeAccount(
     for (const project of transferable) {
       // rowCount проверяем: между выбором кандидатов и этим UPDATE участника
       // могли отозвать (revokeProjectMember ставит status='revoked'). Тогда
-      // проект остался бы без обещанного владельца, а аккаунт уже обезличен.
+      // проект остался бы без обещанного владельца; вызывающий код откатывает
+      // транзакцию целиком, поэтому аккаунт остаётся нетронутым.
       const updated = await client.query(
         `update project_members set role = 'owner', version = version + 1, updated_at = now()
           where project_id = $1 and user_id = $2 and status = 'active'`,
@@ -456,8 +464,20 @@ export async function purgeAccount(
   }
 
   // Осиротевшие командные проекты уходят вместе с аккаунтом: участников в них
-  // не осталось, и держать их не для кого.
+  // не осталось, и держать их не для кого. Перед удалением перепроверяем
+  // состав: пока шла подготовка, участника могли пригласить и он мог принять
+  // приглашение — тогда проект удалять нельзя.
   for (const project of orphaned) {
+    const remaining = await client.query<{ count: string | number }>(
+      `select count(*)::int as count
+         from project_members
+        where project_id = $1 and user_id <> $2 and status = 'active'`,
+      [project.id, userId],
+    );
+    if (Number(remaining.rows[0]?.count ?? 0) > 0) {
+      // Состав изменился: проект больше не осиротевший.
+      return { ok: false, error: "shared_project_owner", projects: [project] };
+    }
     await resolveProjectBlockers(client, project.id);
   }
 

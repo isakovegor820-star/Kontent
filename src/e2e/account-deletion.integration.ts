@@ -181,4 +181,140 @@ describe("account deletion on a real schema", () => {
     await pool.query("delete from projects where id = $1", [projectId]);
     await pool.query("delete from users where id = any($1::bigint[])", [[owner, stranger, colleague]]);
   });
+
+  it("keeps another user's preferences alive when their selected project is deleted", async () => {
+    // Ветка user_project_preferences раньше не была покрыта ничем, а она на
+    // основном пути: у каждого пользователя есть строка настроек, и она обычно
+    // указывает на его личный проект, который удаляется первым. Если бы ссылку
+    // просто удаляли, человек терял бы вместе с ней и остальные настройки.
+    const owner = await createUser(`pref-owner-${Date.now()}@example.test`);
+    const colleague = await createUser(`pref-mate-${Date.now()}@example.test`);
+    // Осиротевший командный проект владельца: участников нет, поэтому он
+    // удаляется вместе с аккаунтом — именно этот случай и нужен.
+    const doomedProject = await createTeamProject("Осиротевший", owner);
+    // У коллеги есть собственный личный проект — на него и должен перейти выбор.
+    const fallback = await pool.query<{ id: number }>(
+      `insert into projects (name, created_by_user_id, personal_owner_user_id)
+       values ('Личный коллеги', $1, $1) returning id`,
+      [colleague],
+    );
+    const fallbackId = Number(fallback.rows[0].id);
+    await pool.query(
+      `insert into user_project_preferences (user_id, selected_project_id) values ($1, $2)
+       on conflict (user_id) do update set selected_project_id = excluded.selected_project_id`,
+      [colleague, doomedProject],
+    );
+
+    const client = await pool.connect();
+    try {
+      await client.query("begin");
+      const result = await purgeAccount(client, owner);
+      expect(result).toMatchObject({ ok: true, deletedSharedProjects: [doomedProject] });
+      await client.query("commit");
+    } finally {
+      client.release();
+    }
+
+    // Строка настроек коллеги жива и переведена на доступный ему проект.
+    const preferences = await pool.query<{ selected_project_id: number }>(
+      `select selected_project_id from user_project_preferences where user_id = $1`,
+      [colleague],
+    );
+    expect(preferences.rowCount).toBe(1);
+    expect(Number(preferences.rows[0].selected_project_id)).toBe(fallbackId);
+
+    await pool.query("delete from user_project_preferences where user_id = $1", [colleague]);
+    await pool.query("delete from projects where id = $1", [fallbackId]);
+    await pool.query("delete from users where id = any($1::bigint[])", [[owner, colleague]]);
+  });
+
+  it("leaves the project with the co-owner when one owner deletes the account", async () => {
+    const first = await createUser(`co1-${Date.now()}@example.test`);
+    const second = await createUser(`co2-${Date.now()}@example.test`);
+    const projectId = await createTeamProject("Два владельца", first);
+    await addMember(projectId, second, "owner");
+
+    // У первого владельца есть со-владелец, поэтому блокера нет: проект
+    // остаётся второму, и удаление проходит без передачи.
+    const blockers = await findPurgeBlockers(pool, first);
+    expect(blockers.find((item) => item.id === projectId)).toBeUndefined();
+
+    const client = await pool.connect();
+    try {
+      await client.query("begin");
+      const result = await purgeAccount(client, first);
+      expect(result).toMatchObject({ ok: true, deletedSharedProjects: [] });
+      await client.query("commit");
+    } finally {
+      client.release();
+    }
+
+    const project = await pool.query("select 1 from projects where id = $1", [projectId]);
+    expect(project.rowCount).toBe(1);
+    const members = await pool.query<{ user_id: number; role: string; status: string }>(
+      `select user_id, role, status from project_members where project_id = $1`,
+      [projectId],
+    );
+    // Второй владелец действует, ушедший отозван: проект управляем.
+    expect(members.rows.find((row) => Number(row.user_id) === second)).toMatchObject({ role: "owner", status: "active" });
+    expect(members.rows.find((row) => Number(row.user_id) === first)).toMatchObject({ status: "revoked" });
+
+    await pool.query("delete from project_members where project_id = $1", [projectId]);
+    await pool.query("delete from projects where id = $1", [projectId]);
+    await pool.query("delete from projects where personal_owner_user_id = $1", [second]);
+    await pool.query("delete from users where id = any($1::bigint[])", [[first, second]]);
+  });
+
+  it("requires one successor who fits every project that needs one", async () => {
+    const owner = await createUser(`multi-${Date.now()}@example.test`);
+    const common = await createUser(`multi-common-${Date.now()}@example.test`);
+    const onlyFirst = await createUser(`multi-first-${Date.now()}@example.test`);
+    const first = await createTeamProject("Первый", owner);
+    const second = await createTeamProject("Второй", owner);
+    await addMember(first, common);
+    await addMember(first, onlyFirst);
+    await addMember(second, common);
+
+    const candidatesForFirst = await findTransferCandidates(pool, first, owner);
+    const candidatesForSecond = await findTransferCandidates(pool, second, owner);
+    // Общий кандидат есть, «только первый» не подходит второму проекту.
+    expect(candidatesForFirst.map((item) => item.userId)).toEqual(expect.arrayContaining([common, onlyFirst]));
+    expect(candidatesForSecond.map((item) => item.userId)).toEqual([common]);
+
+    const client = await pool.connect();
+    try {
+      await client.query("begin");
+      // Участник, подходящий лишь одному проекту, отклоняется.
+      const rejected = await purgeAccount(client, owner, { transferSharedTo: onlyFirst });
+      expect(rejected).toMatchObject({ ok: false, error: "invalid_transfer_target" });
+      await client.query("rollback");
+    } finally {
+      client.release();
+    }
+
+    const client2 = await pool.connect();
+    try {
+      await client2.query("begin");
+      const accepted = await purgeAccount(client2, owner, { transferSharedTo: common });
+      expect(accepted).toMatchObject({ ok: true, transferredSharedProjects: [first, second] });
+      await client2.query("commit");
+    } finally {
+      client2.release();
+    }
+
+    const owners = await pool.query<{ project_id: number; user_id: number; role: string }>(
+      `select project_id, user_id, role from project_members
+        where project_id = any($1::bigint[]) and status = 'active' and role = 'owner'`,
+      [[first, second]],
+    );
+    expect(owners.rows.map((row) => Number(row.user_id))).toEqual([common, common]);
+
+    for (const projectId of [first, second]) {
+      await pool.query("delete from project_members where project_id = $1", [projectId]);
+      await pool.query("delete from projects where id = $1", [projectId]);
+    }
+    await pool.query("delete from user_project_preferences where user_id = any($1::bigint[])", [[common, onlyFirst]]);
+    await pool.query("delete from projects where personal_owner_user_id = any($1::bigint[])", [[common, onlyFirst]]);
+    await pool.query("delete from users where id = any($1::bigint[])", [[owner, common, onlyFirst]]);
+  });
 });
