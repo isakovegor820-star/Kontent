@@ -19,6 +19,7 @@ describe("worker AI call policy", () => {
       "site-article",
       "site-report-interpretation",
       "site-visibility-probe",
+      "web-research-extract",
     ]);
     expect(assertWorkerAiCallPolicy("rss-summary", 91)).toMatchObject({
       billing: "user",

@@ -47,6 +47,7 @@ describe("worker AI usage integration contract", () => {
       "radar-osint-profile",
       "radar-query-expansion",
       "rss-summary",
+      "web-research-extract",
     ]));
     for (const call of calls) {
       expect(WORKER_AI_SURFACES[call.surface]).toBeDefined();

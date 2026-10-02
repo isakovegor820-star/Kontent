@@ -38,6 +38,12 @@ export function baselineCoverage(topic, ownPostTexts) {
 }
 
 export function opportunityFingerprint(move) {
+  // Ссылки на источники обязаны участвовать в отпечатке: иначе усиление уже
+  // существующего сигнала новым подтверждением не создавало бы новую ревизию,
+  // и пользователь продолжал бы видеть старый набор доказательств.
+  const sourceKey = Array.isArray(move.evidence?.sources)
+    ? move.evidence.sources.map((source) => String(source?.url ?? "")).filter(Boolean).sort().join("|")
+    : "";
   return sha([
     OPPORTUNITY_FORMULA_VERSION,
     move.weekStart,
@@ -46,6 +52,7 @@ export function opportunityFingerprint(move) {
     move.evidence?.profileHash ?? "no-profile",
     move.evidence?.priorityScore ?? 0,
     move.evidence?.sourceCount ?? move.evidence?.sampleSize ?? 0,
+    sourceKey,
   ].join(":"));
 }
 

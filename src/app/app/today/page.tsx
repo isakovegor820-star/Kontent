@@ -31,6 +31,7 @@ import { AppShell } from "@/components/app/shell";
 import { TodayPublications } from "@/components/app/today-publications";
 import { WorkCenterNav } from "@/components/app/work-center-nav";
 import { EvidenceCard } from "@/components/app/evidence-card";
+import { WebResearchResearchLog } from "@/components/web-research-research-log";
 import { Button, buttonClassName } from "@/components/ui/button";
 import { Badge, Card } from "@/components/ui/primitives";
 import type {
@@ -1234,6 +1235,11 @@ function TodayPageContent() {
             ) : null}
 
             {!quickMode ? <CompletedToday items={board.completedItems} timezone={board.timezone} /> : null}
+
+            <WebResearchResearchLog
+              channelId={board.channelId}
+              onFinished={(message) => { setRefreshNotice(message); setAnnouncement(message); }}
+            />
           </>
         ) : null}
       </div>

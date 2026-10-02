@@ -167,6 +167,97 @@ export async function syncPublicMarketSignals(db) {
   }
 }
 
+/**
+ * Чистое преобразование проверенного факта в параметры рыночного сигнала.
+ *
+ * Вынесено отдельно от SQL, чтобы правила — окно актуальности, момент, доверие —
+ * проверялись тестом без базы: именно здесь решается, увидят ли пользователи факт
+ * или он молча истечёт.
+ *
+ * Важная тонкость: `market_signals.published_at` задаёт окно актуальности
+ * возможности. Для закона, опубликованного полгода назад, честная дата публикации
+ * закрыла бы окно сразу, поэтому сюда идёт дата обнаружения факта Авророй,
+ * а настоящая дата публикации источника сохраняется в raw_metadata и в
+ * web_research_findings.published_at.
+ */
+export function webResearchSignalInput(row) {
+  const trust = bounded(row.source_trust);
+  const retrievedAt = row.retrieved_at;
+  const ageHoursValue = ageHours(row.published_at, new Date(retrievedAt));
+  const kind = String(row.kind);
+  // Долгоживущие типы получают окно 30 дней, свежие события — короткое окно новости.
+  const signalKind = ["law", "benchmark", "statistics"].includes(kind)
+    ? "evergreen_gap"
+    : ageHoursValue <= 48 ? "news" : "rising_topic";
+  const momentum = bounded(
+    (ageHoursValue <= 24 ? 80 : ageHoursValue <= 72 ? 70 : ageHoursValue <= 168 ? 55 : ageHoursValue <= 720 ? 40 : 25)
+    + (row.source_tier === "official" ? 8 : row.source_tier === "professional" ? 5 : 0)
+    + (kind === "law" ? 5 : 0),
+  );
+  const baseTitle = firstLine(row.claim || row.quote);
+  const title = baseTitle.length < 3 ? firstLine(row.quote) : baseTitle;
+  return {
+    key: `web-research:${row.fingerprint}`,
+    kind: signalKind,
+    title,
+    summary: clean(row.claim, 1_200),
+    // Дата обнаружения, а не дата публикации: иначе старый закон получил бы уже
+    // истёкшее окно возможности и никогда не дошёл бы до пользователя.
+    publishedAt: retrievedAt,
+    lastSeenAt: retrievedAt,
+    momentum,
+    trust,
+    provider: `web-research:${row.source_tier}`,
+    url: row.source_url,
+    sourceTitle: row.source_label || row.source_domain,
+    rawMetadata: {
+      webResearchFindingId: Number(row.id),
+      webResearchFingerprint: String(row.fingerprint),
+      findingKind: kind,
+      legalStatus: row.legal_status || null,
+      sourceTier: row.source_tier,
+      sourcePublishedAt: row.published_at,
+      quote: clean(row.quote, 900),
+      corroborationCount: Number(row.corroboration_count) || 0,
+    },
+  };
+}
+
+/**
+ * Переносит проверенные факты из интернета в общий пул рыночных сигналов.
+ *
+ * Это единственная точка, через которую выход в интернет попадает в продукт:
+ * дальше `loadChannelMarketCandidates` раздаёт сигналы «Карте возможностей»,
+ * «Инфоповодам» и «Развитию», а через снимки возможностей — «Сегодня» и Студии.
+ */
+export async function syncWebResearchSignals(db, options = {}) {
+  const locked = (await db.query("select pg_try_advisory_lock(hashtextextended('web-research-signals-v1', 0)) as locked")).rows[0]?.locked === true;
+  if (!locked) return { synchronized: 0, skipped: true };
+  let synchronized = 0;
+  try {
+    const maxAgeDays = Math.max(1, Math.min(180, Number(options.maxAgeDays) || 45));
+    const rows = (await db.query(
+      `select finding.id, finding.fingerprint, finding.kind, finding.claim, finding.quote,
+              finding.legal_status, finding.source_url, finding.source_domain, finding.source_label,
+              finding.source_tier, finding.source_trust, finding.corroboration_count,
+              finding.published_at::text, finding.retrieved_at::text
+         from web_research_findings finding
+        where finding.status in ('new','used')
+          and finding.retrieved_at >= now() - ($1::int * interval '1 day')
+        order by finding.source_trust desc, finding.retrieved_at desc
+        limit 500`,
+      [maxAgeDays],
+    )).rows;
+
+    for (const row of rows) {
+      synchronized += await upsertPublicSignal(db, webResearchSignalInput(row));
+    }
+    return { synchronized, skipped: false };
+  } finally {
+    await db.query("select pg_advisory_unlock(hashtextextended('web-research-signals-v1', 0))").catch(() => undefined);
+  }
+}
+
 async function upsertPublicSignal(db, input) {
   const topics = words(`${input.title} ${input.summary}`).slice(0, 30);
   const eventKey = words(input.title).slice(0, 14).join(":");
@@ -203,11 +294,28 @@ async function upsertPublicSignal(db, input) {
   return 1;
 }
 
+/**
+ * Итоговая релевантность сигнала для канала.
+ *
+ * Факт, добытый исследованием интернета, уже отобран запросами, построенными из брифа
+ * этого же канала, и прошёл ворота достоверности. Лексическая эвристика ниже — грубая:
+ * живая формулировка нормы права («федеральный закон вступает в силу») не делит слов
+ * с нишей («юридическая практика»), и без этой поправки настоящий закон молча исчезал
+ * бы из выдачи. Порог 32 пропускает такой факт, но оставляет его ниже лексически
+ * совпавших кандидатов в общем ранжировании.
+ */
+export function candidateRelevance(profile, title, summary, rawMetadata) {
+  const lexical = marketRelevance(profile, `${title} ${summary}`);
+  if (!rawMetadata?.webResearchFingerprint) return lexical;
+  return Math.max(lexical, 32);
+}
+
 export async function loadChannelMarketCandidates(db, scope, profile, now = new Date()) {
   if (!profile?.niche && !profile?.rubrics?.length && !profile?.opportunityKeywords?.length) return [];
   const rows = (await db.query(
     `select signal.id, signal.kind, signal.title, signal.summary, signal.momentum_score,
             signal.trust_score, signal.published_at::text, signal.last_seen_at::text,
+            signal.raw_metadata,
             count(source.id)::int as source_count,
             coalesce(jsonb_agg(jsonb_build_object('url',source.source_url,'label',coalesce(source.source_title,source.source_domain),'trust',source.trust_score)
               order by source.trust_score desc, source.id) filter (where source.id is not null), '[]'::jsonb) as sources
@@ -221,7 +329,7 @@ export async function loadChannelMarketCandidates(db, scope, profile, now = new 
   )).rows;
   const candidates = [];
   for (const row of rows) {
-    const relevance = marketRelevance(profile, `${row.title} ${row.summary}`);
+    const relevance = candidateRelevance(profile, row.title, row.summary, row.raw_metadata);
     if (relevance < 25) continue;
     const observedAt = row.published_at || row.last_seen_at;
     const fresh = freshnessScore(observedAt, now);

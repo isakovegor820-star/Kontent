@@ -1493,5 +1493,15 @@
     "path": "/api/typography/runs/latest",
     "method": "GET",
     "policy": "project"
+  },
+  {
+    "path": "/api/web-research",
+    "method": "GET",
+    "policy": "project"
+  },
+  {
+    "path": "/api/web-research",
+    "method": "POST",
+    "policy": "project"
   }
 ]
