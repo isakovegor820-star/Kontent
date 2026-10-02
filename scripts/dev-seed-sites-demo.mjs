@@ -18,6 +18,7 @@ import pg from "pg";
 
 import { buildSiteAnalysisReport, extractSitePage, DEFAULT_SITE_CRAWL_LIMITS } from "../src/lib/site-crawler.mjs";
 import { buildSiteProfile } from "../src/lib/site-profile/profile.mjs";
+import { buildCompetitorSummary, compareWithCompetitors } from "../src/lib/site-competitors/summary.mjs";
 import { buildMonthlyReport } from "../src/lib/site-report/monthly.mjs";
 import { persistSiteProfileForAnalysis } from "../worker/site-profile-persistence.mjs";
 
@@ -184,6 +185,17 @@ function aspbPages() {
       },
     },
     {
+      // Страница, которую рисует JavaScript: контент есть, но без исполнения скриптов его не видно.
+      path: "/magazin",
+      raw: `<!doctype html><html lang="ru"><head>
+<meta charset="utf-8"><title>Магазин юридических документов</title>
+<meta name="description" content="Конструктор документов для бизнеса: договоры, претензии, заявления.">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="stylesheet" href="/static/app.css">
+<script src="/static/vendor.js"></script><script src="/static/app.js"></script><script src="/static/chunk-3.js"></script>
+</head><body><div id="root"></div></body></html>`,
+    },
+    {
       path: "/politika",
       page: {
         title: "Политика конфиденциальности",
@@ -196,7 +208,7 @@ function aspbPages() {
       },
     },
   ];
-  return pages.map(({ path, page }) => extractSitePage(html(page), new URL(path, base), 200));
+  return pages.map(({ path, page, raw }) => extractSitePage(raw ?? html(page), new URL(path, base), 200));
 }
 
 function techPravoPages() {
@@ -305,6 +317,48 @@ const ARTICLES = [
   },
 ];
 
+/* --------------------------------------------------------- конкуренты */
+
+function competitorPages(domain, { pages, words, schema }) {
+  const base = `https://${domain}`;
+  return Array.from({ length: pages }, (_, index) => {
+    const path = index === 0 ? "/" : `/uslugi-${index}`;
+    const ld = schema && index < 2
+      ? `<script type="application/ld+json">{"@type":"${index === 0 ? "Organization" : "FAQPage"}"}</script>`
+      : "";
+    const text = `Услуги по банкротству и налогам: разбор практики, сроки, стоимость и риски. ${"Подробности и примеры из практики. ".repeat(Math.round(words / 6))}`;
+    return extractSitePage(html({
+      title: `${domain} — услуга ${index + 1}`,
+      description: `Практика по банкротству и налогам: ${domain}`,
+      h1: `Услуга ${index + 1}`,
+      body: `<p>${text}</p>`,
+      schema: null,
+    }).replace("</head>", `${ld}</head>`), new URL(path, base), 200);
+  });
+}
+
+async function seedCompetitors(site, definitions) {
+  for (const definition of definitions) {
+    const created = await client.query(
+      `insert into site_competitors (site_id, project_id, user_id, domain, canonical_url)
+       values ($1, $2, $3, $4, $5)
+       on conflict (site_id, domain) do nothing
+       returning id`,
+      [site.id, site.project_id, site.user_id, definition.domain, `https://${definition.domain}/`],
+    );
+    if (!created.rows[0]) continue;
+    const pages = competitorPages(definition.domain, definition);
+    const report = buildSiteAnalysisReport(new URL(`https://${definition.domain}/`), pages, DEFAULT_SITE_CRAWL_LIMITS, {});
+    const summary = buildCompetitorSummary({ domain: definition.domain, pages, report });
+    await client.query(
+      `update site_competitors
+          set status = 'ready', summary = $3::jsonb, crawled_at = now(), updated_at = now()
+        where id = $1 and site_id = $2`,
+      [created.rows[0].id, site.id, JSON.stringify(summary)],
+    );
+  }
+}
+
 /* ------------------------------------------------------------------ seed */
 
 const client = new pg.Client({ connectionString: url.href });
@@ -314,12 +368,11 @@ function sessionToken() {
   return { token, hash: createHash("sha256").update(token, "utf8").digest("hex") };
 }
 
-async function seedSite(site, pages, { withArticles }) {
+/** Один прогон аудита: задание, профиль и стартовый отчёт — теми же функциями, что в worker'е. */
+async function seedAnalysisRun(site, pages, { checkedAt, runRevision }) {
   const target = new URL(site.canonical_url);
   const report = buildSiteAnalysisReport(target, pages, DEFAULT_SITE_CRAWL_LIMITS, {});
-  const checkedAt = new Date(Date.now() - 8 * 24 * 60 * 60 * 1000);
   const snapshotHash = "sha256:" + createHash("sha256").update(JSON.stringify(pages.map((page) => page.url))).digest("hex");
-
   const job = await client.query(
     `insert into site_analysis_jobs
        (user_id, project_id, request_id, idempotency_key, request_fingerprint, target_url, confirmed_domain,
@@ -329,18 +382,42 @@ async function seedSite(site, pages, { withArticles }) {
      returning id`,
     [
       site.user_id, site.project_id, `demo-${randomUUID()}`, `demo-${randomUUID()}`, "demo-fingerprint",
-      site.canonical_url, site.confirmed_domain, new Date(Date.now() - 9 * 24 * 60 * 60 * 1000),
-      JSON.stringify(DEFAULT_SITE_CRAWL_LIMITS), JSON.stringify(report), site.id, 1, snapshotHash,
+      site.canonical_url, site.confirmed_domain, new Date(checkedAt.getTime() - 24 * 60 * 60 * 1000),
+      JSON.stringify(DEFAULT_SITE_CRAWL_LIMITS), JSON.stringify(report), site.id, runRevision, snapshotHash,
       51, report?.interview?.answeredCount ?? 38, checkedAt, checkedAt,
     ],
   );
   const analysisId = Number(job.rows[0].id);
-
   const persisted = await persistSiteProfileForAnalysis(client, {
-    analysisId, runRevision: 1, siteId: site.id, pages, report, snapshotHash, checkedAt, now: checkedAt,
+    analysisId, runRevision, siteId: site.id, pages, report, snapshotHash, checkedAt, now: checkedAt,
   });
-
   const profile = buildSiteProfile({ confirmedDomain: site.confirmed_domain, pages, report, checkedAt });
+  return { analysisId, profileId: persisted.profileId, reportId: persisted.reportId, profile };
+}
+
+async function seedSite(site, pages, { withArticles }) {
+  const checkedAt = new Date(Date.now() - 8 * 24 * 60 * 60 * 1000);
+
+  // Первый прогон — по части страниц и раньше по времени: в истории аудитов должно быть
+  // с чем сравнивать, иначе блок «что изменилось» нечем проверить.
+  if (withArticles) {
+    await seedAnalysisRun(site, pages.slice(0, 5), {
+      checkedAt: new Date(Date.now() - 15 * 24 * 60 * 60 * 1000),
+      runRevision: 1,
+    });
+  }
+
+  // Конкуренты добавляются до текущего прогона: иначе в отчёте не будет сравнения,
+  // ведь снимки читаются в момент сборки отчёта.
+  if (withArticles) {
+    await seedCompetitors(site, [
+      { domain: "rival-bankrot.ru", pages: 8, words: 420, schema: true },
+      { domain: "pravo-help.ru", pages: 4, words: 180, schema: false },
+    ]);
+  }
+
+  const current = await seedAnalysisRun(site, pages, { checkedAt, runRevision: withArticles ? 2 : 1 });
+  const { profile } = current;
 
   // Ежемесячный отчёт: тот же builder, что и в планировщике сайта.
   const previous = await client.query(
@@ -348,10 +425,17 @@ async function seedSite(site, pages, { withArticles }) {
     [site.id],
   );
   const period = { start: checkedAt.toISOString(), end: new Date(checkedAt.getTime() + 7 * 24 * 60 * 60 * 1000).toISOString() };
+  const competitorRows = await client.query(
+    "select domain, status, summary from site_competitors where site_id = $1 order by created_at asc, id asc",
+    [site.id],
+  );
   const monthly = buildMonthlyReport({
     site: { confirmedDomain: site.confirmed_domain, canonicalUrl: site.canonical_url, verificationState: site.verification_state },
     profile,
     period,
+    competitors: competitorRows.rows.length > 0
+      ? compareWithCompetitors(profile, competitorRows.rows.map((item) => ({ domain: item.domain, status: item.status, summary: item.summary })))
+      : null,
     publications: withArticles ? { published: 0, rejectedDuplicates: 0, pendingReview: ARTICLES.length, failed: 0 } : {},
     probe: null,
     previousReport: previous.rows[0] ? { id: Number(previous.rows[0].id), payload: previous.rows[0].payload } : null,
@@ -361,7 +445,7 @@ async function seedSite(site, pages, { withArticles }) {
     `insert into site_reports (site_id, kind, profile_id, previous_report_id, payload, summary_ru, status, created_at)
      values ($1,'monthly',$2,$3,$4::jsonb,$5,'ready',$6) returning id`,
     [
-      site.id, persisted.profileId, previous.rows[0]?.id ?? null, JSON.stringify(monthly.payload), monthly.summaryRu,
+      site.id, current.profileId, previous.rows[0]?.id ?? null, JSON.stringify(monthly.payload), monthly.summaryRu,
       new Date(checkedAt.getTime() + 7 * 24 * 60 * 60 * 1000),
     ],
   );
@@ -383,7 +467,7 @@ async function seedSite(site, pages, { withArticles }) {
     }
   }
 
-  return { analysisId, profileId: persisted.profileId, reportId: persisted.reportId, monthlyReportId: Number(monthlyRow.rows[0].id), profile, report };
+  return { analysisId: current.analysisId, profileId: current.profileId, reportId: current.reportId, monthlyReportId: Number(monthlyRow.rows[0].id), profile };
 }
 
 async function main() {

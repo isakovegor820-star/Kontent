@@ -33,6 +33,10 @@ type Article = {
 };
 
 type Props = {
+  /** Заготовка из пробела: форма создания открыта, тема и тип уже выбраны. */
+  initialBrief?: { brief: string; type: string } | null;
+  /** Заготовка использована: повторный вход в раздел не должен открывать форму заново. */
+  onDraftConsumed?: () => void;
   siteId: number;
   verified: boolean;
   hasDestinations: boolean;
@@ -80,7 +84,7 @@ function matchesFilter(article: Article, filter: Filter) {
   return true;
 }
 
-export function ArticlesPanel({ siteId, verified, hasDestinations, destinationsLoaded, hasProfile, onSiteChanged, onStats }: Props) {
+export function ArticlesPanel({ initialBrief = null, onDraftConsumed, siteId, verified, hasDestinations, destinationsLoaded, hasProfile, onSiteChanged, onStats }: Props) {
   const requestJson = useProjectCall(unscopedRequestJson);
   const [articles, setArticles] = useState<Article[]>([]);
   const [loaded, setLoaded] = useState(false);
@@ -89,11 +93,11 @@ export function ArticlesPanel({ siteId, verified, hasDestinations, destinationsL
   const [openId, setOpenId] = useState<number | null>(null);
   const [detail, setDetail] = useState<Article | null>(null);
   const [editing, setEditing] = useState(false);
-  const [creating, setCreating] = useState(false);
+  const [creating, setCreating] = useState(Boolean(initialBrief));
   const [filter, setFilter] = useState<Filter>("review");
   const [draft, setDraft] = useState({ title: "", metaDescription: "", bodyMarkdown: "" });
-  const [manualType, setManualType] = useState<string>("audience_answer");
-  const [manualBrief, setManualBrief] = useState("");
+  const [manualType, setManualType] = useState<string>(initialBrief?.type || "audience_answer");
+  const [manualBrief, setManualBrief] = useState(initialBrief?.brief || "");
   const detailRequest = useRef(0);
   // Открытая карточка должна обновиться, если список принёс более свежую версию материала,
   // но ровно один раз на изменение — иначе опрос списка превращается в шторм запросов.
@@ -222,8 +226,9 @@ export function ArticlesPanel({ siteId, verified, hasDestinations, destinationsL
     }
     setManualBrief("");
     setCreating(false);
+    onDraftConsumed?.();
     await load();
-  }, [requestJson, siteId, manualType, manualBrief, load]);
+  }, [requestJson, siteId, manualType, manualBrief, load, onDraftConsumed]);
 
   const saveEdit = useCallback(async () => {
     if (!detail) return;

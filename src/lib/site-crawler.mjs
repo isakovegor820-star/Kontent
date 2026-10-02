@@ -411,6 +411,20 @@ function pageLinks(html, baseUrl) {
   return result;
 }
 
+/**
+ * Похоже ли, что контент страницы рисует JavaScript, а не сервер.
+ * Признаки: почти нет текста, но есть каркас клиентского приложения и скрипты.
+ * Это эвристика: она не доказывает рендеринг, а запрещает делать вид, что контента нет.
+ */
+const CLIENT_RENDER_ROOT = /<div[^>]+(?:id|class)=["'][^"']*(?:\broot\b|\bapp\b|__next|__nuxt|\bmount\b)[^"']*["']/iu;
+const CLIENT_RENDER_MARKER = /(?:__NEXT_DATA__|window\.__NUXT__|data-reactroot|ng-version=|data-v-app|astro-island|id=["']___gatsby["'])/iu;
+
+function isClientRenderedPage(source, { wordCount, mainContent, scriptCount }) {
+  if (wordCount >= 120 || String(mainContent || "").length >= 600) return false;
+  if (scriptCount < 3) return false;
+  return CLIENT_RENDER_ROOT.test(source) || CLIENT_RENDER_MARKER.test(source);
+}
+
 function imageSignals(html) {
   let total = 0;
   let missingAlt = 0;
@@ -530,6 +544,10 @@ export function extractSitePage(html, value, status = 200) {
     })(),
   };
   const images = imageSignals(source);
+  const scriptCount = (source.match(/<script\b/giu) || []).length;
+  // Без этого признака обход молча решает, что контента нет, и советует «добавить текст» —
+  // хотя текст есть, просто его рисует JavaScript.
+  const clientRendered = isClientRenderedPage(source, { wordCount, mainContent, scriptCount });
 
   return sanitizeExtractedValue({
     url: url.toString(),
@@ -564,6 +582,8 @@ export function extractSitePage(html, value, status = 200) {
       imageCount: images.total,
       missingImageAlt: images.missingAlt,
       emptyImageAlt: images.emptyAlt,
+      scriptCount,
+      clientRendered,
     },
   });
 }
@@ -936,6 +956,7 @@ function buildOptimizationReport(target, goodPages, pages, crawlSignals = {}) {
 export function buildSiteAnalysisReport(targetUrl, pages, limits = DEFAULT_SITE_CRAWL_LIMITS, crawlSignals = {}) {
   const target = targetUrl instanceof URL ? targetUrl : new URL(String(targetUrl));
   const goodPages = pages.filter((page) => page.status >= 200 && page.status < 400);
+  const clientRenderedPages = goodPages.filter((page) => page.technical.clientRendered);
   const seo = [];
   const geo = [];
   for (const page of goodPages) {
@@ -954,7 +975,13 @@ export function buildSiteAnalysisReport(targetUrl, pages, limits = DEFAULT_SITE_
       seo.push(finding("missing_schema_seo", "low", "Нет микроразметки", "Добавь подходящую Schema.org-разметку в формате JSON-LD.", page.url, "medium"));
       geo.push(finding("missing_schema", "medium", "Нет структурированных данных", "Добавь подходящую структурированную разметку и проверяемые сущности.", page.url));
     }
-    if (page.technical.wordCount < 120) geo.push(finding("thin_content", "medium", "Мало объясняющего контента", "Добавь самостоятельное объяснение темы, определения и ответы на вопросы.", page.url, "medium"));
+    if (page.technical.clientRendered) {
+      // Не выдаём отсутствие серверного HTML за отсутствие контента: совет «добавь текст»
+      // здесь вреден — текст есть, его просто не видно без исполнения скриптов.
+      geo.push(finding("client_rendered", "medium", "Контент рисует JavaScript", "Обход читает HTML без исполнения скриптов, поэтому содержимое страницы не видно. Включи серверный рендеринг или пререндер, чтобы поиск и ИИ-движки получали текст.", page.url, "medium"));
+    } else if (page.technical.wordCount < 120) {
+      geo.push(finding("thin_content", "medium", "Мало объясняющего контента", "Добавь самостоятельное объяснение темы, определения и ответы на вопросы.", page.url, "medium"));
+    }
     if (!page.headings.some((heading) => heading.level === 2)) geo.push(finding("weak_answer_structure", "low", "Нет подзаголовков ответа", "Разбей материал на ясные вопросы и смысловые блоки.", page.url, "medium"));
   }
 
@@ -1049,6 +1076,12 @@ export function buildSiteAnalysisReport(targetUrl, pages, limits = DEFAULT_SITE_
     seoAudit: seo,
     geoAudit: geo,
     optimization,
+    // Сколько страниц отдали пустой HTML из-за клиентского рендеринга: это граница измерения,
+    // а не дефект контента, и пользователь должен видеть её прямо в отчёте.
+    rendering: Object.freeze({
+      clientRenderedPages: clientRenderedPages.length,
+      urls: clientRenderedPages.slice(0, 20).map((page) => page.url),
+    }),
     themes,
     intents,
     internalLinking: {
@@ -1085,6 +1118,9 @@ export function buildSiteAnalysisReport(targetUrl, pages, limits = DEFAULT_SITE_
       ],
     },
     limitations: [
+      ...(clientRenderedPages.length
+        ? [`Страниц с контентом на JavaScript: ${clientRenderedPages.length}. Обход читает HTML без исполнения скриптов, поэтому их содержимое не оценивалось.`]
+        : []),
       "Анализ открытых страниц не показывает посещаемость, позиции, конверсии или выручку.",
       "Комментарии учитываются только тогда, когда они публично присутствуют в коде страницы или структурированных данных.",
       "Динамический контент, закрытые кабинеты и данные за авторизацией не открываются.",

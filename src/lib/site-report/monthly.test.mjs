@@ -116,4 +116,44 @@ describe("buildMonthlyReport", () => {
     expect(result.items).toEqual([{ key: "a", status: "open", sinceReportId: null }]);
     expect(result.doneCount).toBe(0);
   });
+  it("честно пишет про страницы на JavaScript в ограничениях отчёта", () => {
+    const base = profileWithoutOrganization();
+    const report = buildMonthlyReport({
+      site,
+      profile: { ...base, technical: { ...base.technical, clientRenderedPages: 3 } },
+      period: { start: "2026-09-01T00:00:00Z", end: "2026-10-01T00:00:00Z" },
+      publications: {},
+      generatedAt: new Date("2026-10-01T00:00:00Z"),
+    });
+    expect(report.payload.limitations.join(" ")).toMatch(/JavaScript: 3/);
+  });
+
+  it("не добавляет строку про JavaScript, когда таких страниц нет", () => {
+    const report = buildMonthlyReport({
+      site,
+      profile: profileWithoutOrganization(),
+      period: { start: "2026-09-01T00:00:00Z", end: "2026-10-01T00:00:00Z" },
+      publications: {},
+      generatedAt: new Date("2026-10-01T00:00:00Z"),
+    });
+    expect(report.payload.limitations.join(" ")).not.toMatch(/JavaScript/);
+  });
+  it("включает сравнение с конкурентами, когда снимки собраны", () => {
+    const report = buildMonthlyReport({
+      site,
+      profile: profileWithoutOrganization(),
+      period: { start: "2026-09-01T00:00:00Z", end: "2026-10-01T00:00:00Z" },
+      publications: {},
+      competitors: {
+        own: { pages: 2, avgWords: 200, pagesWithSchema: 1, hasOrganization: false, hasFaq: false },
+        rows: [{ domain: "rival.ru", pages: 6, avgWords: 350, pagesWithSchema: 3, hasOrganization: true, hasFaq: false }],
+        missingThemes: [{ theme: "налоги", competitor: "rival.ru" }],
+        deeperCompetitors: [{ domain: "rival.ru", avgWords: 350 }],
+      },
+      generatedAt: new Date("2026-10-01T00:00:00Z"),
+    });
+    expect(report.payload.competitors.status).toBe("ready");
+    expect(report.payload.competitors.rows[0].domain).toBe("rival.ru");
+    expect(report.payload.limitations.join(" ")).toMatch(/не замер позиций/);
+  });
 });

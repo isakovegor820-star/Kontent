@@ -114,6 +114,7 @@ export function classifySitePages(pages, classification = null) {
       words: pageWords(page),
       ok: isOkPage(page),
       schemaTypes: [...pageSchemas(page)],
+      clientRendered: page?.technical?.clientRendered === true,
       publishedAt: normalizeDate(page?.metadata?.publishedAt),
       headings: pageHeadings(page).map((heading) => ({ level: Number(heading.level || 0), text: cleanText(heading.text, 300) })),
     }));
@@ -294,6 +295,12 @@ function evidenceUrlsOf(items) {
   return Object.freeze(urls);
 }
 
+function averageWords(values) {
+  const numbers = values.filter((value) => Number.isFinite(value) && value > 0);
+  if (numbers.length === 0) return 0;
+  return Math.round(numbers.reduce((sum, value) => sum + value, 0) / numbers.length);
+}
+
 function buildTechnical(report, inventory) {
   const seo = report?.optimization?.seo || null;
   const geo = report?.optimization?.geo || null;
@@ -310,6 +317,13 @@ function buildTechnical(report, inventory) {
     notChecked: [...(seo?.checks || []), ...(geo?.checks || [])]
       .filter((check) => check.status === "not_checked")
       .map((check) => String(check.id)),
+    // Граница измерения, а не дефект сайта: страницы, содержимое которых рисует JavaScript.
+    clientRenderedPages: inventory.filter((page) => page.ok && page.clientRendered).length,
+    // Те же величины, что считаются у конкурентов: без них сравнивать нечем.
+    avgWords: averageWords(inventory.filter((page) => page.ok).map((page) => page.words)),
+    pagesWithSchema: inventory.filter((page) => page.ok && page.schemaTypes.length > 0).length,
+    hasOrganization: inventory.some((page) => page.ok && page.schemaTypes.some((type) => ORGANIZATION_SCHEMAS.has(type))),
+    hasFaqSchema: inventory.some((page) => page.ok && page.schemaTypes.includes("FAQPage")),
     orphanCandidates: Array.isArray(report?.internalLinking?.orphanCandidates) ? report.internalLinking.orphanCandidates.length : null,
   });
 }

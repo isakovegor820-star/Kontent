@@ -175,6 +175,40 @@ export function buildSiteReportSections(report) {
     },
   });
 
+  const competitors = payload.competitors || {};
+  if (competitors.status === "ready" && Array.isArray(competitors.rows) && competitors.rows.length > 0) {
+    const own = competitors.own || {};
+    sections.push({
+      title: "Сравнение с конкурентами",
+      paragraphs: [
+        "Аврора читает открытые страницы конкурентов тем же обходчиком, что и ваш сайт: это сравнение объёма, разметки и тем, а не замер позиций в поиске.",
+      ],
+      table: {
+        headers: ["Сайт", "Страниц", "Средняя длина", "С разметкой", "Organization", "FAQ"],
+        rows: [
+          ["Ваш сайт", own.pages ?? "—", own.avgWords ?? "—", `${own.pagesWithSchema ?? 0} из ${own.pages ?? 0}`, own.hasOrganization ? "есть" : "нет", own.hasFaq ? "есть" : "нет"],
+          ...competitors.rows.map((row) => [
+            row.domain,
+            row.pages ?? "—",
+            row.avgWords ?? "—",
+            `${row.pagesWithSchema ?? 0} из ${row.pages ?? 0}`,
+            row.hasOrganization ? "есть" : "нет",
+            row.hasFaq ? "есть" : "нет",
+          ]),
+        ],
+        empty: "",
+      },
+      bullets: [
+        ...(Array.isArray(competitors.missingThemes) && competitors.missingThemes.length
+          ? [`Темы, которых нет у вас: ${competitors.missingThemes.map((item) => `${item.theme} (${item.competitor})`).join(", ")}`]
+          : []),
+        ...(Array.isArray(competitors.deeperCompetitors) && competitors.deeperCompetitors.length
+          ? [`Средняя страница длиннее у: ${competitors.deeperCompetitors.map((item) => `${item.domain} (${item.avgWords} слов)`).join(", ")}`]
+          : []),
+      ],
+    });
+  }
+
   sections.push({
     title: "Ограничения",
     bullets: [...(payload.limitations || [])],

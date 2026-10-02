@@ -9,7 +9,31 @@ import { cn } from "@/lib/utils";
 
 import { formatDate } from "./client";
 import { ProbePanel } from "./probe-panel";
-import { SEVERITY_LABEL, SEVERITY_TONE, plural, type AnalysisView, type Issue, type ProfileView, type SiteTab } from "./types";
+import { compareWithCompetitors, SITE_COMPETITOR_LIMIT } from "@/lib/site-competitors/summary.mjs";
+
+import { SEVERITY_LABEL, SEVERITY_TONE, analysisLabel, plural, type AnalysisView, type Gap, type Issue, type ProfileView, type SiteAuditRun, type SiteCompetitor } from "./types";
+
+/** Из вида пробела понятно, какой материал его закрывает. */
+function articleTypeForGap(gap: Gap): string {
+  switch (gap.kind) {
+    case "page_type_missing":
+      return gap.key.includes("article") ? "evergreen_guide" : "machine_readable_page";
+    case "schema_missing":
+      return "machine_readable_page";
+    case "question_without_answer":
+      return "audience_answer";
+    default:
+      return "evergreen_guide";
+  }
+}
+
+/** Тема материала: для вопроса — сам вопрос, иначе формулировка пробела. */
+function briefForGap(gap: Gap): string {
+  const brief = gap.kind === "question_without_answer"
+    ? `${gap.label}. Ответить прямо и по делу, с опорой на факты сайта.`
+    : `${gap.label}. ${gap.detail}`;
+  return brief.slice(0, 400);
+}
 
 type Props = {
   siteId: number;
@@ -21,9 +45,15 @@ type Props = {
   reanalyzing: boolean;
   analysisActive: boolean;
   maxPages: number;
+  audits: SiteAuditRun[];
+  competitors: SiteCompetitor[];
+  competitorBusy: boolean;
+  onAddCompetitor: (url: string) => Promise<boolean>;
+  onRemoveCompetitor: (id: number) => Promise<void>;
   onMaxPagesChange: (value: number) => void;
   onReanalyze: () => void;
-  onTab: (tab: SiteTab) => void;
+  /** Пробел превращается в задание на материал: тема и тип уже выбраны. */
+  onCreateMaterial: (input: { brief: string; type: string }) => void;
 };
 
 const SCORE_LABEL = (value: number | null) => (value === null ? "не измерено" : value >= 85 ? "сильно" : value >= 60 ? "средне" : "слабо");
@@ -55,16 +85,27 @@ export function AuditPanel({
   reanalyzing,
   analysisActive,
   maxPages,
+  audits,
+  competitors,
+  competitorBusy,
+  onAddCompetitor,
+  onRemoveCompetitor,
   onMaxPagesChange,
   onReanalyze,
-  onTab,
+  onCreateMaterial,
 }: Props) {
   const [showAllIssues, setShowAllIssues] = useState(false);
+  const [competitorUrl, setCompetitorUrl] = useState("");
+  const comparison = useMemo(
+    () => compareWithCompetitors(profile, competitors),
+    [profile, competitors],
+  );
   const issues = useMemo(() => (profile ? issueRows(profile) : []), [profile]);
   const visibleIssues = showAllIssues ? issues : issues.slice(0, 6);
   const maxTopicPages = Math.max(1, ...(profile?.topics.map((topic) => topic.pageCount) ?? [1]));
   const highGaps = profile?.gaps.filter((gap) => gap.severity === "high") ?? [];
   const otherGaps = profile?.gaps.filter((gap) => gap.severity !== "high") ?? [];
+  const clientRendered = profile?.technical.clientRenderedPages ?? 0;
 
   if (!profile) {
     return (
@@ -137,7 +178,10 @@ export function AuditPanel({
             <span className="mt-3 block h-1.5 overflow-hidden rounded-full bg-surface-inset">
               <span className="block h-full rounded-full bg-brand" style={{ width: `${Math.min(100, Math.round((profile.technical.pagesChecked / Math.max(1, maxPages)) * 100))}%` }} />
             </span>
-            <span className="type-caption mt-2 block text-text-3">из {maxPages}, которые разрешил лимит обхода</span>
+            <span className="type-caption mt-2 block text-text-3">
+              из {maxPages}, которые разрешил лимит обхода
+              {clientRendered > 0 ? ` · ${clientRendered} на JavaScript` : ""}
+            </span>
           </div>
           <div className="p-4 sm:p-5">
             <span className="type-caption block text-text-3">Темы и пробелы</span>
@@ -279,7 +323,11 @@ export function AuditPanel({
             <p className="type-caption mt-0.5 text-text-3">Из пробела можно сразу поставить материал — Аврора подставит тему и источники</p>
           </div>
           {profile.gaps.length > 0 && (
-            <Button type="button" size="sm" onClick={() => onTab("materials")}>
+            <Button
+              type="button"
+              size="sm"
+              onClick={() => onCreateMaterial({ brief: briefForGap([...highGaps, ...otherGaps][0]), type: articleTypeForGap([...highGaps, ...otherGaps][0]) })}
+            >
               <Sparkles className="h-4 w-4" aria-hidden />Предложить материалы
             </Button>
           )}
@@ -297,7 +345,14 @@ export function AuditPanel({
                 <p className="type-body-strong mt-2 text-text">{gap.label}</p>
                 <p className="type-caption mt-1 text-text-2">{gap.detail}</p>
                 <div className="mt-3 flex flex-wrap items-center gap-3">
-                  <Button type="button" size="sm" variant="secondary" onClick={() => onTab("materials")}>Создать материал</Button>
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="secondary"
+                    onClick={() => onCreateMaterial({ brief: briefForGap(gap), type: articleTypeForGap(gap) })}
+                  >
+                    Создать материал
+                  </Button>
                   {gap.evidenceUrls.length > 0 && (
                     <a
                       href={gap.evidenceUrls[0]}
@@ -318,6 +373,194 @@ export function AuditPanel({
           <p className="type-caption border-t border-line px-5 py-3 text-text-3 sm:px-6">
             Показаны 8 из {profile.gaps.length}. Остальные закроются по мере выхода материалов.
           </p>
+        )}
+      </Card>
+
+      {/* Сравнение с конкурентами: аудит смотрел только внутрь сайта */}
+      <Card>
+        <div className="flex flex-wrap items-center justify-between gap-3 border-b border-line px-5 py-4 sm:px-6">
+          <div>
+            <h3 className="type-h3 text-text">Сравнение с конкурентами · {competitors.length} из {SITE_COMPETITOR_LIMIT}</h3>
+            <p className="type-caption mt-0.5 text-text-3">
+              Аврора читает по 10 публичных страниц конкурента и сравнивает темы, объём и разметку. Обновляется вместе с аудитом.
+            </p>
+          </div>
+        </div>
+
+        {competitors.length === 0 ? (
+          <div className="px-5 py-5 sm:px-6">
+            <p className="type-secondary text-text-2">
+              Пока сравнивать не с чем. Добавьте до трёх сайтов конкурентов — Аврора прочитает их открытые страницы и покажет, где вы отстаёте, а где опережаете.
+            </p>
+          </div>
+        ) : (
+          <>
+            <div className="overflow-x-auto">
+              <table className="w-full min-w-[640px]">
+                <thead>
+                  <tr className="type-caption text-text-3">
+                    <th className="px-5 py-3 text-left font-semibold sm:px-6">Сайт</th>
+                    <th className="px-3 py-3 text-left font-semibold">Страниц</th>
+                    <th className="px-3 py-3 text-left font-semibold">Средняя длина</th>
+                    <th className="px-3 py-3 text-left font-semibold">С разметкой</th>
+                    <th className="px-3 py-3 text-left font-semibold">Organization</th>
+                    <th className="px-3 py-3 text-left font-semibold">FAQ</th>
+                    <th className="px-5 py-3 text-right font-semibold sm:px-6"> </th>
+                  </tr>
+                </thead>
+                <tbody className="type-caption">
+                  <tr className="border-t border-line bg-surface-2">
+                    <td className="px-5 py-3 sm:px-6">
+                      <span className="type-body-strong text-text">Ваш сайт</span>
+                    </td>
+                    <td className="px-3 py-3 text-text-2">{comparison.own?.pages ?? "—"}</td>
+                    <td className="px-3 py-3 text-text-2">{comparison.own?.avgWords ? `${comparison.own.avgWords} слов` : "—"}</td>
+                    <td className="px-3 py-3 text-text-2">
+                      {comparison.own ? `${comparison.own.pagesWithSchema} из ${comparison.own.pages}` : "—"}
+                    </td>
+                    <td className="px-3 py-3">{comparison.own?.hasOrganization ? <Badge tone="success">есть</Badge> : <Badge tone="fire">нет</Badge>}</td>
+                    <td className="px-3 py-3">{comparison.own?.hasFaq ? <Badge tone="success">есть</Badge> : <Badge tone="fire">нет</Badge>}</td>
+                    <td className="px-5 py-3 sm:px-6" />
+                  </tr>
+                  {competitors.map((item) => (
+                    <tr key={item.id} className="border-t border-line">
+                      <td className="px-5 py-3 sm:px-6">
+                        <a href={item.canonicalUrl} target="_blank" rel="noopener noreferrer" className="type-body-strong text-brand hover:underline">
+                          {item.domain}
+                        </a>
+                        {item.status === "error" && (
+                          <span className="type-caption mt-0.5 block text-fire-text">
+                            не прочитан{item.lastError ? `: ${item.lastError}` : ""} — обновите аудит
+                          </span>
+                        )}
+                        {item.status === "pending" && <span className="type-caption mt-0.5 block text-text-3">ждёт обхода — обновите аудит</span>}
+                      </td>
+                      <td className="px-3 py-3 text-text-2">{item.summary ? item.summary.pages : "—"}</td>
+                      <td className="px-3 py-3 text-text-2">{item.summary ? `${item.summary.avgWords} слов` : "—"}</td>
+                      <td className="px-3 py-3 text-text-2">{item.summary ? `${item.summary.pagesWithSchema} из ${item.summary.pages}` : "—"}</td>
+                      <td className="px-3 py-3">{item.summary ? (item.summary.hasOrganization ? <Badge tone="success">есть</Badge> : <Badge tone="fire">нет</Badge>) : "—"}</td>
+                      <td className="px-3 py-3">{item.summary ? (item.summary.hasFaq ? <Badge tone="success">есть</Badge> : <Badge tone="neutral">нет</Badge>) : "—"}</td>
+                      <td className="px-5 py-3 text-right sm:px-6">
+                        <Button type="button" size="sm" variant="ghost" disabled={competitorBusy} onClick={() => void onRemoveCompetitor(item.id)}>
+                          Убрать
+                        </Button>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+
+            {(comparison.missingThemes.length > 0 || comparison.deeperCompetitors.length > 0) && (
+              <div className="space-y-3 border-t border-line px-5 py-4 sm:px-6">
+                {comparison.missingThemes.length > 0 && (
+                  <div>
+                    <p className="type-label text-text-2">Темы, которых у вас нет</p>
+                    <ul className="mt-2 flex flex-wrap gap-2">
+                      {comparison.missingThemes.map((item) => (
+                        <li key={`${item.competitor}:${item.theme}`}>
+                          <Badge tone="fire">{item.theme} · {item.competitor}</Badge>
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+                {comparison.deeperCompetitors.length > 0 && (
+                  <p className="type-caption text-text-2">
+                    Средняя страница длиннее у: {comparison.deeperCompetitors.map((item) => `${item.domain} (${item.avgWords} слов)`).join(", ")}
+                    {comparison.own?.avgWords ? ` — у вас ${comparison.own.avgWords}` : ""}.
+                  </p>
+                )}
+              </div>
+            )}
+          </>
+        )}
+
+        {competitors.length < SITE_COMPETITOR_LIMIT && (
+          <form
+            className="flex flex-wrap items-end gap-3 border-t border-line bg-surface-2 px-5 py-4 sm:px-6"
+            onSubmit={async (event) => {
+              event.preventDefault();
+              const added = await onAddCompetitor(competitorUrl.trim());
+              if (added) setCompetitorUrl("");
+            }}
+          >
+            <label className="type-caption min-w-[240px] flex-1 text-text-3" htmlFor="competitor-url">
+              Адрес сайта конкурента
+              <input
+                id="competitor-url"
+                type="url"
+                value={competitorUrl}
+                onChange={(event) => setCompetitorUrl(event.target.value)}
+                placeholder="https://competitor.ru"
+                className="type-input mt-1 w-full rounded-sm border border-line bg-surface px-3 py-2 text-text"
+                required
+              />
+            </label>
+            <Button type="submit" size="sm" variant="secondary" disabled={competitorBusy || competitorUrl.trim().length === 0}>
+              {competitorBusy ? "Добавляем…" : "Добавить конкурента"}
+            </Button>
+            <span className="type-caption w-full text-text-3 sm:w-auto">
+              Читаются только открытые страницы, как и у вашего сайта.
+            </span>
+          </form>
+        )}
+      </Card>
+
+      {/* История прогонов: раньше она жила в отдельном разделе без привязки к сайту */}
+      <Card>
+        <div className="flex flex-wrap items-center justify-between gap-3 border-b border-line px-5 py-4 sm:px-6">
+          <div>
+            <h3 className="type-h3 text-text">История аудитов · {audits.length}</h3>
+            <p className="type-caption mt-0.5 text-text-3">Что менялось между прогонами: страницы, пробелы, оценки</p>
+          </div>
+          <span className="type-caption text-text-3">Обновление аудита добавляет новую запись</span>
+        </div>
+        {audits.length === 0 ? (
+          <p className="type-secondary px-5 py-5 text-text-2 sm:px-6">Прогонов пока не было.</p>
+        ) : (
+          <ul>
+            {audits.map((run, index) => {
+              const previous = audits[index + 1] ?? null;
+              const gapsDelta = previous && run.gapCount !== null && previous.gapCount !== null ? run.gapCount - previous.gapCount : null;
+              const pagesDelta = previous && run.pageCount !== null && previous.pageCount !== null ? run.pageCount - previous.pageCount : null;
+              return (
+                <li key={run.id} className={cn("flex flex-wrap items-center gap-x-4 gap-y-2 px-5 py-4 sm:px-6", index > 0 && "border-t border-line")}>
+                  <span className={cn(
+                    "grid h-9 w-9 shrink-0 place-items-center rounded-sm",
+                    run.status === "ready" ? "bg-success-soft text-success-text" : run.status === "failed" ? "bg-danger-soft text-danger-text" : "bg-surface-inset text-text-2",
+                  )}>
+                    {run.status === "ready" ? <Check className="h-4 w-4" aria-hidden /> : <RefreshCw className="h-4 w-4" aria-hidden />}
+                  </span>
+                  <span className="min-w-0 flex-1">
+                    <span className="type-body-strong block text-text">
+                      {index === 0 ? "Текущий прогон" : "Прогон"} · ревизия {run.runRevision}
+                    </span>
+                    <span className="type-caption text-text-3">
+                      {formatDate(run.completedAt || run.createdAt, true)} · {analysisLabel(run.status)}
+                      {run.pageCount !== null ? ` · страниц: ${run.pageCount}` : ""}
+                      {run.gapCount !== null ? ` · пробелов: ${run.gapCount}` : ""}
+                    </span>
+                  </span>
+                  <span className="flex flex-wrap items-center gap-2">
+                    {pagesDelta !== null && pagesDelta !== 0 && (
+                      <Badge tone={pagesDelta > 0 ? "success" : "neutral"}>
+                        страниц {pagesDelta > 0 ? "+" : ""}{pagesDelta}
+                      </Badge>
+                    )}
+                    {gapsDelta !== null && gapsDelta !== 0 && (
+                      <Badge tone={gapsDelta < 0 ? "success" : "fire"}>
+                        пробелов {gapsDelta > 0 ? "+" : ""}{gapsDelta}
+                      </Badge>
+                    )}
+                    {run.seoScore !== null && (
+                      <Badge tone="neutral">SEO {run.seoScore}{run.geoScore !== null ? ` · ИИ ${run.geoScore}` : ""}</Badge>
+                    )}
+                  </span>
+                </li>
+              );
+            })}
+          </ul>
         )}
       </Card>
 
@@ -344,10 +587,21 @@ export function AuditPanel({
             </span>
           </li>
           <li className="flex gap-3">
-            <span className="grid h-8 w-8 shrink-0 place-items-center rounded-sm bg-fire-soft text-fire-text"><AlertTriangle className="h-4 w-4" aria-hidden /></span>
+            <span className={cn(
+              "grid h-8 w-8 shrink-0 place-items-center rounded-sm",
+              clientRendered > 0 ? "bg-fire-soft text-fire-text" : "bg-surface-inset text-text-2",
+            )}>
+              <AlertTriangle className="h-4 w-4" aria-hidden />
+            </span>
             <span>
-              <span className="type-body-strong block text-text">Страницы на JavaScript</span>
-              <span className="type-caption text-text-2">Обход читает HTML без исполнения скриптов: одностраничные приложения могут показаться пустыми.</span>
+              <span className="type-body-strong block text-text">
+                Страницы на JavaScript{clientRendered > 0 ? ` · ${clientRendered}` : ""}
+              </span>
+              <span className="type-caption text-text-2">
+                {clientRendered > 0
+                  ? `Обход читает HTML без исполнения скриптов: ${clientRendered} ${plural(clientRendered, "страница отдала", "страницы отдали", "страниц отдали")} пустой HTML, их содержимое не оценивалось. Нужен серверный рендеринг или пререндер.`
+                  : "Обход читает HTML без исполнения скриптов: если содержимое рисует JavaScript, оно не попадёт в оценку — таких страниц сейчас не найдено."}
+              </span>
             </span>
           </li>
           <li className="flex gap-3">

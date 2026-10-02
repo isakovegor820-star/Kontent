@@ -122,7 +122,7 @@ export function buildInitialAuditSummary({ site, profile, recommendations }) {
   return sentences.join(" ");
 }
 
-export function buildInitialAuditReport({ site, profile, analysis = {}, generatedAt = null } = {}) {
+export function buildInitialAuditReport({ site, profile, analysis = {}, competitors = null, generatedAt = null } = {}) {
   if (!site?.confirmedDomain) throw new TypeError("site_report_site_required");
   if (!profile || profile.profileVersion !== "site-profile-v1") throw new TypeError("site_report_profile_required");
   const recommendations = buildRecommendations(profile);
@@ -180,10 +180,22 @@ export function buildInitialAuditReport({ site, profile, analysis = {}, generate
       linkablePages: profile.linkablePages.length,
     }),
     recommendations: Object.freeze(recommendations),
+    // Сравнение с конкурентами приходит из данных сайта: если конкурентов не добавляли,
+    // отчёт честно говорит об этом, а не молчит.
+    competitors: competitors
+      ? Object.freeze({
+          status: "ready",
+          own: competitors.own ?? null,
+          rows: Object.freeze(competitors.rows || []),
+          missingThemes: Object.freeze(competitors.missingThemes || []),
+          deeperCompetitors: Object.freeze(competitors.deeperCompetitors || []),
+        })
+      : Object.freeze({ status: "not_configured", own: null, rows: Object.freeze([]), missingThemes: Object.freeze([]), deeperCompetitors: Object.freeze([]) }),
     limitations: Object.freeze([
       "Позиции в поиске и трафик не измерялись: интеграции Яндекс.Вебмастер и Google Search Console не подключены.",
       "Упоминания бренда в ответах генеративных движков не проверялись: зонд видимости не запускался.",
       "Оценки относятся только к проверенному публичному срезу страниц; закрытые разделы и динамический контент не учитывались.",
+      ...(competitors ? ["Сравнение с конкурентами опирается на открытые страницы, которые Аврора прочитала сама: это не рейтинг и не замер позиций в поиске."] : []),
     ]),
   });
   const summaryRu = buildInitialAuditSummary({ site, profile, recommendations });

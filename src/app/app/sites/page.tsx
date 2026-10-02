@@ -102,6 +102,8 @@ export default function SitesPage() {
   const [reportRequested, setReportRequested] = useState(false);
   const [retryingAi, setRetryingAi] = useState<string | null>(null);
   const [articleStats, setArticleStats] = useState<ArticleStats | null>(null);
+  // Заготовка материала из пробела: тема и тип приходят из аудита, форма открывается сразу.
+  const [materialDraft, setMaterialDraft] = useState<{ token: number; brief: string; type: string } | null>(null);
   const [menuOpen, setMenuOpen] = useState(false);
   const [editOpen, setEditOpen] = useState(false);
   const [editUrl, setEditUrl] = useState("");
@@ -137,7 +139,7 @@ export default function SitesPage() {
       const { status, body } = await requestJson<SiteDetails & { error?: string }>(`/api/sites/${id}`);
       if (request !== detailsRequest.current) return null;
       if (status !== 200 || !body.site) throw Object.assign(new Error("details_failed"), { code: body.error });
-      setDetails({ site: body.site, latestAnalysis: body.latestAnalysis, profile: body.profile, reports: body.reports });
+      setDetails({ site: body.site, latestAnalysis: body.latestAnalysis, profile: body.profile, reports: body.reports, audits: body.audits ?? [], competitors: body.competitors ?? [] });
       if (body.articleStats) setArticleStats(body.articleStats);
       void requestJson<{ destinations?: Array<{ status: string; readyToPublish: boolean }> }>(`/api/sites/${id}/destinations`)
         .then((result) => {
@@ -262,7 +264,7 @@ export default function SitesPage() {
     setConnectOpen(false);
     await loadSites();
     setSelectedId(body.site.id);
-    setDetails({ site: body.site, latestAnalysis: body.latestAnalysis, profile: body.profile, reports: body.reports, articleStats: body.articleStats });
+    setDetails({ site: body.site, latestAnalysis: body.latestAnalysis, profile: body.profile, reports: body.reports, audits: body.audits ?? [], competitors: body.competitors ?? [], articleStats: body.articleStats });
     if (body.articleStats) setArticleStats(body.articleStats);
     if (body.analysisError) setActionError(errorMessage(body.analysisError, "Сайт подключён, но анализ не запустился."));
   }, [consent, requestJson, url, loadSites]);
@@ -369,6 +371,38 @@ export default function SitesPage() {
   }, [details, loadSites, maxPages, requestJson]);
 
   const handleArticleStats = useCallback((stats: ArticleStats) => setArticleStats(stats), []);
+
+  const [competitorBusy, setCompetitorBusy] = useState(false);
+
+  const addCompetitor = useCallback(async (url: string) => {
+    if (!details || url.length === 0) return false;
+    setCompetitorBusy(true);
+    setActionError(null);
+    const { status, body } = await requestJson<{ error?: string }>(`/api/sites/${details.site.id}/competitors`, {
+      method: "PUT",
+      body: JSON.stringify({ url }),
+    });
+    setCompetitorBusy(false);
+    if (status >= 400) {
+      setActionError(errorMessage(body.error, "Не удалось добавить конкурента."));
+      return false;
+    }
+    await loadDetails(details.site.id);
+    return true;
+  }, [details, requestJson, loadDetails]);
+
+  const removeCompetitor = useCallback(async (id: number) => {
+    if (!details) return;
+    setCompetitorBusy(true);
+    setActionError(null);
+    const { status, body } = await requestJson<{ error?: string }>(`/api/sites/${details.site.id}/competitors?id=${id}`, { method: "DELETE" });
+    setCompetitorBusy(false);
+    if (status >= 400) {
+      setActionError(errorMessage(body.error, "Не удалось убрать конкурента."));
+      return;
+    }
+    await loadDetails(details.site.id);
+  }, [details, requestJson, loadDetails]);
 
   const selected = current?.site ?? null;
   const profile = current?.profile ?? null;
@@ -846,14 +880,25 @@ export default function SitesPage() {
                 reanalyzing={reanalyzing}
                 analysisActive={analysisActive}
                 maxPages={maxPages}
+                audits={current?.audits ?? []}
+                competitors={current?.competitors ?? []}
+                competitorBusy={competitorBusy}
+                onAddCompetitor={addCompetitor}
+                onRemoveCompetitor={removeCompetitor}
                 onMaxPagesChange={setMaxPages}
                 onReanalyze={reanalyze}
-                onTab={setTab}
+                onCreateMaterial={(input) => {
+                  setMaterialDraft({ token: Date.now(), brief: input.brief, type: input.type });
+                  setTab("materials");
+                }}
               />
             )}
 
             {tab === "materials" && (
               <ArticlesPanel
+                key={materialDraft ? `${selected.id}:${materialDraft.token}` : `${selected.id}`}
+                initialBrief={materialDraft}
+                onDraftConsumed={() => setMaterialDraft(null)}
                 siteId={selected.id}
                 verified={selected.verification.state === "verified"}
                 hasDestinations={destinationCount > 0}

@@ -4,6 +4,7 @@ import { serializeSiteAnalysis, siteAnalysisFingerprint, type SiteAnalysisRow } 
 import { enqueueSiteAnalysis, hasSiteAnalysisWorker } from "../site-analysis-queue";
 import { SiteCrawlerError, normalizeSiteLimits, normalizeSiteTarget } from "../site-crawler.mjs";
 import { hostedSectionOrigin } from "../site-destinations/index.mjs";
+import { listSiteCompetitors } from "./competitors-service";
 import {
   generateSiteVerificationToken,
   siteVerificationInstructions,
@@ -221,6 +222,26 @@ export function reportInsights(payload: unknown) {
         : recommendations.filter((item) => item.status === "done").length,
     },
     recommendations,
+    competitors: asRecord(data.competitors) && asRecord(data.competitors)?.status === "ready"
+      ? {
+          own: asRecord(asRecord(data.competitors)?.own),
+          rows: (Array.isArray(asRecord(data.competitors)?.rows) ? asRecord(data.competitors)!.rows as unknown[] : []).slice(0, 5).map((item) => {
+            const row = asRecord(item) || {};
+            return {
+              domain: String(row.domain ?? ""),
+              pages: Number(row.pages ?? 0),
+              avgWords: Number(row.avgWords ?? 0),
+              pagesWithSchema: Number(row.pagesWithSchema ?? 0),
+              hasOrganization: row.hasOrganization === true,
+              hasFaq: row.hasFaq === true,
+            };
+          }),
+          missingThemes: (Array.isArray(asRecord(data.competitors)?.missingThemes) ? asRecord(data.competitors)!.missingThemes as unknown[] : []).slice(0, 8).map((item) => {
+            const theme = asRecord(item) || {};
+            return { theme: String(theme.theme ?? ""), competitor: String(theme.competitor ?? "") };
+          }),
+        }
+      : null,
     limitations: (Array.isArray(data.limitations) ? data.limitations : []).map((item) => String(item)).slice(0, 6),
   };
 }
@@ -384,9 +405,52 @@ export async function startSiteAnalysis(pool: Pool, input: {
   return { analysis: serializeSiteAnalysis(row), replayed: false };
 }
 
+export type SiteAuditRow = {
+  id: string | number;
+  run_revision: string | number;
+  status: string;
+  created_at: Date | string | null;
+  completed_at: Date | string | null;
+  page_count: string | number | null;
+  gap_count: string | number | null;
+  seo_score: string | number | null;
+  geo_score: string | number | null;
+};
+
+/**
+ * История прогонов аудита по сайту: раньше она была видна только в разделе
+ * «Анализ сайта» и без привязки к сайту.
+ */
+export async function listSiteAudits(db: Queryable, siteId: number, limit = 12) {
+  const rows = await db.query<SiteAuditRow>(
+    `select a.id, a.run_revision, a.status, a.created_at, a.completed_at,
+            p.page_count,
+            case when p.gaps is null then null else jsonb_array_length(p.gaps) end as gap_count,
+            p.technical->>'seoScore' as seo_score,
+            p.technical->>'geoScore' as geo_score
+       from site_analysis_jobs a
+       left join site_profiles p on p.site_id = a.site_id and p.analysis_job_id = a.id
+      where a.site_id = $1
+      order by a.created_at desc, a.id desc
+      limit $2`,
+    [siteId, Math.min(50, Math.max(1, limit))],
+  );
+  return rows.rows.map((row) => ({
+    id: Number(row.id),
+    runRevision: Number(row.run_revision ?? 1),
+    status: String(row.status),
+    createdAt: iso(row.created_at),
+    completedAt: iso(row.completed_at),
+    pageCount: row.page_count === null ? null : Number(row.page_count),
+    gapCount: row.gap_count === null ? null : Number(row.gap_count),
+    seoScore: row.seo_score === null || row.seo_score === undefined ? null : Number(row.seo_score),
+    geoScore: row.geo_score === null || row.geo_score === undefined ? null : Number(row.geo_score),
+  }));
+}
+
 export async function loadSiteDetails(db: Queryable, site: SiteRow) {
   const siteId = Number(site.id);
-  const [analysis, profile, reports, articles] = await Promise.all([
+  const [analysis, profile, reports, articles, audits, competitors] = await Promise.all([
     db.query<SiteAnalysisRow>(
       `select ${SITE_ANALYSIS_FIELDS}
          from site_analysis_jobs
@@ -421,6 +485,8 @@ export async function loadSiteDetails(db: Queryable, site: SiteRow) {
         where site_id = $1`,
       [siteId],
     ),
+    listSiteAudits(db, siteId),
+    listSiteCompetitors(db, siteId),
   ]);
   const articleRow = articles.rows[0];
   return {
@@ -433,6 +499,8 @@ export async function loadSiteDetails(db: Queryable, site: SiteRow) {
       pending: Number(articleRow?.pending ?? 0),
       published: Number(articleRow?.published ?? 0),
     },
+    audits,
+    competitors,
   };
 }
 

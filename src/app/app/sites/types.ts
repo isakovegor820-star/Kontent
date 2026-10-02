@@ -73,6 +73,7 @@ export type ProfileView = {
     geoIssues: Issue[];
     pagesChecked: number;
     failedPages?: number;
+    clientRenderedPages?: number;
     questions?: { unansweredQuestions: number; faqSchemaPages: number };
   };
   linkablePages: Array<{ url: string; title: string; pageType: string }>;
@@ -120,10 +121,50 @@ export type ReportView = {
     doneRecommendations: number;
   } | null;
   recommendations?: ReportRecommendation[];
+  competitors?: {
+    own: { pages?: number; avgWords?: number; pagesWithSchema?: number; hasOrganization?: boolean; hasFaq?: boolean } | null;
+    rows: Array<{ domain: string; pages: number; avgWords: number; pagesWithSchema: number; hasOrganization: boolean; hasFaq: boolean }>;
+    missingThemes: Array<{ theme: string; competitor: string }>;
+  } | null;
   limitations?: string[];
 };
 
 export type ArticleStats = { total: number; pending: number; published: number };
+
+export type SiteCompetitorSummary = {
+  domain: string;
+  pages: number;
+  avgWords: number;
+  pagesWithSchema: number;
+  hasOrganization: boolean;
+  hasFaq: boolean;
+  clientRenderedPages?: number;
+  themes: Array<{ theme: string; occurrences: number }>;
+  checkedAt?: string | null;
+};
+
+export type SiteCompetitor = {
+  id: number;
+  domain: string;
+  canonicalUrl: string;
+  status: "pending" | "ready" | "error";
+  lastError: string | null;
+  summary: SiteCompetitorSummary | null;
+  crawledAt: string | null;
+  createdAt: string | null;
+};
+
+export type SiteAuditRun = {
+  id: number;
+  runRevision: number;
+  status: string;
+  createdAt: string | null;
+  completedAt: string | null;
+  pageCount: number | null;
+  gapCount: number | null;
+  seoScore: number | null;
+  geoScore: number | null;
+};
 
 export type SiteDetails = {
   site: SiteSummary;
@@ -131,6 +172,8 @@ export type SiteDetails = {
   profile: ProfileView | null;
   reports: ReportView[];
   articleStats?: ArticleStats | null;
+  audits?: SiteAuditRun[];
+  competitors?: SiteCompetitor[];
 };
 
 export const REPORT_KIND_LABEL: Record<ReportView["kind"], string> = {

@@ -149,4 +149,30 @@ describe("renderSiteReportExport", () => {
     expect(rendered.bytes.subarray(0, 5).toString("latin1")).toBe("%PDF-");
     expect(rendered.contentType).toBe("application/pdf");
   });
+
+  it("включает сравнение с конкурентами, когда они добавлены", () => {
+    const profile = buildSiteProfile({
+      confirmedDomain: "law.example",
+      checkedAt: "2026-09-01T00:00:00Z",
+      pages: [page("https://law.example/", { title: "Юристы", technical: { wordCount: 300 } })],
+    });
+    const comparison = {
+      own: { pages: 1, avgWords: 300, pagesWithSchema: 0, hasOrganization: false, hasFaq: false, themes: ["банкротство"] },
+      rows: [{ domain: "rival.ru", pages: 8, avgWords: 420, pagesWithSchema: 2, hasOrganization: true, hasFaq: true, themes: ["налоги"] }],
+      missingThemes: [{ theme: "налоги", competitor: "rival.ru" }],
+      deeperCompetitors: [{ domain: "rival.ru", avgWords: 420 }],
+    };
+    const withCompetitors = buildInitialAuditReport({ site: { confirmedDomain: "law.example" }, profile, competitors: comparison });
+    expect(withCompetitors.payload.competitors).toMatchObject({ status: "ready" });
+    expect(withCompetitors.payload.competitors.rows).toHaveLength(1);
+    expect(withCompetitors.payload.competitors.missingThemes[0]).toEqual({ theme: "налоги", competitor: "rival.ru" });
+
+    // Оговорка про сравнение появляется только тогда, когда сравнение есть.
+    expect(withCompetitors.payload.limitations.join(" ")).toMatch(/не замер позиций/);
+
+    const without = buildInitialAuditReport({ site: { confirmedDomain: "law.example" }, profile });
+    expect(without.payload.competitors.status).toBe("not_configured");
+    expect(without.payload.competitors.rows).toEqual([]);
+    expect(without.payload.limitations.join(" ")).not.toMatch(/не замер позиций/);
+  });
 });
