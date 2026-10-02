@@ -3,6 +3,14 @@ import type { MetadataRoute } from "next";
 import { DISALLOWED_PATHS, publicOrigin } from "@/lib/seo/public-routes";
 
 /**
+ * Рендер на каждый запрос. Без этого Next кэширует маршрут и генерирует его на этапе
+ * сборки, где переменной APP_URL ещё нет: карта сайта уходила в прод пустой
+ * (`x-nextjs-cache: HIT`), а в robots.txt не появлялась строка Sitemap.
+ * Цена — один дешёвый рендер на запрос; выгода — адреса всегда совпадают с origin прода.
+ */
+export const dynamic = "force-dynamic";
+
+/**
  * robots.txt домена продукта.
  *
  * До этого файла на домене не было /robots.txt вообще: краулер получал 404 и не знал ни
