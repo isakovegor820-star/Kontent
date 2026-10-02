@@ -8,6 +8,7 @@ import {
   webFindingAngle,
 } from "./web-research-service.mjs";
 import { planWebResearch, webResearchKeywords, webResearchTopic } from "./web-research-plan.mjs";
+import { sourceTextFromHtml } from "./web-research-contract.mjs";
 
 const NOW = Date.parse("2026-10-01T12:00:00.000Z");
 
@@ -262,5 +263,72 @@ describe("формулировка повода", () => {
       source: { label: "Официальный интернет-портал правовой информации" },
     });
     expect(angle).toBe("Закон вступил в силу. Закон вступает в силу с 1 марта. Источник: Официальный интернет-портал правовой информации");
+  });
+});
+
+describe("подтверждение вторым источником", () => {
+  const UNREGISTERED_TEXT = sourceTextFromHtml(
+    "<p>Федеральный закон от 30.09.2026 № 321-ФЗ вступает в силу с 1 марта 2027 года "
+    + "и сокращает число проверок на 40 процентов, сообщает издание.</p>"
+    + "<p>Документ опубликован и доступен для ознакомления в полном объёме на портале.</p>",
+  );
+  const UNREGISTERED_DRAFT = {
+    kind: "law",
+    claim: "Федеральный закон вступает в силу с 1 марта 2027 года",
+    quote: "вступает в силу с 1 марта 2027 года",
+    legalStatus: "in_force",
+    publishedAt: "2026-09-30T09:00:00.000Z",
+  };
+
+  it("один неизвестный домен по-прежнему не проходит", async () => {
+    const result = await runWebResearch({ topic: "маркировка рекламы", categories: ["law"] }, deps({
+      search: async () => [{ url: "https://one-unknown-blog.ru/law", title: "Закон", snippet: "законопроект" }],
+      fetchPage: async () => ({ url: "https://one-unknown-blog.ru/law", status: 200, contentType: "text/html", html: UNREGISTERED_TEXT }),
+      extract: async () => [UNREGISTERED_DRAFT],
+    }));
+    expect(result.findings).toHaveLength(0);
+    expect(result.rejections.map((item) => item.code)).toContain("weak_source");
+  });
+
+  it("два независимых неизвестных домена с тем же утверждением дают факт", async () => {
+    const result = await runWebResearch({ topic: "маркировка рекламы", categories: ["law"] }, deps({
+      search: async () => [
+        { url: "https://first-unknown-blog.ru/law", title: "Закон", snippet: "законопроект" },
+        { url: "https://second-unknown-blog.ru/law", title: "Закон", snippet: "законопроект" },
+      ],
+      fetchPage: async (url) => ({ url, status: 200, contentType: "text/html", html: UNREGISTERED_TEXT }),
+      extract: async () => [UNREGISTERED_DRAFT],
+    }));
+    expect(result.findings).toHaveLength(1);
+    expect(result.findings[0].corroboratedBy).toMatch(/unknown-blog\.ru/u);
+    expect(result.log.some((entry) => entry.message.includes("подтверждён вторым источником"))).toBe(true);
+  });
+
+  it("два адреса одного домена подтверждением не считаются", async () => {
+    const result = await runWebResearch({ topic: "маркировка рекламы", categories: ["law"] }, deps({
+      search: async () => [
+        { url: "https://same-unknown-blog.ru/a", title: "Закон", snippet: "законопроект" },
+        { url: "https://same-unknown-blog.ru/b", title: "Закон", snippet: "законопроект" },
+      ],
+      fetchPage: async (url) => ({ url, status: 200, contentType: "text/html", html: UNREGISTERED_TEXT }),
+      extract: async () => [UNREGISTERED_DRAFT],
+    }));
+    expect(result.findings).toHaveLength(0);
+    expect(result.rejections.every((item) => item.code === "weak_source")).toBe(true);
+  });
+
+  it("утверждения на разные темы друг друга не подтверждают", async () => {
+    const result = await runWebResearch({ topic: "маркировка рекламы", categories: ["law"] }, deps({
+      search: async () => [
+        { url: "https://first-unknown-blog.ru/law", title: "Закон", snippet: "законопроект" },
+        { url: "https://second-unknown-blog.ru/other", title: "Другое", snippet: "законопроект" },
+      ],
+      fetchPage: async (url) => ({ url, status: 200, contentType: "text/html", html: UNREGISTERED_TEXT }),
+      extract: async ({ page }) => [page.url.includes("second")
+        ? { ...UNREGISTERED_DRAFT, claim: "Компания открыла новый офис в Казани", quote: "вступает в силу с 1 марта 2027 года" }
+        : UNREGISTERED_DRAFT],
+    }));
+    // Первое утверждение остаётся без подтверждения, второе вообще не проходит по цитате.
+    expect(result.findings).toHaveLength(0);
   });
 });

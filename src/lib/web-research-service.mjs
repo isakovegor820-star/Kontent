@@ -9,7 +9,7 @@
 // журнал с кодом отказа — именно это видит пользователь в «полном логе исследования».
 
 import { evaluateWebFinding, normalizeForMatch, sourceTextFromHtml, WEB_FINDING_REJECTION_LABELS } from "./web-research-contract.mjs";
-import { planWebResearch, scoreWebResearchCandidate, normalizeWebResearchBudget } from "./web-research-plan.mjs";
+import { planWebResearch, webResearchStems, scoreWebResearchCandidate, normalizeWebResearchBudget } from "./web-research-plan.mjs";
 import { resolveWebSource } from "./web-research-sources.mjs";
 
 export const WEB_RESEARCH_LOG_LIMIT = 60;
@@ -132,6 +132,7 @@ export async function runWebResearch(request = {}, deps = {}) {
   const log = [];
   const findings = [];
   const rejections = [];
+  const collected = [];
   const seenFingerprints = new Set();
   const seenClaims = new Set();
   const note = (step, message, detail) => {
@@ -215,50 +216,131 @@ export async function runWebResearch(request = {}, deps = {}) {
       continue;
     }
 
-    // ── Шаг 4. Ворота достоверности ─────────────────────────────────────────────
+    // Черновики не проверяем сразу: подтверждение второго источника ищется по всем
+    // страницам запуска, поэтому ворота идут отдельным проходом ниже.
     for (const draft of drafts) {
-      const draftLanguage = draft?.language === "EN" || draft?.language === "RU" ? draft.language : null;
-      const result = evaluateWebFinding({
-        kind: draft?.kind,
-        claim: draft?.claim,
-        quote: draft?.quote,
-        sourceUrl: response?.url || page.url,
-        sourceText: pageText,
-        // Порядок важен: сначала дата, названная моделью по тексту страницы, затем
-        // дата, извлечённая загрузчиком из разметки или адреса, и лишь потом — из
-        // поисковой выдачи.
+      collected.push({
+        draft,
+        url: response?.url || page.url,
+        domain: page.domain,
+        pageText,
         publishedAt: draft?.publishedAt || response?.publishedAt || page.publishedAt,
-        legalStatus: draft?.legalStatus,
         title: draft?.title || page.title,
-        language: draftLanguage || (plan.language === "EN" ? "EN" : "RU"),
-        corroborating: draft?.corroborating,
-        now,
+        language: draft?.language === "EN" || draft?.language === "RU"
+          ? draft.language
+          : (plan.language === "EN" ? "EN" : "RU"),
+        page,
       });
-      if (!result.ok) {
-        rejections.push({
-          url: page.url,
-          domain: page.domain,
-          code: result.code,
-          reason: result.reason || WEB_FINDING_REJECTION_LABELS[result.code] || result.code,
-          detail: result.detail || null,
-          claim: cleanText(draft?.claim, 240),
-        });
-        note("gate", `Отклонено на ${page.domain}: ${result.reason}`, { url: page.url, code: result.code });
-        continue;
+    }
+  }
+
+  // ── Шаг 4. Ворота достоверности ───────────────────────────────────────────────
+  const gate = (item, corroborating) => evaluateWebFinding({
+    kind: item.draft?.kind,
+    claim: item.draft?.claim,
+    quote: item.draft?.quote,
+    sourceUrl: item.url,
+    sourceText: item.pageText,
+    publishedAt: item.publishedAt,
+    legalStatus: item.draft?.legalStatus,
+    title: item.title,
+    language: item.language,
+    corroborating: corroborating ?? item.draft?.corroborating,
+    now,
+  });
+
+  // Отклонённые по слабости источника откладываем: их судьбу решает подтверждение.
+  const pendingWeak = [];
+  const accept = (result, item, corroboratedBy) => {
+    const claimKey = `${result.finding.kind}:${normalizeForMatch(result.finding.claim)}`;
+    if (seenFingerprints.has(result.finding.fingerprint) || seenClaims.has(claimKey)) {
+      note("gate", `Дубль факта пропущен: ${cleanText(result.finding.claim, 120)}`, { url: item.url });
+      return;
+    }
+    seenFingerprints.add(result.finding.fingerprint);
+    seenClaims.add(claimKey);
+    findings.push({
+      ...result.finding,
+      matchedQueries: item.page.matchedQueries,
+      candidateScore: item.page.score,
+      ...(corroboratedBy ? { corroboratedBy } : {}),
+    });
+    note(
+      "gate",
+      corroboratedBy
+        ? `Принят факт (подтверждён вторым источником): ${cleanText(result.finding.claim, 140)}`
+        : `Принят факт: ${cleanText(result.finding.claim, 140)}`,
+      { url: item.url, tier: result.finding.source.tier, corroboratedBy: corroboratedBy || null },
+    );
+  };
+
+  for (const item of collected) {
+    const result = gate(item);
+    if (result.ok) {
+      accept(result, item, null);
+      continue;
+    }
+    if (result.code === "weak_source") {
+      pendingWeak.push({ item, result });
+      continue;
+    }
+    rejections.push({
+      url: item.url,
+      domain: item.domain,
+      code: result.code,
+      reason: result.reason || WEB_FINDING_REJECTION_LABELS[result.code] || result.code,
+      detail: result.detail || null,
+      claim: cleanText(item.draft?.claim, 240),
+    });
+    note("gate", `Отклонено на ${item.domain}: ${result.reason}`, { url: item.url, code: result.code });
+  }
+
+  // ── Шаг 5. Подтверждение вторым источником ────────────────────────────────────
+  // Домен вне реестра не может быть единственной опорой факта. Но если то же самое
+  // утверждают два независимых сайта, это уже доказательство, а не совпадение:
+  // так требование строгости не ослабляется, а перестаёт отбрасывать реальность.
+  const claimStems = (value) => new Set(webResearchStems(value, 10));
+  const indexed = collected.map((item) => ({ item, stems: claimStems(item.draft?.claim), domain: item.domain }));
+  for (const { item, result } of pendingWeak) {
+    const mine = claimStems(item.draft?.claim);
+    let corroborating = null;
+    if (mine.size) {
+      for (const other of indexed) {
+        if (other.domain === item.domain || !other.stems.size) continue;
+        let shared = 0;
+        for (const stem of mine) if (other.stems.has(stem)) shared += 1;
+        const needed = Math.min(2, mine.size);
+        if (shared >= needed) {
+          corroborating = [{ url: other.item.url }];
+          break;
+        }
       }
-      // Дедупликация по смыслу утверждения, а не по полному отпечатку: один и тот же
-      // факт, пересказанный двумя сайтами, должен дать одну карточку. Подтверждение
-      // вторым источником подхватывает нижележащий слой сигналов, который складывает
-      // URL в market_signal_sources.
-      const claimKey = `${result.finding.kind}:${normalizeForMatch(result.finding.claim)}`;
-      if (seenFingerprints.has(result.finding.fingerprint) || seenClaims.has(claimKey)) {
-        note("gate", `Дубль факта пропущен: ${cleanText(result.finding.claim, 120)}`, { url: page.url });
-        continue;
-      }
-      seenFingerprints.add(result.finding.fingerprint);
-      seenClaims.add(claimKey);
-      findings.push({ ...result.finding, matchedQueries: page.matchedQueries, candidateScore: page.score });
-      note("gate", `Принят факт: ${cleanText(result.finding.claim, 140)}`, { url: page.url, tier: result.finding.source.tier });
+    }
+    if (!corroborating) {
+      rejections.push({
+        url: item.url,
+        domain: item.domain,
+        code: result.code,
+        reason: result.reason || WEB_FINDING_REJECTION_LABELS[result.code] || result.code,
+        detail: result.detail || null,
+        claim: cleanText(item.draft?.claim, 240),
+      });
+      note("gate", `Отклонено на ${item.domain}: ${result.reason}`, { url: item.url, code: result.code });
+      continue;
+    }
+    const retry = gate(item, corroborating);
+    if (retry.ok) {
+      accept(retry, item, corroborating[0].url);
+    } else {
+      rejections.push({
+        url: item.url,
+        domain: item.domain,
+        code: retry.code,
+        reason: retry.reason || WEB_FINDING_REJECTION_LABELS[retry.code] || retry.code,
+        detail: retry.detail || null,
+        claim: cleanText(item.draft?.claim, 240),
+      });
+      note("gate", `Отклонено на ${item.domain}: ${retry.reason}`, { url: item.url, code: retry.code });
     }
   }
 
