@@ -170,6 +170,18 @@ function postState(status: string) {
   return { tone: "neutral" as const, icon: Clock3 };
 }
 
+/** Человекочитаемые названия видов согласия: в карточке не должно быть кодов. */
+const CONSENT_KIND_LABEL: Record<string, string> = {
+  pd_processing: "Обработка персональных данных",
+  marketing: "Сообщения и рассылки",
+  pd_distribution: "Распространение данных",
+  cookie: "Аналитические cookie",
+};
+
+function consentKindLabel(kind: string): string {
+  return CONSENT_KIND_LABEL[kind] ?? kind;
+}
+
 function StatusPill({
   label,
   tone,
@@ -551,7 +563,7 @@ function DetailContent({ detail, onChanged, onDirtyChange }: { detail: AdminUser
           <ul className="mt-4 divide-y divide-line">
             {detail.consents.current.map((item) => (
               <li key={item.kind} className="flex flex-wrap items-baseline justify-between gap-2 py-3">
-                <span className="type-secondary text-text">{item.kind}</span>
+                <span className="type-secondary text-text">{consentKindLabel(item.kind)}</span>
                 <span className="flex flex-wrap items-baseline gap-3">
                   <StatusPill
                     label={item.granted ? "Действует" : "Отозвано или не дано"}
@@ -584,7 +596,7 @@ function DetailContent({ detail, onChanged, onDirtyChange }: { detail: AdminUser
             <ul className="mt-2 space-y-1">
               {detail.consents.history.map((entry) => (
                 <li key={entry.id} className="type-caption text-text-3">
-                  <time dateTime={entry.grantedAt}>{fullDate(entry.grantedAt)}</time> · {entry.kind} ·{" "}
+                  <time dateTime={entry.grantedAt}>{fullDate(entry.grantedAt)}</time> · {consentKindLabel(entry.kind)} ·{" "}
                   {entry.granted ? "согласие дано" : "согласие отозвано"}
                   {entry.source ? ` · ${entry.source}` : ""}
                   {entry.hasIp ? " · адрес зафиксирован" : ""}

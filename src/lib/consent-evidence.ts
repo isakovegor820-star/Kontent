@@ -50,19 +50,7 @@ export type ConsentEvidence = {
 const iso = (value: Date | string | null) =>
   value == null ? null : value instanceof Date ? value.toISOString() : String(value);
 
-function mapRow(row: {
-  id: number;
-  user_id: number | null;
-  contact: string | null;
-  kind: string;
-  granted: boolean;
-  granted_at: Date | string;
-  source: string | null;
-  policy_version: string | null;
-  consent_text_version: string | null;
-  ip: string | null;
-  user_agent: string | null;
-}): ConsentEvidenceRow {
+function mapRow(row: ConsentRow): ConsentEvidenceRow {
   return {
     id: row.id,
     userId: row.user_id,
@@ -80,6 +68,21 @@ function mapRow(row: {
 
 const ROW_COLUMNS = `id, user_id, contact, kind, granted, granted_at, source,
                      policy_version, consent_text_version, ip, user_agent`;
+
+/** Строка журнала как она приходит из базы — до преобразования в ConsentEvidenceRow. */
+type ConsentRow = {
+  id: number;
+  user_id: number | null;
+  contact: string | null;
+  kind: string;
+  granted: boolean;
+  granted_at: Date | string;
+  source: string | null;
+  policy_version: string | null;
+  consent_text_version: string | null;
+  ip: string | null;
+  user_agent: string | null;
+};
 
 /**
  * Находит согласия по аккаунту и/или контакту.
@@ -124,7 +127,7 @@ export async function findConsentEvidence(
 
   // Ищем по аккаунту и по контакту одновременно: у человека мог быть аккаунт,
   // а заявка при этом пришла с другой формы и другого адреса.
-  const rowsResult = await client.query<Parameters<typeof mapRow>[0]>(
+  const rowsResult = await client.query<ConsentRow>(
     `select ${ROW_COLUMNS}
        from consents
       where ($1::bigint is not null and user_id = $1)
