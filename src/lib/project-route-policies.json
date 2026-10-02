@@ -1185,6 +1185,21 @@
     "policy": "account"
   },
   {
+    "path": "/api/settings/account-deletion",
+    "method": "GET",
+    "policy": "account"
+  },
+  {
+    "path": "/api/settings/account-deletion",
+    "method": "POST",
+    "policy": "account"
+  },
+  {
+    "path": "/api/settings/personal-data",
+    "method": "GET",
+    "policy": "account"
+  },
+  {
     "path": "/api/settings/consents",
     "method": "GET",
     "policy": "account"
