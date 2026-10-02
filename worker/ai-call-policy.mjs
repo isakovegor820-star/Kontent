@@ -18,6 +18,7 @@ export const WORKER_AI_SURFACES = Object.freeze({
   "site-page-classifier": Object.freeze({ billing: "system", purpose: "internal_classification" }),
 
   "radar-osint-profile": Object.freeze({ billing: "user", purpose: "visible_osint_profile" }),
+  "web-research-extract": Object.freeze({ billing: "user", purpose: "visible_web_fact" }),
   "competitor-idea": Object.freeze({ billing: "user", purpose: "visible_content_idea" }),
   "rss-summary": Object.freeze({ billing: "user", purpose: "scheduled_user_post" }),
   "autopilot-plan": Object.freeze({ billing: "user", purpose: "visible_content_plan" }),
