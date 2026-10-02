@@ -284,14 +284,17 @@ export function Tabs<T extends string>({
   ariaLabel = "Переключатель представления",
   idPrefix,
   controls,
+  fill = false,
 }: {
   value: T;
   onChange: (v: T) => void;
-  items: { value: T; label: string; icon?: React.ReactNode }[];
+  items: { value: T; label: string; icon?: React.ReactNode; badge?: number }[];
   className?: string;
   ariaLabel?: string;
   idPrefix?: string;
   controls?: string;
+  /** Полоса на всю ширину: сегменты делят её поровну и не «плавают» по центру. */
+  fill?: boolean;
 }) {
   const tabRefs = useRef<(HTMLButtonElement | null)[]>([]);
   const activeIndex = Math.max(0, items.findIndex((item) => item.value === value));
@@ -315,6 +318,7 @@ export function Tabs<T extends string>({
       onKeyDown={onKeyDown}
       className={cn(
         "inline-flex gap-1 rounded-sm border border-line bg-surface-inset p-1",
+        fill && "flex w-full",
         className,
       )}
     >
@@ -336,6 +340,7 @@ export function Tabs<T extends string>({
             className={cn(
               "type-button inline-flex min-h-11 cursor-pointer items-center gap-1.5 rounded-[9px] px-3.5 py-2",
               "transition-[background-color,color,box-shadow] duration-200 motion-reduce:transition-none",
+              fill && "flex-1 justify-center",
               active
                 ? "bg-surface text-text shadow-soft"
                 : "text-text-2 hover:text-text",
@@ -343,6 +348,16 @@ export function Tabs<T extends string>({
           >
             {it.icon}
             {it.label}
+            {Number.isFinite(it.badge) && (it.badge as number) > 0 && (
+              <span
+                className={cn(
+                  "rounded-full px-1.5 py-0.5 text-[11px] font-bold leading-none",
+                  active ? "bg-info-soft text-info-text" : "bg-surface text-text-2",
+                )}
+              >
+                {it.badge}
+              </span>
+            )}
           </button>
         );
       })}

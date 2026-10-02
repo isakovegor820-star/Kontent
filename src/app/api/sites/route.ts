@@ -1,4 +1,5 @@
 import { withProjectRoute } from "@/lib/project-route";
+import { checkRateLimit, rateLimitResponse } from "@/lib/rate-limit";
 import { NextRequest } from "next/server";
 
 import { readJsonBodyValue } from "@/lib/bounded-request-body";
@@ -36,6 +37,9 @@ async function handleGET(req: NextRequest) {
 async function handlePOST(req: NextRequest) {
   const resolved = await resolveSiteRoute(req, "content.create", { mutation: true, label: "/api/sites POST" });
   if (!resolved.ok) return resolved.response;
+
+  const createRate = await checkRateLimit(`site:create:user:${resolved.context.userId}`, 20, 3_600, { failureMode: "closed" });
+  if (!createRate.allowed) return rateLimitResponse(createRate);
   const { pool, projectId, userId, requestId } = resolved.context;
 
   let body: Record<string, unknown>;

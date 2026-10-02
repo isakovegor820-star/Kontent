@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ArticlesPanel } from "./articles-panel";
 import { setProjectTransport } from "@/lib/project-transport";
@@ -15,11 +15,15 @@ describe("article detail recovery", () => {
     let resolveList!: (value: Response) => void;
     vi.stubGlobal("fetch", vi.fn(() => new Promise<Response>((resolve) => { resolveList = resolve; })));
     render(<ArticlesPanel siteId={5} verified hasDestinations={false} destinationsLoaded={false} hasProfile onSiteChanged={vi.fn()} />);
-    expect(screen.getByText("Загружаем очередь материалов…")).toBeTruthy();
-    expect(screen.queryByText(/На одобрении сейчас:/)).toBeNull();
-    expect(screen.queryByText(/Нет настроенного назначения/)).toBeNull();
+    expect(screen.getByText("Загружаем материалы…")).toBeTruthy();
+    // До ответа сервера интерфейс не имеет права утверждать, что очередь пуста
+    // или что назначение публикации не настроено.
+    expect(screen.queryByText(/ждут решения/)).toBeNull();
+    expect(within(screen.getByRole("tablist", { name: "Фильтр материалов" })).queryByText("0")).toBeNull();
+    expect(screen.queryByText(/Назначение публикации не подключено/)).toBeNull();
     await act(async () => { resolveList(Response.json({ articles: [] })); });
-    expect(screen.getByText(/На одобрении сейчас: 0/)).toBeTruthy();
+    expect(screen.getByText("Материалов пока нет")).toBeTruthy();
+    expect(within(screen.getByRole("tablist", { name: "Фильтр материалов" })).getAllByText("0").length).toBeGreaterThan(0);
   });
 
   it("refreshes an open generating card to its terminal result and blocks failed quality approval", async () => {
@@ -36,7 +40,7 @@ describe("article detail recovery", () => {
     await flush();
     article = { ...row, status: "failed", updatedAt: "2026-09-08T10:01Z", quality: { issues: [{ code: "too_short", severity: "error", message: "Недостаточно текста" }] } };
     await act(async () => { await vi.advanceTimersByTimeAsync(4000); });
-    expect(screen.getByText("• Недостаточно текста")).toBeTruthy();
+    expect(screen.getByText("Недостаточно текста")).toBeTruthy();
     expect((screen.getByRole("button", { name: "Одобрить" }) as HTMLButtonElement).disabled).toBe(true);
     expect(detailRequests).toBe(2);
     await act(async () => { await vi.advanceTimersByTimeAsync(8000); });

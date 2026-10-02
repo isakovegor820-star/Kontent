@@ -275,7 +275,23 @@ function sectionIssues(section) {
       status: check.status,
       detail: cleanText(check.detail, 500),
       recommendation: cleanText(check.recommendation, 300),
+      // Доказательство едет вместе с замечанием: без URL пользователь не может
+      // проверить вывод, и рекомендация неотличима от догадки модели.
+      evidenceUrls: evidenceUrlsOf(check.evidence),
     }));
+}
+
+const EVIDENCE_URL_LIMIT = 10;
+
+function evidenceUrlsOf(items) {
+  const urls = [];
+  for (const item of Array.isArray(items) ? items : []) {
+    const url = String(item?.url || "").trim();
+    if (!url.startsWith("http") || urls.includes(url)) continue;
+    urls.push(url);
+    if (urls.length >= EVIDENCE_URL_LIMIT) break;
+  }
+  return Object.freeze(urls);
 }
 
 function buildTechnical(report, inventory) {
