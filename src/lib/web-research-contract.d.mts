@@ -28,13 +28,17 @@ export interface WebFinding {
     trust: number;
     registered: boolean;
   };
-  publishedAt: string;
+  publishedAt: string | null;
+  /** false — дату публикации установить не удалось; выводить её в текст нельзя. */
+  dateKnown: boolean;
   retrievedAt: string;
   ageDays: number;
   numbers: string[];
   corroboratingDomains: string[];
   corroborationCount: number;
   trusted: boolean;
+  /** Источник вне реестра и без независимого подтверждения: ссылаться можно, верить на слово — нет. */
+  unverifiedSource: boolean;
 }
 
 export interface WebFindingEvaluation {
@@ -82,6 +86,15 @@ export function extractClaimNumbers(value: unknown): string[];
 export function hasNumericClaim(value: unknown): boolean;
 export function classifyLegalStatus(value: unknown): { status: LegalStatus; confidence: number; marker: string | null };
 export function webFindingFingerprint(finding: Partial<WebFinding> | null | undefined): string;
-export function evaluateWebFinding(input: EvaluateWebFindingInput, options?: { now?: number; maxAgeDays?: number }): WebFindingEvaluation;
-export function buildWebFinding(input: EvaluateWebFindingInput, options?: { now?: number; maxAgeDays?: number }): WebFinding;
+export function evaluateWebFinding(input: EvaluateWebFindingInput, options?: {
+  now?: number;
+  maxAgeDays?: number;
+  /** Разрешить факт без даты публикации (диалог в Студии). По умолчанию запрещено. */
+  allowMissingPublishedAt?: boolean;
+  /** Пропустить источник вне реестра без подтверждения, пометив его как непроверенный. */
+  allowOpenSources?: boolean;
+}): WebFindingEvaluation;
+export function buildWebFinding(input: EvaluateWebFindingInput, options?: {
+  now?: number; maxAgeDays?: number; allowMissingPublishedAt?: boolean; allowOpenSources?: boolean;
+}): WebFinding;
 export function webFindingCitation(finding: WebFinding): string;

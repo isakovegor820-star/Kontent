@@ -312,15 +312,32 @@ export function evaluateWebFinding(input, options = {}) {
   const quoteCheck = verifyQuoteInSource(quote, sourceText);
   if (!quoteCheck.found) return reject(quoteCheck.reason || "quote_not_in_source");
 
+  // Дата публикации обязательна по умолчанию: именно она не даёт старой новости
+  // выглядеть свежей. Чат — единственное исключение: там Аврора отвечает человеку
+  // здесь и сейчас, и требование даты просто выбросило бы половину интернета.
+  // Разрешая факт без даты, модуль честно помечает его `dateKnown: false`, и промпт
+  // обязывает модель не приписывать такому факту никаких дат.
+  const allowMissingPublishedAt = options.allowMissingPublishedAt === true;
   const publishedRaw = input?.publishedAt;
-  if (!publishedRaw) return reject("missing_published_at");
-  const publishedMs = Date.parse(String(publishedRaw));
-  if (!Number.isFinite(publishedMs)) return reject("bad_published_at", { publishedAt: String(publishedRaw) });
-  if (publishedMs > now + MAX_CLOCK_SKEW_MS) return reject("future_dated_source", { publishedAt: new Date(publishedMs).toISOString() });
+  let publishedMs = now;
+  let dateKnown = Boolean(publishedRaw);
+  if (!publishedRaw) {
+    if (!allowMissingPublishedAt) return reject("missing_published_at");
+  } else {
+    publishedMs = Date.parse(String(publishedRaw));
+    if (!Number.isFinite(publishedMs)) {
+      if (!allowMissingPublishedAt) return reject("bad_published_at", { publishedAt: String(publishedRaw) });
+      publishedMs = now;
+      dateKnown = false;
+    }
+  }
+  if (dateKnown && publishedMs > now + MAX_CLOCK_SKEW_MS) {
+    return reject("future_dated_source", { publishedAt: new Date(publishedMs).toISOString() });
+  }
 
   const maxAgeDays = Number(options.maxAgeDays ?? WEB_FINDING_MAX_AGE_DAYS[kind]) || WEB_FINDING_MAX_AGE_DAYS.statement;
-  const ageDays = (now - publishedMs) / DAY_MS;
-  if (ageDays > maxAgeDays) {
+  const ageDays = dateKnown ? (now - publishedMs) / DAY_MS : 0;
+  if (dateKnown && ageDays > maxAgeDays) {
     return reject("stale_source", { ageDays: Math.round(ageDays), maxAgeDays });
   }
 
@@ -353,9 +370,16 @@ export function evaluateWebFinding(input, options = {}) {
     corroboratingDomains.add(itemSource.domain);
   }
   const soleSourceAllowed = WEB_RESEARCH_SOLE_SOURCE_TIERS.includes(source.tier);
-  if (!soleSourceAllowed && corroboratingDomains.size === 0) {
+  // Открытый источник без подтверждения по умолчанию отбрасывается: на его основе
+  // нельзя месяцами показывать автору «возможность». Чат — другое дело: там человек
+  // сам читает ответ и видит каждую ссылку, а реестр из сорока доменов никогда не
+  // покроет нишевую тему. Поэтому чат пропускает такой источник, но факт остаётся
+  // помеченным как неподтверждённый, и промпт требует атрибуции «по данным источника».
+  const allowOpenSources = options.allowOpenSources === true;
+  if (!soleSourceAllowed && corroboratingDomains.size === 0 && !allowOpenSources) {
     return reject("weak_source", { domain: source.domain, tier: source.tier });
   }
+  const sourceIsWeak = !soleSourceAllowed && corroboratingDomains.size === 0;
 
   const statusLabel = kind === "law" ? LEGAL_STATUS_LABELS[legalStatus] : null;
   const trusted = source.tier !== "open" && (soleSourceAllowed || corroboratingDomains.size > 0);
@@ -377,13 +401,16 @@ export function evaluateWebFinding(input, options = {}) {
       trust: source.trust,
       registered: source.registered,
     },
-    publishedAt: new Date(publishedMs).toISOString(),
+    publishedAt: dateKnown ? new Date(publishedMs).toISOString() : null,
+    dateKnown,
     retrievedAt: new Date(now).toISOString(),
     ageDays: Math.max(0, Math.round(ageDays)),
     numbers,
     corroboratingDomains: [...corroboratingDomains],
     corroborationCount: corroboratingDomains.size,
     trusted,
+    /** Источник вне реестра и без независимого подтверждения: ссылаться можно, верить на слово — нет. */
+    unverifiedSource: sourceIsWeak,
   };
   return { ok: true, finding: { ...finding, fingerprint: webFindingFingerprint(finding) } };
 }

@@ -92,6 +92,12 @@ import {
   type AiAttemptPhase,
 } from "@/lib/ai-attempt-budget";
 import { productDurationMs, recordChannelProductEvent, safeProductErrorCode } from "@/lib/server-product-events.mjs";
+import { chatResearchEnabled, chatResearchReasonText, detectChatResearchNeed } from "@/lib/chat-research.mjs";
+import {
+  buildChatEvidenceBlock,
+  chatResearchHeader,
+  runChatResearch,
+} from "@/lib/chat-research-runner.mjs";
 
 export const runtime = "nodejs";
 
@@ -608,6 +614,7 @@ function studioStreamResponse(
   semanticAdapter: SemanticEntailmentAdapter | null,
   deliverGeneratedResult: boolean,
   operation: { providerEngine: string; providerModel: string; channelId: number; startedAt: number },
+  research: { status: "none" | "ok" | "empty"; header: unknown } = { status: "none", header: null },
 ) {
   const settings = normalizePostSettings(params.postSettings);
   const topicIntent = params.referenceAdaptation ?? studioEditorialIntent(params);
@@ -1177,6 +1184,13 @@ function studioStreamResponse(
       "x-ai-limit": String(limit),
       "x-ai-pipeline": editorial ? "author-editor-stream" : "single-pass-stream",
       "x-ai-ack-required": "true",
+      // Клиент показывает пользователю, что Аврора сходила в интернет, и какие
+      // первоисточники она нашла. Заголовки приходят до тела потока, поэтому
+      // индикатор «Аврора смотрит в интернет…» появляется сразу.
+      "x-aurora-research-status": research.status,
+      ...(research.header
+        ? { "x-aurora-research": encodeURIComponent(JSON.stringify(research.header)) }
+        : {}),
     },
   });
 }
@@ -1543,6 +1557,54 @@ async function handlePOST(req: NextRequest) {
     return aiJson(requestId, { error: "channel_not_found", retryable: false }, { status: 422 });
   }
 
+  // ── Выход в интернет перед ответом ──────────────────────────────────────────
+  // Раньше на «напиши пост о выходе новой модели OpenAI» Студия не имела права
+  // ссылаться на внешние данные и вместо поста задавала встречный вопрос. Теперь
+  // Аврора сначала ищет проверяемые факты, а уже потом пишет по ним.
+  const researchDecision = interactiveStream && chatResearchEnabled(process.env)
+    ? detectChatResearchNeed({ task: clientRequestedTask, history: conversation })
+    : { needed: false, reasons: [], topic: "", categories: [], confidence: 0 };
+  let researchFindings: Awaited<ReturnType<typeof runChatResearch>>["findings"] = [];
+  let researchSources: Awaited<ReturnType<typeof runChatResearch>>["sources"] = [];
+  let researchCounts = { queries: 0, pages: 0 };
+  let researchEvidence = "";
+  if (researchDecision.needed) {
+    try {
+      const outcome = await runChatResearch({
+        topic: researchDecision.topic,
+        categories: researchDecision.categories,
+        language: "ANY",
+      });
+      researchFindings = outcome.findings;
+      researchSources = outcome.sources;
+      researchCounts = { queries: outcome.queries, pages: outcome.pages };
+      researchEvidence = buildChatEvidenceBlock(outcome.findings);
+      console.log("[ai-generate] research", {
+        requestId,
+        needed: true,
+        reasons: researchDecision.reasons.join(","),
+        queries: outcome.queries,
+        pages: outcome.pages,
+        findings: outcome.findings.length,
+        rejections: outcome.rejectionCodes.slice(0, 6).join(","),
+      });
+    } catch (error) {
+      // Недоступный поисковик не должен ломать генерацию: пишем без внешних фактов,
+      // но обязательно помечаем ответ как непроверенный, чтобы модель не выдумывала.
+      console.warn("[ai-generate] research failed", {
+        requestId,
+        errorName: error instanceof Error ? error.name : "Error",
+      });
+    }
+  }
+  const researchHeader = researchDecision.needed
+    ? chatResearchHeader(
+      { ...researchCounts, findings: researchFindings, sources: researchSources },
+      chatResearchReasonText(researchDecision.reasons),
+    )
+    : null;
+  const researchStatus = !researchDecision.needed ? "none" : researchFindings.length ? "ok" : "empty";
+
   const params: GenerateParams = {
     kind,
     task,
@@ -1575,6 +1637,7 @@ async function handlePOST(req: NextRequest) {
     channelQuality: channel?.quality,
     channelPostIndex: channel?.postIndex,
     knownFacts: channel?.facts,
+    researchEvidence: researchEvidence || undefined,
     conversation,
     postSettings: effectivePostSettings,
     grounding: interactiveStream ? "platform" : undefined,
@@ -1585,12 +1648,24 @@ async function handlePOST(req: NextRequest) {
     task,
     postSettings: effectivePostSettings,
     knownFacts: channel?.facts,
-    sourceEvidence: referenceContext?.factualGrounding ? [{
-      id: `rss-item-${referenceContext.factualGrounding.id}`,
-      text: referenceContext.factualGrounding.text,
-      source: "source",
-      countsForCapacity: true,
-    }] : undefined,
+    // Найденные в интернете факты входят в allow-list реестра как «curated source
+    // evidence» — ровно та категория, которую контракт реестра считает доказательством.
+    // Благодаря этому пост проверяется на соответствие реально найденному тексту,
+    // а не только на соответствие паспорту канала.
+    sourceEvidence: [
+      ...(referenceContext?.factualGrounding ? [{
+        id: `rss-item-${referenceContext.factualGrounding.id}`,
+        text: referenceContext.factualGrounding.text,
+        source: "source" as const,
+        countsForCapacity: true,
+      }] : []),
+      ...researchFindings.map((finding, index) => ({
+        id: `research-${index + 1}`,
+        text: `${finding.claim}\nИсточник: ${finding.source.label} — ${finding.source.url}`,
+        source: "source" as const,
+        countsForCapacity: true,
+      })),
+    ],
     profile: channel?.profile,
   });
   const factPreflight = preflightFactLedger(factLedger);
@@ -1709,6 +1784,7 @@ async function handlePOST(req: NextRequest) {
     semanticAdapter,
     deliverGeneratedResult,
     { providerEngine: chosen, providerModel: runtime.model, channelId, startedAt },
+    { status: researchStatus, header: researchHeader },
   );
 }
 

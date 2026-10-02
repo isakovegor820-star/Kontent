@@ -1,0 +1,125 @@
+import { describe, expect, it } from "vitest";
+
+import {
+  chatResearchEnabled,
+  chatResearchReasonText,
+  chatResearchTopic,
+  detectChatResearchNeed,
+} from "./chat-research.mjs";
+
+describe("тема для поиска", () => {
+  it("отрезает издательскую обёртку от темы", () => {
+    expect(chatResearchTopic("напиши пост - о выходе новой модель от OpenAi"))
+      .toBe("выходе новой модель от OpenAi");
+    expect(chatResearchTopic("Сделай пост про маркировку рекламы")).toBe("маркировку рекламы");
+    expect(chatResearchTopic("Подготовь публикацию на тему налоговой реформы")).toBe("налоговой реформы");
+  });
+
+  it("сохраняет исходный текст, если обёртки не было", () => {
+    expect(chatResearchTopic("что нового у OpenAI")).toBe("что нового у OpenAI");
+  });
+
+  it("переживает пустой ввод", () => {
+    expect(chatResearchTopic("")).toBe("");
+    expect(chatResearchTopic(null)).toBe("");
+  });
+});
+
+describe("нужен ли интернет", () => {
+  const need = (task, extra = {}) => detectChatResearchNeed({ task, ...extra });
+
+  it("идёт в интернет на запрос о выходе новой модели — это исходная жалоба", () => {
+    const decision = need("напиши пост - о выходе новой модель от OpenAi");
+    expect(decision.needed).toBe(true);
+    expect(decision.reasons).toContain("content_request");
+    expect(decision.reasons).toContain("external_event");
+    expect(decision.topic).toBe("выходе новой модель от OpenAi");
+  });
+
+  it("идёт в интернет для любой темы поста, а не только про OpenAI", () => {
+    for (const task of [
+      "напиши пост про рынок кофе в России",
+      "сделай пост о налоге на самозанятых",
+      "подготовь обзор новых видеокарт",
+      "нужен лонгрид о кибербезопасности малого бизнеса",
+    ]) {
+      expect(need(task).needed, task).toBe(true);
+    }
+  });
+
+  it("идёт в интернет по норме права и берёт категорию «право»", () => {
+    const decision = need("какие законы вступили в силу с 1 марта 2026 года");
+    expect(decision.needed).toBe(true);
+    expect(decision.categories).toContain("law");
+    expect(decision.reasons).toContain("legal");
+  });
+
+  it("идёт в интернет по прямой просьбе проверить", () => {
+    const decision = need("проверь, что там с новыми тарифами связи");
+    expect(decision.needed).toBe(true);
+    expect(decision.reasons).toContain("explicit_request");
+  });
+
+  it("идёт в интернет по бенчмаркам", () => {
+    const decision = need("сравни новые модели по бенчмаркам");
+    expect(decision.needed).toBe(true);
+    expect(decision.categories).toContain("benchmark");
+  });
+
+  it("не идёт в сеть на чистую редактуру", () => {
+    expect(need("сократи этот текст вдвое").needed).toBe(false);
+    expect(need("перепиши последний абзац другими словами").needed).toBe(false);
+    expect(need("сделай короче и мягче").needed).toBe(false);
+  });
+
+  it("не идёт в сеть на вопросы о самой платформе", () => {
+    expect(need("что ты умеешь").needed).toBe(false);
+    expect(need("как настроить автопилот").needed).toBe(false);
+    expect(need("какие у меня рубрики в паспорте канала").needed).toBe(false);
+  });
+
+  it("не идёт в сеть на внутренние темы канала", () => {
+    expect(need("напиши пост про наши рубрики").needed).toBe(false);
+    expect(need("перепиши наши посты в другом тоне").needed).toBe(false);
+  });
+
+  it("наследует тему из предыдущей реплики на короткий ответ", () => {
+    const decision = detectChatResearchNeed({
+      task: "да, давай",
+      history: [{ role: "user", text: "напиши пост о выходе новой модели OpenAI" }],
+    });
+    expect(decision.needed).toBe(true);
+    expect(decision.topic).toContain("OpenAI");
+  });
+
+  it("на пустом вводе ничего не делает", () => {
+    expect(need("").needed).toBe(false);
+    expect(detectChatResearchNeed({}).needed).toBe(false);
+  });
+
+  it("возвращает человекочитаемую причину для журнала", () => {
+    expect(chatResearchReasonText(["content_request", "external_event"]))
+      .toBe("Запрос на пост по внешней теме, Событие во внешнем мире");
+    expect(chatResearchReasonText([])).toBe("Тема требует внешних данных");
+  });
+});
+
+describe("выключатель выхода в интернет", () => {
+  it("по умолчанию включён в боевом окружении", () => {
+    expect(chatResearchEnabled({})).toBe(true);
+    expect(chatResearchEnabled({ NODE_ENV: "production" })).toBe(true);
+  });
+
+  it("молчит под тестовым раннером, иначе прогон открывал бы реальные соединения", () => {
+    // safe-http ходит через node:https и не видит подменённый global.fetch.
+    expect(chatResearchEnabled({ VITEST: "true" })).toBe(false);
+  });
+
+  it("явное решение владельца сильнее умолчания", () => {
+    expect(chatResearchEnabled({ VITEST: "true", AURORA_CHAT_RESEARCH: "on" })).toBe(true);
+    expect(chatResearchEnabled({ AURORA_CHAT_RESEARCH: "off" })).toBe(false);
+    expect(chatResearchEnabled({ AURORA_CHAT_RESEARCH: "false" })).toBe(false);
+    expect(chatResearchEnabled({ AURORA_CHAT_RESEARCH: "1" })).toBe(true);
+    expect(chatResearchEnabled({ AURORA_CHAT_RESEARCH: "enabled" })).toBe(true);
+  });
+});

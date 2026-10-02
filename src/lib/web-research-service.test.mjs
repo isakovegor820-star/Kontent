@@ -50,13 +50,22 @@ describe("план исследования", () => {
     expect(() => planWebResearch({})).toThrow(/нужна тема/u);
   });
 
-  it("ставит site:-запросы к первоисточникам выше обычных", () => {
+  it("по умолчанию не использует оператор site:, которому движки не подчиняются", () => {
+    // Замер: Bing RSS и DuckDuckGo HTML оператор игнорируют и возвращают статьи
+    // о слове «site» — словари, Google Sites и казино-спам. Приоритетные site:-запросы
+    // забивали пул кандидатов мусором, поэтому доверие к источнику теперь даёт реестр
+    // доменов, а не оператор поиска.
     const plan = planWebResearch({ topic: "маркировка рекламы", categories: ["law"] });
+    expect(plan.siteScopedCount).toBe(0);
+    expect(plan.queries.every((query) => !query.siteScoped)).toBe(true);
+    expect(plan.queries.length).toBeGreaterThan(0);
+  });
+
+  it("включает site:-запросы только по явной просьбе", () => {
+    const plan = planWebResearch({ topic: "маркировка рекламы", categories: ["law"], includeScoped: true });
     const scoped = plan.queries.filter((query) => query.siteScoped);
     expect(scoped.length).toBeGreaterThan(0);
     expect(scoped[0].text).toMatch(/^site:/u);
-    expect(scoped[0].text).toContain("маркировка");
-    expect(plan.queries[0].siteScoped).toBe(true);
   });
 
   it("не превышает бюджет запросов", () => {
