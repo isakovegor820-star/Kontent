@@ -126,6 +126,29 @@ export type ReportView = {
 
 export type ArticleStats = { total: number; pending: number; published: number };
 
+export type SiteCompetitorSummary = {
+  domain: string;
+  pages: number;
+  avgWords: number;
+  pagesWithSchema: number;
+  hasOrganization: boolean;
+  hasFaq: boolean;
+  clientRenderedPages?: number;
+  themes: Array<{ theme: string; occurrences: number }>;
+  checkedAt?: string | null;
+};
+
+export type SiteCompetitor = {
+  id: number;
+  domain: string;
+  canonicalUrl: string;
+  status: "pending" | "ready" | "error";
+  lastError: string | null;
+  summary: SiteCompetitorSummary | null;
+  crawledAt: string | null;
+  createdAt: string | null;
+};
+
 export type SiteAuditRun = {
   id: number;
   runRevision: number;
@@ -145,6 +168,7 @@ export type SiteDetails = {
   reports: ReportView[];
   articleStats?: ArticleStats | null;
   audits?: SiteAuditRun[];
+  competitors?: SiteCompetitor[];
 };
 
 export const REPORT_KIND_LABEL: Record<ReportView["kind"], string> = {

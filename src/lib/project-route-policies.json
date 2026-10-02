@@ -1325,6 +1325,21 @@
     "policy": "project"
   },
   {
+    "path": "/api/sites/[id]/competitors",
+    "method": "GET",
+    "policy": "project"
+  },
+  {
+    "path": "/api/sites/[id]/competitors",
+    "method": "PUT",
+    "policy": "project"
+  },
+  {
+    "path": "/api/sites/[id]/competitors",
+    "method": "DELETE",
+    "policy": "project"
+  },
+  {
     "path": "/api/sites/[id]/settings",
     "method": "PATCH",
     "policy": "project"

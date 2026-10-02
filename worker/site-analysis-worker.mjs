@@ -15,6 +15,7 @@ import {
 import { finalizeWorkerAiUsage } from "./ai-usage-reservation.mjs";
 import { runSiteInterview, SiteInterviewWorkerError } from "./site-analysis-interview.mjs";
 import { persistSiteProfileForAnalysis } from "./site-profile-persistence.mjs";
+import { refreshSiteCompetitors } from "./site-competitors-refresh.mjs";
 
 const SITE_ANALYSIS_QUEUE = "site-analysis";
 
@@ -214,6 +215,7 @@ export async function processSiteAnalysisJob(pool, data, dependencies = {}) {
   const interviewRunner = dependencies.runInterview || runSiteInterview;
   const finalizeUsage = dependencies.finalizeUsage || finalizeWorkerAiUsage;
   const persistSiteProfile = dependencies.persistSiteProfile || persistSiteProfileForAnalysis;
+  const refreshCompetitors = dependencies.refreshCompetitors || refreshSiteCompetitors;
   let interviewRun = null;
   let failureStage = "robots";
   const heartbeat = setInterval(() => {
@@ -564,6 +566,20 @@ export async function processSiteAnalysisJob(pool, data, dependencies = {}) {
         throw new SiteInterviewWorkerError("quota_commit_failed", "Quota commit did not reach committed state.", { retryable: true });
       }
       await client.query("commit");
+
+      // Конкуренты обходятся после основного коммита: недоступный чужой сайт не должен
+      // отменять аудит клиента, поэтому ошибки здесь только логируются.
+      if (analysis.site_id) {
+        try {
+          await refreshCompetitors(pool, { siteId: Number(analysis.site_id), crawl });
+        } catch (error) {
+          console.error("[site-analysis] competitor refresh", {
+            analysisId,
+            errorName: error instanceof Error ? error.name : "Error",
+          });
+        }
+      }
+
       return {
         ok: true,
         analysisId,

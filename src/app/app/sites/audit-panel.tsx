@@ -9,7 +9,9 @@ import { cn } from "@/lib/utils";
 
 import { formatDate } from "./client";
 import { ProbePanel } from "./probe-panel";
-import { SEVERITY_LABEL, SEVERITY_TONE, analysisLabel, plural, type AnalysisView, type Gap, type Issue, type ProfileView, type SiteAuditRun } from "./types";
+import { compareWithCompetitors, SITE_COMPETITOR_LIMIT } from "@/lib/site-competitors/summary.mjs";
+
+import { SEVERITY_LABEL, SEVERITY_TONE, analysisLabel, plural, type AnalysisView, type Gap, type Issue, type ProfileView, type SiteAuditRun, type SiteCompetitor } from "./types";
 
 /** Из вида пробела понятно, какой материал его закрывает. */
 function articleTypeForGap(gap: Gap): string {
@@ -44,6 +46,10 @@ type Props = {
   analysisActive: boolean;
   maxPages: number;
   audits: SiteAuditRun[];
+  competitors: SiteCompetitor[];
+  competitorBusy: boolean;
+  onAddCompetitor: (url: string) => Promise<boolean>;
+  onRemoveCompetitor: (id: number) => Promise<void>;
   onMaxPagesChange: (value: number) => void;
   onReanalyze: () => void;
   /** Пробел превращается в задание на материал: тема и тип уже выбраны. */
@@ -80,11 +86,20 @@ export function AuditPanel({
   analysisActive,
   maxPages,
   audits,
+  competitors,
+  competitorBusy,
+  onAddCompetitor,
+  onRemoveCompetitor,
   onMaxPagesChange,
   onReanalyze,
   onCreateMaterial,
 }: Props) {
   const [showAllIssues, setShowAllIssues] = useState(false);
+  const [competitorUrl, setCompetitorUrl] = useState("");
+  const comparison = useMemo(
+    () => compareWithCompetitors(profile, competitors),
+    [profile, competitors],
+  );
   const issues = useMemo(() => (profile ? issueRows(profile) : []), [profile]);
   const visibleIssues = showAllIssues ? issues : issues.slice(0, 6);
   const maxTopicPages = Math.max(1, ...(profile?.topics.map((topic) => topic.pageCount) ?? [1]));
@@ -358,6 +373,137 @@ export function AuditPanel({
           <p className="type-caption border-t border-line px-5 py-3 text-text-3 sm:px-6">
             Показаны 8 из {profile.gaps.length}. Остальные закроются по мере выхода материалов.
           </p>
+        )}
+      </Card>
+
+      {/* Сравнение с конкурентами: аудит смотрел только внутрь сайта */}
+      <Card>
+        <div className="flex flex-wrap items-center justify-between gap-3 border-b border-line px-5 py-4 sm:px-6">
+          <div>
+            <h3 className="type-h3 text-text">Сравнение с конкурентами · {competitors.length} из {SITE_COMPETITOR_LIMIT}</h3>
+            <p className="type-caption mt-0.5 text-text-3">
+              Аврора читает по 10 публичных страниц конкурента и сравнивает темы, объём и разметку. Обновляется вместе с аудитом.
+            </p>
+          </div>
+        </div>
+
+        {competitors.length === 0 ? (
+          <div className="px-5 py-5 sm:px-6">
+            <p className="type-secondary text-text-2">
+              Пока сравнивать не с чем. Добавьте до трёх сайтов конкурентов — Аврора прочитает их открытые страницы и покажет, где вы отстаёте, а где опережаете.
+            </p>
+          </div>
+        ) : (
+          <>
+            <div className="overflow-x-auto">
+              <table className="w-full min-w-[640px]">
+                <thead>
+                  <tr className="type-caption text-text-3">
+                    <th className="px-5 py-3 text-left font-semibold sm:px-6">Сайт</th>
+                    <th className="px-3 py-3 text-left font-semibold">Страниц</th>
+                    <th className="px-3 py-3 text-left font-semibold">Средняя длина</th>
+                    <th className="px-3 py-3 text-left font-semibold">С разметкой</th>
+                    <th className="px-3 py-3 text-left font-semibold">Organization</th>
+                    <th className="px-3 py-3 text-left font-semibold">FAQ</th>
+                    <th className="px-5 py-3 text-right font-semibold sm:px-6"> </th>
+                  </tr>
+                </thead>
+                <tbody className="type-caption">
+                  <tr className="border-t border-line bg-surface-2">
+                    <td className="px-5 py-3 sm:px-6">
+                      <span className="type-body-strong text-text">Ваш сайт</span>
+                    </td>
+                    <td className="px-3 py-3 text-text-2">{comparison.own?.pages ?? "—"}</td>
+                    <td className="px-3 py-3 text-text-2">{comparison.own?.avgWords ? `${comparison.own.avgWords} слов` : "—"}</td>
+                    <td className="px-3 py-3 text-text-2">
+                      {comparison.own ? `${comparison.own.pagesWithSchema} из ${comparison.own.pages}` : "—"}
+                    </td>
+                    <td className="px-3 py-3">{comparison.own?.hasOrganization ? <Badge tone="success">есть</Badge> : <Badge tone="fire">нет</Badge>}</td>
+                    <td className="px-3 py-3">{comparison.own?.hasFaq ? <Badge tone="success">есть</Badge> : <Badge tone="fire">нет</Badge>}</td>
+                    <td className="px-5 py-3 sm:px-6" />
+                  </tr>
+                  {competitors.map((item) => (
+                    <tr key={item.id} className="border-t border-line">
+                      <td className="px-5 py-3 sm:px-6">
+                        <a href={item.canonicalUrl} target="_blank" rel="noopener noreferrer" className="type-body-strong text-brand hover:underline">
+                          {item.domain}
+                        </a>
+                        {item.status === "error" && (
+                          <span className="type-caption mt-0.5 block text-fire-text">
+                            не прочитан{item.lastError ? `: ${item.lastError}` : ""} — обновите аудит
+                          </span>
+                        )}
+                        {item.status === "pending" && <span className="type-caption mt-0.5 block text-text-3">ждёт обхода — обновите аудит</span>}
+                      </td>
+                      <td className="px-3 py-3 text-text-2">{item.summary ? item.summary.pages : "—"}</td>
+                      <td className="px-3 py-3 text-text-2">{item.summary ? `${item.summary.avgWords} слов` : "—"}</td>
+                      <td className="px-3 py-3 text-text-2">{item.summary ? `${item.summary.pagesWithSchema} из ${item.summary.pages}` : "—"}</td>
+                      <td className="px-3 py-3">{item.summary ? (item.summary.hasOrganization ? <Badge tone="success">есть</Badge> : <Badge tone="fire">нет</Badge>) : "—"}</td>
+                      <td className="px-3 py-3">{item.summary ? (item.summary.hasFaq ? <Badge tone="success">есть</Badge> : <Badge tone="neutral">нет</Badge>) : "—"}</td>
+                      <td className="px-5 py-3 text-right sm:px-6">
+                        <Button type="button" size="sm" variant="ghost" disabled={competitorBusy} onClick={() => void onRemoveCompetitor(item.id)}>
+                          Убрать
+                        </Button>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+
+            {(comparison.missingThemes.length > 0 || comparison.deeperCompetitors.length > 0) && (
+              <div className="space-y-3 border-t border-line px-5 py-4 sm:px-6">
+                {comparison.missingThemes.length > 0 && (
+                  <div>
+                    <p className="type-label text-text-2">Темы, которых у вас нет</p>
+                    <ul className="mt-2 flex flex-wrap gap-2">
+                      {comparison.missingThemes.map((item) => (
+                        <li key={`${item.competitor}:${item.theme}`}>
+                          <Badge tone="fire">{item.theme} · {item.competitor}</Badge>
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+                {comparison.deeperCompetitors.length > 0 && (
+                  <p className="type-caption text-text-2">
+                    Средняя страница длиннее у: {comparison.deeperCompetitors.map((item) => `${item.domain} (${item.avgWords} слов)`).join(", ")}
+                    {comparison.own?.avgWords ? ` — у вас ${comparison.own.avgWords}` : ""}.
+                  </p>
+                )}
+              </div>
+            )}
+          </>
+        )}
+
+        {competitors.length < SITE_COMPETITOR_LIMIT && (
+          <form
+            className="flex flex-wrap items-end gap-3 border-t border-line bg-surface-2 px-5 py-4 sm:px-6"
+            onSubmit={async (event) => {
+              event.preventDefault();
+              const added = await onAddCompetitor(competitorUrl.trim());
+              if (added) setCompetitorUrl("");
+            }}
+          >
+            <label className="type-caption min-w-[240px] flex-1 text-text-3" htmlFor="competitor-url">
+              Адрес сайта конкурента
+              <input
+                id="competitor-url"
+                type="url"
+                value={competitorUrl}
+                onChange={(event) => setCompetitorUrl(event.target.value)}
+                placeholder="https://competitor.ru"
+                className="type-input mt-1 w-full rounded-sm border border-line bg-surface px-3 py-2 text-text"
+                required
+              />
+            </label>
+            <Button type="submit" size="sm" variant="secondary" disabled={competitorBusy || competitorUrl.trim().length === 0}>
+              {competitorBusy ? "Добавляем…" : "Добавить конкурента"}
+            </Button>
+            <span className="type-caption w-full text-text-3 sm:w-auto">
+              Читаются только открытые страницы, как и у вашего сайта.
+            </span>
+          </form>
         )}
       </Card>
 

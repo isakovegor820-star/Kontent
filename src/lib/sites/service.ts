@@ -4,6 +4,7 @@ import { serializeSiteAnalysis, siteAnalysisFingerprint, type SiteAnalysisRow } 
 import { enqueueSiteAnalysis, hasSiteAnalysisWorker } from "../site-analysis-queue";
 import { SiteCrawlerError, normalizeSiteLimits, normalizeSiteTarget } from "../site-crawler.mjs";
 import { hostedSectionOrigin } from "../site-destinations/index.mjs";
+import { listSiteCompetitors } from "./competitors-service";
 import {
   generateSiteVerificationToken,
   siteVerificationInstructions,
@@ -429,7 +430,7 @@ export async function listSiteAudits(db: Queryable, siteId: number, limit = 12) 
 
 export async function loadSiteDetails(db: Queryable, site: SiteRow) {
   const siteId = Number(site.id);
-  const [analysis, profile, reports, articles, audits] = await Promise.all([
+  const [analysis, profile, reports, articles, audits, competitors] = await Promise.all([
     db.query<SiteAnalysisRow>(
       `select ${SITE_ANALYSIS_FIELDS}
          from site_analysis_jobs
@@ -465,6 +466,7 @@ export async function loadSiteDetails(db: Queryable, site: SiteRow) {
       [siteId],
     ),
     listSiteAudits(db, siteId),
+    listSiteCompetitors(db, siteId),
   ]);
   const articleRow = articles.rows[0];
   return {
@@ -478,6 +480,7 @@ export async function loadSiteDetails(db: Queryable, site: SiteRow) {
       published: Number(articleRow?.published ?? 0),
     },
     audits,
+    competitors,
   };
 }
 

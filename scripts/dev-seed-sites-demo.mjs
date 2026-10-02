@@ -18,6 +18,7 @@ import pg from "pg";
 
 import { buildSiteAnalysisReport, extractSitePage, DEFAULT_SITE_CRAWL_LIMITS } from "../src/lib/site-crawler.mjs";
 import { buildSiteProfile } from "../src/lib/site-profile/profile.mjs";
+import { buildCompetitorSummary } from "../src/lib/site-competitors/summary.mjs";
 import { buildMonthlyReport } from "../src/lib/site-report/monthly.mjs";
 import { persistSiteProfileForAnalysis } from "../worker/site-profile-persistence.mjs";
 
@@ -316,6 +317,48 @@ const ARTICLES = [
   },
 ];
 
+/* --------------------------------------------------------- конкуренты */
+
+function competitorPages(domain, { pages, words, schema }) {
+  const base = `https://${domain}`;
+  return Array.from({ length: pages }, (_, index) => {
+    const path = index === 0 ? "/" : `/uslugi-${index}`;
+    const ld = schema && index < 2
+      ? `<script type="application/ld+json">{"@type":"${index === 0 ? "Organization" : "FAQPage"}"}</script>`
+      : "";
+    const text = `Услуги по банкротству и налогам: разбор практики, сроки, стоимость и риски. ${"Подробности и примеры из практики. ".repeat(Math.round(words / 6))}`;
+    return extractSitePage(html({
+      title: `${domain} — услуга ${index + 1}`,
+      description: `Практика по банкротству и налогам: ${domain}`,
+      h1: `Услуга ${index + 1}`,
+      body: `<p>${text}</p>`,
+      schema: null,
+    }).replace("</head>", `${ld}</head>`), new URL(path, base), 200);
+  });
+}
+
+async function seedCompetitors(site, definitions) {
+  for (const definition of definitions) {
+    const created = await client.query(
+      `insert into site_competitors (site_id, project_id, user_id, domain, canonical_url)
+       values ($1, $2, $3, $4, $5)
+       on conflict (site_id, domain) do nothing
+       returning id`,
+      [site.id, site.project_id, site.user_id, definition.domain, `https://${definition.domain}/`],
+    );
+    if (!created.rows[0]) continue;
+    const pages = competitorPages(definition.domain, definition);
+    const report = buildSiteAnalysisReport(new URL(`https://${definition.domain}/`), pages, DEFAULT_SITE_CRAWL_LIMITS, {});
+    const summary = buildCompetitorSummary({ domain: definition.domain, pages, report });
+    await client.query(
+      `update site_competitors
+          set status = 'ready', summary = $3::jsonb, crawled_at = now(), updated_at = now()
+        where id = $1 and site_id = $2`,
+      [created.rows[0].id, site.id, JSON.stringify(summary)],
+    );
+  }
+}
+
 /* ------------------------------------------------------------------ seed */
 
 const client = new pg.Client({ connectionString: url.href });
@@ -406,6 +449,14 @@ async function seedSite(site, pages, { withArticles }) {
         ],
       );
     }
+  }
+
+  if (withArticles) {
+    // Конкуренты: один крупнее и с разметкой, второй слабее — сравнение должно быть наглядным.
+    await seedCompetitors(site, [
+      { domain: "rival-bankrot.ru", pages: 8, words: 420, schema: true },
+      { domain: "pravo-help.ru", pages: 4, words: 180, schema: false },
+    ]);
   }
 
   return { analysisId: current.analysisId, profileId: current.profileId, reportId: current.reportId, monthlyReportId: Number(monthlyRow.rows[0].id), profile };
