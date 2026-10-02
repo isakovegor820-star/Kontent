@@ -102,6 +102,8 @@ export default function SitesPage() {
   const [reportRequested, setReportRequested] = useState(false);
   const [retryingAi, setRetryingAi] = useState<string | null>(null);
   const [articleStats, setArticleStats] = useState<ArticleStats | null>(null);
+  // Заготовка материала из пробела: тема и тип приходят из аудита, форма открывается сразу.
+  const [materialDraft, setMaterialDraft] = useState<{ token: number; brief: string; type: string } | null>(null);
   const [menuOpen, setMenuOpen] = useState(false);
   const [editOpen, setEditOpen] = useState(false);
   const [editUrl, setEditUrl] = useState("");
@@ -848,12 +850,18 @@ export default function SitesPage() {
                 maxPages={maxPages}
                 onMaxPagesChange={setMaxPages}
                 onReanalyze={reanalyze}
-                onTab={setTab}
+                onCreateMaterial={(input) => {
+                  setMaterialDraft({ token: Date.now(), brief: input.brief, type: input.type });
+                  setTab("materials");
+                }}
               />
             )}
 
             {tab === "materials" && (
               <ArticlesPanel
+                key={materialDraft ? `${selected.id}:${materialDraft.token}` : `${selected.id}`}
+                initialBrief={materialDraft}
+                onDraftConsumed={() => setMaterialDraft(null)}
                 siteId={selected.id}
                 verified={selected.verification.state === "verified"}
                 hasDestinations={destinationCount > 0}

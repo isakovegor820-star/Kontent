@@ -9,7 +9,29 @@ import { cn } from "@/lib/utils";
 
 import { formatDate } from "./client";
 import { ProbePanel } from "./probe-panel";
-import { SEVERITY_LABEL, SEVERITY_TONE, plural, type AnalysisView, type Issue, type ProfileView, type SiteTab } from "./types";
+import { SEVERITY_LABEL, SEVERITY_TONE, plural, type AnalysisView, type Gap, type Issue, type ProfileView } from "./types";
+
+/** Из вида пробела понятно, какой материал его закрывает. */
+function articleTypeForGap(gap: Gap): string {
+  switch (gap.kind) {
+    case "page_type_missing":
+      return gap.key.includes("article") ? "evergreen_guide" : "machine_readable_page";
+    case "schema_missing":
+      return "machine_readable_page";
+    case "question_without_answer":
+      return "audience_answer";
+    default:
+      return "evergreen_guide";
+  }
+}
+
+/** Тема материала: для вопроса — сам вопрос, иначе формулировка пробела. */
+function briefForGap(gap: Gap): string {
+  const brief = gap.kind === "question_without_answer"
+    ? `${gap.label}. Ответить прямо и по делу, с опорой на факты сайта.`
+    : `${gap.label}. ${gap.detail}`;
+  return brief.slice(0, 400);
+}
 
 type Props = {
   siteId: number;
@@ -23,7 +45,8 @@ type Props = {
   maxPages: number;
   onMaxPagesChange: (value: number) => void;
   onReanalyze: () => void;
-  onTab: (tab: SiteTab) => void;
+  /** Пробел превращается в задание на материал: тема и тип уже выбраны. */
+  onCreateMaterial: (input: { brief: string; type: string }) => void;
 };
 
 const SCORE_LABEL = (value: number | null) => (value === null ? "не измерено" : value >= 85 ? "сильно" : value >= 60 ? "средне" : "слабо");
@@ -57,7 +80,7 @@ export function AuditPanel({
   maxPages,
   onMaxPagesChange,
   onReanalyze,
-  onTab,
+  onCreateMaterial,
 }: Props) {
   const [showAllIssues, setShowAllIssues] = useState(false);
   const issues = useMemo(() => (profile ? issueRows(profile) : []), [profile]);
@@ -283,7 +306,11 @@ export function AuditPanel({
             <p className="type-caption mt-0.5 text-text-3">Из пробела можно сразу поставить материал — Аврора подставит тему и источники</p>
           </div>
           {profile.gaps.length > 0 && (
-            <Button type="button" size="sm" onClick={() => onTab("materials")}>
+            <Button
+              type="button"
+              size="sm"
+              onClick={() => onCreateMaterial({ brief: briefForGap([...highGaps, ...otherGaps][0]), type: articleTypeForGap([...highGaps, ...otherGaps][0]) })}
+            >
               <Sparkles className="h-4 w-4" aria-hidden />Предложить материалы
             </Button>
           )}
@@ -301,7 +328,14 @@ export function AuditPanel({
                 <p className="type-body-strong mt-2 text-text">{gap.label}</p>
                 <p className="type-caption mt-1 text-text-2">{gap.detail}</p>
                 <div className="mt-3 flex flex-wrap items-center gap-3">
-                  <Button type="button" size="sm" variant="secondary" onClick={() => onTab("materials")}>Создать материал</Button>
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="secondary"
+                    onClick={() => onCreateMaterial({ brief: briefForGap(gap), type: articleTypeForGap(gap) })}
+                  >
+                    Создать материал
+                  </Button>
                   {gap.evidenceUrls.length > 0 && (
                     <a
                       href={gap.evidenceUrls[0]}
