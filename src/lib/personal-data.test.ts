@@ -47,7 +47,7 @@ describe("personal data export", () => {
   });
 
   it("fails loudly when the account is gone", async () => {
-    const { client: query, query: queryMock } = client([{ match: "from users where id", rows: [] }]);
+    const { client: query } = client([{ match: "from users where id", rows: [] }]);
     await expect(collectUserData(query as never, 404)).rejects.toThrow("user_not_found");
   });
 });

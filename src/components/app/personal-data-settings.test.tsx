@@ -27,8 +27,8 @@ describe("personal data settings section", () => {
       createObjectURL: vi.fn(() => "blob:mock"),
       revokeObjectURL: vi.fn(),
     }));
-    fetchMock.mockImplementation((url: string, init?: RequestInit) => {
-      if (String(url).includes("account-deletion") && init?.method === "POST") {
+    fetchMock.mockImplementation((url: string, _init?: RequestInit) => {
+      if (String(url).includes("account-deletion") && _init?.method === "POST") {
         return jsonResponse({ ok: true, deleted: true });
       }
       if (String(url).includes("account-deletion")) {
@@ -121,8 +121,8 @@ describe("personal data settings section", () => {
   });
 
   it("offers the project members to hand the project over to", async () => {
-    fetchMock.mockImplementation((url: string, init?: RequestInit) => {
-      if (String(url).includes("account-deletion") && init?.method === "POST") {
+    fetchMock.mockImplementation((url: string, _init?: RequestInit) => {
+      if (String(url).includes("account-deletion") && _init?.method === "POST") {
         return jsonResponse({ ok: true, deleted: true });
       }
       if (String(url).includes("account-deletion")) {
@@ -163,7 +163,7 @@ describe("personal data settings section", () => {
   });
 
   it("explains when there is nobody to hand the project over to", async () => {
-    fetchMock.mockImplementation((url: string, init?: RequestInit) => {
+    fetchMock.mockImplementation((url: string) => {
       if (String(url).includes("account-deletion")) {
         return jsonResponse({
           ok: true,
