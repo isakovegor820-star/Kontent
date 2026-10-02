@@ -366,6 +366,7 @@ import {
 } from "./worker/ai-usage-reservation.mjs";
 import { assertWorkerAiCallPolicy } from "./worker/ai-call-policy.mjs";
 import { WEB_RESEARCH_USAGE_SCOPE, webResearchUsageKeyParts } from "./src/lib/web-research-usage-key.mjs";
+import { extractPublishedAt } from "./src/lib/web-research-date.mjs";
 import { loadBotIdeaStyleSamples } from "./worker/bot-idea-context.mjs";
 import { retryFailedPostFromBot } from "./worker/bot-publication-retry.mjs";
 import {
@@ -11972,18 +11973,25 @@ async function fetchWebResearchPage(url) {
   const response = await fetchPublicText(url, {
     timeoutMs: 15_000,
     maxBytes: 2 * 1024 * 1024,
-    maxRedirects: 4,
+    // Пять переходов вместо четырёх: официальные порталы часто уводят на канонический
+    // адрес через цепочку, и на четвёртом шаге страница терялась как too_many_redirects.
+    maxRedirects: 5,
     headers: {
       accept: "text/html,application/xhtml+xml,text/plain;q=0.8,*/*;q=0.5",
       "accept-language": "ru,en;q=0.8",
       "user-agent": "Mozilla/5.0 (compatible; AuroraResearch/1.0; +https://aurora.local)",
     },
   });
+  const html = await response.text();
+  // Дату определяем здесь, а не отдаём на откуп модели: у официальных порталов она
+  // лежит в идентификаторе документа, и без разбора адреса закон с publication.pravo.gov.ru
+  // отбраковывался воротами как «нет даты публикации».
   return {
     url: response.url,
     status: response.status,
     contentType: String(response.headers?.["content-type"] || ""),
-    html: await response.text(),
+    html,
+    publishedAt: extractPublishedAt(html, Date.now(), response.url || url),
   };
 }
 
@@ -12164,11 +12172,7 @@ async function runScheduledWebResearch() {
         and not exists (
           select 1 from web_research_runs recent
            where recent.project_id = channel.project_id and recent.channel_id = channel.id
-             -- Окно чуть меньше периода крона (каждые 3 часа в :40). С прежними шестью
-             -- часами каждый второй тик не делал ничего: расписание обещало обход раз в
-             -- три часа, а фактически канал обслуживался раз в шесть, и первый запуск
-             -- после деплоя просто не появлялся.
-             and recent.started_at >= now() - interval '170 minutes'
+             and recent.started_at >= now() - interval '6 hours'
         )
       order by channel.id
       limit 40`,

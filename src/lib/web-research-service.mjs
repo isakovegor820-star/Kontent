@@ -224,7 +224,10 @@ export async function runWebResearch(request = {}, deps = {}) {
         quote: draft?.quote,
         sourceUrl: response?.url || page.url,
         sourceText: pageText,
-        publishedAt: draft?.publishedAt || page.publishedAt,
+        // Порядок важен: сначала дата, названная моделью по тексту страницы, затем
+        // дата, извлечённая загрузчиком из разметки или адреса, и лишь потом — из
+        // поисковой выдачи.
+        publishedAt: draft?.publishedAt || response?.publishedAt || page.publishedAt,
         legalStatus: draft?.legalStatus,
         title: draft?.title || page.title,
         language: draftLanguage || (plan.language === "EN" ? "EN" : "RU"),
