@@ -60,11 +60,16 @@ export function AuthScreen({ mode, intent = "platform" }: { mode: AuthMode; inte
   const nameRef = useRef<HTMLInputElement>(null);
   const emailRef = useRef<HTMLInputElement>(null);
   const passwordRef = useRef<HTMLInputElement>(null);
+  const consentRef = useRef<HTMLInputElement>(null);
 
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [showPassword, setShowPassword] = useState(false);
+  // Согласие на обработку ПДн — отдельное действие пользователя, а не следствие
+  // отправки формы: по умолчанию снято, без него регистрация не уходит.
+  const [consent, setConsent] = useState(false);
+  const [consentError, setConsentError] = useState<string>();
   const [nameError, setNameError] = useState<string>();
   const [emailError, setEmailError] = useState<string>();
   const [passwordError, setPasswordError] = useState<string>();
@@ -95,10 +100,17 @@ export function AuthScreen({ mode, intent = "platform" }: { mode: AuthMode; inte
       : passwordProblem
         ? passwordProblemMessage(passwordProblem)
         : undefined;
+    // Согласие обязательно только при регистрации: при входе данные уже
+    // обрабатываются на основании существующего аккаунта.
+    const nextConsentError =
+      isRegistration && !consent
+        ? "Отметьте согласие на обработку персональных данных — без него аккаунт создать нельзя."
+        : undefined;
 
     setNameError(nextNameError);
     setEmailError(nextEmailError);
     setPasswordError(nextPasswordError);
+    setConsentError(nextConsentError);
     setFormError(undefined);
 
     if (nextNameError) {
@@ -113,6 +125,10 @@ export function AuthScreen({ mode, intent = "platform" }: { mode: AuthMode; inte
       passwordRef.current?.focus();
       return;
     }
+    if (nextConsentError) {
+      consentRef.current?.focus();
+      return;
+    }
 
     setPending(true);
     try {
@@ -122,7 +138,7 @@ export function AuthScreen({ mode, intent = "platform" }: { mode: AuthMode; inte
         body: JSON.stringify({
           email: email.trim(),
           password,
-          ...(isRegistration ? { name: name.trim() } : {}),
+          ...(isRegistration ? { name: name.trim(), consent } : {}),
         }),
       });
       const data = (await response.json().catch(() => null)) as {
@@ -298,6 +314,39 @@ export function AuthScreen({ mode, intent = "platform" }: { mode: AuthMode; inte
             <div className={styles.formStatus} aria-live="polite">
               {formError ? <p role="alert">{formError}</p> : null}
             </div>
+
+            {/* Согласие стоит до кнопки отправки: пользователь отмечает его
+                осознанно, а не после нажатия «Создать аккаунт». Нативный
+                input, а не кнопка с role=checkbox: нужна семантика формы. */}
+            {isRegistration ? (
+              <div className={styles.field}>
+                <label className={styles.consentRow} htmlFor="pd-consent">
+                  <input
+                    ref={consentRef}
+                    id="pd-consent"
+                    name="consent"
+                    type="checkbox"
+                    required
+                    checked={consent}
+                    aria-invalid={consentError ? true : undefined}
+                    aria-describedby={consentError ? "pd-consent-error" : undefined}
+                    onChange={(event) => {
+                      setConsent(event.target.checked);
+                      if (consentError) setConsentError(undefined);
+                    }}
+                  />
+                  <span>
+                    Даю согласие на обработку персональных данных (имя, адрес электронной почты) для
+                    создания и обслуживания аккаунта на условиях{" "}
+                    <Link href="/consent">текста согласия</Link> и{" "}
+                    <Link href="/privacy">политики обработки данных</Link>.
+                  </span>
+                </label>
+                {consentError ? (
+                  <p id="pd-consent-error" role="alert">{consentError}</p>
+                ) : null}
+              </div>
+            ) : null}
 
             <Button
               type="submit"

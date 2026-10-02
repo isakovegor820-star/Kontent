@@ -5,7 +5,7 @@
  */
 export const SCHEMA_MANIFEST = Object.freeze({
   manifestVersion: 1,
-  schemaVersion: "2026-10-22.120",
+  schemaVersion: "2026-10-22.121",
   migrations: Object.freeze([
     ["20260801_account_onboarding.sql", "ac0e1f10046cf620185570ab5f40437991d08513473f67d4e93bdafa07b86614"],
     ["20260801_ai_usage_reservations.sql", "991c3a92dce16df55011d9df52fb65af1a7f4310b27f61dc519705f05528d7a0"],
@@ -130,6 +130,7 @@ export const SCHEMA_MANIFEST = Object.freeze({
     ["20261023_autopilot_schedule_continuation.sql", "786e655d9062226450d5775e7e609a2e3c46880fdf429385124e0cc17b57a038"],
     ["20261024_web_research.sql", "e8d79b9dac7abaede9584b9bff0661d24db81380c7f8c48deeea5bb0aac3851a"],
     ["20261025_site_competitors.sql", "ab5d2099398dd73913b15eb7b6f78a120d40db58eb59c1df91ee8a7b2db3f474"],
+    ["20261026_consents.sql", "1ec3220acec28ec2e734d69034cf8c03e187ddf4a6aaef7b208d81b93a1d18a5"],
   ].map(([name, checksum, acceptedChecksums]) => Object.freeze({
     name,
     checksum,
@@ -271,6 +272,7 @@ export const SCHEMA_MANIFEST = Object.freeze({
       "site_article_revisions",
       "site_article_publications",
       "site_visibility_probes",
+      "consents",
     ]),
     columns: Object.freeze([
       "content_brief.language",
@@ -805,6 +807,20 @@ export const SCHEMA_MANIFEST = Object.freeze({
       "discovered_sources.content_embedding_model",
       "knowledge_chunks.embedding_model",
       "knowledge_chunks.site_id",
+      "consents.user_id",
+      "consents.contact",
+      "consents.kind",
+      "consents.granted",
+      "consents.granted_at",
+      "consents.ip",
+      "consents.user_agent",
+      "consents.policy_version",
+      "consents.consent_text_version",
+      "consents.source",
+      "consents.created_at",
+      "leads.consent_granted",
+      "leads.consent_text_version",
+      "leads.consent_at",
     ]),
     constraints: Object.freeze([
       "content_brief.content_brief_language_check",
@@ -1423,6 +1439,8 @@ export const SCHEMA_MANIFEST = Object.freeze({
       "knowledge_sources.knowledge_sources_retry_idx",
       "knowledge_sources.knowledge_sources_site_idx",
       "knowledge_chunks.knowledge_chunks_site_kind_idx",
+      "consents.consents_user_kind_idx",
+      "consents.consents_contact_kind_idx",
     ]),
   }),
 });

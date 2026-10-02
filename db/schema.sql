@@ -47,6 +47,18 @@ create index if not exists leads_created_at_idx on leads (created_at desc);
 -- Отбор по статусу воронки (пригодится в CRM).
 create index if not exists leads_status_idx on leads (status);
 
+-- Заявка помнит, что согласие было дано именно при её отправке: без этого нельзя
+-- показать, на каком тексте человек согласился, если форма изменилась.
+-- Guard на случай базы без leads: журнал согласий от неё не зависит.
+do $$
+begin
+  if to_regclass('public.leads') is not null then
+    execute 'alter table leads add column if not exists consent_granted boolean';
+    execute 'alter table leads add column if not exists consent_text_version text';
+    execute 'alter table leads add column if not exists consent_at timestamptz';
+  end if;
+end $$;
+
 
 -- ------------------------------------------------------- Д.2: вход без паролей
 -- Один человек = одна строка. Вход любым способом (Telegram/VK/почта) ведёт в
@@ -71,6 +83,49 @@ alter table users add column if not exists ai_mood text;
 -- Старые аккаунты получают пустой объект и автоматически нормализуются в безопасные
 -- значения src/lib/post-settings.ts — миграция не переписывает пользовательские данные.
 alter table users add column if not exists ai_post_settings jsonb not null default '{}'::jsonb;
+
+
+-- ------------------------------------- Журнал согласий на обработку ПДн (152-ФЗ)
+-- Согласие нужно доказывать (ч. 1, ч. 3 ст. 9 152-ФЗ), а доказательство — это не
+-- флаг, а запись с временем, версией текста, версией политики и источником.
+-- Отзыв согласия — новая строка с granted = false: история и есть доказательство,
+-- поэтому DELETE в журнале не используется. Версии — text без перечислений:
+-- утверждённая редакция меняет константу в коде, а не схему (обратный пример уже
+-- был: media_prompt_policy_version пришлось расширять через drop constraint).
+create table if not exists consents (
+  id                    bigint generated always as identity primary key,
+
+  -- Кто дал согласие: аккаунт или контакт из формы. Заполняется хотя бы одно поле.
+  user_id               bigint references users (id) on delete set null,
+  contact               text,
+
+  -- Вид согласия: обработка ПДн, рассылки, распространение, cookie.
+  kind                  text not null,
+
+  -- false — отзыв согласия.
+  granted               boolean not null default true,
+
+  granted_at            timestamptz not null default now(),
+
+  -- Чем подтверждается: адрес запроса и клиент.
+  ip                    text,
+  user_agent            text,
+
+  -- Версия текста согласия и версия политики на момент согласия.
+  policy_version        text,
+  consent_text_version  text,
+
+  -- Где получено согласие: форма регистрации, лид-форма, кабинет.
+  source                text,
+
+  created_at            timestamptz not null default now()
+);
+
+-- Основной запрос: «последнее согласие этого пользователя по виду».
+create index if not exists consents_user_kind_idx on consents (user_id, kind, granted_at desc);
+
+-- Тот же вопрос для заявок без аккаунта: согласие привязано к контакту.
+create index if not exists consents_contact_kind_idx on consents (contact, kind, granted_at desc);
 
 -- Активные сессии. Выход = удаление строки (не только cookie).
 -- В cookie sid лежит случайный bearer, а в БД — только его SHA-256 verifier.

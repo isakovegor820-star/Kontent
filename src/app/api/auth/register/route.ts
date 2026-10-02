@@ -3,6 +3,7 @@
 
 import { JsonBodyReadError, readJsonBodyValue } from "@/lib/bounded-request-body";
 import { NextRequest, NextResponse } from "next/server";
+import { consentFactsFromHeaders, isConsentRequired, parseConsentFlag } from "@/lib/consent";
 import { getPool } from "@/lib/db";
 import { EMAIL } from "@/lib/leads";
 import { convertMatchingLeadAfterRegistration } from "@/lib/users";
@@ -28,10 +29,16 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ ok: false, error: code }, { status });
   }
 
-  const b = body as { email?: unknown; password?: unknown; name?: unknown };
+  const b = body as { email?: unknown; password?: unknown; name?: unknown; consent?: unknown };
   const email = String(b?.email ?? "").trim().toLowerCase();
   const password = String(b?.password ?? "");
   const nameRaw = String(b?.name ?? "").trim();
+
+  // Согласие разбираем строго: строка «true» согласием не считается.
+  const consentFlag = parseConsentFlag(b?.consent);
+  if (!consentFlag.ok) {
+    return NextResponse.json({ ok: false, error: consentFlag.error }, { status: 422 });
+  }
 
   if (!EMAIL.test(email)) {
     return NextResponse.json({ ok: false, error: "bad_email" }, { status: 422 });
@@ -42,6 +49,12 @@ export async function POST(req: NextRequest) {
       { ok: false, error: "bad_password", reason: pwProblem },
       { status: 422 },
     );
+  }
+
+  // Обязательность включается отдельным решением: тексты согласия должны быть
+  // утверждены, иначе чекбокс остаётся формальностью. См. src/lib/consent.ts.
+  if (isConsentRequired() && !consentFlag.granted) {
+    return NextResponse.json({ ok: false, error: "consent_required" }, { status: 422 });
   }
 
   // Режем массовое создание аккаунтов: не больше 5 регистраций с одного IP в час.
@@ -63,7 +76,22 @@ export async function POST(req: NextRequest) {
   try {
     const pool = getPool();
     const hash = await hashPassword(password);
-    const registration = await registerPasswordUser({ pool, email, name, passwordHash: hash });
+    const registration = await registerPasswordUser({
+      pool,
+      email,
+      name,
+      passwordHash: hash,
+      // Согласие пишется в той же транзакции, что и аккаунт: доказательство
+      // основания обработки не должно появляться отдельно от неё.
+      ...(consentFlag.granted
+        ? {
+            consent: {
+              granted: true,
+              ...consentFactsFromHeaders(req.headers, clientIp(req), "register"),
+            },
+          }
+        : {}),
+    });
     if (!registration.ok) {
       // Не раскрываем, что именно конфликтует (перечисление занятых почт).
       // Универсальный код: пользователь с существующим аккаунтом пойдёт во «вход»,
