@@ -159,6 +159,9 @@ export function buildMonthlyReport({ site, profile, period, publications, probe 
     recommendations: recommendations.items,
     recommendationSummary: Object.freeze({ open: recommendations.openCount, done: recommendations.doneCount, carried: recommendations.carriedCount }),
     limitations: Object.freeze([
+      ...(Number(profile?.technical?.clientRenderedPages || 0) > 0
+        ? [`Страниц с контентом на JavaScript: ${Number(profile.technical.clientRenderedPages)}. Их содержимое не оценивалось — обход не исполняет скрипты.`]
+        : []),
       "Позиции в поиске и трафик не измерялись: интеграции Яндекс.Вебмастер и Google Search Console не подключены.",
       "Зонд видимости опрашивает подключённые движки одинаковыми вопросами; это воспроизводимая динамика, а не замер реальной выдачи Perplexity или Яндекс-Нейро.",
       "Оценки относятся только к проверенному публичному срезу страниц.",
