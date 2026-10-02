@@ -30,6 +30,11 @@
     "policy": "account"
   },
   {
+    "path": "/api/admin/consents",
+    "method": "GET",
+    "policy": "account"
+  },
+  {
     "path": "/api/admin/overview",
     "method": "GET",
     "policy": "account"

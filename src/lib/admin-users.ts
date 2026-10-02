@@ -1,6 +1,7 @@
 import type { Pool } from "pg";
 
 import type { AdminPeriodDays } from "./admin-dashboard";
+import { findConsentEvidence, summarizeConsentState } from "./consent-evidence";
 
 export type AdminUserStatusFilter = "all" | "active" | "attention" | "new" | "onboarding";
 export type AdminUserSort = "registered_desc" | "activity_desc" | "posts_desc" | "ai_desc";
@@ -98,6 +99,35 @@ export interface AdminUserDetail {
     actor: string;
     createdAt: string;
   }>;
+  /**
+   * Согласия субъекта: нужны поддержке и юристу, потому что доказывать
+   * получение согласия обязан оператор (ч. 3 ст. 9 152-ФЗ).
+   */
+  consents: {
+    current: Array<{
+      kind: string;
+      granted: boolean;
+      changedAt: string;
+      consentTextVersion: string | null;
+      policyVersion: string | null;
+      source: string | null;
+    }>;
+    history: Array<{
+      id: number;
+      kind: string;
+      granted: boolean;
+      grantedAt: string;
+      source: string | null;
+      consentTextVersion: string | null;
+      policyVersion: string | null;
+      /** Зафиксированы ли адрес и клиент: сами значения отдаёт только выгрузка. */
+      hasIp: boolean;
+      hasUserAgent: boolean;
+    }>;
+    /** Заявка с формы, если согласие пришло без аккаунта. */
+    lead: { id: number; contact: string; source: string | null; createdAt: string | null } | null;
+    accountStatus: "active" | "blocked" | "deleted" | null;
+  };
   summary: {
     projects: number;
     channels: number;
@@ -519,7 +549,7 @@ export async function loadAdminUserDetail(
   );
   if (identity.rowCount === 0) return null;
 
-  const [summary, activity, projects, channels, posts, aiKinds, recentAi, sessions, audit, adminActions] = await Promise.all([
+  const [summary, activity, projects, channels, posts, aiKinds, recentAi, sessions, audit, adminActions, evidence] = await Promise.all([
     db.query<{
       projects: unknown;
       channels: unknown;
@@ -747,6 +777,9 @@ export async function loadAdminUserDetail(
         order by event.created_at desc, event.id desc limit 20`,
       [userId],
     ),
+    // Согласия субъекта: по аккаунту и по почте, потому что заявка могла быть
+    // оставлена с другого адреса. Это доказательство для поддержки и юриста.
+    findConsentEvidence(db, { userId, contact: identity.rows[0]?.email ?? null }),
   ]);
 
   const row = identity.rows[0];
@@ -779,6 +812,25 @@ export async function loadAdminUserDetail(
       actor: String(event.actor || "Администратор"),
       createdAt: iso(event.created_at),
     })),
+    // Согласия читаем тем же помощником, что и операторский поиск: у человека
+    // мог быть аккаунт, а заявка — с другого адреса, поэтому смотрим и по
+    // user_id, и по почте аккаунта.
+    consents: {
+      current: summarizeConsentState(evidence.rows),
+      history: evidence.rows.map((entry) => ({
+        id: entry.id,
+        kind: entry.kind,
+        granted: entry.granted,
+        grantedAt: entry.grantedAt,
+        source: entry.source,
+        consentTextVersion: entry.consentTextVersion,
+        policyVersion: entry.policyVersion,
+        hasIp: entry.hasIp,
+        hasUserAgent: entry.hasUserAgent,
+      })),
+      lead: evidence.lead,
+      accountStatus: evidence.account?.status ?? null,
+    },
     summary: {
       projects: count(totals?.projects),
       channels: count(totals?.channels),

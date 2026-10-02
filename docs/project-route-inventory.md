@@ -15,6 +15,7 @@
 | [GET /api/admin/aurora-analytics](../src/app/api/admin/aurora-analytics/route.ts) | сессия аккаунта / admin guard | см. guard в обработчике | прямой HTTP / service client | чтение |
 | [POST /api/admin/bot/actions](../src/app/api/admin/bot/actions/route.ts) | сессия аккаунта / admin guard | см. guard в обработчике | прямой HTTP / service client | создание / действие |
 | [GET /api/admin/bot](../src/app/api/admin/bot/route.ts) | сессия аккаунта / admin guard | см. guard в обработчике | прямой HTTP / service client | чтение |
+| [GET /api/admin/consents](../src/app/api/admin/consents/route.ts) | сессия аккаунта / admin guard | см. guard в обработчике | `admin-users-center.tsx` | чтение / выгрузка доказательств согласий |
 | [GET /api/admin/connections](../src/app/api/admin/connections/route.ts) | сессия аккаунта / admin guard | см. guard в обработчике | прямой HTTP / service client | чтение |
 | [GET /api/admin/overview](../src/app/api/admin/overview/route.ts) | сессия аккаунта / admin guard | см. guard в обработчике | прямой HTTP / service client | чтение |
 | [GET /api/admin/projects/[id]](../src/app/api/admin/projects/[id]/route.ts) | сессия аккаунта / admin guard | см. guard в обработчике | прямой HTTP / service client | чтение |
