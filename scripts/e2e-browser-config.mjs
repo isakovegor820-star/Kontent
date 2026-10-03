@@ -183,8 +183,17 @@ export function classifyE2eKnownBrowserObservation({
     const rscToken = rscUrl.searchParams.get("_rsc");
     // The admin panel is a single route whose navigation is hash/query driven, so a
     // full navigation there cancels in-flight RSC prefetches exactly like /app pages.
+    //
+    // Правовые документы стоят в подвале каждой страницы, браузер их префетчит,
+    // а полная навигация отменяет запрос — ровно как в /app и /admin. Список
+    // закрытый: /login и другие входные точки намеренно НЕ входят, у них своя
+    // проверка (classifyE2eKnownWebKitRequestCancellation требует наблюдаемого
+    // доказательства), и ослаблять её нельзя.
+    const prefetchedLegalDocuments = new Set(["/privacy", "/consent", "/cookies", "/personal-data", "/terms"]);
     if (
-      (/^\/app(?:\/[a-z0-9-]+)+$/u.test(rscUrl.pathname) || /^\/admin(?:\/[a-z0-9-]+)*$/u.test(rscUrl.pathname))
+      (/^\/app(?:\/[a-z0-9-]+)+$/u.test(rscUrl.pathname)
+        || /^\/admin(?:\/[a-z0-9-]+)*$/u.test(rscUrl.pathname)
+        || prefetchedLegalDocuments.has(rscUrl.pathname))
       && /^[A-Za-z0-9_-]+$/u.test(rscToken || "")
     ) {
       return { kind: "webkit.cancelled-rsc-prefetch", detail: pathAndQuery };

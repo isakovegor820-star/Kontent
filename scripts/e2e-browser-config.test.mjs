@@ -168,6 +168,17 @@ describe("real E2E browser configuration", () => {
       .toBe("webkit.cancelled-rsc-prefetch");
     expect(classify("/127.0.0.1:43190/admin/login?_rsc=abc_123 due to access control checks.")?.kind)
       .toBe("webkit.cancelled-rsc-prefetch");
+    // Правовые документы: ссылки в подвале каждой страницы, поэтому префетч
+    // отменяется полной навигацией так же, как в /app и /admin.
+    for (const path of ["/privacy", "/consent", "/cookies", "/personal-data", "/terms"]) {
+      expect(classify(`/127.0.0.1:43190${path}?_rsc=UVd2usJEOykhXMMt due to access control checks.`)?.kind)
+        .toBe("webkit.cancelled-rsc-prefetch");
+    }
+    // Список закрытый: входные точки в него не попадают, иначе ослабла бы
+    // проверка подделки/отмены запросов на входе.
+    for (const path of ["/login", "/register", "/bot/connect"]) {
+      expect(classify(`/127.0.0.1:43190${path}?_rsc=abc_123 due to access control checks.`)).toBeNull();
+    }
     for (const path of [
       "/api/rss/items?summary=unread",
       "/api/media/generations",
