@@ -170,6 +170,18 @@ function postState(status: string) {
   return { tone: "neutral" as const, icon: Clock3 };
 }
 
+/** Человекочитаемые названия видов согласия: в карточке не должно быть кодов. */
+const CONSENT_KIND_LABEL: Record<string, string> = {
+  pd_processing: "Обработка персональных данных",
+  marketing: "Сообщения и рассылки",
+  pd_distribution: "Распространение данных",
+  cookie: "Аналитические cookie",
+};
+
+function consentKindLabel(kind: string): string {
+  return CONSENT_KIND_LABEL[kind] ?? kind;
+}
+
 function StatusPill({
   label,
   tone,
@@ -511,7 +523,7 @@ function DetailContent({ detail, onChanged, onDirtyChange }: { detail: AdminUser
   return (
     <div className="space-y-7 p-4 sm:p-6">
       <div className="flex flex-wrap items-center gap-3"><CopyValue value={user.id} label="ID пользователя" />{user.email ? <CopyValue value={user.email} label="email пользователя" /> : null}</div>
-      <nav aria-label="Разделы карточки аккаунта" className="flex flex-wrap gap-2">{[["channels-detail-title", "Подключения"], ["posts-detail-title", "Публикации"], ["account-controls-title", "Действия администратора"]].map(([id, label]) => <a key={id} href={`#${id}`} onClick={e => { e.preventDefault(); const target = document.getElementById(id); target?.focus({ preventScroll: true }); target?.scrollIntoView({ block: "start" }); }} className="type-button inline-flex min-h-10 items-center rounded-xs border border-line px-3 text-info-text">{label}</a>)}</nav>
+      <nav aria-label="Разделы карточки аккаунта" className="flex flex-wrap gap-2">{[["consents-detail-title", "Согласия"], ["channels-detail-title", "Подключения"], ["posts-detail-title", "Публикации"], ["account-controls-title", "Действия администратора"]].map(([id, label]) => <a key={id} href={`#${id}`} onClick={e => { e.preventDefault(); const target = document.getElementById(id); target?.focus({ preventScroll: true }); target?.scrollIntoView({ block: "start" }); }} className="type-button inline-flex min-h-10 items-center rounded-xs border border-line px-3 text-info-text">{label}</a>)}</nav>
       <section aria-labelledby="account-summary-title">
         <h3 id="account-summary-title" className="sr-only">Сводка аккаунта</h3>
         <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
@@ -524,6 +536,75 @@ function DetailContent({ detail, onChanged, onDirtyChange }: { detail: AdminUser
           <SummaryCard label="AI-операции" value={summary.aiTotal} helper={`${fmtNum(summary.aiPeriod)} за период`} icon={Sparkles} />
           <SummaryCard label="Неистёкшие сессии" value={summary.activeSessions} helper={`${fmtNum(summary.sessions)} входов всего`} icon={Activity} />
         </div>
+      </section>
+
+      {/* Согласия субъекта: доказательство для поддержки и юриста. Показываем
+          текущее состояние по видам, историю и то, на каком тексте человек
+          согласился (ч. 3 ст. 9 152-ФЗ — доказывает оператор). */}
+      <section aria-labelledby="consents-detail-title" className="rounded-md border border-line bg-surface p-5">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <h3 id="consents-detail-title" className="text-text" tabIndex={-1}>Согласия</h3>
+          <a
+            className="type-button inline-flex min-h-10 items-center rounded-xs border border-line px-3 text-info-text"
+            href={`/api/admin/consents?userId=${user.id}&format=csv`}
+          >
+            Выгрузить доказательства (CSV)
+          </a>
+        </div>
+
+        {detail.consents?.accountStatus === "deleted" ? (
+          <p className="type-secondary mt-3 rounded-sm bg-fire-soft p-3 text-fire-text">
+            Аккаунт удалён по запросу субъекта: персональные данные стёрты. Записи согласий могли быть
+            удалены вместе с аккаунтом — факт запроса и его время ищите в журнале запросов.
+          </p>
+        ) : null}
+
+        {detail.consents?.current?.length ? (
+          <ul className="mt-4 divide-y divide-line">
+            {detail.consents.current.map((item) => (
+              <li key={item.kind} className="flex flex-wrap items-baseline justify-between gap-2 py-3">
+                <span className="type-secondary text-text">{consentKindLabel(item.kind)}</span>
+                <span className="flex flex-wrap items-baseline gap-3">
+                  <StatusPill
+                    label={item.granted ? "Действует" : "Отозвано или не дано"}
+                    tone={item.granted ? "success" : "neutral"}
+                    icon={item.granted ? CheckCircle2 : Clock3}
+                  />
+                  <span className="type-caption text-text-3">
+                    {item.changedAt ? <time dateTime={item.changedAt}>{fullDate(item.changedAt)}</time> : "нет записи"}
+                    {item.consentTextVersion ? ` · текст ${item.consentTextVersion}` : ""}
+                    {item.policyVersion ? ` · политика ${item.policyVersion}` : ""}
+                  </span>
+                </span>
+              </li>
+            ))}
+          </ul>
+        ) : (
+          <p className="type-secondary mt-3 text-text-2">Записей о согласиях нет.</p>
+        )}
+
+        {detail.consents?.lead ? (
+          <p className="type-caption mt-3 text-text-3">
+            Заявка с формы: {detail.consents.lead.contact} · {detail.consents.lead.source ?? "источник не указан"}
+            {detail.consents.lead.createdAt ? <> · <time dateTime={detail.consents.lead.createdAt}>{fullDate(detail.consents.lead.createdAt)}</time></> : null}
+          </p>
+        ) : null}
+
+        {detail.consents?.history?.length ? (
+          <details className="mt-3">
+            <summary className="type-caption cursor-pointer">История: {detail.consents.history.length} записей</summary>
+            <ul className="mt-2 space-y-1">
+              {detail.consents.history.map((entry) => (
+                <li key={entry.id} className="type-caption text-text-3">
+                  <time dateTime={entry.grantedAt}>{fullDate(entry.grantedAt)}</time> · {consentKindLabel(entry.kind)} ·{" "}
+                  {entry.granted ? "согласие дано" : "согласие отозвано"}
+                  {entry.source ? ` · ${entry.source}` : ""}
+                  {entry.hasIp ? " · адрес зафиксирован" : ""}
+                </li>
+              ))}
+            </ul>
+          </details>
+        ) : null}
       </section>
 
       <section className="grid gap-4 lg:grid-cols-2" aria-labelledby="account-data-title">

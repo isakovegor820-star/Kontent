@@ -1,24 +1,19 @@
 import * as Sentry from "@sentry/nextjs";
 
-const isProduction = process.env.NODE_ENV === "production";
-const sentryDisabled = process.env.NEXT_PUBLIC_AURORA_SENTRY_DISABLED === "1";
-const configuredTraceRate = Number(process.env.NEXT_PUBLIC_SENTRY_TRACES_SAMPLE_RATE ?? "");
-const tracesSampleRate = Number.isFinite(configuredTraceRate)
-  && configuredTraceRate >= 0
-  && configuredTraceRate <= 1
-  ? configuredTraceRate
-  : isProduction ? 0.1 : 1;
+import { startClientSentry, watchConsentForSentry } from "@/lib/sentry-client";
 
-Sentry.init({
-  dsn: "https://ed2eb6d188015427081dc1ed0c80b884@o4511981780402176.ingest.de.sentry.io/4511981792329808",
-  enabled: !sentryDisabled && (isProduction || process.env.NEXT_PUBLIC_SENTRY_ENABLE_DEV === "true"),
-  environment: process.env.NEXT_PUBLIC_SENTRY_ENVIRONMENT ?? (isProduction ? "prod" : "development"),
-  tracesSampleRate,
-  sendDefaultPii: false,
-  dataCollection: {
-    userInfo: false,
-    httpBodies: [],
-  },
-});
+/**
+ * Клиентская инициализация Sentry.
+ *
+ * Пока в cookie нет аналитического согласия, `init` не вызывается: счётчики и
+ * трассировка не должны стартовать до выбора пользователя в баннере. Модуль
+ * читает cookie синхронно — асинхронный порядок в client instrumentation не
+ * гарантирован, а решение нужно до первого сетевого запроса SDK.
+ *
+ * Серверный Sentry (`sentry.server.config.ts`) живёт отдельно и на клиентское
+ * согласие не опирается.
+ */
+startClientSentry();
+watchConsentForSentry();
 
 export const onRouterTransitionStart = Sentry.captureRouterTransitionStart;

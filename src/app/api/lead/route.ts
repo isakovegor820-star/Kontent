@@ -13,6 +13,7 @@
 
 import { JsonBodyReadError, readJsonBodyValue } from "@/lib/bounded-request-body";
 import { NextResponse } from "next/server";
+import { CONSENT_TEXT_VERSION, parseConsentFlag, recordConsent } from "@/lib/consent";
 import { getPool } from "@/lib/db";
 import { parseContact } from "@/lib/leads";
 import { notifyOwner, nowMoscow } from "@/lib/notify";
@@ -38,6 +39,11 @@ export async function POST(request: Request) {
   const source = (typeof data.source === "string" ? data.source : "landing").slice(0, 120);
   // Ловушка для ботов (honeypot): скрытое поле, которое люди не видят и не заполняют.
   const honeypot = typeof data.website === "string" ? data.website : "";
+  // Согласие разбираем строго: строка «true» согласием не считается.
+  const consentFlag = parseConsentFlag(data.consent);
+  if (!consentFlag.ok) {
+    return NextResponse.json({ ok: false, error: consentFlag.error }, { status: 422 });
+  }
 
   // 2. Бот заполнил ловушку → тихо отбрасываем, но делаем вид, что всё хорошо.
   if (honeypot.trim() !== "") {
@@ -69,15 +75,39 @@ export async function POST(request: Request) {
 
     // 5. Пишем заявку. Дубликаты не создаются: contact уникален, повтор → do nothing.
     //    Вернулась строка → заявка новая; пусто → такой контакт уже был.
+    //    Согласие сохраняем вместе с заявкой: по нему видно, на каком тексте
+    //    человек согласился, даже если форма потом изменилась.
     const result = await pool.query<{ id: number }>(
-      `insert into leads (contact, kind, source, user_agent)
-       values ($1, $2, $3, $4)
+      `insert into leads (contact, kind, source, user_agent, consent_granted, consent_text_version, consent_at)
+       values ($1, $2, $3, $4, $5, $6, $7)
        on conflict (contact) do nothing
        returning id`,
-      [parsed.contact, parsed.kind, source, userAgent],
+      [
+        parsed.contact,
+        parsed.kind,
+        source,
+        userAgent,
+        consentFlag.granted ? true : null,
+        consentFlag.granted ? CONSENT_TEXT_VERSION : null,
+        consentFlag.granted ? new Date() : null,
+      ],
     );
 
     const isNew = (result.rowCount ?? 0) > 0;
+
+    // 5.1. Согласие — отдельной записью в журнале. При повторной заявке
+    //      (on conflict do nothing) основная строка не обновляется, поэтому
+    //      журнал ведём вставкой: история согласий не перезаписывается.
+    if (consentFlag.granted) {
+      await recordConsent(pool, {
+        contact: parsed.contact,
+        kind: "pd_processing",
+        granted: true,
+        ip: clientIp(request),
+        userAgent,
+        source: "lead",
+      });
+    }
 
     // 6. Теперь — уведомление. База уже записана, так что сбой бота ничего не теряет.
     const head = isNew ? "🔥 Новая заявка" : "🔁 Повторная заявка";

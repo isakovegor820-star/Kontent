@@ -32,4 +32,28 @@ describe("public authentication flow", () => {
     expect(authScreen).toContain("!isRegistration && !isAdmin");
     expect(adminDashboard).toContain('href="/admin/login"');
   });
+
+  // Согласие на обработку ПДн: раньше под формой была пассивная фраза, и
+  // регистрация уходила на сервер без согласия. Теперь это отдельный флажок,
+  // который по умолчанию снят и блокирует отправку (ч. 1 ст. 9 152-ФЗ).
+  it("requires an explicit consent checkbox for registration", () => {
+    expect(authScreen).toContain('id="pd-consent"');
+    expect(authScreen).toContain('name="consent"');
+    expect(authScreen).toContain('type="checkbox"');
+    expect(authScreen).toContain("required");
+    expect(authScreen).toContain("checked={consent}");
+    expect(authScreen).toContain("useState(false)");
+    // Текст согласия говорит про обработку ПДн и ссылается на документы.
+    expect(authScreen).toContain("Даю согласие на обработку персональных данных");
+    expect(authScreen).toContain('href="/consent"');
+  });
+
+  it("does not send the registration request until consent is given", () => {
+    // Проверка стоит в submit до fetch: без согласия запрос не уходит вовсе.
+    expect(authScreen).toContain("const nextConsentError =");
+    expect(authScreen).toContain("if (nextConsentError) {");
+    expect(authScreen).toContain("consentRef.current?.focus()");
+    // Согласие передаётся в теле запроса вместе с остальными полями.
+    expect(authScreen).toContain("...(isRegistration ? { name: name.trim(), consent } : {})");
+  });
 });

@@ -7,6 +7,7 @@ import { useRef, useState } from "react";
 import Link from "next/link";
 import { motion, useReducedMotion } from "motion/react";
 import { ArrowRight, Check, Send } from "lucide-react";
+import { LegalLinks } from "@/components/legal/legal-links";
 import { ERR_SHAPE, validateContact } from "@/lib/leads";
 import { V3Reveal } from "./reveal";
 
@@ -20,9 +21,14 @@ const SUPPORT_TG = "https://t.me/kontenfkv_bot";
 export function V3FinalCta({ legacyPricing = false }: { legacyPricing?: boolean }) {
   const reduce = useReducedMotion();
   const inputRef = useRef<HTMLInputElement>(null);
+  const consentRef = useRef<HTMLInputElement>(null);
 
   const [contact, setContact] = useState("");
   const [honeypot, setHoneypot] = useState("");
+  // Согласие — отдельное действие: по умолчанию снято, отправку без него форма
+  // не пропускает. Текст и ссылки на документы стоят рядом с флажком.
+  const [consent, setConsent] = useState(false);
+  const [consentError, setConsentError] = useState<string>();
   const [error, setError] = useState<string>();
   const [loading, setLoading] = useState(false);
   const [done, setDone] = useState(false);
@@ -35,11 +41,18 @@ export function V3FinalCta({ legacyPricing = false }: { legacyPricing?: boolean 
     const problem = validateContact(contact);
     if (problem) {
       setError(problem);
+      setConsentError(undefined);
       inputRef.current?.focus();
+      return;
+    }
+    if (!consent) {
+      setError(undefined);
+      setConsentError("Отметьте согласие на обработку персональных данных.");
       return;
     }
 
     setError(undefined);
+    setConsentError(undefined);
     setServerDown(false);
     setLoading(true);
 
@@ -51,6 +64,7 @@ export function V3FinalCta({ legacyPricing = false }: { legacyPricing?: boolean 
           contact: contact.trim(),
           source: "v3_final_waitlist",
           website: honeypot, // honeypot: у людей пусто
+          consent,
         }),
       });
       const data = (await res.json().catch(() => null)) as
@@ -154,6 +168,44 @@ export function V3FinalCta({ legacyPricing = false }: { legacyPricing?: boolean 
                       {!loading && <Send className="h-4 w-4" strokeWidth={2.5} aria-hidden />}
                     </button>
                   </form>
+                  {/* Согласие на обработку ПДн: отдельный флажок, а не фраза
+                      «отправляя форму, вы соглашаетесь». */}
+                  <label
+                    htmlFor="v3-lead-consent"
+                    className="mt-4 flex cursor-pointer items-start gap-2.5 text-left text-[12.5px] leading-relaxed"
+                  >
+                    <input
+                      ref={consentRef}
+                      id="v3-lead-consent"
+                      name="consent"
+                      type="checkbox"
+                      required
+                      checked={consent}
+                      onChange={(e) => {
+                        setConsent(e.target.checked);
+                        if (consentError) setConsentError(undefined);
+                      }}
+                      aria-invalid={consentError ? true : undefined}
+                      aria-describedby={consentError ? "v3-lead-consent-error" : undefined}
+                      className="mt-0.5 h-4 w-4 shrink-0 accent-[var(--acc)]"
+                    />
+                    <span>
+                      Даю согласие на обработку персональных данных для ответа на заявку на условиях{" "}
+                      <Link href="/consent" className="underline decoration-1 underline-offset-2">
+                        текста согласия
+                      </Link>{" "}
+                      и{" "}
+                      <Link href="/privacy" className="underline decoration-1 underline-offset-2">
+                        политики обработки данных
+                      </Link>
+                      .
+                    </span>
+                  </label>
+                  {consentError && (
+                    <p id="v3-lead-consent-error" role="alert" className="mt-2 text-[13.5px] font-semibold">
+                      {consentError}
+                    </p>
+                  )}
                   {error && (
                     <p id="v3-lead-error" role="alert" className="mt-3 text-[13.5px] font-semibold">
                       {error}
@@ -214,6 +266,13 @@ export function V3Footer({ legacyPricing = false }: { legacyPricing?: boolean })
             Вопросы
           </a>
         </nav>
+
+        {/* Правовые документы: доступ к политике нужен с каждой страницы сбора данных. */}
+        <LegalLinks
+          ariaLabel="Правовые документы"
+          className="v3-mono flex flex-col gap-3 text-[12px] tracking-[0.08em] uppercase"
+          linkClassName="opacity-80 transition-opacity hover:opacity-100 hover:underline hover:decoration-2 hover:underline-offset-4"
+        />
 
         <div className="v3-mono text-[12px] tracking-[0.08em] uppercase">
           <a

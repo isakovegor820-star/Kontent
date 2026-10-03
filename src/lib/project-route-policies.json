@@ -30,6 +30,11 @@
     "policy": "account"
   },
   {
+    "path": "/api/admin/consents",
+    "method": "GET",
+    "policy": "account"
+  },
+  {
     "path": "/api/admin/overview",
     "method": "GET",
     "policy": "account"
@@ -1181,6 +1186,31 @@
   },
   {
     "path": "/api/settings/profile/email/request",
+    "method": "POST",
+    "policy": "account"
+  },
+  {
+    "path": "/api/settings/account-deletion",
+    "method": "GET",
+    "policy": "account"
+  },
+  {
+    "path": "/api/settings/account-deletion",
+    "method": "POST",
+    "policy": "account"
+  },
+  {
+    "path": "/api/settings/personal-data",
+    "method": "GET",
+    "policy": "account"
+  },
+  {
+    "path": "/api/settings/consents",
+    "method": "GET",
+    "policy": "account"
+  },
+  {
+    "path": "/api/settings/consents",
     "method": "POST",
     "policy": "account"
   },

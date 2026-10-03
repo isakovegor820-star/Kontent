@@ -2,7 +2,7 @@ import { readdirSync, readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 
-import { CONTACT_DOMAIN_CONFIRMED, CONTACT_EMAIL, LEGAL_EMAIL, SUPPORT_EMAIL } from "./contact";
+import { CONTACT_DOMAIN_CONFIRMED, CONTACT_EMAIL, LEGAL_EMAIL, LEGAL_ENTITY, SUPPORT_EMAIL, hasOperatorDetails } from "./contact";
 
 const SRC = fileURLToPath(new URL("..", import.meta.url));
 
@@ -38,5 +38,18 @@ describe("contact addresses live in exactly one place", () => {
     // Тест фиксирует состояние, а не запрещает изменение: поменяли домен —
     // поменяйте и флаг, и комментарий в lib/contact.ts.
     expect(CONTACT_DOMAIN_CONFIRMED).toBe(false);
+  });
+
+  it("does not let empty operator details masquerade as approved", () => {
+    // Пока владелец не подтвердил реквизиты, правовые страницы не имеют права
+    // печатать строку с реквизитами: пустое значение выглядело бы как факт.
+    // Заполнение — трек B плана (audit-localhost-3000/fix-plan.md): значения
+    // в LEGAL_ENTITY, структура страниц и этот тест не переписываются.
+    expect(LEGAL_ENTITY.confirmed).toBe(false);
+    expect(LEGAL_ENTITY.name).toBeNull();
+    expect(LEGAL_ENTITY.inn).toBeNull();
+    expect(LEGAL_ENTITY.ogrn).toBeNull();
+    expect(LEGAL_ENTITY.address).toBeNull();
+    expect(hasOperatorDetails()).toBe(false);
   });
 });

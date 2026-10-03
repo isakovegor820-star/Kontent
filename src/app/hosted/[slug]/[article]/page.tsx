@@ -1,4 +1,5 @@
 import type { Metadata } from "next";
+import { LegalLinks } from "@/components/legal/legal-links";
 import { notFound } from "next/navigation";
 
 import { getPool } from "@/lib/db";
@@ -67,6 +68,12 @@ export default async function HostedArticlePage({ params }: Params) {
       </article>
       <footer className="mt-12 border-t border-line pt-6 text-[13px] text-text-3">
         Материал подготовлен для <a href={site.canonicalUrl} className="hover:underline">{site.brandName}</a>.
+        <div className="mt-2">
+          <LegalLinks
+            className="flex flex-wrap gap-x-3 gap-y-1"
+            linkClassName="underline decoration-1 underline-offset-2 hover:text-text-2"
+          />
+        </div>
       </footer>
     </main>
   );

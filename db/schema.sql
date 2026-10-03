@@ -38,7 +38,13 @@ create table if not exists leads (
   -- С какого устройства пришли — для аналитики.
   user_agent  text,
 
-  created_at  timestamptz not null default now()
+  created_at  timestamptz not null default now(),
+
+  -- Согласие, зафиксированное в момент отправки формы: без этого нельзя
+  -- показать, на каком тексте человек согласился, если форма изменилась.
+  consent_granted       boolean,
+  consent_text_version  text,
+  consent_at            timestamptz
 );
 
 -- Быстрый отбор свежих заявок в будущем кабинете владельца.
@@ -46,6 +52,12 @@ create index if not exists leads_created_at_idx on leads (created_at desc);
 
 -- Отбор по статусу воронки (пригодится в CRM).
 create index if not exists leads_status_idx on leads (status);
+
+-- Те же операторы, что и в миграции 20261026_consents.sql: снапшот и миграция
+-- обязаны совпадать дословно, иначе свежая база и обновлённая разойдутся.
+alter table leads add column if not exists consent_granted boolean;
+alter table leads add column if not exists consent_text_version text;
+alter table leads add column if not exists consent_at timestamptz;
 
 
 -- ------------------------------------------------------- Д.2: вход без паролей
@@ -71,6 +83,92 @@ alter table users add column if not exists ai_mood text;
 -- Старые аккаунты получают пустой объект и автоматически нормализуются в безопасные
 -- значения src/lib/post-settings.ts — миграция не переписывает пользовательские данные.
 alter table users add column if not exists ai_post_settings jsonb not null default '{}'::jsonb;
+
+
+-- ------------------------------------- Журнал согласий на обработку ПДн (152-ФЗ)
+-- Согласие нужно доказывать (ч. 1, ч. 3 ст. 9 152-ФЗ), а доказательство — это не
+-- флаг, а запись с временем, версией текста, версией политики и источником.
+-- Отзыв согласия — новая строка с granted = false: история и есть доказательство,
+-- поэтому DELETE в журнале не используется. Версии — text без перечислений:
+-- утверждённая редакция меняет константу в коде, а не схему (обратный пример уже
+-- был: media_prompt_policy_version пришлось расширять через drop constraint).
+create table if not exists consents (
+  id                    bigint generated always as identity primary key,
+
+  -- Кто дал согласие: аккаунт или контакт из формы. Заполняется хотя бы одно поле.
+  user_id               bigint references users (id) on delete set null,
+  contact               text,
+
+  -- Вид согласия: обработка ПДн, рассылки, распространение, cookie.
+  kind                  text not null,
+
+  -- false — отзыв согласия.
+  granted               boolean not null default true,
+
+  granted_at            timestamptz not null default now(),
+
+  -- Чем подтверждается: адрес запроса и клиент.
+  ip                    text,
+  user_agent            text,
+
+  -- Версия текста согласия и версия политики на момент согласия.
+  policy_version        text,
+  consent_text_version  text,
+
+  -- Где получено согласие: форма регистрации, лид-форма, кабинет.
+  source                text,
+
+  created_at            timestamptz not null default now()
+);
+
+-- Основной запрос: «последнее согласие этого пользователя по виду».
+create index if not exists consents_user_kind_idx on consents (user_id, kind, granted_at desc);
+
+-- Тот же вопрос для заявок без аккаунта: согласие привязано к контакту.
+create index if not exists consents_contact_kind_idx on consents (contact, kind, granted_at desc);
+
+
+-- ------------------------------- Запросы субъекта ПДн: выгрузка и удаление (152-ФЗ)
+-- Право на доступ к своим данным и на удаление (ст. 14, 20, 21). Запись в журнале
+-- фиксирует срок и факт исполнения; сама выгрузка не хранится.
+-- Запросы субъекта персональных данных: выгрузка своих данных и удаление аккаунта.
+--
+-- Зачем отдельная таблица, а не письмо в поддержку: закон даёт субъекту право
+-- на доступ к своим данным и на их удаление (ст. 14, 20, 21 152-ФЗ), и оператор
+-- обязан уложиться в срок (7 рабочих дней на уточнение/блокирование, 30 дней на
+-- уничтожение). Запрос с отметкой времени и состоянием — это то, по чему видно
+-- срок и факт исполнения; письмо в почте этого не доказывает.
+--
+-- Журнал append-only: сама выгрузка не хранится (её отдаёт ответ), хранится
+-- факт запроса и результат. Состояния ведём текстом без CHECK: набор состояний
+-- уточняется по мере появления автоматической обработки, и расширять его
+-- миграцией каждый раз не нужно.
+
+
+create table if not exists data_requests (
+  id            bigint generated always as identity primary key,
+
+  -- Кто запросил. on delete cascade: после удаления аккаунта персональных
+  -- данных быть не должно, включая ссылку в этом журнале.
+  user_id       bigint not null references users (id) on delete cascade,
+
+  -- Вид запроса: доступ к данным (выгрузка) или удаление аккаунта.
+  kind          text not null,
+
+  -- Состояние: обработан сразу или ждёт ручного разбора оператором.
+  state         text not null default 'completed',
+
+  -- Что вернули или что помешало. Без персональных данных: только коды и числа.
+  result        jsonb not null default '{}'::jsonb,
+
+  created_at    timestamptz not null default now(),
+  completed_at  timestamptz
+);
+
+-- Основной запрос оператора: «что ждёт ручного разбора», и пользователя:
+-- «что я запрашивал». Оба идут по времени вниз.
+create index if not exists data_requests_user_kind_idx on data_requests (user_id, kind, created_at desc);
+create index if not exists data_requests_state_idx on data_requests (state, created_at desc);
 
 -- Активные сессии. Выход = удаление строки (не только cookie).
 -- В cookie sid лежит случайный bearer, а в БД — только его SHA-256 verifier.

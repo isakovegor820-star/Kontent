@@ -11,6 +11,8 @@ import { AnimatePresence, motion, useReducedMotion, type Variants } from "motion
 import { ArrowRight, Send, Sparkles } from "lucide-react";
 import { AuroraBackground } from "@/components/aurora-background";
 import { Wordmark } from "@/components/brand";
+import { CookieSettingsLink } from "@/components/legal/cookie-settings-link";
+import { LegalLinks } from "@/components/legal/legal-links";
 import { Button } from "@/components/ui/button";
 import { Badge, Divider, Field, GlassCard, Input } from "@/components/ui/primitives";
 import { useStore } from "@/lib/store";
@@ -87,9 +89,13 @@ export function FinalCta() {
   const s = useStore();
   const reduce = useReducedMotion();
   const inputRef = useRef<HTMLInputElement>(null);
+  const consentRef = useRef<HTMLInputElement>(null);
 
   const [contact, setContact] = useState("");
   const [honeypot, setHoneypot] = useState(""); // ловушка для ботов — люди не заполняют
+  // Согласие на обработку ПДн: отдельный флажок под формой, по умолчанию снят.
+  const [consent, setConsent] = useState(false);
+  const [consentError, setConsentError] = useState<string>();
   const [error, setError] = useState<string>();
   const [loading, setLoading] = useState(false);
   const [done, setDone] = useState(false);
@@ -116,11 +122,19 @@ export function FinalCta() {
     const problem = validateContact(contact);
     if (problem) {
       setError(problem);
+      setConsentError(undefined);
       inputRef.current?.focus();
+      return;
+    }
+    if (!consent) {
+      setError(undefined);
+      setConsentError("Отметьте согласие на обработку персональных данных.");
+      consentRef.current?.focus();
       return;
     }
 
     setError(undefined);
+    setConsentError(undefined);
     setServerDown(false);
     setLoading(true);
 
@@ -135,6 +149,7 @@ export function FinalCta() {
           // источников, и без метки нельзя понять, что конвертит.
           source: "final_waitlist_vk",
           website: honeypot, // honeypot: у людей пусто
+          consent,
         }),
       });
       const data = (await res.json().catch(() => null)) as
@@ -294,6 +309,45 @@ export function FinalCta() {
                 />
               </div>
 
+              {/* Согласие на обработку ПДн — отдельный флажок и ссылки на документы.
+                  Без него форма не уходит: согласие это действие, а не следствие. */}
+              <label
+                htmlFor="cta-consent"
+                className="mt-4 flex cursor-pointer items-start gap-2.5 text-left text-[12.5px] leading-relaxed text-text-2"
+              >
+                <input
+                  ref={consentRef}
+                  id="cta-consent"
+                  name="consent"
+                  type="checkbox"
+                  required
+                  checked={consent}
+                  onChange={(e) => {
+                    setConsent(e.target.checked);
+                    if (consentError) setConsentError(undefined);
+                  }}
+                  aria-invalid={consentError ? true : undefined}
+                  aria-describedby={consentError ? "cta-consent-error" : undefined}
+                  className="mt-0.5 h-4 w-4 shrink-0 accent-[#2563ff]"
+                />
+                <span>
+                  Даю согласие на обработку персональных данных для ответа на заявку на условиях{" "}
+                  <Link href="/consent" className="font-semibold text-info underline underline-offset-2">
+                    текста согласия
+                  </Link>{" "}
+                  и{" "}
+                  <Link href="/privacy" className="font-semibold text-info underline underline-offset-2">
+                    политики обработки данных
+                  </Link>
+                  .
+                </span>
+              </label>
+              {consentError ? (
+                <p id="cta-consent-error" role="alert" className="mt-2 text-[13px] font-semibold text-danger-text">
+                  {consentError}
+                </p>
+              ) : null}
+
               <div className="relative mt-5">
                 <AnimatePresence mode="wait" initial={false}>
                   {done ? (
@@ -397,7 +451,6 @@ const PRODUCT: { label: string; href: string }[] = [
 ];
 
 const COMPANY = ["О нас", "Блог", "Контакты"];
-const LEGAL = ["Политика данных", "Условия"];
 
 function FooterCol({ title, children }: { title: string; children: React.ReactNode }) {
   return (
@@ -451,11 +504,15 @@ export function Footer() {
             </FooterCol>
 
             <FooterCol title="Правовое">
-              {LEGAL.map((l) => (
-                <li key={l}>
-                  <span className="text-[13px] text-text-3">{l}</span>
-                </li>
-              ))}
+              <li>
+                <LegalLinks
+                  className="flex flex-col gap-2.5"
+                  linkClassName="text-[13px] text-text-2 underline decoration-1 underline-offset-4 transition-colors duration-200 hover:text-text"
+                />
+              </li>
+              <li>
+                <CookieSettingsLink className="text-left text-[13px] text-text-2 underline decoration-1 underline-offset-4 transition-colors duration-200 hover:text-text" />
+              </li>
             </FooterCol>
           </nav>
         </div>

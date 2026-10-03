@@ -18,7 +18,11 @@ function check(results) {
 }
 
 describe("parallel CI release gate", () => {
-  it("runs the actual aggregate script and requires every branch, not just the fast checks", () => {
+  // Тест запускает агрегатный скрипт отдельным процессом Node по разу на каждую
+  // комбинацию job/result — это около тридцати процессов. Дефолтных пяти секунд
+  // хватает только на незагруженной машине, поэтому бюджет задан явно: иначе
+  // проверка падает по таймауту и маскирует реальные поломки ворот релиза.
+  it("runs the actual aggregate script and requires every branch, not just the fast checks", { timeout: 30_000 }, () => {
     expect(gate).toBeTruthy();
     expect(aggregate).toContain("if: always()");
     expect(aggregate).toContain(`needs: [${required.join(", ")}]`);

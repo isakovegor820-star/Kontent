@@ -146,6 +146,36 @@
   color: #314058;
 }
 
+/* Строка согласия: флажок выравнивается по первой строке текста, подпись
+   кликабельна. Класс висит на том же label, поэтому взят двойным селектором —
+   иначе правило .field label перебило бы размеры шрифта. */
+.field label.consentRow {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  align-items: start;
+  gap: 0.6rem;
+  cursor: pointer;
+  font-size: 0.8rem;
+  font-weight: 500;
+  line-height: 1.45;
+  color: #5b6779;
+}
+
+/* Высота 3.25rem рассчитана на текстовые поля: флажку нужен свой размер. */
+.field label.consentRow input[type="checkbox"] {
+  width: 1.15rem;
+  height: 1.15rem;
+  margin: 0.15rem 0 0;
+  padding: 0;
+  border-radius: 0.3rem;
+  accent-color: #2563ff;
+}
+
+.field label.consentRow a {
+  color: #2563ff;
+  font-weight: 650;
+}
+
 .field input {
   height: 3.25rem;
   border-radius: 0.85rem;

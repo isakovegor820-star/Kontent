@@ -1,6 +1,7 @@
 import type { Metadata, Viewport } from "next";
 import { connection } from "next/server";
 import { StoreProvider } from "@/lib/store";
+import { CookieConsentBanner } from "@/components/legal/cookie-consent-banner";
 import { Toaster } from "@/components/ui/toaster";
 import { JsonLd } from "@/components/seo/json-ld";
 import { organizationJsonLd, webSiteJsonLd } from "@/lib/seo/product-json-ld";
@@ -109,6 +110,7 @@ export default async function RootLayout({ children }: { children: React.ReactNo
         <StoreProvider>
           {children}
           <Toaster />
+          <CookieConsentBanner />
         </StoreProvider>
       </body>
     </html>

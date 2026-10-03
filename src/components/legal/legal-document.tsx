@@ -1,6 +1,9 @@
 import Link from "next/link";
 
 import { Logo } from "@/components/brand";
+import { CookieSettingsLink } from "@/components/legal/cookie-settings-link";
+import { LegalLinks } from "@/components/legal/legal-links";
+import { OperatorDetails } from "@/components/legal/operator-details";
 import { LEGAL_EMAIL } from "@/lib/contact";
 
 export type LegalSection = {
@@ -62,6 +65,18 @@ export function LegalDocument({
 
         <footer className="mt-10 border-t border-border pt-7 text-sm leading-6 text-text-2">
           Вопросы по документам: <a className="font-semibold text-info underline underline-offset-4" href={`mailto:${LEGAL_EMAIL}`}>{LEGAL_EMAIL}</a>.
+          <div className="mt-4">
+            <OperatorDetails variant="inline" />
+          </div>
+          {/* Юридические документы ссылаются друг на друга: из политики видно согласие,
+              из согласия — меры защиты. Требование доступности документов, ч. 2 ст. 18.1. */}
+          <LegalLinks
+            className="mt-5 flex flex-wrap gap-x-4 gap-y-2"
+            linkClassName="font-semibold text-info underline underline-offset-4"
+          />
+          <div className="mt-3">
+            <CookieSettingsLink className="font-semibold text-info underline underline-offset-4" />
+          </div>
         </footer>
       </article>
     </main>

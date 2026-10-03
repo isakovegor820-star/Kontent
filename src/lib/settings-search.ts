@@ -1,4 +1,4 @@
-export type SettingsSectionId = "profile" | "project" | "channels" | "content" | "autopilot" | "dictionary" | "integrations" | "notifications";
+export type SettingsSectionId = "profile" | "project" | "channels" | "content" | "autopilot" | "dictionary" | "integrations" | "notifications" | "consents" | "personal-data";
 export type SettingSearchEntry = { id: string; section: SettingsSectionId; label: string; aliases: string; target: string };
 
 /** Search destinations are explicit, shared links to the actual setting, never copies of its value. */
@@ -26,6 +26,8 @@ export const SETTINGS_SEARCH_ENTRIES: SettingSearchEntry[] = [
   {"id": "bot", "section": "integrations", "label": "Telegram-бот", "aliases": "телеграм уведомления подключение бот сообщения", "target": "[data-setting-target=\"bot\"]"},
   {"id": "notifications", "section": "notifications", "label": "Доставка уведомлений", "aliases": "email telegram оповещение события письмо сообщение безопасность лимиты", "target": "[data-setting-target=\"notifications\"]"},
   {"id": "security", "section": "notifications", "label": "Пароль и вход", "aliases": "безопасность сессия выход пароль восстановление доступ", "target": "[data-setting-target=\"security\"]"},
+  {"id": "consents", "section": "consents", "label": "Мои согласия", "aliases": "согласие персональные данные отзыв согласия 152-фз обработка данных политика", "target": "[data-setting-target=\"consents\"]"},
+  {"id": "personal-data", "section": "personal-data", "label": "Мои данные и аккаунт", "aliases": "выгрузка скачать данные удаление аккаунта стереть персональные данные удалить профиль", "target": "[data-setting-target=\"personal-data\"]"},
   {"id": "quiet", "section": "notifications", "label": "Тихие часы", "aliases": "ночь публикации ночной перерыв время", "target": "[data-setting-target=\"quiet\"]"},
   {"id": "channel-niche", "section": "content", "label": "Тема и ниша", "aliases": "", "target": "#channel-niche"},
   {"id": "channel-audience", "section": "content", "label": "Аудитория и её задача", "aliases": "", "target": "#channel-audience"},

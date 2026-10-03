@@ -15,6 +15,7 @@
 | [GET /api/admin/aurora-analytics](../src/app/api/admin/aurora-analytics/route.ts) | сессия аккаунта / admin guard | см. guard в обработчике | прямой HTTP / service client | чтение |
 | [POST /api/admin/bot/actions](../src/app/api/admin/bot/actions/route.ts) | сессия аккаунта / admin guard | см. guard в обработчике | прямой HTTP / service client | создание / действие |
 | [GET /api/admin/bot](../src/app/api/admin/bot/route.ts) | сессия аккаунта / admin guard | см. guard в обработчике | прямой HTTP / service client | чтение |
+| [GET /api/admin/consents](../src/app/api/admin/consents/route.ts) | сессия аккаунта / admin guard | см. guard в обработчике | `admin-users-center.tsx` | чтение / выгрузка доказательств согласий |
 | [GET /api/admin/connections](../src/app/api/admin/connections/route.ts) | сессия аккаунта / admin guard | см. guard в обработчике | прямой HTTP / service client | чтение |
 | [GET /api/admin/overview](../src/app/api/admin/overview/route.ts) | сессия аккаунта / admin guard | см. guard в обработчике | прямой HTTP / service client | чтение |
 | [GET /api/admin/projects/[id]](../src/app/api/admin/projects/[id]/route.ts) | сессия аккаунта / admin guard | см. guard в обработчике | прямой HTTP / service client | чтение |
@@ -235,6 +236,8 @@
 | [PATCH /api/settings/account-profile](../src/app/api/settings/account-profile/route.ts) | сессия аккаунта / admin guard | см. guard в обработчике | `account-profile-settings.tsx`, `theme-provider.tsx`, `use-profile-autosave.ts` | изменение |
 | [GET /api/settings/channel](../src/app/api/settings/channel/route.ts) | header / URL → membership | `content.edit`, `content.publish`, `project.read` | `channel-settings-center.tsx`, `settings-sections.tsx` | чтение |
 | [POST /api/settings/channel](../src/app/api/settings/channel/route.ts) | header / URL → membership | `content.edit`, `content.publish`, `project.read` | `channel-settings-center.tsx`, `settings-sections.tsx` | создание / действие |
+| [GET /api/settings/consents](../src/app/api/settings/consents/route.ts) | сессия аккаунта / admin guard | см. guard в обработчике | `consents-settings.tsx` | чтение |
+| [POST /api/settings/consents](../src/app/api/settings/consents/route.ts) | сессия аккаунта / admin guard | см. guard в обработчике | `consents-settings.tsx` | создание / действие |
 | [GET /api/settings/notifications](../src/app/api/settings/notifications/route.ts) | сессия аккаунта / admin guard | см. guard в обработчике | `notification-security-settings.tsx` | чтение |
 | [POST /api/settings/notifications](../src/app/api/settings/notifications/route.ts) | сессия аккаунта / admin guard | см. guard в обработчике | `notification-security-settings.tsx` | создание / действие |
 | [GET /api/settings/preview](../src/app/api/settings/preview/route.ts) | header / URL → membership | `content.edit`, `project.manage`, `project.read` | `settings-sections.tsx` | чтение |

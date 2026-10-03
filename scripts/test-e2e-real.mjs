@@ -201,6 +201,33 @@ function assert(value, message) {
   if (!value) throw new Error(message);
 }
 
+/**
+ * Заранее записывает выбор по cookie — состояние вернувшегося пользователя.
+ *
+ * Зачем: cookie-баннер (требование 152-ФЗ) висит внизу экрана и перехватывает
+ * клики по элементам у нижней кромки, а сценарии кликают именно туда. Реальный
+ * пользователь, сделавший выбор однажды, баннера больше не видит, поэтому
+ * прогон начинается с того же состояния. Сам баннер проверяется отдельно:
+ * в чистом профиле он обязан появиться (audit-localhost-3000/verify-track-a.mjs).
+ */
+async function seedCookieConsent(context) {
+  const value = encodeURIComponent(JSON.stringify({
+    decision: "necessary",
+    categories: { necessary: true, analytics: false, marketing: false },
+    version: "e2e",
+    decidedAt: new Date(0).toISOString(),
+  }));
+  // Указываем url, а не пару domain/path: Playwright не принимает их вместе.
+  await context.addCookies([{
+    name: "aurora_cookie_consent",
+    value,
+    url: baseUrl,
+    httpOnly: false,
+    secure: true,
+    sameSite: "Lax",
+  }]);
+}
+
 async function readEditableText(locator) {
   return locator.evaluate((element) => {
     if (
@@ -2011,6 +2038,7 @@ try {
       recordVideo: { dir: videoDirectory, size: E2E_EVIDENCE_VIDEO_SIZE },
     } : {}),
   });
+  await seedCookieConsent(context);
   await installBrowserDiagnostics(context, "main");
   page = await context.newPage();
   interfaceEvidence.reducedMotion.main = await page.evaluate(
@@ -4063,6 +4091,7 @@ try {
     await reviewerContext.tracing.start(E2E_EVIDENCE_TRACE_OPTIONS);
     reviewerTraceStarted = true;
   }
+  await seedCookieConsent(reviewerContext);
   await installBrowserDiagnostics(reviewerContext, "reviewer");
   const reviewerRegistration = await reviewerContext.request.post("/api/auth/register", {
     headers: { origin: baseUrl },
