@@ -38,7 +38,13 @@ create table if not exists leads (
   -- С какого устройства пришли — для аналитики.
   user_agent  text,
 
-  created_at  timestamptz not null default now()
+  created_at  timestamptz not null default now(),
+
+  -- Согласие, зафиксированное в момент отправки формы: без этого нельзя
+  -- показать, на каком тексте человек согласился, если форма изменилась.
+  consent_granted       boolean,
+  consent_text_version  text,
+  consent_at            timestamptz
 );
 
 -- Быстрый отбор свежих заявок в будущем кабинете владельца.
@@ -47,17 +53,11 @@ create index if not exists leads_created_at_idx on leads (created_at desc);
 -- Отбор по статусу воронки (пригодится в CRM).
 create index if not exists leads_status_idx on leads (status);
 
--- Заявка помнит, что согласие было дано именно при её отправке: без этого нельзя
--- показать, на каком тексте человек согласился, если форма изменилась.
--- Guard на случай базы без leads: журнал согласий от неё не зависит.
-do $$
-begin
-  if to_regclass('public.leads') is not null then
-    execute 'alter table leads add column if not exists consent_granted boolean';
-    execute 'alter table leads add column if not exists consent_text_version text';
-    execute 'alter table leads add column if not exists consent_at timestamptz';
-  end if;
-end $$;
+-- Те же операторы, что и в миграции 20261026_consents.sql: снапшот и миграция
+-- обязаны совпадать дословно, иначе свежая база и обновлённая разойдутся.
+alter table leads add column if not exists consent_granted boolean;
+alter table leads add column if not exists consent_text_version text;
+alter table leads add column if not exists consent_at timestamptz;
 
 
 -- ------------------------------------------------------- Д.2: вход без паролей

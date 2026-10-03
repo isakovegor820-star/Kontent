@@ -130,7 +130,7 @@ export const SCHEMA_MANIFEST = Object.freeze({
     ["20261023_autopilot_schedule_continuation.sql", "786e655d9062226450d5775e7e609a2e3c46880fdf429385124e0cc17b57a038"],
     ["20261024_web_research.sql", "e8d79b9dac7abaede9584b9bff0661d24db81380c7f8c48deeea5bb0aac3851a"],
     ["20261025_site_competitors.sql", "ab5d2099398dd73913b15eb7b6f78a120d40db58eb59c1df91ee8a7b2db3f474"],
-    ["20261026_consents.sql", "1ec3220acec28ec2e734d69034cf8c03e187ddf4a6aaef7b208d81b93a1d18a5"],
+    ["20261026_consents.sql", "e3b513f52e75a18ecc4cec1956998703a82bf46f8667817588efca40e45ac7ce"],
     ["20261027_data_requests.sql", "45d6bea8dac969b738c23ddcd32611c4f0dd113286752923775d125dfc0b5005"],
   ].map(([name, checksum, acceptedChecksums]) => Object.freeze({
     name,

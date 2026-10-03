@@ -55,16 +55,36 @@ create index if not exists consents_contact_kind_idx on consents (contact, kind,
 
 -- Заявка помнит, что согласие было дано именно при её отправке: без этого
 -- нельзя показать, на каком тексте человек согласился, если форма изменилась.
--- Guard: таблицы leads может не быть в базе, пришедшей с очень старой миграции
--- (интеграционный прогон стартует с legacy-фикстурой), а падать из-за этого
--- миграция не должна — журнал согласий от leads не зависит.
-do $$
-begin
-  if to_regclass('public.leads') is not null then
-    execute 'alter table leads add column if not exists consent_granted boolean';
-    execute 'alter table leads add column if not exists consent_text_version text';
-    execute 'alter table leads add column if not exists consent_at timestamptz';
-  end if;
-end $$;
+--
+-- Таблицу создаём здесь, а не только дополняем: база, пришедшая с очень старой
+-- миграции, может не иметь leads вовсе (интеграционный прогон стартует с
+-- legacy-фикстурой без неё). Раньше здесь стоял guard «если таблица есть» — и
+-- тогда манифест обещал колонки, которых в такой базе не появлялось: гейт
+-- готовности схемы падал с capability_missing:column:leads.consent_granted.
+-- Миграция обязана приводить базу к тому же состоянию, что и схема с нуля.
+create table if not exists leads (
+  id          bigint generated always as identity primary key,
+  contact     text        not null unique,
+  kind        text        not null check (kind in ('email', 'telegram')),
+  source      text,
+  status      text        not null default 'new'
+                          check (status in ('new', 'invited', 'registered', 'active')),
+  note        text,
+  user_agent  text,
+  created_at  timestamptz not null default now(),
+
+  -- Согласие, зафиксированное в момент отправки формы.
+  consent_granted       boolean,
+  consent_text_version  text,
+  consent_at            timestamptz
+);
+
+create index if not exists leads_created_at_idx on leads (created_at desc);
+create index if not exists leads_status_idx on leads (status);
+
+-- Для базы, где leads уже есть, но без колонок согласия.
+alter table leads add column if not exists consent_granted boolean;
+alter table leads add column if not exists consent_text_version text;
+alter table leads add column if not exists consent_at timestamptz;
 
 commit;
