@@ -12179,6 +12179,15 @@ async function runScheduledWebResearch() {
     });
   }
 
+  const eligible = Number((await pool.query(
+    `select count(*)::int as n
+       from channels channel
+       join content_brief brief on brief.project_id = channel.project_id and brief.channel_id = channel.id
+      where channel.status = 'active'
+        and channel.network = 'tg'
+        and (nullif(btrim(brief.niche), '') is not null or cardinality(brief.rubrics) > 0)`,
+  )).rows[0]?.n ?? 0);
+
   const rows = (await pool.query(
     `select channel.project_id, channel.id as channel_id
        from channels channel
@@ -12219,7 +12228,15 @@ async function runScheduledWebResearch() {
     }).catch(() => undefined);
     started += 1;
   }
-  return { started };
+  // Плановый обход обязан быть видимым в журнале. Раньше он возвращал результат,
+  // который никто не печатал, и «крон молчит» было неотличимо от «крон отработал,
+  // но не нашёл ни одного канала»: ни одной строки в журнале, ни одного запуска в базе.
+  console.log("[web-research] плановый обход", {
+    eligibleChannels: eligible,
+    started,
+    skippedByRecentRun: Math.max(0, eligible - started),
+  });
+  return { started, eligible };
 }
 
 const statsWorker = MEDIA_ONLY || AUTOPILOT_ONLY || PUBLICATION_ONLY ? null : new Worker(
@@ -12930,6 +12947,14 @@ for (const s of AUTOPILOT_ONLY || MEDIA_ONLY || PUBLICATION_ONLY ? [] : CRON_SCH
     name: s.name,
     attempts: 2,
     backoff: { type: "exponential", delay: 60_000 },
+    // Идентификатор задачи планировщика — `repeat:<имя>:<метка времени>`, поэтому
+    // хеш каждой завершённой задачи остаётся в Redis под ключом
+    // `bull:cron:repeat:<имя>:<метка>`. Без ограничения они копятся вечно: у расписания
+    // `exports`, которое идёт каждую минуту, это около 1440 записей в сутки и 88 тысяч
+    // за два месяца — при шестнадцати самих расписаниях. Держим последние двести
+    // записей на расписание: истории для разбора хватает, память не течёт.
+    removeOnComplete: { count: 200 },
+    removeOnFail: { count: 200 },
   });
 }
 if (!AUTOPILOT_ONLY && !MEDIA_ONLY && !PUBLICATION_ONLY) {

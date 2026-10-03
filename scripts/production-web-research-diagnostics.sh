@@ -131,10 +131,41 @@ if [[ -n "$current_path" && -f "$current_path/.env.production" ]]; then
     elif ! command -v redis-cli >/dev/null 2>&1; then
       echo "redis-cli not installed on host"
     else
-      printf 'cron_repeat_keys=%s\n' \
+      # ВНИМАНИЕ к названию: это НЕ ключи расписаний. Идентификатор задачи, которую
+      # создаёт планировщик, — `repeat:<имя>:<метка времени>`, поэтому хеш каждой
+      # завершённой задачи лежит под ключом `bull:cron:repeat:<имя>:<метка>`.
+      # Их число равно числу сохранённых записей о выполненных задачах, а не числу
+      # расписаний; самих расписаний ровно столько, сколько в scheduler_keys.
+      printf 'cron_job_hashes=%s\n' \
         "$(redis-cli -u "$REDIS_URL" --raw keys 'bull:cron:repeat:*' 2>/dev/null | wc -l)"
       printf 'web_research_marker_present=%s\n' \
         "$(redis-cli -u "$REDIS_URL" --raw keys 'bull:cron:repeat:*' 2>/dev/null | grep -c 'web-research' || true)"
+      # Восемьдесят восемь тысяч ключей повторов при шестнадцати расписаниях — это
+      # накопление, а не норма. Печатаем образец: по нему видно, дубли это одного
+      # расписания или остатки старого API повторяющихся задач.
+      printf 'cron_job_hashes_sample=%s\n' \
+        "$(redis-cli -u "$REDIS_URL" --raw keys 'bull:cron:repeat:*' 2>/dev/null | head -8 | tr '\n' ' ')"
+      printf 'cron_job_hashes_web_research=%s\n' \
+        "$(redis-cli -u "$REDIS_URL" --raw keys 'bull:cron:repeat:*' 2>/dev/null | grep 'web-research' | head -6 | tr '\n' ' ')"
+      printf 'cron_job_hashes_distinct_names=%s\n' \
+        "$(redis-cli -u "$REDIS_URL" --raw keys 'bull:cron:repeat:*' 2>/dev/null | sed 's/.*:repeat://' | sed 's/:.*//' | sort -u | paste -sd, - | cut -c1-300)"
+      # Legacy-набор повторяющихся задач: если он непустой, значит старый механизм
+      # жив и именно он плодит ключи с метками времени. Если пуст — 88 тысяч ключей
+      # это осиротевшие остатки, и они не могут быть причиной несрабатывания крона.
+      printf 'legacy_repeat_zset=%s\n' \
+        "$(redis-cli -u "$REDIS_URL" zcard 'bull:cron:repeat' 2>/dev/null)"
+      printf 'legacy_repeat_members=%s\n' \
+        "$(redis-cli -u "$REDIS_URL" --raw zrange 'bull:cron:repeat' 0 7 2>/dev/null | tr '\n' ' ')"
+      printf 'scheduler_keys=%s\n' \
+        "$(redis-cli -u "$REDIS_URL" --raw keys 'bull:cron:repeat:*' 2>/dev/null | grep -vE ':[0-9]{13}$' | tr '\n' ' ')"
+      # Сколько задач крон реально выполнил: по счётчику завершённых в очереди cron.
+      printf 'cron_completed=%s failed=%s\n' \
+        "$(redis-cli -u "$REDIS_URL" zcard 'bull:cron:completed' 2>/dev/null)" \
+        "$(redis-cli -u "$REDIS_URL" zcard 'bull:cron:failed' 2>/dev/null)"
+      printf 'cron_queue_wait=%s active=%s delayed=%s\n' \
+        "$(redis-cli -u "$REDIS_URL" llen 'bull:cron:wait' 2>/dev/null)" \
+        "$(redis-cli -u "$REDIS_URL" llen 'bull:cron:active' 2>/dev/null)" \
+        "$(redis-cli -u "$REDIS_URL" zcard 'bull:cron:delayed' 2>/dev/null)"
       printf 'stats_queue_wait=%s active=%s failed=%s\n' \
         "$(redis-cli -u "$REDIS_URL" llen 'bull:stats:wait' 2>/dev/null)" \
         "$(redis-cli -u "$REDIS_URL" llen 'bull:stats:active' 2>/dev/null)" \
@@ -163,36 +194,5 @@ if [[ -n "${AURORA_DIAG_SQL_B64:-}" && -n "$current_path" && -f "$current_path/.
 else
   echo "(no diagnostics SQL supplied)"
 fi
-
-section "SELF-HOSTED SEARCH READINESS (read-only)"
-# Answers one question: can a SearXNG instance live on this host? Nothing is started,
-# nothing is installed; the probe only reports what is already present.
-if command -v docker >/dev/null 2>&1; then
-  printf 'docker=%s\n' "$(docker --version 2>/dev/null || echo present-but-broken)"
-  printf 'docker_daemon=%s\n' "$(docker info >/dev/null 2>&1 && echo running || echo unavailable)"
-  printf 'docker_compose=%s\n' "$(docker compose version --short 2>/dev/null || echo missing)"
-  printf 'containers=%s\n' "$(docker ps -a --format '{{.Names}}:{{.Status}}' 2>/dev/null | paste -sd, - || echo none)"
-  printf 'searxng_container=%s\n' "$(docker ps -a --format '{{.Names}}' 2>/dev/null | grep -ci searxng || true)"
-else
-  echo "docker=absent"
-fi
-for tool in podman python3 pip3; do
-  if command -v "$tool" >/dev/null 2>&1; then
-    printf '%s=present\n' "$tool"
-  else
-    printf '%s=absent\n' "$tool"
-  fi
-done
-# Port 8080 first, then the usual fallbacks. Only the listening state matters.
-for port in 8080 8081 8888; do
-  if ss -ltn 2>/dev/null | grep -q ":${port} "; then
-    printf 'port_%s=busy\n' "$port"
-  else
-    printf 'port_%s=free\n' "$port"
-  fi
-done
-printf 'disk_root=%s\n' "$(df -h / 2>/dev/null | awk 'NR==2 {print $4" free of "$2}')"
-printf 'memory=%s\n' "$(free -m 2>/dev/null | awk 'NR==2 {print $7" MB available of "$2" MB"}')"
-printf 'load=%s\n' "$(cut -d' ' -f1-3 /proc/loadavg 2>/dev/null || echo unknown)"
 
 section "END OF REPORT"

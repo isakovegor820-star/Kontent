@@ -36,11 +36,16 @@ describe("Today background refresh worker contract", () => {
   // сбой не откладывает stats на 6 ч, а weekly на неделю.
   const retry = { attempts: 2, backoff: { type: "exponential", delay: 60_000 } };
 
+  // Хранение записей ограничено: идентификатор задачи планировщика содержит метку
+  // времени, поэтому без предела хеши завершённых задач копятся вечно — 88 тысяч
+  // за два месяца при шестнадцати расписаниях.
+  const retention = { removeOnComplete: { count: 200 }, removeOnFail: { count: 200 } };
+
   it("schedules opportunity materialization through the existing cron worker", async () => {
     expect(worker).toContain('import { materializeAllOpportunitySnapshots }');
     const queue = await registeredJobs();
     expect(queue.upsertJobScheduler.mock.calls.filter(([name]) => name === "today-opportunities")).toEqual([
-      ["today-opportunities", { pattern: "20,50 * * * *", tz: "Europe/Moscow" }, { name: "today-opportunities", ...retry }],
+      ["today-opportunities", { pattern: "20,50 * * * *", tz: "Europe/Moscow" }, { name: "today-opportunities", ...retry, ...retention }],
     ]);
     const pool = {};
     const materializeAllOpportunitySnapshots = vi.fn(async () => "snapshots-refreshed");
@@ -52,7 +57,7 @@ describe("Today background refresh worker contract", () => {
   it("refreshes public market signals before opportunity snapshots", async () => {
     const queue = await registeredJobs();
     expect(queue.upsertJobScheduler.mock.calls.filter(([name]) => name === "market-signals")).toEqual([
-      ["market-signals", { pattern: "5,35 * * * *", tz: "Europe/Moscow" }, { name: "market-signals", ...retry }],
+      ["market-signals", { pattern: "5,35 * * * *", tz: "Europe/Moscow" }, { name: "market-signals", ...retry, ...retention }],
     ]);
     const pool = {};
     const statsProducerQueue = {};
@@ -69,7 +74,7 @@ describe("Today background refresh worker contract", () => {
   it("retries channel statistics during the day instead of waiting until tomorrow", async () => {
     const queue = await registeredJobs();
     expect(queue.upsertJobScheduler.mock.calls.filter(([name]) => name === "stats")).toEqual([
-      ["stats", { pattern: "0 */6 * * *", tz: "Europe/Moscow" }, { name: "stats", ...retry }],
+      ["stats", { pattern: "0 */6 * * *", tz: "Europe/Moscow" }, { name: "stats", ...retry, ...retention }],
     ]);
     const collectAllProjectStats = vi.fn(async () => "stats-refreshed");
     const process = await run(`return ${cronWorker.arguments![1].getText(parsed)};`, { collectAllProjectStats });
