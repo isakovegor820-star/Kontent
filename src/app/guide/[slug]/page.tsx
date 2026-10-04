@@ -114,7 +114,7 @@ export default async function GuidePage({ params }: Params) {
             </Link>
           </li>
           <li>
-            <Link className="text-brand underline underline-offset-2" href="/#answer">
+            <Link className="text-brand underline underline-offset-2" href="/#features">
               Что делает {PRODUCT_NAME} и кому подходит
             </Link>
           </li>

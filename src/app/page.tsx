@@ -1,5 +1,5 @@
 import type { Metadata } from "next";
-import { ReferenceLanding } from "@/components/landing/reference-landing";
+import { AuroraLanding } from "@/components/landing/aurora/aurora-landing";
 import { JsonLd } from "@/components/seo/json-ld";
 import { softwareApplicationJsonLd } from "@/lib/seo/product-json-ld";
 import { publicOrigin } from "@/lib/seo/public-routes";
@@ -26,7 +26,7 @@ export default function LandingPage() {
   return (
     <>
       {origin ? <JsonLd value={softwareApplicationJsonLd(origin)} /> : null}
-      <ReferenceLanding />
+      <AuroraLanding />
     </>
   );
 }
