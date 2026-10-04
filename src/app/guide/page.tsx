@@ -66,7 +66,7 @@ export default function GuideIndexPage() {
           изменилось в измеримых вещах.
         </p>
         <p className="mt-3 text-[15px] leading-7">
-          <Link className="text-brand underline underline-offset-2" href="/#answer">
+          <Link className="text-brand underline underline-offset-2" href="/#features">
             Что делает {PRODUCT_NAME} и кому подходит
           </Link>
         </p>

@@ -1,0 +1,1292 @@
+/*
+ * Дизайн-система главной «Аврора · Bento».
+ *
+ * Источник — утверждённый макет владельца: `docs/design-refs/aurora-bento.html`.
+ * Значения перенесены оттуда дословно (палитра, радиусы, тени, кегли, сетка),
+ * менялась только форма записи: CSS-модуль, комментарии и отказ от JavaScript там,
+ * где хватает CSS.
+ *
+ * Почему один модуль на всю страницу. Макет держится на общей сетке bento и общем
+ * наборе плиток: секция не «заводит себе второй дизайн», а берёт классы отсюда.
+ * Прежний лендинг жил в файле на 3976 строк, где 103 скругления спорили друг с
+ * другом; здесь токенов ровно столько, сколько есть в макете.
+ *
+ * Модуль не знает о содержании: он даёт сетку, плитки, типографику и движение.
+ */
+
+.site {
+  /* Палитра макета */
+  --paper: #f4f2fb;
+  --white: #ffffff;
+  --ink: #151129;
+  --grape: #5a3cf0;
+  --grape-2: #7a5cff;
+  --blue: #2563ff;
+  --blue-2: #4b8bff;
+  --red: #d92c0c;
+  --teal: #0d8f86;
+  --sun: #ffd22e;
+  --lime: #c8f24e;
+  --mint: #a8f0d0;
+  --sky: #a6e9f7;
+  --peach: #ffd0bb;
+  --pink: #ff5fa2;
+  --muted: #6b6880;
+  --pearl: #eceaf7;
+  --line: rgb(21 17 41 / 0.1);
+
+  /* Ритм и форма */
+  --r: 26px;
+  --r-sm: 18px;
+  --sh: 0 18px 40px -22px rgb(21 17 41 / 0.35);
+  --sh-sm: 0 10px 24px -16px rgb(21 17 41 / 0.35);
+  --maxw: 1200px;
+  --font: "Onest Variable", var(--font-interface);
+  --ease: cubic-bezier(0.22, 1, 0.36, 1);
+
+  min-height: 100vh;
+  overflow-x: hidden;
+  background: var(--paper);
+  color: var(--ink);
+  font-family: var(--font);
+  font-size: 16px;
+  line-height: 1.55;
+  -webkit-font-smoothing: antialiased;
+}
+
+.site *,
+.site *::before,
+.site *::after {
+  box-sizing: border-box;
+}
+
+.site img,
+.site svg {
+  display: block;
+}
+
+.site a {
+  text-decoration: none;
+}
+
+/*
+ * Цвет ссылки наследуется — но с нулевой специфичностью (`:where`).
+ * Иначе сброс `.site a` (0,1,1) перебивал бы классы кнопок (0,1,0): белая кнопка
+ * в финальном блоке получала бы белый текст на белом фоне и пропадала.
+ */
+.site :where(a) {
+  color: inherit;
+}
+
+.site button {
+  font: inherit;
+  color: inherit;
+  background: none;
+  border: 0;
+  cursor: pointer;
+}
+
+.site ul {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.site ::selection {
+  background: var(--grape);
+  color: #fff;
+}
+
+.site a:focus-visible,
+.site button:focus-visible,
+.site summary:focus-visible {
+  outline: 3px solid var(--grape);
+  outline-offset: 3px;
+  border-radius: 14px;
+}
+
+.wrap {
+  width: 100%;
+  max-width: var(--maxw);
+  margin-inline: auto;
+  padding-inline: 20px;
+}
+
+/* ------------------------------------------------------------ ТИПОГРАФИКА */
+
+/* Пилюля-подпись секции с точкой. В макете называется eyebrow; здесь `pill`,
+   потому что тест главной запрещает подстроку `eyebrow` в атрибуте class. */
+.pill {
+  display: inline-flex;
+  /* `align-self` обязателен: внутри плитки (flex-колонка) пилюля иначе
+     растягивается на всю ширину и перестаёт быть подписью. */
+  align-self: flex-start;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 15px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: #fff;
+  box-shadow: var(--sh-sm);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.pill i {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--grape);
+}
+
+.sec {
+  padding-block: clamp(52px, 6vw, 92px);
+}
+
+/* Волосяная линия внутри плитки: тот же вес, что у границ таблицы и подвала. */
+.hairline {
+  height: 1px;
+  margin: 0;
+  border: 0;
+  background: var(--line);
+}
+
+/*
+ * Прямой ответ на вопрос «что это» — самый крупный текст страницы после первого
+ * экрана. Он идёт не абзацем .tile p (15px), а собственным классом: 56 слов ответа
+ * должны читаться как заявление, иначе блок превращается в серую простыню, ради
+ * ухода от которой страница и переделывалась.
+ */
+.answer {
+  max-width: 48ch;
+  margin: 0;
+  font-size: clamp(20px, 2.2vw, 32px);
+  font-weight: 700;
+  line-height: 1.45;
+  letter-spacing: -0.02em;
+  text-wrap: pretty;
+}
+
+.answerNote {
+  max-width: 58ch;
+  margin: 0;
+  color: var(--muted);
+  font-size: 13.5px;
+  line-height: 1.6;
+}
+
+.secHead {
+  max-width: 720px;
+  margin-bottom: clamp(28px, 3.4vw, 44px);
+}
+
+.secHead h2 {
+  margin: 16px 0 0;
+  font-size: clamp(30px, 4.4vw, 54px);
+  font-weight: 800;
+  line-height: 1.03;
+  letter-spacing: -0.035em;
+}
+
+.secHead p {
+  margin: 14px 0 0;
+  max-width: 56ch;
+  color: var(--muted);
+  font-size: 18px;
+  line-height: 1.5;
+}
+
+/* --------------------------------------------------------------- КНОПКИ */
+
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 9px;
+  min-height: 50px;
+  padding: 0 22px;
+  border-radius: 999px;
+  font-size: 15px;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+  transition:
+    transform 0.22s var(--ease),
+    box-shadow 0.25s,
+    background 0.2s,
+    color 0.2s;
+}
+
+.btn svg {
+  width: 17px;
+  height: 17px;
+  transition: transform 0.28s;
+}
+
+.btn:hover svg {
+  transform: translateX(3px);
+}
+
+.btnPrimary {
+  background: var(--ink);
+  color: #fff;
+  box-shadow: var(--sh);
+}
+
+.btnPrimary:hover {
+  transform: translateY(-2px);
+}
+
+.btnGrape {
+  background: var(--grape);
+  color: #fff;
+  box-shadow: 0 16px 34px -14px rgb(90 60 240 / 0.75);
+}
+
+.btnGrape:hover {
+  background: #4b2fe0;
+  transform: translateY(-2px);
+}
+
+.btnWhite {
+  background: #fff;
+  color: var(--ink);
+  box-shadow: var(--sh);
+}
+
+.btnWhite:hover {
+  transform: translateY(-2px);
+}
+
+.btnGhost {
+  border: 1px solid var(--line);
+  background: rgb(255 255 255 / 0.7);
+  color: var(--ink);
+}
+
+.btnGhost:hover {
+  background: #fff;
+}
+
+/* --------------------------------------------------------------- ШАПКА */
+
+.nav {
+  position: sticky;
+  inset-block-start: 12px;
+  z-index: 90;
+  margin-block-start: 12px;
+}
+
+.navInner {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  max-width: var(--maxw);
+  margin-inline: auto;
+  padding: 10px 12px 10px 16px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: rgb(255 255 255 / 0.82);
+  backdrop-filter: blur(16px);
+  box-shadow: var(--sh-sm);
+  transition: box-shadow 0.3s;
+}
+
+.nav[data-stuck="yes"] .navInner {
+  box-shadow: var(--sh);
+}
+
+.brand {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  font-size: 18px;
+  font-weight: 800;
+  letter-spacing: -0.02em;
+}
+
+.brand svg,
+.brand img {
+  width: 30px;
+  height: 30px;
+  border-radius: 9px;
+}
+
+.navLinks {
+  display: flex;
+  gap: 2px;
+  margin-inline-start: 8px;
+}
+
+.navLinks a {
+  padding: 9px 13px;
+  border-radius: 999px;
+  color: #3a3654;
+  font-size: 14.5px;
+  font-weight: 600;
+  transition: background 0.2s, color 0.2s;
+}
+
+.navLinks a:hover {
+  background: rgb(90 60 240 / 0.09);
+  color: var(--grape);
+}
+
+.navAct {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-inline-start: auto;
+}
+
+.navLogin {
+  padding: 9px 12px;
+  border-radius: 999px;
+  font-size: 14.5px;
+  font-weight: 700;
+}
+
+.navLogin:hover {
+  background: rgb(21 17 41 / 0.06);
+}
+
+.navToggle {
+  display: none;
+  align-items: center;
+  justify-content: center;
+  width: 46px;
+  height: 46px;
+  border-radius: 999px;
+  background: var(--ink);
+}
+
+/* Три полосы одной деталью: при открытом меню превращаются в крест. */
+.navToggle span,
+.navToggle span::before,
+.navToggle span::after {
+  content: "";
+  display: block;
+  width: 17px;
+  height: 2px;
+  border-radius: 2px;
+  background: #fff;
+  transition: transform 0.3s;
+}
+
+.navToggle span::before {
+  transform: translateY(-5px);
+}
+
+.navToggle span::after {
+  transform: translateY(3px);
+}
+
+.navToggle[aria-expanded="true"] span {
+  background: transparent;
+}
+
+.navToggle[aria-expanded="true"] span::before {
+  transform: rotate(45deg);
+}
+
+.navToggle[aria-expanded="true"] span::after {
+  transform: rotate(-45deg) translateY(-2px);
+}
+
+.mobile {
+  position: fixed;
+  inset: 0;
+  z-index: 95;
+  display: none;
+  padding: 96px 20px 30px;
+  background: rgb(244 242 251 / 0.98);
+  backdrop-filter: blur(18px);
+}
+
+.mobile[data-open="yes"] {
+  display: block;
+}
+
+.mobile a {
+  display: block;
+  padding: 16px 6px;
+  border-block-end: 1px solid var(--line);
+  font-size: 22px;
+  font-weight: 800;
+  letter-spacing: -0.02em;
+}
+
+.mobile .btn {
+  width: 100%;
+  margin-block-start: 22px;
+}
+
+/* ---------------------------------------------------------- BENTO-СЕТКА */
+
+.bento {
+  display: grid;
+  grid-template-columns: repeat(12, 1fr);
+  gap: 16px;
+}
+
+.tile {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  min-height: 170px;
+  padding: clamp(20px, 2.4vw, 28px);
+  border-radius: var(--r);
+  box-shadow: var(--sh-sm);
+  overflow: hidden;
+  transition: transform 0.28s var(--ease);
+}
+
+.tile h3 {
+  margin: 0;
+  font-size: clamp(19px, 1.8vw, 25px);
+  font-weight: 800;
+  line-height: 1.1;
+  letter-spacing: -0.025em;
+}
+
+.tile p {
+  margin: 10px 0 0;
+  font-size: 15px;
+  line-height: 1.5;
+  opacity: 0.9;
+}
+
+.tile .ico {
+  display: grid;
+  place-items: center;
+  width: 46px;
+  height: 46px;
+  margin-block-end: 16px;
+  border-radius: 14px;
+  background: rgb(255 255 255 / 0.25);
+}
+
+.tile .ico svg {
+  width: 22px;
+  height: 22px;
+}
+
+.tile .tag {
+  align-self: flex-start;
+  margin-block-start: auto;
+  padding-block-start: 16px;
+  font-size: 12.5px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  opacity: 0.85;
+}
+
+/* Цвета плиток — как в макете: четыре градиента для «действия» и пастель для
+   «состояния». Белые и жемчужные плитки держат текст и таблицы. */
+.cInk {
+  background: var(--ink);
+  color: #fff;
+}
+
+.cGrape {
+  background: linear-gradient(140deg, #6d4dff, #4a2ee0);
+  color: #fff;
+}
+
+.cBlue {
+  background: linear-gradient(140deg, #3a7bff, #1c48d8);
+  color: #fff;
+}
+
+.cTeal {
+  background: linear-gradient(140deg, #15b3a5, #0b7d75);
+  color: #fff;
+}
+
+.cRed {
+  background: linear-gradient(140deg, #e84a24, #c2210a);
+  color: #fff;
+}
+
+.cSun {
+  background: var(--sun);
+  color: #2a1d00;
+}
+
+.cLime {
+  background: var(--lime);
+  color: #1d2600;
+}
+
+.cMint {
+  background: var(--mint);
+  color: #073122;
+}
+
+.cSky {
+  background: var(--sky);
+  color: #053240;
+}
+
+.cPeach {
+  background: var(--peach);
+  color: #3d1400;
+}
+
+.cPaper {
+  background: #fff;
+  color: var(--ink);
+}
+
+.cPearl {
+  background: var(--pearl);
+  color: var(--ink);
+}
+
+.tile.cSun .ico,
+.tile.cLime .ico,
+.tile.cMint .ico,
+.tile.cSky .ico,
+.tile.cPeach .ico {
+  background: rgb(21 17 41 / 0.08);
+}
+
+.s3 { grid-column: span 3; }
+.s4 { grid-column: span 4; }
+.s5 { grid-column: span 5; }
+.s6 { grid-column: span 6; }
+.s7 { grid-column: span 7; }
+.s8 { grid-column: span 8; }
+.s12 { grid-column: span 12; }
+.r2 { grid-row: span 2; }
+
+.tile.cGrape .pbar,
+.tile.cBlue .pbar,
+.tile.cTeal .pbar,
+.tile.cRed .pbar,
+.tile.cInk .pbar {
+  background: rgb(255 255 255 / 0.25);
+}
+
+.tile.cGrape .pbar i,
+.tile.cBlue .pbar i,
+.tile.cTeal .pbar i,
+.tile.cRed .pbar i,
+.tile.cInk .pbar i {
+  background: #fff;
+}
+
+/* ------------------------------------------------------------ ПЕРВЫЙ ЭКРАН */
+
+.hero {
+  padding-block-start: clamp(40px, 5vw, 72px);
+  text-align: center;
+}
+
+.heroTitle {
+  max-width: 16ch;
+  margin: 22px auto 0;
+  font-size: clamp(38px, 6.6vw, 86px);
+  font-weight: 800;
+  line-height: 1;
+  letter-spacing: -0.045em;
+  /* Базовое состояние — обычные чернила: текст обязан быть виден до всякой
+     поддержки заливки по буквам. */
+  color: var(--ink);
+}
+
+/*
+ * Акцентная часть заголовка. В макете это <mark> внутри h1; здесь — градиент по
+ * всему заголовку с затуханием в чернила: цветными остаются первые слова, и это
+ * не зависит от того, где перенеслась строка. Вариант с `::first-line` пробовали —
+ * на телефоне он обрезал слово посередине, потому что фон считался от строки.
+ */
+@supports ((background-clip: text) or (-webkit-background-clip: text)) {
+  .heroTitle {
+    /* Градиент идёт почти вертикально: цветными остаются первые строки, и на
+       телефоне, где строк четыре, затухание читается так же, как на десктопе. */
+    background-image: linear-gradient(
+      168deg,
+      #5a3cf0 0%,
+      #a04ce8 10%,
+      #ff5fa2 20%,
+      #ff8a3d 30%,
+      var(--ink) 42%,
+      var(--ink) 100%
+    );
+    -webkit-background-clip: text;
+    background-clip: text;
+    color: transparent;
+  }
+}
+
+.lede {
+  max-width: 62ch;
+  margin: 22px auto 0;
+  color: var(--muted);
+  font-size: clamp(17px, 1.5vw, 20px);
+  line-height: 1.55;
+}
+
+.heroCta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  justify-content: center;
+  margin-block-start: 30px;
+}
+
+.heroChips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 9px;
+  justify-content: center;
+  margin-block-start: 22px;
+}
+
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 9px 15px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: #fff;
+  box-shadow: var(--sh-sm);
+  font-size: 13.5px;
+  font-weight: 600;
+}
+
+.chip i {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+}
+
+.heroBento {
+  margin-block-start: clamp(38px, 4.5vw, 60px);
+  text-align: start;
+}
+
+/* Мини-календарь недели в плитке плана. */
+.mini {
+  display: grid;
+  grid-template-columns: repeat(5, 1fr);
+  gap: 7px;
+  margin-block-start: 18px;
+}
+
+.mini b {
+  padding: 9px 7px;
+  border-radius: 12px;
+  background: rgb(255 255 255 / 0.16);
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.mini b span {
+  display: block;
+  margin-block-end: 5px;
+  font-size: 10px;
+  opacity: 0.7;
+}
+
+.mini em {
+  display: block;
+  margin-block-start: 6px;
+  padding: 5px 6px;
+  border-radius: 7px;
+  color: #fff;
+  font-size: 10.5px;
+  font-style: normal;
+  font-weight: 700;
+}
+
+.mB { background: linear-gradient(140deg, #3a7bff, #1c48d8); }
+.mV { background: linear-gradient(140deg, #8b5cf6, #6d28d9); }
+.mC { background: linear-gradient(140deg, #22c1e8, #0891b2); }
+.mO { background: linear-gradient(140deg, #fb923c, #ea580c); }
+
+/* Список с галочками внутри плитки. */
+.check {
+  display: grid;
+  gap: 10px;
+  margin-block-start: 14px;
+}
+
+.check li {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 14.5px;
+  font-weight: 600;
+}
+
+.check svg {
+  flex: none;
+  width: 18px;
+  height: 18px;
+}
+
+.big {
+  font-size: clamp(46px, 6vw, 82px);
+  font-weight: 800;
+  line-height: 0.9;
+  letter-spacing: -0.05em;
+}
+
+.bigLabel {
+  margin-block-start: 10px;
+  font-size: 15px;
+  font-weight: 700;
+  opacity: 0.85;
+}
+
+.vers {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-block-start: 18px;
+}
+
+.vers b {
+  padding: 7px 13px;
+  border-radius: 999px;
+  background: rgb(21 17 41 / 0.08);
+  font-size: 12.5px;
+  font-weight: 700;
+}
+
+.vers .now {
+  background: var(--ink);
+  color: #fff;
+}
+
+.vers i {
+  font-style: normal;
+  opacity: 0.5;
+}
+
+.pbar {
+  height: 9px;
+  margin-block-start: 16px;
+  border-radius: 999px;
+  background: rgb(21 17 41 / 0.12);
+  overflow: hidden;
+}
+
+.pbar i {
+  display: block;
+  width: 100%;
+  height: 100%;
+  border-radius: 999px;
+  background: var(--ink);
+  transform: scaleX(0);
+  transform-origin: left center;
+}
+
+/* ------------------------------------------------------- СЕКЦИИ И ШАГИ */
+
+.feat .ico {
+  background: rgb(255 255 255 / 0.28);
+}
+
+.step .num {
+  font-size: clamp(40px, 4.6vw, 64px);
+  font-weight: 800;
+  line-height: 0.9;
+  letter-spacing: -0.05em;
+}
+
+.step .res {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  margin-block-start: auto;
+  padding-block-start: 16px;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.step .res svg {
+  width: 15px;
+  height: 15px;
+}
+
+/* Образец проверки материала: четыре метрики и две панели. */
+.specGrid {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 14px;
+}
+
+.specGrid .tile,
+.specRow .tile {
+  min-height: auto;
+  box-shadow: none;
+}
+
+.specRow {
+  display: grid;
+  grid-template-columns: repeat(12, 1fr);
+  gap: 14px;
+  margin-block-start: 16px;
+}
+
+.specLabel {
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  opacity: 0.7;
+}
+
+.specValue {
+  margin-block-start: 8px;
+  font-size: 24px;
+  font-weight: 800;
+}
+
+.specNote {
+  font-size: 13.5px;
+  opacity: 0.8;
+}
+
+/* --------------------------------------------------------------- ВОПРОСЫ */
+
+.faq {
+  display: grid;
+  gap: 12px;
+}
+
+.faq details {
+  border-radius: var(--r-sm);
+  background: #fff;
+  box-shadow: var(--sh-sm);
+  overflow: hidden;
+}
+
+.faq summary {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 20px 22px;
+  font-size: 17px;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+  list-style: none;
+  cursor: pointer;
+}
+
+.faq summary::-webkit-details-marker {
+  display: none;
+}
+
+.faq .qn {
+  display: grid;
+  flex: none;
+  place-items: center;
+  width: 30px;
+  height: 30px;
+  border-radius: 10px;
+  background: var(--pearl);
+  color: var(--grape);
+  font-size: 13px;
+  font-weight: 800;
+}
+
+.faq .pl {
+  display: grid;
+  flex: none;
+  place-items: center;
+  width: 30px;
+  height: 30px;
+  margin-inline-start: auto;
+  border-radius: 50%;
+  background: var(--ink);
+  color: #fff;
+  font-size: 18px;
+  font-weight: 400;
+  transition: transform 0.28s;
+}
+
+.faq details[open] summary .pl {
+  transform: rotate(45deg);
+}
+
+.faq .ans {
+  padding: 0 22px 22px 66px;
+  color: var(--muted);
+  font-size: 15.5px;
+  line-height: 1.6;
+}
+
+/* Вопрос обязан быть заголовком: его читает и поиск, и генеративный движок.
+   Внутри <summary> заголовок разрешён спецификацией. */
+.faq .q {
+  margin: 0;
+  font-size: 17px;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+}
+
+/* ------------------------------------------------------ СРАВНЕНИЕ (ТАБЛИЦА) */
+
+.tableWrap {
+  border-radius: var(--r);
+  background: #fff;
+  box-shadow: var(--sh-sm);
+  overflow: hidden;
+}
+
+.table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 15px;
+}
+
+.table caption {
+  padding: 22px 24px 6px;
+  color: var(--muted);
+  font-size: 13.5px;
+  text-align: start;
+}
+
+.table th,
+.table td {
+  padding: 15px 16px;
+  border-block-start: 1px solid var(--line);
+  text-align: start;
+  vertical-align: top;
+}
+
+.table thead th {
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+}
+
+.table tbody th {
+  font-weight: 700;
+}
+
+/* Колонка Авроры — единственная с фоном: сравнение должно читаться с одного
+   взгляда, а не построчно. */
+.table .auroraCol {
+  background: rgb(90 60 240 / 0.07);
+}
+
+.table .empty {
+  color: var(--muted);
+}
+
+.legend {
+  margin: 16px 0 0;
+  color: var(--muted);
+  font-size: 13.5px;
+}
+
+.notes {
+  display: grid;
+  gap: 10px;
+  margin: 14px 0 0;
+  padding: 0;
+  list-style: none;
+  color: var(--muted);
+  font-size: 14px;
+}
+
+.notes strong {
+  color: var(--ink);
+}
+
+.weakChip {
+  display: inline-block;
+  margin-inline-start: 8px;
+  padding: 3px 9px;
+  border-radius: 999px;
+  background: var(--pearl);
+  color: var(--grape);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.scrollHint {
+  display: none;
+  margin: 0 0 10px;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+/* ------------------------------------------------------------ ФИНАЛ И CTA */
+
+.cta {
+  position: relative;
+  padding: clamp(34px, 5vw, 68px);
+  border-radius: 34px;
+  background: linear-gradient(135deg, #5a3cf0 0%, #7a5cff 40%, #2563ff 100%);
+  color: #fff;
+  box-shadow: 0 40px 80px -40px rgb(90 60 240 / 0.8);
+  overflow: hidden;
+}
+
+.cta::after {
+  content: "";
+  position: absolute;
+  inset-block-start: -200px;
+  inset-inline-end: -140px;
+  width: 520px;
+  height: 520px;
+  border-radius: 50%;
+  background: rgb(255 255 255 / 0.16);
+}
+
+.cta::before {
+  content: "";
+  position: absolute;
+  inset-block-end: -200px;
+  inset-inline-start: -120px;
+  width: 360px;
+  height: 360px;
+  border-radius: 50%;
+  background: rgb(255 95 162 / 0.35);
+}
+
+.ctaIn {
+  position: relative;
+  z-index: 1;
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 30px;
+  align-items: center;
+}
+
+.cta h2 {
+  max-width: 18ch;
+  margin: 0;
+  color: #fff;
+  font-size: clamp(28px, 4vw, 52px);
+  font-weight: 800;
+  line-height: 1.03;
+  letter-spacing: -0.04em;
+}
+
+.cta p {
+  max-width: 46ch;
+  margin: 14px 0 0;
+  color: rgb(255 255 255 / 0.88);
+  font-size: 17px;
+}
+
+/* --------------------------------------------------------------- ПОДВАЛ */
+
+.footer {
+  margin-block-start: clamp(44px, 5vw, 76px);
+  padding-block: clamp(44px, 5vw, 68px) 24px;
+  border-radius: 34px 34px 0 0;
+  background: var(--ink);
+  color: #fff;
+}
+
+.footerGrid {
+  display: grid;
+  grid-template-columns: 1.6fr repeat(4, 1fr);
+  gap: 32px clamp(18px, 3vw, 36px);
+}
+
+.footerBrand .brand {
+  font-size: 20px;
+}
+
+.footerBrand p {
+  max-width: 28ch;
+  margin: 14px 0 0;
+  color: rgb(255 255 255 / 0.6);
+  font-size: 14.5px;
+}
+
+.footer h4 {
+  margin: 0 0 14px;
+  color: rgb(255 255 255 / 0.5);
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+}
+
+.footer ul {
+  display: grid;
+  gap: 9px;
+}
+
+.footer a {
+  color: rgb(255 255 255 / 0.78);
+  font-size: 14.5px;
+  transition: color 0.2s;
+}
+
+.footer a:hover {
+  color: #fff;
+}
+
+.footerBottom {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 14px;
+  align-items: center;
+  justify-content: space-between;
+  margin-block-start: clamp(34px, 4vw, 54px);
+  padding-block-start: 20px;
+  border-block-start: 1px solid rgb(255 255 255 / 0.14);
+  color: rgb(255 255 255 / 0.55);
+  font-size: 13.5px;
+}
+
+.footerBottom button {
+  min-height: 40px;
+  font-size: 13.5px;
+}
+
+/* -------------------------------------------------------- ЛЕСТНИЦА ПОЯВЛЕНИЯ */
+
+/*
+ * Появление по скроллу — на CSS, а не на IntersectionObserver, как в макете.
+ * Причина та же, что и раньше: без JavaScript текст остаётся видимым, и его
+ * читают поиск и генеративный движок. Там, где scroll-driven анимации нет,
+ * элемент просто виден сразу — это правильный отказ.
+ */
+@keyframes riseIn {
+  from {
+    opacity: 0;
+    transform: translate3d(0, 18px, 0);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@keyframes growBar {
+  from {
+    transform: scaleX(0);
+  }
+  to {
+    transform: scaleX(1);
+  }
+}
+
+/* Первый экран входит при загрузке: он уже в окне, скролл-таймлайн ему не нужен. */
+.enter {
+  animation: riseIn 0.7s var(--ease) both;
+  animation-delay: var(--delay, 0ms);
+}
+
+@supports (animation-timeline: view()) {
+  @media (prefers-reduced-motion: no-preference) {
+    .reveal {
+      animation: riseIn linear both;
+      animation-timeline: view();
+      animation-range: entry 4% entry 92%;
+    }
+
+    /* Плитки одной секции поднимаются лестницей: задержка задаётся через --i. */
+    .stagger > * {
+      animation: riseIn linear both;
+      animation-timeline: view();
+      animation-range: entry calc(4% + var(--i, 0) * 6%) entry calc(88% + var(--i, 0) * 4%);
+    }
+
+    /* Полоса заполняется, когда плитка плана попала в кадр. */
+    .pbar i {
+      animation: growBar linear both;
+      animation-timeline: view();
+      animation-range: entry 20% entry 90%;
+    }
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .site {
+    scroll-behavior: auto;
+  }
+
+  .site *,
+  .site *::before,
+  .site *::after {
+    animation: none !important;
+    transition: none !important;
+  }
+
+  .pbar i {
+    transform: none;
+  }
+}
+
+/* --------------------------------------------------------------- АДАПТИВ */
+
+@media (max-width: 980px) {
+  .navLinks {
+    display: none;
+  }
+
+  .navToggle {
+    display: flex;
+  }
+
+  .s3,
+  .s4,
+  .s5,
+  .s7,
+  .s8 {
+    grid-column: span 6;
+  }
+
+  .ctaIn {
+    grid-template-columns: 1fr;
+  }
+
+  .footerGrid {
+    grid-template-columns: 1fr 1fr;
+  }
+}
+
+@media (max-width: 640px) {
+  .bento,
+  .specRow {
+    gap: 12px;
+  }
+
+  .s3,
+  .s4,
+  .s5,
+  .s6,
+  .s7,
+  .s8 {
+    grid-column: span 12;
+  }
+
+  .specGrid {
+    grid-template-columns: 1fr 1fr;
+  }
+
+  .mini {
+    grid-template-columns: repeat(5, 1fr);
+  }
+
+  .footerGrid {
+    grid-template-columns: 1fr 1fr;
+  }
+
+  .faq .ans {
+    padding-inline-start: 22px;
+  }
+
+  .scrollHint {
+    display: block;
+  }
+}

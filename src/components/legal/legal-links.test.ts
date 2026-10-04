@@ -17,7 +17,7 @@ const ROOT = fileURLToPath(new URL("../../../", import.meta.url));
  * добавленный без ссылок, если его внести в список.
  */
 const FOOTER_SOURCES = [
-  "src/components/landing/reference-landing.tsx",
+  "src/components/landing/aurora/footer.tsx",
   "src/components/landing/final-cta.tsx",
   "src/components/v3/final-cta.tsx",
   "src/components/v3/production-footer.tsx",

@@ -1,9 +1,7 @@
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { COMPARISON_COLUMNS, COMPARISON_LEGEND, COMPARISON_ROWS } from "@/lib/comparison";
 import {
-  PRODUCT_ANSWER,
   PRODUCT_CONTENT_UPDATED_AT,
   PRODUCT_DOES_NOT_FIT,
   PRODUCT_FITS,
@@ -61,7 +59,10 @@ describe("production landing page", () => {
     expect(markup).toContain("План готов");
     expect(markup).toContain("Источники связаны");
     expect(markup).toContain("Версия согласована");
-    expect(markup).toContain("process-route-gradient");
+    // Здесь проверялся SVG-путь `process-route-gradient` из прежней закреплённой
+    // сцены. В утверждённом макете владельца шаги — плитки bento, SVG-пути в них
+    // нет, поэтому проверка снята вместе с элементом. Содержание шага (заголовок,
+    // описание, результат) осталось и проверяется строками выше.
     expect(markup).toContain("Проверяйте риски и доказательства до публикации");
     expect(markup).toContain("Пример проверки материала");
     expect(markup).toContain("Что уже есть для юридического редактора");
@@ -99,22 +100,11 @@ describe("production landing page", () => {
 });
 
 describe("landing blocks for search and generative answers", () => {
-  it("opens with a direct answer of 40 to 60 words", () => {
-    const markup = render();
-    const words = PRODUCT_ANSWER.split(/\s+/u).filter(Boolean);
-    expect(words.length).toBeGreaterThanOrEqual(40);
-    expect(words.length).toBeLessThanOrEqual(60);
-    expect(markup).toContain(PRODUCT_ANSWER);
-
-    // Ответ обязан идти в разметке раньше остальных блоков: генеративный движок
-    // вырезает первые абзацы, а не тот блок, который ниже визуально.
-    const answerAt = markup.indexOf(PRODUCT_ANSWER);
-    const featuresAt = markup.indexOf('id="features"');
-    const answerBlockAt = markup.indexOf('id="answer"');
-    expect(answerBlockAt).toBeGreaterThan(-1);
-    expect(answerAt).toBeGreaterThan(answerBlockAt);
-    expect(answerAt).toBeLessThan(featuresAt);
-  });
+  // Здесь проверялся блок прямого ответа («Коротко»): 40–60 слов определения
+  // первым текстовым блоком страницы, чтобы генеративный движок вырезал его
+  // целиком. Блок удалён с главной по решению владельца 4 октября 2026 вместе
+  // со своей проверкой. Определение продукта осталось в первом вопросе FAQ —
+  // он и отвечает на тот же запрос, но без отдельной секции.
 
   it("states who the product is not for, not only who it suits", () => {
     const markup = render();
@@ -126,21 +116,11 @@ describe("landing blocks for search and generative answers", () => {
     }
   });
 
-  it("compares with alternatives in a real table and admits the weak row", () => {
-    const markup = render();
-    expect(markup).toContain("<table");
-    expect(markup).toContain("<caption");
-    for (const column of COMPARISON_COLUMNS) {
-      expect(markup).toContain(column);
-    }
-    for (const row of COMPARISON_ROWS) {
-      expect(markup).toContain(row.criterion);
-    }
-    // Без этой строки таблица читается как реклама. С ней — как сравнение.
-    const weakRow = COMPARISON_ROWS.find((row) => row.criterion === "Глубина аналитики чужих каналов");
-    expect(weakRow?.cells[0]).toBe("нет");
-    expect(markup).toContain(COMPARISON_LEGEND);
-  });
+  // Здесь проверялся блок сравнения с сервисами отложенного постинга: настоящая
+  // <table> с подписью, колонками конкурентов и честной слабой строкой. Блок удалён
+  // с главной по решению владельца 4 октября 2026 — вместе с ним ушла и проверка.
+  // Вопрос о различии с сервисами отложенного постинга остался в FAQ: он отвечает
+  // на тот же запрос текстом, без таблицы.
 
   it("renders every FAQ question as a heading and never invents a price", () => {
     const markup = render();
