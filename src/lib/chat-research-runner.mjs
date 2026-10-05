@@ -11,7 +11,7 @@
 
 import { discoverRadarWebCandidates } from "./radar-search.mjs";
 import { fetchPublicText } from "./safe-http.mjs";
-import { evaluateWebFinding, sourceTextFromHtml } from "./web-research-contract.mjs";
+import { evaluateWebFinding, sourceTextFromHtml, looksLikeBlockedPage, MAX_CLAIM_LENGTH } from "./web-research-contract.mjs";
 import { planWebResearch, webResearchStems, scoreWebResearchCandidate, isWebResearchCandidateRelevant } from "./web-research-plan.mjs";
 // Определение даты живёт в общем модуле: тот же код нужен фоновому обходу,
 // который иначе отбрасывал закон с официального портала как «нет даты».
@@ -37,7 +37,9 @@ const READ_CONCURRENCY = 3;
 
 export const CHAT_RESEARCH_PASSAGES_PER_PAGE = 2;
 const MIN_PASSAGE_LENGTH = 60;
-const MAX_PASSAGE_LENGTH = 700;
+// Потолок фрагмента совпадает с лимитом ворот достоверности: фрагмент длиннее
+// отметается как `claim_too_long`, и вместе с ним теряется сам факт.
+const MAX_PASSAGE_LENGTH = MAX_CLAIM_LENGTH;
 
 /**
  * Ограничивает ожидание промиса. Исходный промис не отменяется — он просто
@@ -55,10 +57,21 @@ function withDeadline(promise, ms) {
 /**
  * Разбивает текст на предложения-кандидаты. Абзацы сохраняются целиком, если в них
  * нет нормального членения: длинная цитата лучше, чем потерянный факт.
+ *
+ * Потолок фрагмента равен `MAX_CLAIM_LENGTH` ворот достоверности, а не больше его:
+ * фрагмент длиннее лимита ворота отклоняют как `claim_too_long`, и факт с официальной
+ * страницы теряется целиком. В живом прогоне так отбрасывались сразу четыре факта из
+ * документации модели, где предложения длиннее шестисот символов. Фрагмент, который
+ * не удаётся уложить в лимит по границе предложения, режется по словам: лучше часть
+ * утверждения с ссылкой на источник, чем его отсутствие.
  */
 export function splitPassages(text) {
   const normalized = String(text ?? "").replace(/\u00a0/gu, " ");
   const passages = [];
+  const push = (value) => {
+    const trimmed = String(value ?? "").trim();
+    if (trimmed.length >= MIN_PASSAGE_LENGTH) passages.push(trimmed);
+  };
   for (const block of normalized.split(/\n+/u)) {
     const trimmed = block.trim();
     if (trimmed.length < MIN_PASSAGE_LENGTH) continue;
@@ -67,13 +80,20 @@ export function splitPassages(text) {
     for (const sentence of sentences) {
       const next = current ? `${current} ${sentence}` : sentence;
       if (next.length > MAX_PASSAGE_LENGTH && current) {
-        passages.push(current);
+        push(current);
         current = sentence;
       } else {
         current = next;
       }
+      // Одно предложение может быть длиннее потолка само по себе.
+      while (current.length > MAX_PASSAGE_LENGTH) {
+        const cut = current.lastIndexOf(" ", MAX_PASSAGE_LENGTH);
+        if (cut < MIN_PASSAGE_LENGTH) break;
+        push(current.slice(0, cut));
+        current = current.slice(cut + 1);
+      }
     }
-    if (current.trim().length >= MIN_PASSAGE_LENGTH) passages.push(current.trim());
+    push(current);
   }
   return passages.map((passage) => passage.replace(/\s+/gu, " ").trim()).filter(Boolean);
 }
@@ -269,6 +289,11 @@ export async function runChatResearch(input, deps = {}) {
       const pageText = sourceTextFromHtml(html);
       if (pageText.length < 200) {
         rejectionCodes.push("source_too_short");
+        continue;
+      }
+      // Заглушка «доступ запрещён» — не источник: её текст нельзя выдавать за факт.
+      if (looksLikeBlockedPage(pageText)) {
+        rejectionCodes.push("page_blocked");
         continue;
       }
       const publishedAt = extractPublishedAt(html, Date.now(), page.url);

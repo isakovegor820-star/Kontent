@@ -5,6 +5,7 @@ import {
   classifyLegalStatus,
   evaluateWebFinding,
   extractClaimNumbers,
+  looksLikeBlockedPage,
   normalizeForMatch,
   sourceTextFromHtml,
   verifyQuoteInSource,
@@ -340,5 +341,21 @@ describe("отпечаток факта", () => {
 
   it("webFindingFingerprint переживает частичный объект", () => {
     expect(webFindingFingerprint(null)).toMatch(/^wf-/u);
+  });
+});
+
+describe("страница-заглушка вместо источника", () => {
+  it("распознаёт отказ доступа и проверку бота", () => {
+    // developers.openai.com ответил «You don't have permission to access…», и этот
+    // текст попадал в факты как утверждение со ссылкой на источник.
+    expect(looksLikeBlockedPage('You don\'t have permission to access "http://example.com/x" on this server.')).toBe(true);
+    expect(looksLikeBlockedPage("Checking your browser before accessing example.com. Just a moment...")).toBe(true);
+    expect(looksLikeBlockedPage("Доступ запрещён. Подтвердите, что вы не робот.")).toBe(true);
+  });
+
+  it("не трогает нормальную статью", () => {
+    expect(looksLikeBlockedPage("Правила маркировки рекламы в 2026 году: кто обязан маркировать креативы и как отчитываться.")).toBe(false);
+    expect(looksLikeBlockedPage("")).toBe(false);
+    expect(looksLikeBlockedPage(null)).toBe(false);
   });
 });
