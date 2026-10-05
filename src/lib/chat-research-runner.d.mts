@@ -36,11 +36,33 @@ export type ChatResearchHeader = {
   sources: ChatResearchSource[];
 };
 
-export function extractPublishedAt(html: unknown, now?: number): string | null;
+export function extractPublishedAt(html: unknown, now?: number, url?: string | null): string | null;
 export function splitPassages(text: unknown): string[];
 export function selectTopicPassages(text: unknown, topic: unknown, limit?: number): string[];
-export function searchChatResearch(query: string): Promise<Array<{ url: string; title: string; snippet: string; publishedAt: string | null }>>;
-export function readChatResearchPage(url: string): Promise<{ url: string; html: string }>;
+
+export type ChatResearchSearchDeps = {
+  /** Поисковый провайдер: по умолчанию Радар с бесплатными web-адаптерами. */
+  search?: (query: string) => Promise<Array<{ url: string; title: string; snippet: string; publishedAt: string | null }>>;
+  /** Чтение страницы: по умолчанию SSRF-безопасный fetchPublicText. */
+  readPage?: (url: string, timeoutMs?: number) => Promise<{ url: string; html: string }>;
+  fetchImpl?: typeof fetch;
+  fetchPage?: (url: string, options?: Record<string, unknown>) => Promise<{
+    url?: string;
+    headers?: Record<string, string>;
+    text: () => Promise<string>;
+  }>;
+  searxngUrl?: string;
+};
+
+export function searchChatResearch(
+  query: string,
+  options?: ChatResearchSearchDeps,
+): Promise<Array<{ url: string; title: string; snippet: string; publishedAt: string | null }>>;
+export function readChatResearchPage(
+  url: string,
+  timeoutMs?: number,
+  options?: ChatResearchSearchDeps,
+): Promise<{ url: string; html: string }>;
 
 export function runChatResearch(input: {
   topic: string;
@@ -49,7 +71,7 @@ export function runChatResearch(input: {
   kind?: string;
   now?: number;
   budget?: Partial<typeof CHAT_RESEARCH_BUDGET>;
-}): Promise<ChatResearchResult>;
+}, deps?: ChatResearchSearchDeps): Promise<ChatResearchResult>;
 
 export function chatResearchHeader(result: unknown, reason: string): ChatResearchHeader;
 export function buildChatEvidenceBlock(findings: unknown, options?: { limit?: number }): string;

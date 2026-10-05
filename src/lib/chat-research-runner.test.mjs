@@ -1,10 +1,12 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import {
   buildChatEvidenceBlock,
   chatResearchHeader,
   extractDateFromUrl,
   extractPublishedAt,
+  runChatResearch,
+  searchChatResearch,
   selectTopicPassages,
   splitPassages,
 } from "./chat-research-runner.mjs";
@@ -175,5 +177,193 @@ describe("дата из адреса", () => {
     expect(extractPublishedAt(html, NOW, "https://a.ru/2020/01/01/old")).toBe("2026-09-30T09:00:00.000Z");
     expect(extractPublishedAt("<html></html>", NOW, "http://publication.pravo.gov.ru/document/0001202412260005"))
       .toBe("2024-12-26T00:00:00.000Z");
+  });
+});
+
+// ── Конвейер целиком ─────────────────────────────────────────────────────────────
+//
+// Эти тесты появились после аварии 02.10.2026. Рефакторинг вынес разбор даты в
+// `web-research-date.mjs` и заодно вырезал `searchChatResearch` и
+// `readChatResearchPage` — их вызывал `runChatResearch`. 41 тест остался зелёным,
+// потому что ни один из них не запускал конвейер: все проверяли хелперы. В бою каждый
+// поход в интернет падал с ReferenceError, а пользователь видел «Аврора искала, но не
+// нашла источников» при нуле запросов.
+//
+// Поэтому здесь прогоняется весь путь «план → поиск → чтение → ворота» на подставных
+// зависимостях. Файл обязан импортировать `runChatResearch`: если импорт перестанет
+// резолвиться, тест упадёт на сборке, а не в продакшене.
+
+const PAGE_TEXT = [
+  "Компания Astra представила шестое поколение своей модели для анализа данных.",
+  "Новая модель показывает заметно лучший результат в отраслевых бенчмарках и работает быстрее предыдущей версии.",
+  "По словам разработчиков, модель обучена на расширенном наборе данных и поддерживает работу с длинными документами.",
+].join(" ");
+
+const PAGE_HTML = `<html><head><meta property="article:published_time" content="2026-09-30T09:00:00Z"></head><body><article>${PAGE_TEXT}</article></body></html>`;
+
+describe("конвейер исследования интернета", () => {
+  beforeEach(() => {
+    // Без этого поиск ушёл бы в настоящую сеть из-под тестового раннера.
+    process.env.VITEST = "true";
+    delete process.env.RADAR_SEARXNG_URL;
+  });
+
+  afterEach(() => {
+    delete process.env.RADAR_SEARXNG_URL;
+  });
+
+  it("проходит путь от запроса до подтверждённого факта", async () => {
+    const queries = [];
+    const read = [];
+    const result = await runChatResearch(
+      { topic: "6 astra", categories: ["technology"], language: "ANY" },
+      {
+        search: async (query) => {
+          queries.push(query);
+          return [{
+            url: "https://openai.com/index/astra",
+            title: "Astra: новое поколение модели",
+            snippet: "Компания представила шестое поколение модели для анализа данных.",
+            publishedAt: "2026-09-30T09:00:00Z",
+          }];
+        },
+        readPage: async (url) => {
+          read.push(url);
+          return { url, html: PAGE_HTML };
+        },
+      },
+    );
+
+    expect(queries.length).toBeGreaterThan(0);
+    expect(read).toEqual(["https://openai.com/index/astra"]);
+    expect(result.queries).toBeGreaterThan(0);
+    expect(result.pages).toBe(1);
+    expect(result.findings.length).toBeGreaterThan(0);
+    expect(result.findings[0].source.url).toBe("https://openai.com/index/astra");
+    expect(result.sources[0].label).toBe("OpenAI");
+    expect(result.sources[0].date).toBe("2026-09-30");
+    // Падение поисковика больше не маскируется под «ничего не нашлось».
+    expect(result.rejectionCodes).not.toContain("no_relevant_candidates");
+  });
+
+  it("не считает страницу без слов темы фактом и честно сообщает об этом", async () => {
+    const result = await runChatResearch(
+      { topic: "6 astra", categories: ["technology"], language: "ANY" },
+      {
+        search: async () => [{
+          url: "https://openai.com/index/astra",
+          title: "Astra: новое поколение модели",
+          snippet: "Шестое поколение модели для анализа данных.",
+          publishedAt: null,
+        }],
+        // Страница открылась, но она про другое: фактов по теме на ней нет.
+        readPage: async (url) => ({ url, html: `<html><body><article>${"Рецепт борща и советы по хозяйству на каждый день недели. ".repeat(6)}</article></body></html>` }),
+      },
+    );
+
+    expect(result.queries).toBeGreaterThan(0);
+    expect(result.pages).toBe(1);
+    expect(result.findings).toEqual([]);
+    expect(result.sources).toEqual([]);
+  });
+
+  it("переживает молчание поисковика и не подставляет случайные страницы", async () => {
+    const result = await runChatResearch(
+      { topic: "6 astra", categories: ["technology"], language: "ANY" },
+      {
+        search: async () => { throw new Error("provider down"); },
+        readPage: async () => { throw new Error("read must not be called"); },
+      },
+    );
+
+    expect(result.queries).toBeGreaterThan(0);
+    expect(result.pages).toBe(0);
+    expect(result.findings).toEqual([]);
+    expect(result.rejectionCodes).toContain("no_relevant_candidates");
+  });
+
+  it("отдаёт не больше двух фрагментов с одной страницы", async () => {
+    const longPage = `<html><body><article>${PAGE_TEXT} ${PAGE_TEXT} ${PAGE_TEXT}</article></body></html>`;
+    const result = await runChatResearch(
+      { topic: "6 astra", categories: ["technology"], language: "ANY" },
+      {
+        search: async () => [{
+          url: "https://openai.com/index/astra",
+          title: "Astra: новое поколение модели",
+          snippet: "Шестое поколение модели для анализа данных.",
+          publishedAt: "2026-09-30T09:00:00Z",
+        }],
+        readPage: async (url) => ({ url, html: longPage }),
+      },
+    );
+
+    // Дубли фрагментов отсекаются по ключу, а не по количеству повторов в тексте.
+    expect(result.findings.length).toBeLessThanOrEqual(2);
+  });
+});
+
+describe("провайдер поиска по умолчанию", () => {
+  it("возвращает нормализованные ссылки из ответа поисковика", async () => {
+    // Подставной транспорт отвечает на каждый адаптер его же форматом: SearXNG — JSON,
+    // Bing — RSS, остальные — HTML. Так проверяется, что найденные ссылки доходят
+    // до конвейера уже нормализованными, а не как сырая разметка выдачи.
+    const searchResultHtml = '<html><body><div class="result"><a href="https://openai.com/index/astra">'
+      + "Astra: новая модель</a><p>Шестое поколение модели для анализа данных</p></div></body></html>";
+    const fakeFetch = async (url) => {
+      const target = String(url);
+      if (target.includes("/search?") && target.includes("format=json")) {
+        return {
+          ok: true,
+          status: 200,
+          headers: { get: () => "application/json" },
+          text: async () => JSON.stringify({
+            results: [{
+              url: "https://openai.com/index/astra",
+              title: "Astra: новая модель",
+              content: "Шестое поколение модели для анализа данных",
+            }],
+          }),
+        };
+      }
+      if (target.includes("bing.com")) {
+        return {
+          ok: true,
+          status: 200,
+          headers: { get: () => "application/rss+xml" },
+          text: async () => `<?xml version="1.0"?><rss><channel>
+            <item><title>Astra: новая модель</title><link>https://openai.com/index/astra</link>
+            <description>Шестое поколение модели</description></item>
+          </channel></rss>`,
+        };
+      }
+      return {
+        ok: true,
+        status: 200,
+        headers: { get: () => "text/html" },
+        text: async () => searchResultHtml,
+      };
+    };
+
+    const candidates = await searchChatResearch("6 astra", {
+      fetchImpl: fakeFetch,
+      // SearXNG намеренно не задан: конвейер обязан работать на бесплатных адаптерах.
+      searxngUrl: undefined,
+    });
+
+    expect(candidates.length).toBeGreaterThan(0);
+    expect(candidates[0].url).toBe("https://openai.com/index/astra");
+    expect(candidates[0].title).toContain("Astra");
+    expect(candidates.every((candidate) => /^https:\/\//u.test(candidate.url))).toBe(true);
+  });
+
+  it("не падает, когда адаптеры отвечают ошибкой", async () => {
+    const failingFetch = async () => ({
+      ok: false,
+      status: 503,
+      headers: { get: () => "text/html" },
+      text: async () => "service unavailable",
+    });
+    await expect(searchChatResearch("6 astra", { fetchImpl: failingFetch, searxngUrl: undefined }))
+      .rejects.toBeTruthy();
   });
 });

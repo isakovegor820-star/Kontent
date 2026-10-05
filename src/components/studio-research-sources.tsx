@@ -41,7 +41,12 @@ export function StudioResearchSources({ research }: { research: StudioResearchVi
         Источники
       </h3>
 
-      {research.nothingVerified ? (
+      {research.failed ? (
+        <p className="mt-2 text-[12px] leading-relaxed text-text-2">
+          Поиск в интернете не сработал: поисковик не ответил или страницы не открылись.
+          Это сбой на нашей стороне, а не отсутствие данных в интернете — попробуйте повторить запрос или уточнить формулировку.
+        </p>
+      ) : research.nothingVerified ? (
         <p className="mt-2 text-[12px] leading-relaxed text-text-2">
           Аврора искала в открытом интернете, но не нашла подтверждаемых источников по этому запросу.
           Ответ не опирается на свежие публикации — проверьте факты перед публикацией.

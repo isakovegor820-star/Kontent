@@ -106,11 +106,63 @@ export function selectTopicPassages(text, topic, limit = CHAT_RESEARCH_PASSAGES_
 }
 
 /**
+ * Провайдеры Радара возвращают уже нормализованные ссылки, поэтому дополнительная
+ * защита нужна только на этапе чтения страниц.
+ *
+ * `RADAR_SEARXNG_URL` читается здесь, а не передаётся вызывающим: без него список
+ * провайдеров вырождается в бесплатные web-адаптеры, и это должно быть видно в одном
+ * месте, а не зависеть от того, кто позвал функцию.
+ */
+export async function searchChatResearch(query, options = {}) {
+  const candidates = await discoverRadarWebCandidates(query, {
+    fetchImpl: options.fetchImpl || fetch,
+    searxngUrl: options.searxngUrl ?? (process.env.RADAR_SEARXNG_URL || undefined),
+  });
+  return (Array.isArray(candidates) ? candidates : [])
+    .filter((candidate) => candidate?.canonicalUrl)
+    .map((candidate) => ({
+      url: candidate.canonicalUrl,
+      title: candidate.title || "",
+      snippet: candidate.snippet || "",
+      publishedAt: candidate.publishedAt || null,
+    }));
+}
+
+export async function readChatResearchPage(url, timeoutMs = PAGE_TIMEOUT_MS, options = {}) {
+  const fetchPage = options.fetchPage || fetchPublicText;
+  const response = await fetchPage(url, {
+    timeoutMs,
+    maxBytes: 2 * 1024 * 1024,
+    maxRedirects: 3,
+    headers: {
+      accept: "text/html,application/xhtml+xml,text/plain;q=0.8,*/*;q=0.5",
+      "accept-language": "ru,en;q=0.8",
+      "user-agent": "Mozilla/5.0 (compatible; AuroraStudio/1.0; +https://aurora.local)",
+    },
+  });
+  const contentType = String(response.headers?.["content-type"] ?? "");
+  if (contentType && !/text\/html|text\/plain|application\/xhtml|application\/xml|text\/xml/iu.test(contentType)) {
+    const error = new Error("unsupported_content_type");
+    error.code = "unsupported_content_type";
+    throw error;
+  }
+  const html = await response.text();
+  return { url: response.url || url, html };
+}
+
+/**
  * Полный цикл: план → поиск → чтение → дословные фрагменты → ворота.
+ *
+ * Поиск и чтение приходят через `deps`, как в фоновом `runWebResearch`. Причина не в
+ * гибкости ради гибкости: без точки подстановки конвейер нельзя было проверить целиком,
+ * и удаление `searchChatResearch` в рефакторинге 02.10.2026 прошло незамеченным —
+ * 41 тест остался зелёным, а в бою каждый поход в интернет падал с ReferenceError.
  *
  * @returns {{findings: Array<object>, sources: Array<{label: string, url: string, date: string|null, tier: string}>, queries: number, pages: number, rejectionCodes: string[]}}
  */
-export async function runChatResearch(input) {
+export async function runChatResearch(input, deps = {}) {
+  const search = deps.search || ((query) => searchChatResearch(query, deps));
+  const readPage = deps.readPage || ((url, timeoutMs) => readChatResearchPage(url, timeoutMs, deps));
   const plan = planWebResearch(
     { topic: input?.topic, categories: input?.categories, language: input?.language || "ANY" },
     {},
@@ -129,7 +181,7 @@ export async function runChatResearch(input) {
   let retriedQueries = 0;
   const queriesList = plan.queries.slice(0, budget.maxQueries);
   const searchResults = await Promise.all(
-    queriesList.map((query) => withDeadline(searchChatResearch(query.text), searchDeadline - Date.now())),
+    queriesList.map((query) => withDeadline(search(query.text), searchDeadline - Date.now())),
   );
   const candidates = [];
   const seen = new Set();
@@ -162,7 +214,7 @@ export async function runChatResearch(input) {
   // «маркировка рекламы» находит настоящие страницы там, где длинный запрос
   // с шестью словами не находит ничего.
   if (!relevant.length && shortQuery && candidates.length) {
-    const retry = await withDeadline(searchChatResearch(shortQuery), searchDeadline - Date.now());
+    const retry = await withDeadline(search(shortQuery), searchDeadline - Date.now());
     for (const item of Array.isArray(retry) ? retry : []) {
       if (!item?.url || seen.has(item.url)) continue;
       seen.add(item.url);
@@ -206,7 +258,7 @@ export async function runChatResearch(input) {
       let html;
       try {
         const response = await withDeadline(
-          readChatResearchPage(page.url, Math.min(PAGE_TIMEOUT_MS, remaining)),
+          readPage(page.url, Math.min(PAGE_TIMEOUT_MS, remaining)),
           remaining,
         );
         if (!response) {
