@@ -1,0 +1,41 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>EnvironmentVariables</key>
+	<dict>
+		<!-- Контракт запуска web: без него `next start` в NODE_ENV=production не
+		     поднимается (src/lib/rate-limit.ts, assertTrustedProxyBootContract).
+		     Инцидент 2026-10-05: переменной не было ни здесь, ни в .env.local, и
+		     сервис сутки отвечал 500 на каждый запрос, оставаясь «живым». -->
+		<key>AURORA_TRUSTED_PROXY_HOPS</key>
+		<string>1</string>
+		<key>NODE_ENV</key>
+		<string>production</string>
+	</dict>
+	<key>KeepAlive</key>
+	<true/>
+	<key>Label</key>
+	<string>ru.aurora.web</string>
+	<key>ProcessType</key>
+	<string>Interactive</string>
+	<key>ProgramArguments</key>
+	<array>
+		<string>/opt/homebrew/bin/node</string>
+		<string>/Users/egor/mvp and prod/platform/node_modules/next/dist/bin/next</string>
+		<string>start</string>
+		<string>-p</string>
+		<string>3000</string>
+	</array>
+	<key>RunAtLoad</key>
+	<true/>
+	<key>StandardErrorPath</key>
+	<string>/Users/egor/Library/Logs/Aurora-web.error.log</string>
+	<key>StandardOutPath</key>
+	<string>/Users/egor/Library/Logs/Aurora-web.log</string>
+	<key>ThrottleInterval</key>
+	<integer>5</integer>
+	<key>WorkingDirectory</key>
+	<string>/Users/egor/mvp and prod/platform</string>
+</dict>
+</plist>

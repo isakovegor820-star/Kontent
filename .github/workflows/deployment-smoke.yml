@@ -1,7 +1,16 @@
 name: Production deployment smoke
 
+# Ручной и ежедневный read-only контроль прода.
+#
+# Профиль обязан повторять логику деплоя (deploy-production.yml): при
+# ALLOW_DEGRADED_MAIL=true почта осознанно деградирована, и профиль full требует
+# mailDeliveryReady, которого нет. Из-за жёсткого `full` этот воркфлоу падал во всех
+# 22 прогонах с 18.08.2026 — постоянный сторож прода был красным по умолчанию, и
+# настоящая авария в нём не отличалась от шума.
 on:
   workflow_dispatch:
+  schedule:
+    - cron: "0 6 * * *"
 
 permissions:
   contents: read
@@ -17,7 +26,7 @@ jobs:
     environment: production
     env:
       AURORA_DEPLOYMENT_SMOKE_BASE_URL: ${{ vars.PRODUCTION_BASE_URL }}
-      AURORA_DEPLOYMENT_SMOKE_PROFILE: full
+      AURORA_DEPLOYMENT_SMOKE_PROFILE: ${{ vars.ALLOW_DEGRADED_MAIL == 'true' && 'release' || 'full' }}
       AURORA_READINESS_TOKEN: ${{ secrets.AURORA_READINESS_TOKEN }}
     steps:
       - name: Checkout

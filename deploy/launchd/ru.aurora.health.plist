@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- launchd следит за живостью процесса, но не за тем, отвечает ли он по HTTP.
+	     Инцидент 2026-10-05: web-процесс сутки отдавал 500 на каждый запрос, а
+	     KeepAlive считал его здоровым. Этот агент раз в 5 минут проверяет
+	     /api/health и пишет сбой в ~/Library/Logs/Aurora-health.log. -->
+	<key>Label</key>
+	<string>ru.aurora.health</string>
+	<key>ProgramArguments</key>
+	<array>
+		<string>/bin/bash</string>
+		<string>/Users/egor/mvp and prod/platform/scripts/aurora-local-health.sh</string>
+	</array>
+	<key>RunAtLoad</key>
+	<true/>
+	<key>StartInterval</key>
+	<integer>300</integer>
+	<key>ProcessType</key>
+	<string>Background</string>
+	<key>StandardErrorPath</key>
+	<string>/Users/egor/Library/Logs/Aurora-health.error.log</string>
+	<key>StandardOutPath</key>
+	<string>/Users/egor/Library/Logs/Aurora-health.out.log</string>
+	<key>WorkingDirectory</key>
+	<string>/Users/egor/mvp and prod/platform</string>
+</dict>
+</plist>
