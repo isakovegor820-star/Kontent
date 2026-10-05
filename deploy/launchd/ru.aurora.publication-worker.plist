@@ -1,0 +1,41 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>EnvironmentVariables</key>
+	<dict>
+		<key>AURORA_WORKER_MODE</key>
+		<string>full</string>
+		<key>NODE_ENV</key>
+		<string>development</string>
+		<!-- Поллинг Telegram принадлежит боту прода на VPS. Локальный воркер с
+		     поллингом воровал у него апдейты: в журнале до 06.09.2026 копились
+		     строки «[bot] конфликт: Telegram-команды получает другой polling-процесс».
+		     scripts/dev.mjs ставит то же самое значение по той же причине. -->
+		<key>TG_POLLING_ENABLED</key>
+		<string>0</string>
+	</dict>
+	<key>KeepAlive</key>
+	<true/>
+	<key>Label</key>
+	<string>ru.aurora.publication-worker</string>
+	<key>ProcessType</key>
+	<string>Background</string>
+	<key>ProgramArguments</key>
+	<array>
+		<string>/opt/homebrew/bin/node</string>
+		<string>--env-file=/Users/egor/mvp and prod/platform/.env.local</string>
+		<string>/Users/egor/mvp and prod/platform/worker.mjs</string>
+	</array>
+	<key>RunAtLoad</key>
+	<true/>
+	<key>StandardErrorPath</key>
+	<string>/Users/egor/Library/Logs/Aurora-publication-worker.error.log</string>
+	<key>StandardOutPath</key>
+	<string>/Users/egor/Library/Logs/Aurora-publication-worker.log</string>
+	<key>ThrottleInterval</key>
+	<integer>5</integer>
+	<key>WorkingDirectory</key>
+	<string>/Users/egor/mvp and prod/platform</string>
+</dict>
+</plist>

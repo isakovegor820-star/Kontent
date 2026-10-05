@@ -1,6 +1,8 @@
 import { spawn } from "node:child_process";
 import {
+  assertDevelopmentPortAvailable,
   prepareDevelopmentRuntime,
+  resolveDevelopmentPort,
   safeDevelopmentFailure,
 } from "./dev-bootstrap.mjs";
 
@@ -38,6 +40,23 @@ function stop(signal, exitCode = 0) {
 
 process.once("SIGINT", () => stop("SIGINT", 130));
 process.once("SIGTERM", () => stop("SIGTERM", 143));
+
+// Порт проверяем до обращения к базе: занятый порт — самая частая и самая дешёвая
+// в диагностике причина, и раньше она выглядела как EADDRINUSE из недр Next.
+const developmentPort = resolveDevelopmentPort(process.argv.slice(2), process.env);
+try {
+  await assertDevelopmentPortAvailable(developmentPort);
+} catch (error) {
+  console.error(`[dev] запуск не удался: ${error.message}`);
+  if (developmentPort === 3000) {
+    console.error("[dev] Порт 3000 держит локальный «прод» — launchd-сервис ru.aurora.web");
+    console.error("[dev] (deploy/launchd/README.md). Разработка идёт на свободном порту:");
+    console.error("[dev]     npm run dev -- -p 3100");
+  } else {
+    console.error("[dev] Освободи порт или выбери другой: npm run dev -- -p 3100");
+  }
+  process.exit(1);
+}
 
 try {
   await prepareDevelopmentRuntime();
