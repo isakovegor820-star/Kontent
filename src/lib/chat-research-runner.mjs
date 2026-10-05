@@ -305,9 +305,18 @@ export async function runChatResearch(input, deps = {}) {
       }
     }
   };
-  await Promise.all(
-    Array.from({ length: Math.min(READ_CONCURRENCY, pages.length) }, () => consume()),
+  // Жёсткая граница всего чтения. Ограничители внутри цикла защищают от медленного
+  // сайта, но не от медленного поиска: если `discoverRadarWebCandidates` зависнет на
+  // чтении тела ответа дольше своего срока, `withDeadline` вернёт null, а брошенный
+  // запрос продолжит жить. Пользователь в этот момент ждёт ответ в чате, поэтому весь
+  // проход по страницам дополнительно ограничен остатком бюджета. `withDeadline` на
+  // срабатывании отдаёт null, а успешный проход — массив, так что признак однозначен.
+  const readRemaining = Math.max(1_000, deadline - Date.now());
+  const readDeadlineHit = await withDeadline(
+    Promise.all(Array.from({ length: Math.min(READ_CONCURRENCY, pages.length) }, () => consume())),
+    readRemaining,
   );
+  if (readDeadlineHit === null) rejectionCodes.push("deadline");
 
   // Лучшие источники — вперёд: официальные и отраслевые важнее пересказов.
   findings.sort((left, right) => right.source.trust - left.source.trust);

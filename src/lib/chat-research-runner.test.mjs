@@ -300,6 +300,35 @@ describe("конвейер исследования интернета", () => {
     // Дубли фрагментов отсекаются по ключу, а не по количеству повторов в тексте.
     expect(result.findings.length).toBeLessThanOrEqual(2);
   });
+
+  it("возвращает управление по дедлайну, даже если чтение страницы зависло", async () => {
+    // Проверено вживую: бесплатные адаптеры умеют зависать на чтении тела ответа
+    // дольше собственного срока. Пользователь ждёт ответ в чате, поэтому конвейер
+    // обязан вернуть управление по бюджету, а не по совести зависшего запроса.
+    const startedAt = Date.now();
+    const result = await runChatResearch(
+      { topic: "6 astra", categories: ["technology"], language: "ANY", budget: { deadlineMs: 1_200 } },
+      {
+        search: async () => [{
+          url: "https://openai.com/index/astra",
+          title: "Astra: новое поколение модели",
+          snippet: "Шестое поколение модели для анализа данных.",
+          publishedAt: null,
+        }],
+        // Страница не откроется никогда.
+        readPage: () => new Promise(() => {}),
+      },
+    );
+
+    // Запас в 3 секунды: тест проверяет отсутствие бесконечного ожидания, а не
+    // точность таймера на загруженной машине.
+    expect(Date.now() - startedAt).toBeLessThan(4_000);
+    expect(result.pages).toBe(0);
+    expect(result.findings).toEqual([]);
+    // Границу может срезать как общий дедлайн чтения, так и потолок одного чтения —
+    // важно, что причина отказа названа, а не потеряна.
+    expect(result.rejectionCodes.some((code) => code === "deadline" || code === "timeout")).toBe(true);
+  });
 });
 
 describe("провайдер поиска по умолчанию", () => {
