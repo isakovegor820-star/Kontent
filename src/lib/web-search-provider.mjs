@@ -178,3 +178,43 @@ export function resolveWebSearchProviders(env = {}, options = {}) {
 export function webSearchApiConfigured(env = {}) {
   return Boolean(String(env.AURORA_SEARCH_API_URL ?? "").trim());
 }
+
+/**
+ * Поиск с приоритетом: сначала настроенный сервис, потом бесплатные адаптеры.
+ *
+ * Живёт здесь, а не в диалоговом конвейере, потому что тем же порядком пользуется
+ * фоновое исследование: качество выдачи решает качество ответа в обоих контурах, и
+ * держать два разных порядка — значит чинить одно и забывать другое.
+ *
+ * @param {string} query
+ * @param {object} options
+ * @param {(query: string) => Promise<Array<object>>} options.fallback бесплатные адаптеры
+ * @param {object} [options.env]
+ */
+export async function searchWithProviderPriority(query, options = {}) {
+  const env = options.env || process.env;
+  const api = options.api !== undefined
+    ? options.api
+    : createWebSearchApiProvider({
+      endpoint: env.AURORA_SEARCH_API_URL,
+      apiKey: env.AURORA_SEARCH_API_KEY,
+      apiKeyHeader: env.AURORA_SEARCH_API_KEY_HEADER,
+      style: env.AURORA_SEARCH_API_STYLE,
+      maxResults: env.AURORA_SEARCH_MAX_RESULTS,
+      timeoutMs: env.AURORA_SEARCH_TIMEOUT_MS,
+      fetchImpl: options.fetchImpl,
+    });
+  if (api) {
+    try {
+      const results = await api.search(query, { fetchImpl: options.fetchImpl });
+      if (Array.isArray(results) && results.length) return results;
+    } catch {
+      // Ключ истёк, лимит исчерпан, сервис лежит — это не повод оставить пользователя
+      // без ответа: ниже идут бесплатные адаптеры.
+    }
+  }
+  if (typeof options.fallback !== "function") {
+    throw new Error("search_provider_fallback_missing");
+  }
+  return options.fallback(query);
+}

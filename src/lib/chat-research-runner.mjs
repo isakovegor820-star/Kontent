@@ -17,7 +17,7 @@ import { planWebResearch, webResearchStems, scoreWebResearchCandidate, isWebRese
 // который иначе отбрасывал закон с официального портала как «нет даты».
 import { extractDateFromUrl, extractPublishedAt } from "./web-research-date.mjs";
 export { extractDateFromUrl, extractPublishedAt };
-import { createWebSearchApiProvider } from "./web-search-provider.mjs";
+import { searchWithProviderPriority } from "./web-search-provider.mjs";
 import { resolveTopicEntity, entitySearchQueries } from "./web-entity-resolution.mjs";
 import { resolveWebSource } from "./web-research-sources.mjs";
 
@@ -174,35 +174,15 @@ export async function readChatResearchPage(url, timeoutMs = PAGE_TIMEOUT_MS, opt
 
 /**
  * Поиск с приоритетом: сначала настроенный поисковый API, потом бесплатные адаптеры.
- *
- * Порядок именно такой, потому что качество выдачи решает качество ответа. Когда
- * сервис с ключом не настроен или не ответил, поведение прежнее — идут бесплатные
- * адаптеры Радара. Пустой ответ сервиса тоже считается отказом: молчание поисковика
- * нельзя выдавать за отсутствие данных в интернете.
+ * Порядок живёт в общем модуле — тем же порядком пользуется фоновое исследование.
  */
 async function searchWithPriority(query, deps = {}) {
-  const env = deps.env || process.env;
-  const api = deps.api !== undefined
-    ? deps.api
-    : createWebSearchApiProvider({
-      endpoint: env.AURORA_SEARCH_API_URL,
-      apiKey: env.AURORA_SEARCH_API_KEY,
-      apiKeyHeader: env.AURORA_SEARCH_API_KEY_HEADER,
-      style: env.AURORA_SEARCH_API_STYLE,
-      maxResults: env.AURORA_SEARCH_MAX_RESULTS,
-      timeoutMs: env.AURORA_SEARCH_TIMEOUT_MS,
-      fetchImpl: deps.fetchImpl,
-    });
-  if (api) {
-    try {
-      const results = await api.search(query, { fetchImpl: deps.fetchImpl });
-      if (Array.isArray(results) && results.length) return results;
-    } catch {
-      // Ключ истёк, лимит исчерпан, сервис лежит — это не повод оставить пользователя
-      // без ответа: ниже идут бесплатные адаптеры.
-    }
-  }
-  return searchChatResearch(query, deps);
+  return searchWithProviderPriority(query, {
+    env: deps.env,
+    api: deps.api,
+    fetchImpl: deps.fetchImpl,
+    fallback: (text) => searchChatResearch(text, deps),
+  });
 }
 
 /**
