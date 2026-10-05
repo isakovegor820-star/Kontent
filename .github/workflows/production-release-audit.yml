@@ -1,11 +1,7 @@
 name: Production release audit
 
-# Read-only: забирает SHA релиза, состояния systemd-юнитов, health и журнал миграций.
-# Ежедневный прогон — постоянный контроль прода, а не только шаг деплоя.
 on:
   workflow_dispatch:
-  schedule:
-    - cron: "30 6 * * *"
 
 permissions:
   contents: read

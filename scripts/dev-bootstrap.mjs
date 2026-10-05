@@ -1,6 +1,5 @@
 import { spawnSync } from "node:child_process";
 import { readFile } from "node:fs/promises";
-import { createServer } from "node:net";
 import { resolve } from "node:path";
 import IORedis from "ioredis";
 import { Pool } from "pg";
@@ -259,36 +258,4 @@ export function safeDevelopmentFailure(error) {
     code: error?.code || "development_runtime_unavailable",
     reason: error instanceof Error ? error.message : "Не удалось подготовить dev-окружение",
   };
-}
-
-export class DevelopmentPortBusyError extends Error {
-  constructor(port) {
-    super(`порт ${port} уже занят`);
-    this.name = "DevelopmentPortBusyError";
-    this.code = "development_port_busy";
-    this.port = port;
-  }
-}
-
-/** Порт будущего `next dev`: `-p`/`--port` из argv, иначе PORT, иначе 3000. */
-export function resolveDevelopmentPort(argv = [], env = process.env) {
-  const index = argv.findIndex((arg) => arg === "-p" || arg === "--port");
-  const raw = index >= 0 ? argv[index + 1] : env.PORT;
-  const port = Number(String(raw ?? "").trim() || 3000);
-  return Number.isInteger(port) && port >= 1 && port <= 65_535 ? port : 3000;
-}
-
-/**
- * Порт 3000 постоянно держит локальный «прод» — launchd-сервис `ru.aurora.web`
- * (`deploy/launchd/README.md`). Раньше `npm run dev` в этом случае падал невнятным
- * `EADDRINUSE` из недр Next, и приходилось догадываться, кто занял порт.
- */
-export async function assertDevelopmentPortAvailable(port) {
-  const busy = await new Promise((settle) => {
-    const probe = createServer();
-    probe.once("error", (error) => settle(error?.code === "EADDRINUSE"));
-    probe.once("listening", () => probe.close(() => settle(false)));
-    probe.listen(port);
-  });
-  if (busy) throw new DevelopmentPortBusyError(port);
 }
