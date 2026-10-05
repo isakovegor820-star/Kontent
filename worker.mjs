@@ -107,6 +107,7 @@ import { refreshOpportunityMarket } from "./src/lib/opportunity-market-discovery
 import { syncWebResearchSignals } from "./src/lib/opportunity-market.mjs";
 import { planWebResearch } from "./src/lib/web-research-plan.mjs";
 import { runWebResearch } from "./src/lib/web-research-service.mjs";
+import { searchWithProviderPriority } from "./src/lib/web-search-provider.mjs";
 import {
   finishWebResearchRun,
   getWebResearchRun,
@@ -11951,21 +11952,33 @@ async function loadWebResearchTopic(projectId, channelId) {
   ].filter(Boolean).join(" ").slice(0, 400);
 }
 
-/** Поиск по одному запросу: провайдеры Радара, приведённые к общему виду кандидата. */
+/**
+ * Поиск по одному запросу: настроенный сервис с ключом, затем провайдеры Радара.
+ *
+ * Порядок берётся из общего модуля — тот же, что в диалоговом конвейере. Фоновое
+ * исследование кормит Автопилот и тренды, и качество выдачи здесь так же решает
+ * качество материала, поэтому второй порядок приоритета держать нельзя.
+ */
 async function searchWebResearchCandidates(query) {
-  const candidates = await discoverRadarWebCandidates(query, {
+  return searchWithProviderPriority(query, {
+    env: process.env,
     fetchImpl: fetch,
-    searxngUrl: process.env.RADAR_SEARXNG_URL || undefined,
+    fallback: async (text) => {
+      const candidates = await discoverRadarWebCandidates(text, {
+        fetchImpl: fetch,
+        searxngUrl: process.env.RADAR_SEARXNG_URL || undefined,
+      });
+      return (Array.isArray(candidates) ? candidates : [])
+        .filter((candidate) => candidate?.canonicalUrl)
+        .map((candidate) => ({
+          url: candidate.canonicalUrl,
+          title: candidate.title || "",
+          snippet: candidate.snippet || "",
+          publishedAt: candidate.publishedAt || null,
+          provider: candidate.provider || "web",
+        }));
+    },
   });
-  return (Array.isArray(candidates) ? candidates : [])
-    .filter((candidate) => candidate?.canonicalUrl)
-    .map((candidate) => ({
-      url: candidate.canonicalUrl,
-      title: candidate.title || "",
-      snippet: candidate.snippet || "",
-      publishedAt: candidate.publishedAt || null,
-      provider: candidate.provider || "web",
-    }));
 }
 
 /** Чтение страницы: единственный SSRF-безопасный путь в кодовой базе. */
