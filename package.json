@@ -52,6 +52,7 @@
     "worker:publication": "AURORA_RUNTIME_ROLE=worker AURORA_WORKER_MODE=publication node --env-file=.env.local worker.mjs",
     "test:bot-persistence:integration": "vitest run --config vitest.integration.config.ts src/e2e/bot-persistence.integration.ts",
     "test:calendar:integration": "vitest run --config vitest.integration.config.ts src/e2e/calendar-pagination.integration.ts --maxWorkers=1",
+    "test:autopilot-calendar-plan:integration": "vitest run --config vitest.integration.config.ts src/e2e/autopilot-calendar-plan.integration.ts --maxWorkers=1",
     "test:calendar:browser": "node scripts/test-calendar-pagination-browser.mjs",
     "test:calendar-return:browser": "node scripts/test-calendar-return-browser.mjs",
     "test:launch-monitoring:integration": "vitest run --config vitest.integration.config.ts src/e2e/launch-monitoring.integration.ts --maxWorkers=1",

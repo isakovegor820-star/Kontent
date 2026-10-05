@@ -44,6 +44,13 @@ import {
 } from "lucide-react";
 
 import { AppShell } from "@/components/app/shell";
+import {
+  AutopilotPlanCard,
+  AutopilotPlanDialog,
+} from "@/components/app/autopilot-plan-calendar";
+import { useAutopilotPlan } from "@/lib/use-autopilot-plan";
+import type { AutopilotApprovalPreview } from "@/lib/autopilot-approval.mjs";
+import type { AutopilotCalendarPlanItem } from "@/lib/autopilot-calendar-plan.mjs";
 import { useProjects } from "@/components/app/project-provider";
 import {
   calendarProjectExportPeriod,
@@ -1070,10 +1077,12 @@ function DayColumn({
   day,
   index,
   posts,
+  planItems = [],
   isToday,
   isPast,
   onAdd,
   onOpen,
+  onOpenPlan,
   onRetry,
   onReschedule,
   onRequestMove,
@@ -1093,10 +1102,13 @@ function DayColumn({
   day: Date;
   index: number;
   posts: DatedPost[];
+  /** Неподтверждённые посты автопилота: видны здесь, но публикации ещё нет. */
+  planItems?: AutopilotCalendarPlanItem[];
   isToday: boolean;
   isPast: boolean;
   onAdd?: () => void;
   onOpen: (post: DatedPost) => void;
+  onOpenPlan?: (item: AutopilotCalendarPlanItem) => void;
   onRetry?: (post: DatedPost) => void;
   onReschedule?: (post: DatedPost) => void;
   onRequestMove: (post: DatedPost) => void;
@@ -1152,6 +1164,9 @@ function DayColumn({
         </div>
         <p className="nums mt-1.5 text-[12px] text-text-3">
           {posts.length} {plural(posts.length, "пост", "поста", "постов")}
+          {planItems.length > 0 && (
+            <span className="text-brand"> · {planItems.length} в плане</span>
+          )}
         </p>
       </div>
 
@@ -1189,6 +1204,20 @@ function DayColumn({
           />
         ))}
 
+        {/* План автопилота: ещё не публикация, но неделя должна читаться целиком */}
+        {planItems.length > 0 && onOpenPlan && (
+          <div className="flex flex-col gap-2" data-autopilot-plan-day={dayKey(day)}>
+            {planItems.map((item) => (
+              <AutopilotPlanCard
+                key={item.key}
+                item={item}
+                calendarTimezone={calendarTimezone}
+                onOpen={() => onOpenPlan(item)}
+              />
+            ))}
+          </div>
+        )}
+
         {/* Пустое место в дне — и есть кнопка «создать пост» (главное действие) */}
         {onAdd && (
           <button
@@ -1221,6 +1250,7 @@ function DayColumn({
 function MonthCell({
   day,
   posts,
+  planCount = 0,
   inMonth,
   isToday,
   onPick,
@@ -1228,6 +1258,8 @@ function MonthCell({
 }: {
   day: Date;
   posts: DatedPost[];
+  /** Сколько постов автопилота ждут подтверждения в этот день. */
+  planCount?: number;
   inMonth: boolean;
   isToday: boolean;
   onPick: () => void;
@@ -1300,6 +1332,13 @@ function MonthCell({
             <span className="truncate text-[13px] text-text-2">{p.text}</span>
           </span>
         ))}
+        {/* Месяц — только счётчик: интерактив живёт в неделе, кнопка внутри кнопки недопустима */}
+        {planCount > 0 && (
+          <span className="flex items-center gap-1 rounded-xs border border-dashed border-brand/40 bg-brand/5 px-1 py-0.5 text-[12px] font-semibold text-brand">
+            <Sparkles className="h-3 w-3 shrink-0" strokeWidth={2.25} aria-hidden />
+            {planCount} в плане
+          </span>
+        )}
       </span>
     </button>
   );
@@ -1553,6 +1592,12 @@ export default function CalendarPage() {
   const draftsError = calendarData.error;
   const draftsReadyForUser = calendarData.ready;
   const { refresh: refreshDrafts, updateDraft, updatePost } = calendarData;
+  // План автопилота — отдельный слой календаря: неподтверждённые посты видны здесь,
+  // но публикацией не являются (нет строки в posts и задания в очереди).
+  const autopilotPlan = useAutopilotPlan(s.ready ? currentProjectId : undefined, s.realPosts);
+  const [openPlanKey, setOpenPlanKey] = useState<string | null>(null);
+  const [planBusy, setPlanBusy] = useState(false);
+  const planAttemptRef = useRef<{ planId: number; revision: number; hash: string; key: string } | null>(null);
 
   useEffect(() => {
     if (!s.ready || focusedPostRef.current) return;
@@ -1787,6 +1832,33 @@ export default function CalendarPage() {
 
   const dayPosts = (d: Date) => postsByDay.get(dayKey(d)) ?? [];
 
+  // Видимость канала уважается и для плана: скрытый канал не должен протекать карточками.
+  const planItems = useMemo(
+    () => autopilotPlan.items.filter((item) => item.channelId == null || !hidden.has(item.channelId)),
+    [autopilotPlan.items, hidden],
+  );
+  const planByDay = useMemo(() => {
+    const map = new Map<string, AutopilotCalendarPlanItem[]>();
+    for (const item of planItems) {
+      const key = calendarDateKeyForInstant(item.scheduledAt, calendarTimezone);
+      const list = map.get(key);
+      if (list) list.push(item);
+      else map.set(key, [item]);
+    }
+    for (const list of map.values()) {
+      list.sort((a, b) => Date.parse(a.scheduledAt) - Date.parse(b.scheduledAt));
+    }
+    return map;
+  }, [calendarTimezone, planItems]);
+  const dayPlanItems = (d: Date) => planByDay.get(dayKey(d)) ?? [];
+  const visiblePlanItems = useMemo(
+    () => visibleDays.flatMap((day) => planByDay.get(dayKey(day)) ?? []),
+    [planByDay, visibleDays],
+  );
+  const openPlanItem = openPlanKey == null
+    ? null
+    : planItems.find((item) => item.key === openPlanKey) ?? null;
+
   // Основная очередь теперь только серверная. Старый глобальный localStorage ниже показан
   // отдельно как recovery-копии: он не привязан к пользователю и потому не импортируется сам.
   const queue = useMemo(
@@ -1885,6 +1957,177 @@ export default function CalendarPage() {
     });
   };
   const addPostOn = (day: Date) => router.push(composerForDay(day));
+
+  // Подтверждение поста автопилота прямо из календаря. Публикует не клиент: сервер
+  // заново проверяет план, срок и качество, а идемпотентный ключ защищает от двойного
+  // нажатия. Здесь только точный preview → confirm, как на странице автопилота.
+  const addPlanItem = async (item: AutopilotCalendarPlanItem) => {
+    if (planBusy || !item.selectable || !item.channelId) return;
+    setPlanBusy(true);
+    try {
+      const previewResponse = await fetch("/api/autopilot/approve", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          channelId: item.channelId,
+          action: "preview",
+          selectedIndexes: [item.index],
+          planId: item.planId,
+          planRevision: item.planRevision,
+        }),
+      });
+      const previewBody = (await previewResponse.json().catch(() => null)) as
+        | { ok?: boolean; error?: string; preview?: AutopilotApprovalPreview | null }
+        | null;
+      const preview = previewBody?.preview ?? null;
+      // Сервер отвечает 409 stale_preview вместе со СВЕЖИМ предпросмотром: план изменился
+      // (правки, перенос времени, другое устройство). Показывать «уже обработан» нельзя —
+      // ничего не поставлено в очередь, а новый текст человек ещё не видел.
+      if (!preview?.token) {
+        s.toast(
+          previewBody?.ok
+            ? {
+              kind: "info",
+              title: "План уже обработан",
+              body: "Обновил календарь — повторная постановка не нужна.",
+            }
+            : {
+              kind: "danger",
+              title: "Не удалось проверить план",
+              body: "Ничего не добавлено. Обновил календарь — попробуй ещё раз.",
+            },
+        );
+        await Promise.all([autopilotPlan.refresh(), refreshDrafts()]);
+        return;
+      }
+      if (!preview.complete) {
+        s.toast({
+          kind: "info",
+          title: "Этот пост требует проверки",
+          body: `Готово ${preview.counts.eligible} из ${preview.expectedCount}. Ничего не добавлено: проверь дату, текст и замечания.`,
+        });
+        await autopilotPlan.refresh();
+        return;
+      }
+      const previous = planAttemptRef.current;
+      const idempotencyKey =
+        previous?.planId === preview.planId &&
+        previous.revision === preview.revision &&
+        previous.hash === preview.hash
+          ? previous.key
+          : `calendar-${preview.revision}-${crypto.randomUUID()}`;
+      planAttemptRef.current = {
+        planId: preview.planId,
+        revision: preview.revision,
+        hash: preview.hash,
+        key: idempotencyKey,
+      };
+      const confirmationResponse = await fetch("/api/autopilot/approve", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          channelId: item.channelId,
+          action: "confirm",
+          selectedIndexes: [item.index],
+          planId: preview.planId,
+          idempotencyKey,
+          previewToken: preview.token,
+          planRevision: preview.revision,
+          previewHash: preview.hash,
+        }),
+      });
+      const result = (await confirmationResponse.json().catch(() => null)) as
+        | { ok?: boolean; error?: string; scheduled?: number }
+        | null;
+      planAttemptRef.current = null;
+      if (result?.ok && Number(result.scheduled) > 0) {
+        setOpenPlanKey(null);
+        s.toast({
+          kind: "success",
+          title: "Добавлено в основной календарь",
+          body: `${fmtDateTime(item.scheduledAt, calendarTimezone)}. Публикует сервер.`,
+        });
+      } else if (result?.error === "scheduling_failed") {
+        s.toast({
+          kind: "danger",
+          title: "Не удалось добавить пост",
+          body: "Ничего нового не создано. Повтори попытку из карточки плана.",
+        });
+      } else if (result?.error === "stale_preview" || result?.error === "incomplete_plan") {
+        s.toast({
+          kind: "info",
+          title: "План изменился",
+          body: "Ничего не добавлено. Открой карточку плана заново и проверь время.",
+        });
+      } else {
+        s.toast({
+          kind: "info",
+          title: "Ничего не добавлено",
+          body: "Пост уже подтверждён или план обрабатывается в другой вкладке.",
+        });
+      }
+      s.refreshReal();
+      await Promise.all([autopilotPlan.refresh(), refreshDrafts()]);
+    } catch {
+      s.toast({
+        kind: "danger",
+        title: "Не удалось добавить пост",
+        body: "Связь прервалась. Ничего не поставлено в очередь — повтори попытку.",
+      });
+    } finally {
+      setPlanBusy(false);
+    }
+  };
+
+  const reschedulePlanItem = async (
+    item: AutopilotCalendarPlanItem,
+    localDate: string,
+    localTime: string,
+  ) => {
+    if (planBusy || !item.editable) return false;
+    setPlanBusy(true);
+    try {
+      const response = await fetch("/api/autopilot/item/schedule", {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          planId: item.planId,
+          planRevision: item.planRevision,
+          index: item.index,
+          localDate,
+          localTime,
+          timezone: calendarTimezone,
+        }),
+      });
+      const result = (await response.json().catch(() => null)) as
+        | { ok?: boolean; error?: string }
+        | null;
+      if (!response.ok || !result?.ok) {
+        s.toast({
+          kind: "danger",
+          title: "Время не изменено",
+          body: result?.error === "past"
+            ? "Выбери время не раньше чем через минуту."
+            : "План изменился. Обновил календарь — попробуй ещё раз.",
+        });
+        await autopilotPlan.refresh();
+        return false;
+      }
+      s.toast({
+        kind: "success",
+        title: "Время публикации обновлено",
+        body: "Новая дата сохранена в плане автопилота.",
+      });
+      await autopilotPlan.refresh();
+      return true;
+    } catch {
+      s.toast({ kind: "danger", title: "Время не изменено", body: "Повтори попытку." });
+      return false;
+    } finally {
+      setPlanBusy(false);
+    }
+  };
+
   const retryCalendarPost = (post: DatedPost) => {
     if (post.id.startsWith("real-")) {
       s.retryRealPost(realId(post.id));
@@ -2496,6 +2739,40 @@ export default function CalendarPage() {
                 </div>
               )}
 
+              {autopilotPlan.error && (
+                <div
+                  role="alert"
+                  className="mb-3 flex min-h-11 items-center gap-2 rounded-sm bg-danger-soft px-3 py-2 text-[13px] text-danger-text"
+                >
+                  <AlertTriangle className="h-4 w-4 shrink-0" strokeWidth={2} aria-hidden />
+                  <p>
+                    План автопилота не удалось загрузить, поэтому неподтверждённых постов здесь нет.
+                    Публикации показаны полностью.
+                  </p>
+                  <Button variant="ghost" size="sm" onClick={() => void autopilotPlan.refresh()}>
+                    Обновить план
+                  </Button>
+                </div>
+              )}
+
+              {planItems.length > 0 && (
+                <div
+                  role="status"
+                  className="mb-3 flex min-h-11 items-center gap-2 rounded-sm border border-dashed border-brand/40 bg-brand/5 px-3 py-2 text-[13px] text-text-2"
+                >
+                  <Sparkles className="h-4 w-4 shrink-0 text-brand" strokeWidth={2} aria-hidden />
+                  <p>
+                    <span className="font-semibold text-text">
+                      {visiblePlanItems.length || planItems.length}{" "}
+                      {plural(visiblePlanItems.length || planItems.length, "пост", "поста", "постов")} автопилота
+                      {visiblePlanItems.length ? " в этом периоде" : ""} ждут подтверждения.
+                    </span>{" "}
+                    Здесь они показаны пунктиром: открой карточку и добавь пост в календарь — до этого публикации нет.
+                    {autopilotPlan.truncated && " Показаны не все посты плана — остальные видны в автопилоте."}
+                  </p>
+                </div>
+              )}
+
               {view === "week" && hasMovablePosts && (
                 <>
                   <p id={CALENDAR_DRAG_HELP_ID} className="sr-only">
@@ -2547,10 +2824,12 @@ export default function CalendarPage() {
                               day={day}
                               index={i}
                               posts={dayPosts(day)}
+                              planItems={dayPlanItems(day)}
                               isToday={sameDay(day, today)}
                               isPast={day.getTime() < today.getTime()}
                               onAdd={canEdit ? () => addPostOn(day) : undefined}
                               onOpen={openPost}
+                              onOpenPlan={(item) => setOpenPlanKey(item.key)}
                               onRetry={canPublish ? retryCalendarPost : undefined}
                               onReschedule={canPublish ? retryCalendarPost : undefined}
                               onRequestMove={(post) => setMovePickerPostId(post.id)}
@@ -2590,6 +2869,7 @@ export default function CalendarPage() {
                           key={day.toISOString()}
                           day={day}
                           posts={dayPosts(day)}
+                          planCount={dayPlanItems(day).length}
                           inMonth={day.getMonth() === anchor.getMonth()}
                           isToday={sameDay(day, today)}
                           calendarTimezone={calendarTimezone}
@@ -2606,6 +2886,7 @@ export default function CalendarPage() {
                   <div className="space-y-3">
                     {weekDays.map((day, index) => {
                       const posts = dayPosts(day);
+                      const planForDay = dayPlanItems(day);
                       return (
                         <Card as="section" key={day.toISOString()} className="overflow-hidden" aria-labelledby={`calendar-list-day-${dayKey(day)}`}>
                           <div className="flex flex-wrap items-center justify-between gap-3 border-b border-line px-4 py-3">
@@ -2616,6 +2897,11 @@ export default function CalendarPage() {
                               <span className="nums text-[12px] text-text-3 tabular-nums">
                                 {posts.length} {plural(posts.length, "пост", "поста", "постов")}
                               </span>
+                              {planForDay.length > 0 && (
+                                <span className="rounded-full border border-dashed border-brand/40 bg-brand/5 px-2 py-0.5 text-[12px] font-semibold text-brand">
+                                  {planForDay.length} в плане автопилота
+                                </span>
+                              )}
                             </div>
                             {canEdit && (
                               <Button variant="ghost" size="sm" onClick={() => addPostOn(day)}>
@@ -2624,7 +2910,7 @@ export default function CalendarPage() {
                               </Button>
                             )}
                           </div>
-                          {posts.length === 0 ? (
+                          {posts.length === 0 && planForDay.length === 0 ? (
                             <p className="px-4 py-5 text-[13px] text-text-3">На этот день публикаций нет.</p>
                           ) : (
                             <ul className="divide-y divide-line">
@@ -2646,6 +2932,19 @@ export default function CalendarPage() {
                                   </button>
                                 </li>
                               ))}
+                              {planForDay.length > 0 && (
+                                <li className="space-y-2 bg-brand/[0.03] p-3">
+                                  {planForDay.map((item) => (
+                                    <AutopilotPlanCard
+                                      key={item.key}
+                                      item={item}
+                                      calendarTimezone={calendarTimezone}
+                                      onOpen={() => setOpenPlanKey(item.key)}
+                                      className="bg-surface"
+                                    />
+                                  ))}
+                                </li>
+                              )}
                             </ul>
                           )}
                         </Card>
@@ -2953,6 +3252,18 @@ export default function CalendarPage() {
         calendarTimezone={calendarTimezone}
         reduceMotion={Boolean(reduce)}
       />
+
+      {openPlanItem && (
+        <AutopilotPlanDialog
+          key={openPlanItem.key}
+          item={openPlanItem}
+          busy={planBusy}
+          calendarTimezone={calendarTimezone}
+          onClose={() => setOpenPlanKey(null)}
+          onAdd={() => void addPlanItem(openPlanItem)}
+          onReschedule={(localDate, localTime) => reschedulePlanItem(openPlanItem, localDate, localTime)}
+        />
+      )}
 
     </AppShell>
   );
