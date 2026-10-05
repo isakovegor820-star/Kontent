@@ -17,6 +17,9 @@ import { isIP } from "node:net";
 import { NextResponse } from "next/server";
 
 import { resolveRedisUrl } from "./redis-url.mjs";
+// Контракт доверенного ingress живёт в .mjs: его же читает префлайт production-точек
+// входа (scripts/runtime-schema-preflight.mjs), чтобы сервис не стартовал мимо контракта.
+import { resolveTrustedProxyHops } from "./trusted-proxy-contract.mjs";
 
 const globalForRedis = globalThis as unknown as { auroraRateRedis?: Redis };
 
@@ -126,28 +129,13 @@ function normalizedIp(value: string): string | null {
 }
 
 /**
- * Число доверенных proxy-хоп между клиентом и процессом. Неверное значение —
- * не косметика: 0/miss при прямом доступе к Next означает подставляемый клиентом
- * X-Forwarded-For (обход IP-лимитов) или общий bucket "unknown" (self-DoS).
- * Невалидное/незаданное значение даёт 1 — рантайм остаётся работоспособным,
- * но в production это проверяется на boot: см. assertTrustedProxyBootContract.
+ * Число доверенных proxy-хоп и fail-closed контракт запуска — общие с префлайтом
+ * точек входа. Реализация: `src/lib/trusted-proxy-contract.mjs`.
  */
-export function resolveTrustedProxyHops(env: Record<string, string | undefined> = process.env): number {
-  const configured = Number(String(env.AURORA_TRUSTED_PROXY_HOPS || "").trim() || Number.NaN);
-  return Number.isSafeInteger(configured) && configured >= 1 && configured <= 10 ? configured : 1;
-}
-
-/** Fail-closed контракт запуска web-процесса (ревью P1): в production хопы обязаны быть заданы явно. */
-export function assertTrustedProxyBootContract(env: Record<string, string | undefined> = process.env): void {
-  if (env.NODE_ENV !== "production") return;
-  // Сборка и тесты не обслуживают трафик — контракт проверяется только на живом рантайме.
-  if (env.NEXT_PHASE === "phase-production-build" || env.VITEST) return;
-  const raw = String(env.AURORA_TRUSTED_PROXY_HOPS || "").trim();
-  const configured = Number(raw);
-  if (!raw || !Number.isSafeInteger(configured) || configured < 1 || configured > 10) {
-    throw new Error("trusted_proxy_hops_not_configured");
-  }
-}
+export {
+  assertTrustedProxyBootContract,
+  resolveTrustedProxyHops,
+} from "./trusted-proxy-contract.mjs";
 
 /**
  * IP клиента берётся справа от X-Forwarded-For: доверенный ingress добавляет адрес

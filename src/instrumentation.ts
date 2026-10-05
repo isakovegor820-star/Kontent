@@ -5,8 +5,15 @@ export async function register() {
     // Контракт запуска (ревью P1): IP-лимиты имеют смысл только за доверенным ingress.
     // В production без явно заданного AURORA_TRUSTED_PROXY_HOPS процесс не поднимается —
     // молчаливый обход/само-DoS лимитов опаснее громкого отказа на старте.
+    //
+    // Ревью 2026-10-05: бросок исключения здесь не останавливал сервер. Сокет к этому
+    // моменту уже открыт, Next печатал «Failed to prepare server» и продолжал отвечать
+    // 500 на каждый запрос, а KeepAlive считал процесс живым. Поэтому контракт
+    // проверяется через enforceBootContract: провал обязан завершить процесс.
     const { assertTrustedProxyBootContract } = await import("./lib/rate-limit");
-    assertTrustedProxyBootContract();
+    const { enforceBootContract } = await import("./lib/boot-contract");
+    enforceBootContract(assertTrustedProxyBootContract);
+
     await import("../sentry.server.config");
     // Admin alerts live in the web process on purpose: it is the runtime that keeps
     // serving when Redis or the BullMQ worker is down and therefore can report it.
