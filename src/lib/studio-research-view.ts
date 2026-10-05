@@ -10,7 +10,7 @@
 // отбрасывается — сломанный заголовок не должен ломать чат.
 
 /** Причины, по которым блок источников вообще появляется. */
-export type StudioResearchStatus = "none" | "ok" | "empty";
+export type StudioResearchStatus = "none" | "ok" | "empty" | "failed";
 
 /** Показываем не больше восьми ссылок: это выжимка под ответом, а не журнал. */
 export const STUDIO_RESEARCH_MAX_SOURCES = 8;
@@ -42,6 +42,8 @@ export type StudioResearchView = {
   sources: StudioResearchSource[];
   /** Аврора выходила в интернет, но ничего проверяемого не нашла. */
   nothingVerified: boolean;
+  /** Поиск или чтение страниц упали: это сбой, а не пустая выдача. */
+  failed: boolean;
   /** Строка счёта: «Запросов: 3 · Страниц: 5 · Подтверждённых фактов: 4». */
   countsLine: string;
 };
@@ -75,7 +77,7 @@ export function studioResearchCountsLine(queries: unknown, pages: unknown, findi
  */
 export function parseStudioResearchStatus(value: unknown): StudioResearchStatus {
   const normalized = String(value ?? "").trim().toLowerCase();
-  if (normalized === "ok" || normalized === "empty") return normalized;
+  if (normalized === "ok" || normalized === "empty" || normalized === "failed") return normalized;
   return "none";
 }
 
@@ -160,6 +162,7 @@ function emptyView(status: StudioResearchStatus): StudioResearchView {
     findings: 0,
     sources: [],
     nothingVerified: false,
+    failed: status === "failed",
     countsLine: studioResearchCountsLine(0, 0, 0),
   };
 }
@@ -181,8 +184,13 @@ export function parseStudioResearchHeaders(
 
   const view = emptyView(status);
   // Статус говорит, что Аврора выходила в интернет, а тело заголовка не разобралось:
-  // верим статусу и честно показываем «искала, но ничего не подтвердила».
-  if (!payload) return status === "none" ? view : { ...view, used: true, nothingVerified: true };
+  // верим статусу и честно показываем «искала, но ничего не подтвердила». Для сбоя
+  // формулировка другая: обещать «искала» при нуле запросов нельзя.
+  if (!payload) {
+    return status === "none"
+      ? view
+      : { ...view, used: true, nothingVerified: status !== "failed" };
+  }
 
   const findings = asCount(payload.findings);
   const sources = (Array.isArray(payload.sources) ? payload.sources : [])
@@ -193,7 +201,7 @@ export function parseStudioResearchHeaders(
   if (!used) {
     // Статус говорит, что Аврора выходила в интернет, а тело заголовка промолчало.
     // Верим статусу: честная строка «искала, но ничего не подтвердила» лучше пустоты.
-    if (status !== "none") return { ...view, used: true, nothingVerified: true };
+    if (status !== "none") return { ...view, used: true, nothingVerified: status !== "failed" };
     return view;
   }
 
@@ -205,7 +213,10 @@ export function parseStudioResearchHeaders(
     pages: asCount(payload.pages),
     findings,
     sources,
-    nothingVerified: findings === 0 && sources.length === 0,
+    // Сбой поиска — не «пустая выдача»: даже если заголовок пришёл с used: true и
+    // нулём фактов, пользователю нельзя показывать «искала, но не нашла».
+    nothingVerified: status !== "failed" && findings === 0 && sources.length === 0,
+    failed: status === "failed",
     countsLine: studioResearchCountsLine(payload.queries, payload.pages, findings),
   };
 }
@@ -215,7 +226,8 @@ export function studioResearchProgressLabel(
   view: StudioResearchView | null | undefined,
   options: { streaming?: boolean; hasText?: boolean } = {},
 ): string | null {
-  if (!view || view.status === "none") return null;
+  // «failed» — поиск уже упал: обещать «смотрит в интернет» нельзя.
+  if (!view || view.status === "none" || view.status === "failed") return null;
   if (options.streaming === false) return null;
   if (options.hasText) return null;
   return "Аврора смотрит в интернет…";

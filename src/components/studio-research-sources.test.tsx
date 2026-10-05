@@ -57,6 +57,21 @@ it("честно говорит, что поиск был, но подтверж
   expect(screen.getByText("Запросов: 4 · Страниц: 9 · Подтверждённых фактов: 0")).toBeTruthy();
 });
 
+it("говорит о сбое поиска, а не о пустой выдаче", () => {
+  const view = parseStudioResearchHeaders("failed", header({
+    used: true,
+    queries: 0,
+    pages: 0,
+    findings: 0,
+    sources: [],
+  }));
+  render(<StudioResearchSources research={view} />);
+  expect(screen.getByText(/Поиск в интернете не сработал/u)).toBeTruthy();
+  // Формулировка «искала, но не нашла» здесь была бы неправдой.
+  expect(screen.queryByText(/не нашла подтверждаемых источников/u)).toBeNull();
+  expect(screen.queryByRole("link")).toBeNull();
+});
+
 it("показывает строку прогресса вместо текста", () => {
   render(<StudioResearchProgress label="Аврора смотрит в интернет…" />);
   expect(screen.getByRole("status").textContent).toContain("Аврора смотрит в интернет…");

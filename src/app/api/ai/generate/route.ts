@@ -614,7 +614,7 @@ function studioStreamResponse(
   semanticAdapter: SemanticEntailmentAdapter | null,
   deliverGeneratedResult: boolean,
   operation: { providerEngine: string; providerModel: string; channelId: number; startedAt: number },
-  research: { status: "none" | "ok" | "empty"; header: unknown } = { status: "none", header: null },
+  research: { status: "none" | "ok" | "empty" | "failed"; header: unknown } = { status: "none", header: null },
 ) {
   const settings = normalizePostSettings(params.postSettings);
   const topicIntent = params.referenceAdaptation ?? studioEditorialIntent(params);
@@ -1568,6 +1568,7 @@ async function handlePOST(req: NextRequest) {
   let researchSources: Awaited<ReturnType<typeof runChatResearch>>["sources"] = [];
   let researchCounts = { queries: 0, pages: 0 };
   let researchEvidence = "";
+  let researchFailed = false;
   if (researchDecision.needed) {
     try {
       const outcome = await runChatResearch({
@@ -1591,6 +1592,12 @@ async function handlePOST(req: NextRequest) {
     } catch (error) {
       // Недоступный поисковик не должен ломать генерацию: пишем без внешних фактов,
       // но обязательно помечаем ответ как непроверенный, чтобы модель не выдумывала.
+      //
+      // Признак «поиск упал» отделён от «искали и не нашли»: 02.10.2026 вырезанный
+      // `searchChatResearch` ронял каждый поход в сеть с ReferenceError, а панель
+      // показывала «Аврора искала… не нашла» при нуле запросов. Пользователь читал это
+      // как «в интернете ничего нет» вместо «выход в интернет сломан».
+      researchFailed = true;
       console.warn("[ai-generate] research failed", {
         requestId,
         errorName: error instanceof Error ? error.name : "Error",
@@ -1603,7 +1610,13 @@ async function handlePOST(req: NextRequest) {
       chatResearchReasonText(researchDecision.reasons),
     )
     : null;
-  const researchStatus = !researchDecision.needed ? "none" : researchFindings.length ? "ok" : "empty";
+  const researchStatus = !researchDecision.needed
+    ? "none"
+    : researchFailed
+      ? "failed"
+      : researchFindings.length
+        ? "ok"
+        : "empty";
 
   const params: GenerateParams = {
     kind,

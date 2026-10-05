@@ -164,6 +164,38 @@ describe("studio research headers", () => {
     expect(view?.countsLine).toBe("Запросов: 4 · Страниц: 9 · Подтверждённых фактов: 0");
   });
 
+  it("различает сбой поиска и пустую выдачу", () => {
+    // Авария 02.10.2026: падение поиска показывалось как «искала, но не нашла»
+    // при нуле запросов. Это разные сообщения и разные действия пользователя.
+    const failed = parseStudioResearchHeaders("failed", header({
+      used: true,
+      reason: "Вопрос о внешнем предмете",
+      queries: 0,
+      pages: 0,
+      findings: 0,
+      sources: [],
+    }));
+    expect(failed?.status).toBe("failed");
+    expect(failed?.failed).toBe(true);
+    expect(failed?.nothingVerified).toBe(false);
+
+    const empty = parseStudioResearchHeaders("empty", header({
+      used: true,
+      queries: 4,
+      pages: 9,
+      findings: 0,
+      sources: [],
+    }));
+    expect(empty?.status).toBe("empty");
+    expect(empty?.failed).toBe(false);
+    expect(empty?.nothingVerified).toBe(true);
+  });
+
+  it("не обещает прогресс, когда поиск уже упал", () => {
+    const failed = parseStudioResearchHeaders("failed", header({ used: true, queries: 0, pages: 0, findings: 0, sources: [] }));
+    expect(studioResearchProgressLabel(failed, { streaming: true, hasText: false })).toBeNull();
+  });
+
   it("строит строку счёта и русские формы числительных", () => {
     expect(studioResearchCountsLine(1, 1, 1)).toBe("Запросов: 1 · Страниц: 1 · Подтверждённых фактов: 1");
     expect(studioResearchCountsLine("2", undefined, null)).toBe("Запросов: 2 · Страниц: 0 · Подтверждённых фактов: 0");

@@ -272,6 +272,51 @@ export function webResearchPlanFingerprint(topic, categories, queryTexts) {
 }
 
 /**
+ * Сколько основ темы реально подтверждает кандидат, с весом по месту совпадения.
+ *
+ * Считать одни совпадения в заголовке и сниппете мало: на запрос «выход новой модели
+ * OpenAI» поисковик отдаёт страницу про вязание детских моделей — основа «модел»
+ * совпадает, а тема нет. При этом адрес страницы почти всегда содержит то, о чём она:
+ * `developers.openai.com/.../gpt-6-astra` подтверждает и «openai», и «astra».
+ */
+export function webResearchTopicAgreement(candidate, topic, limit = 10) {
+  const stems = webResearchStems(topic, limit);
+  const title = String(candidate?.title ?? "").toLocaleLowerCase("ru-RU").replace(/ё/gu, "е");
+  const url = String(candidate?.url ?? "").toLocaleLowerCase("ru-RU").replace(/ё/gu, "е");
+  const snippet = String(candidate?.snippet ?? "").toLocaleLowerCase("ru-RU").replace(/ё/gu, "е");
+  let matched = 0;
+  let weight = 0;
+  for (const stem of stems) {
+    if (title.includes(stem)) { matched += 1; weight += 2; continue; }
+    if (url.includes(stem)) { matched += 1; weight += 1.5; continue; }
+    if (snippet.includes(stem)) { matched += 1; weight += 1; }
+  }
+  return { matched, weight, stems: stems.length };
+}
+
+/**
+ * Похож ли кандидат на тему настолько, чтобы тратить на него чтение страницы.
+ *
+ * Порог зависит от длины темы, и это осознанно грубое правило:
+ *
+ * - у «выход новой модели OpenAI» основ четыре, и одного совпадения не хватает —
+ *   именно так проходили страницы про вязание, где совпало слово «модел»;
+ * - у «6 astra» основ две, и требовать две нельзя: «gpt-6-astra» не содержит
+ *   отдельной основы «6».
+ *
+ * Ограничение известно: на коротком названии-омониме («astra» — это и модель, и
+ * конференция, и приложение для учёбы) фильтр пропускает лишнее. Разрешить эту
+ * неоднозначность по заголовку и сниппету нельзя в принципе — агент не знает, о какой
+ * именно Astra спросили. Порядок в списке источников решает реестр доверия: официальная
+ * документация модели стоит выше случайного домена.
+ */
+export function isWebResearchCandidateRelevant(candidate, topic, limit = 10) {
+  const { matched, stems } = webResearchTopicAgreement(candidate, topic, limit);
+  if (!stems) return true;
+  return stems <= 2 ? matched >= 1 : matched >= 2;
+}
+
+/**
  * Насколько результат поиска похож на первоисточник. Используется, чтобы
  * сортировать кандидатов до скачивания страниц и не тратить бюджет впустую.
  */
@@ -289,10 +334,10 @@ export function scoreWebResearchCandidate(candidate, plan) {
   score += entry ? WEB_SOURCE_TIER_TRUST[entry.tier] * 0.4 : 8;
 
   // Совпадение темы по основам слов: русские словоформы иначе не совпадают.
-  const stems = webResearchStems(plan?.topic, 8);
-  const haystack = `${title} ${snippet}`.toLocaleLowerCase("ru-RU").replace(/ё/gu, "е");
-  const matched = stems.filter((stem) => haystack.includes(stem)).length;
-  score += stems.length ? (matched / stems.length) * 25 : 0;
+  // Вес считается по `webResearchTopicAgreement`, где совпадение в заголовке и адресе
+  // ценится выше совпадения в сниппете: адрес почти всегда описывает страницу точнее.
+  const agreement = webResearchTopicAgreement({ url, title, snippet }, plan?.topic, 8);
+  score += agreement.stems ? (agreement.weight / (agreement.stems * 2)) * 25 : 0;
 
   // Признаки нормы права усиливают кандидата для юридической категории.
   if ((plan?.categories || []).includes("law")) {

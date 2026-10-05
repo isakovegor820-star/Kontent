@@ -7,7 +7,7 @@ import {
   summarizeWebResearchRun,
   webFindingAngle,
 } from "./web-research-service.mjs";
-import { planWebResearch, webResearchKeywords, webResearchTopic } from "./web-research-plan.mjs";
+import { planWebResearch, webResearchKeywords, webResearchTopic, isWebResearchCandidateRelevant } from "./web-research-plan.mjs";
 import { sourceTextFromHtml } from "./web-research-contract.mjs";
 
 const NOW = Date.parse("2026-10-01T12:00:00.000Z");
@@ -330,5 +330,40 @@ describe("подтверждение вторым источником", () => {
     }));
     // Первое утверждение остаётся без подтверждения, второе вообще не проходит по цитате.
     expect(result.findings).toHaveLength(0);
+  });
+});
+
+describe("релевантность кандидата теме", () => {
+  it("отбрасывает страницу, где совпало одно общее слово длинной темы", () => {
+    // Реальный случай: на запрос «выход новой модели OpenAI» поисковик отдал
+    // страницу про вязание детских моделей. Основа «модел» совпала, тема — нет.
+    const candidate = {
+      url: "https://www.passionforum.ru/posts/vjazanie-kryuchkom/detskaja-odezhda",
+      title: "Детская одежда крючком: модели и схемы",
+      snippet: "От однотонных моделей в классических тонах до ярких оттенков",
+    };
+    expect(isWebResearchCandidateRelevant(candidate, "выход новой модели OpenAI")).toBe(false);
+  });
+
+  it("оставляет настоящую новость о выходе модели", () => {
+    const candidate = {
+      url: "https://openai.com/index/gpt-6-astra",
+      title: "OpenAI выпустила новую модель GPT-6 Astra",
+      snippet: "Компания объявила о выходе новой модели",
+    };
+    expect(isWebResearchCandidateRelevant(candidate, "выход новой модели OpenAI")).toBe(true);
+  });
+
+  it("ценит совпадение в адресе, когда заголовок на другом языке", () => {
+    const candidate = {
+      url: "https://developers.openai.com/api/docs/models/gpt-6-astra",
+      title: "GPT-6 Astra — model documentation",
+      snippet: "Snapshots let you lock in a specific version",
+    };
+    expect(isWebResearchCandidateRelevant(candidate, "6 astra")).toBe(true);
+  });
+
+  it("не требует двух основ для короткой темы из двух слов", () => {
+    expect(isWebResearchCandidateRelevant({ url: "https://astra-ai.co/de", title: "Astra AI Lernbegleiter" }, "6 astra")).toBe(true);
   });
 });
