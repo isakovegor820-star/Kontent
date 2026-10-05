@@ -12,7 +12,7 @@
 import { discoverRadarWebCandidates } from "./radar-search.mjs";
 import { fetchPublicText } from "./safe-http.mjs";
 import { evaluateWebFinding, sourceTextFromHtml } from "./web-research-contract.mjs";
-import { planWebResearch, webResearchStems, scoreWebResearchCandidate } from "./web-research-plan.mjs";
+import { planWebResearch, webResearchStems, scoreWebResearchCandidate, isWebResearchCandidateRelevant } from "./web-research-plan.mjs";
 // Определение даты живёт в общем модуле: тот же код нужен фоновому обходу,
 // который иначе отбрасывал закон с официального портала как «нет даты».
 import { extractDateFromUrl, extractPublishedAt } from "./web-research-date.mjs";
@@ -196,17 +196,12 @@ export async function runChatResearch(input, deps = {}) {
   const queries = queriesList.length;
 
   // ── Отбор страниц: по одной с домена, только первоисточники в приоритете ───────
-  // Сначала отбрасываем кандидатов, чьи заголовок и сниппет вообще не про тему.
-  // Это дешёвая защита от мусора в выдаче: провайдеры отдают словарные статьи и
-  // спам-домены, и без фильтра бюджет чтения уходил бы на них.
+  // Сначала отбрасываем кандидатов, чьи заголовок, адрес и сниппет не подтверждают
+  // тему. Это дешёвая защита от мусора в выдаче: провайдеры отдают словарные статьи
+  // и спам-домены, и без фильтра бюджет чтения уходил бы на них.
   const topicStems = webResearchStems(plan.topic, 10);
   const shortQuery = topicStems.slice(0, 2).join(" ");
-  const matchesTopic = (candidate) => {
-    const haystack = `${candidate.title ?? ""} ${candidate.snippet ?? ""}`
-      .toLocaleLowerCase("ru-RU").replace(/ё/gu, "е");
-    return topicStems.filter((stem) => haystack.includes(stem)).length;
-  };
-  let relevant = candidates.filter((candidate) => matchesTopic(candidate) > 0);
+  let relevant = candidates.filter((candidate) => isWebResearchCandidateRelevant(candidate, plan.topic));
 
   // Если ни один кандидат не похож на тему, значит поиск не сработал: движки
   // вернули словарные статьи, страницы входа и спам. Читать это бессмысленно —
@@ -219,7 +214,7 @@ export async function runChatResearch(input, deps = {}) {
       if (!item?.url || seen.has(item.url)) continue;
       seen.add(item.url);
       const candidate = { ...item, retried: true };
-      if (matchesTopic(candidate) > 0) relevant.push(candidate);
+      if (isWebResearchCandidateRelevant(candidate, plan.topic)) relevant.push(candidate);
     }
     retriedQueries = 1;
   }
