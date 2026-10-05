@@ -225,6 +225,11 @@
     "policy": "project"
   },
   {
+    "path": "/api/autopilot/calendar-plan",
+    "method": "GET",
+    "policy": "project"
+  },
+  {
     "path": "/api/autopilot/generate",
     "method": "POST",
     "policy": "project"
