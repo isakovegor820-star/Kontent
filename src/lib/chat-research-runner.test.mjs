@@ -64,6 +64,18 @@ describe("членение на фрагменты", () => {
     expect(splitPassages("")).toEqual([]);
     expect(splitPassages(null)).toEqual([]);
   });
+
+  it("не отдаёт фрагмент длиннее лимита ворот достоверности", () => {
+    // Предложение без точек длиннее шестисот символов раньше уходило фрагментом
+    // целиком и отметалось воротами как `claim_too_long` — факт терялся вместе с ним.
+    // В живом прогоне так отбрасывались четыре факта из документации модели.
+    const longSentence = `Модель ${"поддерживает работу с длинными документами и таблицами ".repeat(20)}конец.`;
+    const passages = splitPassages(longSentence);
+    expect(passages.length).toBeGreaterThan(1);
+    for (const passage of passages) {
+      expect(passage.length).toBeLessThanOrEqual(600);
+    }
+  });
 });
 
 describe("отбор фрагментов по теме", () => {

@@ -19,6 +19,25 @@ describe("тема для поиска", () => {
     expect(chatResearchTopic("что нового у OpenAI")).toBe("что нового у OpenAI");
   });
 
+  it("снимает несколько обёрток подряд — это была живая жалоба", () => {
+    // «Напиши пост на тему; расскажи про 6 astra» давало тему «тему расскажи astra»,
+    // запросы вида «тему расскажи astra рынок объём исследование» и ноль найденных
+    // страниц: поисковик получал служебные слова вместо темы.
+    for (const task of [
+      "Напиши пост на тему; расскажи про 6 astra",
+      "Напиши пост на тему: расскажи про 6 astra",
+      "Напиши пост на тему, расскажи про 6 astra",
+    ]) {
+      expect(chatResearchTopic(task), task).toBe("6 astra");
+    }
+    expect(chatResearchTopic("напиши пост на тему маркировка рекламы")).toBe("маркировка рекламы");
+  });
+
+  it("не оставляет пустую тему, если запрос состоял из одних обёрток", () => {
+    const topic = chatResearchTopic("напиши пост");
+    expect(topic.length).toBeGreaterThan(0);
+  });
+
   it("переживает пустой ввод", () => {
     expect(chatResearchTopic("")).toBe("");
     expect(chatResearchTopic(null)).toBe("");
