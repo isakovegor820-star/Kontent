@@ -104,14 +104,41 @@ export const HERO_TILES: readonly HeroTile[] = Object.freeze([
   },
 ] as const);
 
-/** Дни недели в плитке плана. Пятница пустая — видно, куда встанет следующий пост. */
-export const HERO_WEEK = Object.freeze([
-  { day: "Пн 12", status: "Готово", tone: "mB" },
-  { day: "Вт 13", status: "10:00", tone: "mV" },
-  { day: "Ср 14", status: "Пауза", tone: "" },
-  { day: "Чт 15", status: "18:30", tone: "mC" },
-  { day: "Пт 16", status: "Идея", tone: "mO" },
-] as const);
+/**
+ * Дни недели в плитке плана.
+ *
+ * Плитка высокая (две полосы сетки), поэтому день — не плоский чип, а колонка
+ * недельного плана: дата, карточка будущего поста и статус. `lines` — длины строк
+ * карточки в процентах: так текст поста читается как текст, а не как рыба.
+ * Пустой день нарисован пунктиром: видно, куда встанет следующий материал.
+ */
+export type HeroWeekDay = {
+  readonly day: string;
+  readonly date: string;
+  readonly status: string;
+  readonly tone: string;
+  readonly state: "done" | "planned" | "empty" | "draft";
+  readonly lines: readonly number[];
+};
+
+export const HERO_WEEK: readonly HeroWeekDay[] = Object.freeze([
+  { day: "Пн", date: "12", status: "Готово", tone: "mB", state: "done", lines: [100, 78, 52] },
+  { day: "Вт", date: "13", status: "10:00", tone: "mV", state: "planned", lines: [100, 64] },
+  { day: "Ср", date: "14", status: "Пауза", tone: "", state: "empty", lines: [] },
+  { day: "Чт", date: "15", status: "18:30", tone: "mC", state: "planned", lines: [100, 84, 58] },
+  { day: "Пт", date: "16", status: "Идея", tone: "mO", state: "draft", lines: [100] },
+]);
+
+/**
+ * Итог недели под полосой дней. Числа сходятся с тем, что видно выше:
+ * материалы стоят в трёх днях, один день занят идеей, один свободен.
+ * Держим их числами, а не строками: «4 из 5» и «80%» досчитываются в интерфейсе.
+ */
+export const HERO_WEEK_SUMMARY = Object.freeze({
+  filled: 4,
+  total: 5,
+  percent: 80,
+});
 
 /** Контрольные точки доказательства в плитке первого экрана. */
 export const HERO_EVIDENCE_CHECKS = Object.freeze([
@@ -298,21 +325,21 @@ export type Capability = {
 
 export const CAPABILITIES: readonly Capability[] = Object.freeze([
   {
-    tone: "cPaper",
+    tone: "cSun",
     icon: FileCheck2,
     scene: "evidence",
     title: "Карточка доказательства",
     text: "Тип, содержание, источник и дата актуальности хранятся вместе с настройками материала.",
   },
   {
-    tone: "cPaper",
+    tone: "cSky",
     icon: Scale,
     scene: "sources",
     title: "Юридические источники",
     text: "Публичные ленты и разрешённые подключения отделены от закрытых и неподтверждённых данных.",
   },
   {
-    tone: "cPaper",
+    tone: "cGrape",
     icon: History,
     scene: "history",
     title: "История согласования",
@@ -367,7 +394,10 @@ export const INTEGRATIONS: readonly Integration[] = Object.freeze([
 export type AccessTone = "editor" | "telegram" | "vk";
 
 export type AccessCard = {
+  /** Семантический ключ контура: по нему карточку находят тест и инструменты. */
   readonly tone: AccessTone;
+  /** Цвет плитки. Телеграм и ВК носят те же тона, что в секции каналов. */
+  readonly color: Tone;
   readonly icon: LucideIcon;
   readonly title: string;
   readonly note: string;
@@ -379,6 +409,7 @@ export type AccessCard = {
 export const ACCESS_CARDS: readonly AccessCard[] = Object.freeze([
   {
     tone: "editor",
+    color: "cGrape",
     icon: CalendarDays,
     title: "Редактор и контент-план",
     note: "Основной рабочий контур для подготовки юридического контента.",
@@ -392,6 +423,7 @@ export const ACCESS_CARDS: readonly AccessCard[] = Object.freeze([
   },
   {
     tone: "telegram",
+    color: "cSky",
     icon: Send,
     title: "Telegram",
     note: "Подключение канала, расписание и серверная публикация.",
@@ -405,6 +437,7 @@ export const ACCESS_CARDS: readonly AccessCard[] = Object.freeze([
   },
   {
     tone: "vk",
+    color: "cBlue",
     icon: UsersRound,
     title: "ВКонтакте",
     note: "Зависит от настроенного приложения и тестового сообщества.",
