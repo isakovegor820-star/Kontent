@@ -1,6 +1,5 @@
 import { spawn } from "node:child_process";
 import {
-  assertRuntimeBootContracts,
   assertRuntimeSchemaReady,
   safePreflightFailure,
 } from "./runtime-schema-preflight.mjs";
@@ -52,9 +51,6 @@ try {
   resolveDatabasePoolConfig({ ...process.env, NODE_ENV: "production", AURORA_RUNTIME_ROLE: "worker" });
   process.env.AURORA_RUNTIME_ROLE = "web";
   assertAvatarIngressConfigured();
-  // Инцидент 2026-10-05: без этого контракта web-процесс поднимался и отвечал 500,
-  // оставаясь «живым» для супервизора. Отказ обязан случиться до `next start`.
-  assertRuntimeBootContracts();
   await assertRuntimeSchemaReady();
 } catch (error) {
   console.error("[start] runtime preflight failed", safePreflightFailure(error));

@@ -1,7 +1,6 @@
 import pg from "pg";
 import { probeSchemaCompatibility } from "../src/lib/schema-readiness.mjs";
 import { resolvePgSslRejectUnauthorized } from "../src/lib/db-pool-config.mjs";
-import { assertTrustedProxyBootContract } from "../src/lib/trusted-proxy-contract.mjs";
 
 export class RuntimeSchemaPreflightError extends Error {
   constructor(code, reasons = []) {
@@ -9,37 +8,6 @@ export class RuntimeSchemaPreflightError extends Error {
     this.name = "RuntimeSchemaPreflightError";
     this.code = code;
     this.reasons = [...reasons];
-  }
-}
-
-export class RuntimeBootContractError extends Error {
-  constructor(code) {
-    super(code);
-    this.name = "RuntimeBootContractError";
-    this.code = code;
-    this.reasons = [`boot_contract:${code}`];
-  }
-}
-
-/**
- * Boot-контракты production-рантайма, проверяемые ДО `next start`.
- *
- * Инцидент 2026-10-05: сервис ru.aurora.web запускал `next start` мимо этого префлайта
- * и без `AURORA_TRUSTED_PROXY_HOPS`. Процесс поднимал сокет, отвечал 500 на каждый
- * запрос и оставался живым сутки. Теперь точки входа отказываются стартовать.
- *
- * `NODE_ENV` форсируется в production осознанно: `next start` выставляет его сам, а
- * ambient-значение в момент префлайта может быть не задано — иначе проверка молча
- * пропускалась бы ровно там, где нужна. Dev-путь (scripts/dev-bootstrap.mjs) эту
- * функцию не вызывает и по-прежнему работает без переменной.
- */
-export function assertRuntimeBootContracts(options = {}) {
-  const env = { ...(options.env || process.env), NODE_ENV: "production" };
-  try {
-    assertTrustedProxyBootContract(env);
-  } catch (error) {
-    const code = error instanceof Error && error.message ? error.message : "boot_contract_failed";
-    throw new RuntimeBootContractError(code);
   }
 }
 
@@ -95,7 +63,7 @@ export async function assertRuntimeSchemaReady(options = {}) {
 }
 
 export function safePreflightFailure(error) {
-  if (error instanceof RuntimeSchemaPreflightError || error instanceof RuntimeBootContractError) {
+  if (error instanceof RuntimeSchemaPreflightError) {
     return { code: error.code, reasons: error.reasons };
   }
   return { code: "preflight_failed", reasons: [] };

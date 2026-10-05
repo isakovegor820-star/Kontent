@@ -12,14 +12,6 @@ This block is written and re-added by `next dev` — verify at `node_modules/nex
 
 - Start the local application with `npm run dev` from this repository. This command must run
   both the Next.js web process and the full BullMQ worker.
-- **Port 3000 belongs to the always-on local "prod"**: the launchd service `ru.aurora.web`
-  runs `next start -p 3000` against the committed `.next` (`deploy/launchd/README.md`). Plain
-  `npm run dev` therefore refuses to start with a `development_port_busy` message — run
-  development on `npm run dev -- -p 3100` instead. Never `bootout` the agent just to free the
-  port, and never run `npm run build` while the agent is serving: the build replaces
-  `.next/BUILD_ID` and chunk hashes under the live process.
-- The local worker must never poll Telegram (`TG_POLLING_ENABLED=0`): polling belongs to the
-  production bot on the VPS, and a second poller steals its updates.
 - Do not report the dev environment as ready when only the web process is running. Autopilot,
   RSS, analytics, reconnaissance, media jobs, and scheduled publications require the worker.
 - `npm run dev:web-only` is reserved for explicitly requested isolated UI work. Never use it

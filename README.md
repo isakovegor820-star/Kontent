@@ -10,14 +10,8 @@
 ```bash
 npm install
 cp .env.example .env.local
-npm run dev -- -p 3100   # web + worker, http://localhost:3100
+npm run dev      # web + worker, http://localhost:3000
 ```
-
-Порт 3000 занят постоянным локальным «продом» — launchd-сервисом `ru.aurora.web`, который
-отдаёт собранный `.next` (`deploy/launchd/README.md`). Поэтому разработка идёт на 3100, а
-`npm run dev` без `-p` честно откажется стартовать с сообщением `development_port_busy`
-вместо невнятного `EADDRINUSE`. Сборку (`npm run build`) нельзя запускать, пока сервис
-работает: она перезаписывает `.next` под живым процессом.
 
 `npm run dev` сам проверяет локальные PostgreSQL и Redis, при необходимости запускает
 их через Homebrew, создаёт отсутствующую локальную базу и её bootstrap-схему, применяет
