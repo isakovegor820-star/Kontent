@@ -479,3 +479,78 @@ describe("приоритет поискового API над бесплатны�
     expect(seen.some((url) => !url.includes("api.example.com"))).toBe(true);
   });
 });
+
+describe("второй проход по распознанной сущности", () => {
+  it("повторяет поиск каноническим именем, когда первый проход не дал темы", async () => {
+    // Живой случай: «6 astra» на бесплатных движках даёт лотерею «6 aus 49», а
+    // «GPT-6 Astra» — страницу OpenAI. Wikipedia подсказывает каноническое имя.
+    const queries = [];
+    const fetchImpl = async (url) => {
+      const target = String(url);
+      if (target.includes("wikipedia.org")) {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({ query: { search: [{ title: "GPT-6", snippet: "GPT-6 Astra — модель OpenAI" }] } }),
+        };
+      }
+      throw new Error("бесплатные адаптеры в этом тесте не нужны");
+    };
+    const search = async (query) => {
+      queries.push(query);
+      if (query.includes("GPT-6")) {
+        return [{
+          url: "https://openai.com/index/gpt-6-astra",
+          title: "GPT-6 Astra: A new generation of intelligence",
+          snippet: "OpenAI introduces GPT-6 Astra",
+          publishedAt: "2026-09-03T09:00:00Z",
+        }];
+      }
+      // По плану поисковик отвечает не тем: совпала только основа «astra».
+      return [{
+        url: "https://www.lotto.de/lotto-6aus49",
+        title: "LOTTO 6aus49",
+        snippet: "Lottozahlen und Gewinnquoten",
+        publishedAt: null,
+      }];
+    };
+
+    const result = await runChatResearch(
+      { topic: "6 astra", categories: ["technology"], language: "ANY" },
+      { fetchImpl, search, readPage: async (url) => ({ url, html: PAGE_HTML }) },
+    );
+
+    expect(queries.some((query) => query.includes("GPT-6"))).toBe(true);
+    expect(result.pages).toBeGreaterThan(0);
+    expect(result.sources[0].url).toBe("https://openai.com/index/gpt-6-astra");
+  });
+
+  it("не ходит за сущностью, когда первый проход уже дал тему", async () => {
+    const queries = [];
+    let wikiCalls = 0;
+    const fetchImpl = async (url) => {
+      if (String(url).includes("wikipedia.org")) {
+        wikiCalls += 1;
+        return { ok: true, status: 200, json: async () => ({ query: { search: [] } }) };
+      }
+      throw new Error("неожиданный вызов");
+    };
+    const search = async (query) => {
+      queries.push(query);
+      return [{
+        url: "https://openai.com/index/gpt-6-astra",
+        title: "GPT-6 Astra: A new generation of intelligence",
+        snippet: "OpenAI introduces GPT-6 Astra, the sixth generation model",
+        publishedAt: "2026-09-03T09:00:00Z",
+      }];
+    };
+
+    await runChatResearch(
+      { topic: "6 astra", categories: ["technology"], language: "ANY" },
+      { fetchImpl, search, readPage: async (url) => ({ url, html: PAGE_HTML }) },
+    );
+
+    expect(wikiCalls).toBe(0);
+    expect(queries.every((query) => !query.includes("GPT-6"))).toBe(true);
+  });
+});

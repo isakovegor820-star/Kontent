@@ -18,6 +18,7 @@ import { planWebResearch, webResearchStems, scoreWebResearchCandidate, isWebRese
 import { extractDateFromUrl, extractPublishedAt } from "./web-research-date.mjs";
 export { extractDateFromUrl, extractPublishedAt };
 import { createWebSearchApiProvider } from "./web-search-provider.mjs";
+import { resolveTopicEntity, entitySearchQueries } from "./web-entity-resolution.mjs";
 import { resolveWebSource } from "./web-research-sources.mjs";
 
 /** Жёсткий бюджет: человек ждёт ответ, а не отчёт. */
@@ -257,20 +258,37 @@ export async function runChatResearch(input, deps = {}) {
   const shortQuery = topicStems.slice(0, 2).join(" ");
   let relevant = candidates.filter((candidate) => isWebResearchCandidateRelevant(candidate, plan.topic));
 
-  // Если ни один кандидат не похож на тему, значит поиск не сработал: движки
-  // вернули словарные статьи, страницы входа и спам. Читать это бессмысленно —
-  // бюджет уйдёт на мусор. Делаем один повтор коротким запросом из двух основ:
-  // «маркировка рекламы» находит настоящие страницы там, где длинный запрос
-  // с шестью словами не находит ничего.
-  if (!relevant.length && shortQuery && candidates.length) {
-    const retry = await withDeadline(search(shortQuery), searchDeadline - Date.now());
-    for (const item of Array.isArray(retry) ? retry : []) {
-      if (!item?.url || seen.has(item.url)) continue;
-      seen.add(item.url);
-      const candidate = { ...item, retried: true };
-      if (isWebResearchCandidateRelevant(candidate, plan.topic)) relevant.push(candidate);
+  // Если ни один кандидат не похож на тему, значит поиск не сработал. Причина почти
+  // всегда одна: по строке пользователя движок ищет не то. На «6 astra» Bing отдаёт
+  // «Sechs – Wikipedia» и «LOTTO 6aus49», а на «GPT-6 Astra» — страницу openai.com.
+  // Поэтому сначала спрашиваем Wikipedia, что это за сущность, и повторяем поиск
+  // каноническим именем, а не только короткой строкой из основ.
+  if (!relevant.length && candidates.length) {
+    const entity = await withDeadline(
+      resolveTopicEntity(plan.topic, { fetchImpl: deps.fetchImpl }),
+      Math.max(1_000, Math.min(4_000, searchDeadline - Date.now())),
+    );
+    const entityQueries = entitySearchQueries(entity, plan.topic).slice(0, 2);
+    const retryQueries = entityQueries.length
+      ? [...entityQueries, ...(shortQuery ? [shortQuery] : [])]
+      : (shortQuery ? [shortQuery] : []);
+    for (const query of retryQueries) {
+      const retry = await withDeadline(search(query), searchDeadline - Date.now());
+      retriedQueries += 1;
+      for (const item of Array.isArray(retry) ? retry : []) {
+        if (!item?.url || seen.has(item.url)) continue;
+        seen.add(item.url);
+        const candidate = { ...item, retried: true };
+        // Каноническая форма проверяется отдельно: страница про «GPT-6» не обязана
+        // содержать слово «astra», и требовать исходную основу здесь нельзя.
+        const matchesCanonical = entity?.canonical
+          && isWebResearchCandidateRelevant(candidate, `${entity.canonical} ${plan.topic}`);
+        if (matchesCanonical || isWebResearchCandidateRelevant(candidate, plan.topic)) {
+          relevant.push({ ...candidate, entityMatched: Boolean(matchesCanonical) });
+        }
+      }
+      if (relevant.length) break;
     }
-    retriedQueries = 1;
   }
   // Осмысленных кандидатов нет — честно сообщаем, что искать нечего, вместо
   // чтения случайных страниц и выдачи их за источники по теме.

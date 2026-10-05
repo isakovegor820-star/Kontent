@@ -51,8 +51,20 @@ const STOP_WORDS = new Set([
   "разобрать", "объяснить", "подготовить", "собрать", "выбрать", "понять", "узнать",
 ]);
 
-const QUERY_STOP_EN = new Set([
-  "the", "and", "for", "with", "that", "this", "from", "have", "has", "are", "was", "were",
+/**
+ * Аббревиатуры, которые несут тему, хотя и короче четырёх букв.
+ *
+ * Порог в четыре символа отсекал их, и от «GPT-6.1» в ключевых словах оставались одни
+ * цифры. Составлять правило на все случаи нельзя: тогда в тему попадут «лиц», «дом»,
+ * «год» — обычные короткие слова, которые только шумят в поисковом запросе. Поэтому
+ * список закрытый и проверяется тестом.
+ */
+const TOPIC_ABBREVIATIONS = new Set([
+  "gpt", "ии", "фз", "фнс", "фас", "цб", "рф", "сша", "ссср", "орд", "ип", "ооо", "нко",
+  "smm", "seo", "api", "llm", "ai", "ml", "aws", "cdc", "erp", "crm",
+]);
+
+const QUERY_STOP_EN = new Set([  "the", "and", "for", "with", "that", "this", "from", "have", "has", "are", "was", "were",
   "will", "can", "not", "but", "you", "your", "our", "its", "into", "about", "over", "more",
 ]);
 
@@ -76,14 +88,35 @@ export function webResearchKeywords(value, limit = 8) {
     .normalize("NFKC")
     .toLocaleLowerCase("ru-RU")
     .replace(/ё/gu, "е")
-    .split(/[^a-zа-я0-9]+/giu)
-    .filter(Boolean);
+    // Дефис и точка внутри токена сохраняются: «gpt-6.1», «152-фз» и «swe-bench» —
+    // это одно имя, а не три слова. Разрезав их, планировщик терял различающую часть
+    // и оставлял от темы «6 1».
+    .split(/[^a-zа-я0-9.\-]+/giu)
+    .filter(Boolean)
+    .flatMap((token) => {
+      const cleaned = token.replace(/^[.\-]+|[.\-]+$/gu, "");
+      if (!cleaned) return [];
+      if (cleaned.length <= 12) return [cleaned];
+      // Длинный токен всё равно режем: склеенный кусок текста не бывает ключевым словом.
+      return cleaned.split(/[.\-]+/u).filter(Boolean);
+    });
   const seen = new Set();
   const keywords = [];
   for (const token of tokens) {
-    if (token.length < 4) continue;
+    // Число — не шум, а часто единственное, что различает сущности: «6 astra» это
+    // шестое поколение модели, а просто «astra» — ещё и спутниковое телевидение,
+    // Opel Astra и приложение для учёбы. Раньше числа выбрасывались вместе с
+    // короткими словами, тема вырождалась в «astra», и Wikipedia на запрос «astra»
+    // подсказывала Astra Linux — поиск уходил совсем в другую сторону.
+    //
+    // Аббревиатуры из закрытого списка (gpt, ии, фз) тоже ключевые: длина в четыре
+    // символа отсекала их, и от «GPT-6.1» оставались одни цифры. Свободное правило
+    // «любые три буквы» пропускало бы «лиц», «дом» и «год» — обычные слова.
+    const numeric = /^\d+$/u.test(token);
+    const abbreviation = TOPIC_ABBREVIATIONS.has(token);
+    if (!numeric && !abbreviation && token.length < 4) continue;
+    if (numeric && token.length > 6) continue;
     if (STOP_WORDS.has(token) || QUERY_STOP_EN.has(token)) continue;
-    if (/^\d+$/u.test(token)) continue;
     if (seen.has(token)) continue;
     seen.add(token);
     keywords.push(token);
