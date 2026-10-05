@@ -86,7 +86,25 @@ export const WEB_FINDING_REJECTION_LABELS = Object.freeze({
   unknown_legal_status: "Юридический статус нормы не определён",
   number_not_in_source: "Число из утверждения не найдено в источнике",
   weak_source: "Единственный источник недостаточно надёжен и нет подтверждения",
+  page_blocked: "Страница не отдала содержимое: отказ доступа или проверка бота",
 });
+
+/**
+ * Отдала ли страница содержимое или страницу-заглушку.
+ *
+ * `developers.openai.com` ответил «You don't have permission to access…», и этот текст
+ * попадал в факты как утверждение со ссылкой на источник. Признаки отказа проверяются
+ * только в начале текста и только на короткой странице: в длинной статье про блокировки
+ * и капчу эти же слова встречаются законно.
+ */
+export function looksLikeBlockedPage(text) {
+  const value = String(text ?? "").replace(/\s+/gu, " ").trim();
+  if (!value) return false;
+  const head = value.slice(0, 600).toLocaleLowerCase("ru-RU");
+  const denial = /(?:you don'?t have permission to access|access denied|403 forbidden|enable javascript and cookies to continue|checking your browser|just a moment|attention required|проверка.{0,20}(?:робот|бот)|доступ (?:запрещён|ограничен)|подтвердите, что вы не робот)/iu;
+  if (!denial.test(head)) return false;
+  return value.length < 1_500;
+}
 
 export class WebFindingRejected extends Error {
   constructor(code, detail) {
@@ -111,7 +129,7 @@ export const WEB_FINDING_MAX_AGE_DAYS = Object.freeze({
 });
 
 const MIN_SOURCE_TEXT_LENGTH = 200;
-const MAX_CLAIM_LENGTH = 600;
+export const MAX_CLAIM_LENGTH = 600;
 export const WEB_FINDING_MIN_QUOTE_LENGTH = 24;
 
 const ZERO_WIDTH = /[\u200b-\u200d\ufeff\u00ad]/gu;
