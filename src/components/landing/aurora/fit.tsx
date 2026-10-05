@@ -42,6 +42,7 @@ export function Fit() {
           return (
             <article
               className={`${styles.tile} ${styles[card.tone]} ${styles.s6}`}
+              data-fit={card.tone === "cMint" ? "yes" : "no"}
               key={card.title}
               style={{ "--i": index } as CSSProperties}
             >

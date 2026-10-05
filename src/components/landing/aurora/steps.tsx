@@ -30,6 +30,7 @@ export function Steps() {
         {STEPS.map((step, index) => (
           <article
             className={`${styles.tile} ${styles[step.tone]} ${styles.s3} ${styles.step}`}
+            data-step={step.index}
             key={step.index}
             style={{ "--i": index } as CSSProperties}
           >

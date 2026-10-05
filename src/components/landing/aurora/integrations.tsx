@@ -31,6 +31,7 @@ export function Integrations() {
           return (
             <article
               className={`${styles.tile} ${styles[integration.tone]} ${styles.s4}`}
+              data-integration={integration.id}
               key={integration.id}
               style={{ "--i": index } as CSSProperties}
             >

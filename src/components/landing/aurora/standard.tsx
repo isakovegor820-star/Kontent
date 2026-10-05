@@ -37,6 +37,7 @@ export function Standard() {
           return (
             <article
               className={`${styles.tile} ${styles[rule.tone]} ${span}`}
+              data-rule={rule.id}
               key={rule.id}
               style={{ "--i": index } as CSSProperties}
             >

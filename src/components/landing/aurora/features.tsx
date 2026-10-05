@@ -34,6 +34,7 @@ export function Features() {
           return (
             <article
               className={`${styles.tile} ${styles.feat} ${styles[feature.tone]} ${styles.s4}`}
+              data-feature={feature.tone}
               key={feature.title}
               style={{ "--i": index } as CSSProperties}
             >

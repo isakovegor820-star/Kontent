@@ -1,7 +1,8 @@
-import { ArrowRight, Check, Clock3 } from "lucide-react";
+import { ArrowRight, Check, Clock3, Plus } from "lucide-react";
 import { PRODUCT_TAGLINE } from "@/lib/product";
 import styles from "./bento.module.css";
-import { HERO_EVIDENCE_CHECKS, HERO_TILES, HERO_WEEK } from "./content";
+import { HERO_EVIDENCE_CHECKS, HERO_TILES, HERO_WEEK, HERO_WEEK_SUMMARY } from "./content";
+import { WeekCounter } from "./week-counter";
 
 /**
  * Первый экран: обещание и мозаика из пяти плиток.
@@ -25,19 +26,47 @@ const CHIPS = [
 function TileBody({ id }: { id: string }) {
   if (id === "plan") {
     return (
-      <>
-        <div className={styles.mini}>
-          {HERO_WEEK.map((day) => (
-            <b key={day.day}>
-              <span>{day.day}</span>
-              <em className={day.tone ? styles[day.tone] : undefined}>{day.status}</em>
-            </b>
+      <div className={styles.plan}>
+        <div className={styles.planStrip}>
+          {HERO_WEEK.map((day, index) => (
+            <div
+              className={styles.planDay}
+              key={day.date}
+              data-state={day.state}
+              // Ступень волны: дни заполняются по очереди, а не разом.
+              style={{ "--i": index } as React.CSSProperties}
+            >
+              <span className={styles.planDayHead}>
+                {day.day}
+                <b>{day.date}</b>
+              </span>
+
+              {/* Тело дня — карточка будущего поста: строки разной длины читаются
+                  как текст, а пустой день нарисован пунктиром с плюсом. */}
+              <span className={styles.planDayBody} aria-hidden="true">
+                {day.state === "empty" ? (
+                  <Plus />
+                ) : (
+                  day.lines.map((width) => <i key={width} style={{ width: `${width}%` }} />)
+                )}
+              </span>
+
+              <em className={day.tone ? styles[day.tone] : styles.mPause}>{day.status}</em>
+            </div>
           ))}
         </div>
-        <div className={styles.pbar} aria-hidden="true">
+
+        <WeekCounter
+          filled={HERO_WEEK_SUMMARY.filled}
+          total={HERO_WEEK_SUMMARY.total}
+          percent={HERO_WEEK_SUMMARY.percent}
+        />
+
+        {/* Полоса доводится до того же числа, что стоит в итоге: 80%, а не 100%. */}
+        <div className={`${styles.pbar} ${styles.planBar}`} aria-hidden="true">
           <i />
         </div>
-      </>
+      </div>
     );
   }
 

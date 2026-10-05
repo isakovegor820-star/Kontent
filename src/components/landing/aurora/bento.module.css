@@ -45,7 +45,14 @@
   --ease: cubic-bezier(0.22, 1, 0.36, 1);
 
   min-height: 100vh;
-  overflow-x: hidden;
+  /*
+   * `clip`, а не `hidden`. `overflow-x: hidden` превращает контейнер в скролл-порт
+   * (вторая ось вычисляется как `auto`), и тогда ВСЕ scroll-driven анимации внутри
+   * считают прогресс от него, а не от окна. Этот контейнер не прокручивается —
+   * значит, прогресс замирает на конечном кадре и движение исчезает. `clip`
+   * обрезает по горизонтали, не создавая скролл-порт.
+   */
+  overflow-x: clip;
   background: var(--paper);
   color: var(--ink);
   font-family: var(--font);
@@ -436,7 +443,12 @@
   padding: clamp(20px, 2.4vw, 28px);
   border-radius: var(--r);
   box-shadow: var(--sh-sm);
-  overflow: hidden;
+  /*
+   * Обрезки по краю здесь нет намеренно. `overflow: hidden` сделал бы плитку
+   * скролл-портом, и scroll-driven анимации её содержимого (волна по дням недели,
+   * рост строк) считали бы прогресс от неподвижной плитки — то есть не работали бы.
+   * Содержимое и так лежит внутри отступов, обрезать нечего.
+   */
   transition: transform 0.28s var(--ease);
 }
 
@@ -478,6 +490,87 @@
   font-weight: 700;
   letter-spacing: 0.02em;
   opacity: 0.85;
+}
+
+/*
+ * Статус контура: пилюля с точкой. Состояние несёт цвет точки, подпись — текст,
+ * поэтому пилюля читается и на пастели, и на градиенте.
+ */
+.status {
+  display: inline-flex;
+  align-self: flex-start;
+  align-items: center;
+  gap: 7px;
+  margin-block-end: 14px;
+  padding: 6px 12px;
+  border-radius: 999px;
+  background: rgb(255 255 255 / 0.55);
+  font-size: 12.5px;
+  font-weight: 700;
+  letter-spacing: 0.01em;
+}
+
+.status i {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: currentColor;
+}
+
+.status[data-state="live"] i {
+  background: #0f9d76;
+}
+
+.status[data-state="setup"] i {
+  background: #d98324;
+}
+
+/* Тёмные плитки: пилюля светлая, а цветными остаются только точки состояния. */
+.tile.cGrape .status,
+.tile.cBlue .status,
+.tile.cTeal .status,
+.tile.cRed .status,
+.tile.cInk .status {
+  background: rgb(255 255 255 / 0.2);
+  color: #fff;
+}
+
+.tile.cGrape .status[data-state="live"] i,
+.tile.cBlue .status[data-state="live"] i,
+.tile.cTeal .status[data-state="live"] i,
+.tile.cRed .status[data-state="live"] i,
+.tile.cInk .status[data-state="live"] i {
+  background: #6ff0c4;
+}
+
+.tile.cGrape .status[data-state="setup"] i,
+.tile.cBlue .status[data-state="setup"] i,
+.tile.cTeal .status[data-state="setup"] i,
+.tile.cRed .status[data-state="setup"] i,
+.tile.cInk .status[data-state="setup"] i {
+  background: #ffd166;
+}
+
+/*
+ * Пилюли версий на тёмной плите: чернильная заливка на гранате не читается,
+ * поэтому внутри тёмных тонов они светлые, а текущая — белая с чернильным текстом.
+ */
+.tile.cGrape .vers b,
+.tile.cBlue .vers b,
+.tile.cTeal .vers b,
+.tile.cRed .vers b,
+.tile.cInk .vers b {
+  background: rgb(255 255 255 / 0.18);
+  color: #fff;
+}
+
+.tile.cGrape .vers .now,
+.tile.cBlue .vers .now,
+.tile.cTeal .vers .now,
+.tile.cRed .vers .now,
+.tile.cInk .vers .now {
+  background: #fff;
+  color: var(--ink);
 }
 
 /* Цвета плиток — как в макете: четыре градиента для «действия» и пастель для
@@ -667,44 +760,229 @@
   text-align: start;
 }
 
-/* Мини-календарь недели в плитке плана. */
-.mini {
-  display: grid;
-  grid-template-columns: repeat(5, 1fr);
-  gap: 7px;
+/*
+ * Неделя в плитке плана.
+ *
+ * Плитка занимает две полосы сетки, поэтому день — не плоский чип, а колонка
+ * недельного плана: дата сверху, карточка будущего поста посередине, статус снизу.
+ * Полоса растягивается на всю высоту плитки (`flex: 1`) — именно поэтому в плитке
+ * не остаётся пустого места, из-за которого она выглядела недорисованной.
+ */
+.plan {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 14px;
+  min-height: 0;
   margin-block-start: 18px;
 }
 
-.mini b {
-  padding: 9px 7px;
-  border-radius: 12px;
-  background: rgb(255 255 255 / 0.16);
-  font-size: 11px;
-  font-weight: 700;
+.planStrip {
+  display: grid;
+  flex: 1;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 8px;
+  min-height: 12rem;
 }
 
-.mini b span {
-  display: block;
-  margin-block-end: 5px;
+.planDay {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-height: 0;
+  padding: 10px 9px;
+  border-radius: 14px;
+  background: rgb(255 255 255 / 0.14);
+}
+
+.planDayHead {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 4px;
   font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  opacity: 0.75;
+}
+
+.planDayHead b {
+  font-size: 13px;
+  letter-spacing: -0.02em;
+  opacity: 1;
+}
+
+/* Карточка поста: строки разной длины вместо рыбного текста. */
+.planDayBody {
+  display: grid;
+  flex: 1;
+  align-content: center;
+  gap: 6px;
+  min-height: 0;
+  padding: 9px 8px;
+  border-radius: 10px;
+  background: rgb(255 255 255 / 0.12);
+}
+
+.planDayBody i {
+  display: block;
+  height: 4px;
+  border-radius: 2px;
+  background: rgb(255 255 255 / 0.42);
+}
+
+/* Пустой день: видно, куда встанет следующий материал. */
+.planDay[data-state="empty"] .planDayBody {
+  place-content: center;
+  padding: 0;
+  border: 1px dashed rgb(255 255 255 / 0.38);
+  background: transparent;
+}
+
+.planDay[data-state="empty"] .planDayBody svg {
+  width: 16px;
+  height: 16px;
   opacity: 0.7;
 }
 
-.mini em {
+.planDay em {
   display: block;
-  margin-block-start: 6px;
-  padding: 5px 6px;
-  border-radius: 7px;
+  padding: 6px 4px;
+  border-radius: 8px;
   color: #fff;
   font-size: 10.5px;
   font-style: normal;
   font-weight: 700;
+  text-align: center;
+  white-space: nowrap;
+}
+
+/* Итог недели: числа сходятся с тем, что видно в полосе дней. */
+.planFoot {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+  font-size: 12px;
+  font-weight: 600;
+  opacity: 0.9;
+}
+
+.planFoot b {
+  font-size: 16px;
+  font-weight: 800;
+  letter-spacing: -0.02em;
+}
+
+/*
+ * Полоса доводится до числа из итога: 80%, а не 100%. Селектор из двух классов,
+ * потому что общее правило `.pbar i` (ширина 100%) стоит ниже по файлу и при
+ * равной специфичности перебило бы одиночный класс.
+ */
+.pbar.planBar i {
+  width: 80%;
+}
+
+/*
+ * Живой отклик: день отвечает на курсор, соседи уступают ему фокус.
+ * Только там, где есть настоящий курсор: на тач-экране подъём остаётся
+ * «залипшим» после тапа, поэтому там работает лишь отклик на нажатие.
+ */
+@media (hover: hover) and (pointer: fine) {
+  .planDay {
+    transition:
+      transform 180ms var(--ease),
+      background-color 180ms var(--ease),
+      opacity 180ms var(--ease);
+  }
+
+  /*
+   * Соседи уступают фокус яркостью, а не прозрачностью: у дня идёт анимация
+   * появления с `fill: both`, и её `opacity: 1` в каскаде сильнее обычного правила —
+   * приглушение через opacity просто не сработало бы.
+   */
+  .planStrip:hover .planDay:not(:hover) {
+    filter: brightness(0.84);
+  }
+
+  .planDay:hover {
+    transform: translate3d(0, -3px, 0);
+    background: rgb(255 255 255 / 0.22);
+    filter: brightness(1.06);
+  }
+
+  .planDay:hover .planDayBody {
+    background: rgb(255 255 255 / 0.18);
+  }
+
+  .planDay:hover em {
+    box-shadow: 0 8px 20px -8px rgb(11 17 48 / 0.55);
+  }
+}
+
+.planDay:active {
+  transform: scale(0.98);
+}
+
+/*
+ * Волна заполнения недели.
+ *
+ * Это анимация ЗАГРУЗКИ, а не прокрутки: плитка стоит на первом экране, то есть
+ * попадает в кадр сразу. При привязке к скролл-таймлайну частично видимая плитка
+ * застывала бы полупрозрачной до первого движения страницы — первый экран не имеет
+ * права выглядеть недорисованным. Ступень задаёт `--i`: дни оживают по очереди.
+ */
+@keyframes dayFill {
+  from {
+    opacity: 0;
+    translate: 0 10px;
+  }
+  to {
+    opacity: 1;
+    translate: 0 0;
+  }
+}
+
+@keyframes chipLight {
+  from {
+    opacity: 0.3;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .planDay {
+    animation: dayFill 520ms var(--ease) both;
+    animation-delay: calc(620ms + var(--i, 0) * 90ms);
+  }
+
+  .planDayBody i {
+    transform-origin: left center;
+    animation: growBar 420ms var(--ease) both;
+    animation-delay: calc(760ms + var(--i, 0) * 90ms);
+  }
+
+  .planDay em {
+    animation: chipLight 380ms var(--ease) both;
+    animation-delay: calc(880ms + var(--i, 0) * 90ms);
+  }
+
+  /* Полоса итога растёт от нуля к числу из подписи — и тоже на загрузке. */
+  .pbar.planBar i {
+    animation: growBar 900ms var(--ease) both;
+    animation-delay: 900ms;
+    animation-timeline: auto;
+  }
 }
 
 .mB { background: linear-gradient(140deg, #3a7bff, #1c48d8); }
 .mV { background: linear-gradient(140deg, #8b5cf6, #6d28d9); }
 .mC { background: linear-gradient(140deg, #22c1e8, #0891b2); }
 .mO { background: linear-gradient(140deg, #fb923c, #ea580c); }
+.mPause { background: rgb(255 255 255 / 0.2); color: rgb(255 255 255 / 0.82); }
 
 /* Список с галочками внутри плитки. */
 .check {
@@ -728,10 +1006,26 @@
 }
 
 .big {
+  position: relative;
   font-size: clamp(46px, 6vw, 82px);
   font-weight: 800;
   line-height: 0.9;
   letter-spacing: -0.05em;
+}
+
+/* Волна вокруг знака: круг размером в сам знак, а не в ширину плитки. */
+.big::after {
+  content: "";
+  position: absolute;
+  inset-block-start: 45%;
+  inset-inline-start: 0.08em;
+  width: 1em;
+  height: 1em;
+  margin-block-start: -0.5em;
+  border: 2px solid currentColor;
+  border-radius: 50%;
+  opacity: 0;
+  pointer-events: none;
 }
 
 .bigLabel {
@@ -767,12 +1061,253 @@
   opacity: 0.5;
 }
 
+/* ------------------------------------------------- СЦЕНЫ КОНТУРОВ РЕДАКТОРА */
+
+/*
+ * Миниатюры рабочего интерфейса внутри цветных плиток. Каждая сцена — одна панель
+ * с шапкой, строками и волосяными линиями между ними. Раньше части сцены висели
+ * отдельными плашками и наезжали друг на друга — отсюда и ощущение недорисованности.
+ *
+ * Панель светлая на пастели и полупрозрачная на тёмном тоне, а линии и знаки берут
+ * цвет текста через `currentColor`: одна схема читается на любом тоне плитки.
+ */
+.scene {
+  margin-block-start: auto;
+  padding-block-start: 18px;
+}
+
+.scenePanel {
+  padding: 13px 14px 14px;
+  border-radius: 16px;
+  background: rgb(255 255 255 / 0.45);
+}
+
+.sceneHead {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding-block-end: 11px;
+  font-size: 10.5px;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  opacity: 0.72;
+}
+
+.sceneBadge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 9px;
+  border-radius: 999px;
+  background: rgb(255 255 255 / 0.6);
+  font-size: 10.5px;
+  font-weight: 800;
+  letter-spacing: 0.02em;
+  text-transform: none;
+  white-space: nowrap;
+  opacity: 1;
+}
+
+.sceneBadge svg {
+  width: 12px;
+  height: 12px;
+}
+
+/* Карточка доказательства: подпись слева, значение справа, между строками линия. */
+.sceneRows {
+  display: grid;
+  margin: 0;
+}
+
+.sceneRows > div {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: baseline;
+  gap: 10px;
+  padding-block: 8px;
+  border-block-start: 1px solid color-mix(in srgb, currentColor 13%, transparent);
+}
+
+.sceneRows dt {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  opacity: 0.62;
+}
+
+.sceneRows dd {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  margin: 0;
+  font-size: 12.5px;
+  font-weight: 750;
+}
+
+.sceneRows dd svg {
+  width: 12px;
+  height: 12px;
+  opacity: 0.7;
+}
+
+/* Контур источника: что допущено в материал, а что закрыто. */
+.sourceRows {
+  display: grid;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.sourceRows li {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+  padding-block: 9px;
+  border-block-start: 1px solid color-mix(in srgb, currentColor 13%, transparent);
+  font-size: 12.5px;
+  font-weight: 750;
+}
+
+.sourceRows li[data-state="closed"] {
+  opacity: 0.68;
+}
+
+.sourceMark {
+  display: grid;
+  place-items: center;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  background: color-mix(in srgb, currentColor 9%, transparent);
+}
+
+.sourceMark svg {
+  width: 12px;
+  height: 12px;
+}
+
+.sourceName {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sourceNote {
+  font-size: 10.5px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  white-space: nowrap;
+  opacity: 0.62;
+}
+
+.sourceVerdict {
+  margin: 0;
+  padding-block-start: 11px;
+  border-block-start: 1px solid color-mix(in srgb, currentColor 13%, transparent);
+  font-size: 11.5px;
+  font-weight: 600;
+  line-height: 1.4;
+  opacity: 0.72;
+}
+
+/* История версий: рельс, точки и текущая версия — видно порядок, а не три слова. */
+.versionList {
+  display: grid;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.versionList li {
+  position: relative;
+  display: grid;
+  grid-template-columns: auto auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 9px;
+  padding: 8px;
+  border-block-start: 1px solid color-mix(in srgb, currentColor 13%, transparent);
+  font-size: 12.5px;
+}
+
+.versionList li[data-current="yes"] {
+  border-radius: 10px;
+  background: rgb(255 255 255 / 0.18);
+}
+
+.versionDot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: currentColor;
+  opacity: 0.4;
+}
+
+.versionList li[data-current="yes"] .versionDot {
+  opacity: 1;
+  box-shadow: 0 0 0 3px color-mix(in srgb, currentColor 18%, transparent);
+}
+
+/* Рельс между точками: версии идут по порядку и связаны друг с другом. */
+.versionList li:not(:last-child)::after {
+  content: "";
+  position: absolute;
+  inset-block-start: calc(50% + 8px);
+  inset-block-end: -4px;
+  inset-inline-start: 11.5px;
+  width: 1px;
+  background: currentColor;
+  opacity: 0.22;
+}
+
+.versionList b {
+  font-size: 12.5px;
+  font-weight: 800;
+  letter-spacing: -0.01em;
+}
+
+.versionStatus {
+  overflow: hidden;
+  font-weight: 650;
+  opacity: 0.8;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.versionDate {
+  font-size: 10.5px;
+  font-weight: 700;
+  opacity: 0.6;
+  font-variant-numeric: tabular-nums;
+}
+
+/* На тёмных тонах панель полупрозрачная: белая заливка там выглядит молочной. */
+.tile.cGrape .scenePanel,
+.tile.cBlue .scenePanel,
+.tile.cTeal .scenePanel,
+.tile.cRed .scenePanel,
+.tile.cInk .scenePanel {
+  background: rgb(255 255 255 / 0.14);
+}
+
+.tile.cGrape .sceneBadge,
+.tile.cBlue .sceneBadge,
+.tile.cTeal .sceneBadge,
+.tile.cRed .sceneBadge,
+.tile.cInk .sceneBadge {
+  background: rgb(255 255 255 / 0.2);
+}
+
 .pbar {
   height: 9px;
   margin-block-start: 16px;
   border-radius: 999px;
   background: rgb(21 17 41 / 0.12);
-  overflow: hidden;
+  /* Без `overflow: hidden`: заполнение растёт по scroll-driven анимации, а обрезка
+     сделала бы полосу скролл-портом и заморозила бы прогресс. Скругление держит
+     собственный радиус внутреннего элемента. */
 }
 
 .pbar i {
@@ -930,64 +1465,16 @@
   letter-spacing: -0.01em;
 }
 
-/* ------------------------------------------------------ СРАВНЕНИЕ (ТАБЛИЦА) */
+/* ------------------------------------------------------------- ФИНАЛ И CTA */
 
-.tableWrap {
-  border-radius: var(--r);
-  background: #fff;
-  box-shadow: var(--sh-sm);
-  overflow: hidden;
-}
-
-.table {
-  width: 100%;
-  border-collapse: collapse;
-  font-size: 15px;
-}
-
-.table caption {
-  padding: 22px 24px 6px;
-  color: var(--muted);
-  font-size: 13.5px;
-  text-align: start;
-}
-
-.table th,
-.table td {
-  padding: 15px 16px;
-  border-block-start: 1px solid var(--line);
-  text-align: start;
-  vertical-align: top;
-}
-
-.table thead th {
-  color: var(--muted);
-  font-size: 13px;
-  font-weight: 700;
-  letter-spacing: 0.02em;
-  text-transform: uppercase;
-}
-
-.table tbody th {
-  font-weight: 700;
-}
-
-/* Колонка Авроры — единственная с фоном: сравнение должно читаться с одного
-   взгляда, а не построчно. */
-.table .auroraCol {
-  background: rgb(90 60 240 / 0.07);
-}
-
-.table .empty {
-  color: var(--muted);
-}
-
+/* Подпись под блоком: оговорка о тарифе и примечания. */
 .legend {
   margin: 16px 0 0;
   color: var(--muted);
   font-size: 13.5px;
 }
 
+/* Вертикальный список мелких ссылок — документы в подвале. */
 .notes {
   display: grid;
   gap: 10px;
@@ -997,33 +1484,6 @@
   color: var(--muted);
   font-size: 14px;
 }
-
-.notes strong {
-  color: var(--ink);
-}
-
-.weakChip {
-  display: inline-block;
-  margin-inline-start: 8px;
-  padding: 3px 9px;
-  border-radius: 999px;
-  background: var(--pearl);
-  color: var(--grape);
-  font-size: 11px;
-  font-weight: 700;
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
-  white-space: nowrap;
-}
-
-.scrollHint {
-  display: none;
-  margin: 0 0 10px;
-  color: var(--muted);
-  font-size: 13px;
-}
-
-/* ------------------------------------------------------------ ФИНАЛ И CTA */
 
 .cta {
   position: relative;
@@ -1163,11 +1623,13 @@
 @keyframes riseIn {
   from {
     opacity: 0;
-    transform: translate3d(0, 18px, 0);
+    /* `translate`, а не `transform`: transform остаётся свободным для подъёма
+       при наведении — иначе анимация с fill: both запирает его за собой. */
+    translate: 0 18px;
   }
   to {
     opacity: 1;
-    transform: none;
+    translate: 0 0;
   }
 }
 
@@ -1224,6 +1686,490 @@
 
   .pbar i {
     transform: none;
+  }
+}
+
+/* ------------------------------------------------- ОЖИВЛЕНИЕ ПЛИТОК */
+
+/*
+ * Чем руководствовался выбор анимации для каждой карточки: движение должно
+ * объяснять содержимое, а не украшать его. Отсюда правила:
+ *
+ *   доказательства отмечают галочкой  → галочки прочерчиваются по очереди;
+ *   версии сменяют друг друга         → пилюли всплывают каскадом, текущая дышит;
+ *   риск фиксируется решением         → крупный знак впечатывается с волной;
+ *   публикация уходит в канал         → самолётик летит по дуге;
+ *   образец проверяют                 → по нему проходит сканирующая линия;
+ *   шаги идут по порядку              → номер впечатывается, под ним растёт рельс;
+ *   статус канала честный             → живая точка пульсирует, ожидающая мигает тише.
+ *
+ * Двигаются только transform, opacity и штрих: ни одно правило не пересчитывает
+ * раскладку. Первый экран оживает по загрузке (он уже в кадре), остальные секции —
+ * по прокрутке, и оба слоя молчат при `prefers-reduced-motion`.
+ */
+
+@keyframes iconDraw {
+  from {
+    stroke-dashoffset: 240;
+  }
+  to {
+    stroke-dashoffset: 0;
+  }
+}
+
+@keyframes chipPop {
+  from {
+    opacity: 0;
+    scale: 0.82;
+  }
+  62% {
+    opacity: 1;
+    scale: 1.05;
+  }
+  to {
+    opacity: 1;
+    scale: 1;
+  }
+}
+
+@keyframes stampIn {
+  from {
+    opacity: 0;
+    scale: 1.42;
+    rotate: -8deg;
+  }
+  58% {
+    opacity: 1;
+    scale: 0.94;
+    rotate: 1deg;
+  }
+  to {
+    opacity: 1;
+    scale: 1;
+    rotate: 0deg;
+  }
+}
+
+@keyframes ringOut {
+  from {
+    opacity: 0.5;
+    scale: 0.5;
+  }
+  to {
+    opacity: 0;
+    scale: 2;
+  }
+}
+
+@keyframes sweepAcross {
+  from {
+    opacity: 0;
+    translate: -40% 0;
+  }
+  14% {
+    opacity: 0.9;
+  }
+  86% {
+    opacity: 0.9;
+  }
+  to {
+    opacity: 0;
+    translate: 140% 0;
+  }
+}
+
+@keyframes planeArc {
+  0% {
+    translate: 0 0;
+    rotate: 0deg;
+  }
+  45% {
+    translate: 6px -7px;
+    rotate: 12deg;
+  }
+  100% {
+    translate: 0 0;
+    rotate: 0deg;
+  }
+}
+
+@keyframes tickHand {
+  from {
+    rotate: 0deg;
+  }
+  to {
+    rotate: 360deg;
+  }
+}
+
+@keyframes glowPulse {
+  0%,
+  100% {
+    box-shadow: 0 0 0 0 rgb(255 255 255 / 0);
+  }
+  50% {
+    box-shadow: 0 0 0 4px rgb(255 255 255 / 0.2);
+  }
+}
+
+@keyframes breathe {
+  0%,
+  100% {
+    scale: 1;
+  }
+  50% {
+    scale: 1.07;
+  }
+}
+
+/* Иконка отзывается на курсор: перерисовывается заново. */
+@media (hover: hover) and (pointer: fine) {
+  .bento > .tile {
+    transition:
+      transform 0.3s var(--ease),
+      box-shadow 0.3s var(--ease),
+      filter 0.3s var(--ease);
+  }
+
+  .bento > .tile:hover {
+    transform: translate3d(0, -4px, 0);
+    box-shadow: var(--sh);
+  }
+
+  .tile:hover .ico svg :is(path, circle, rect, line, polyline, ellipse) {
+    animation: iconDraw 720ms var(--ease) both;
+    animation-timeline: auto;
+  }
+
+  /* Строка списка отвечает на наведение: точка внимания там, где курсор. */
+  .tile .check li {
+    transition: color 0.2s var(--ease), translate 0.2s var(--ease);
+  }
+
+  .tile .check li:hover {
+    color: var(--ink);
+    transform: translateX(3px);
+  }
+
+  /* Образец проверки: метрики подсвечиваются, решение «проявляется». */
+  .specGrid .tile:hover,
+  .specRow .tile:hover {
+    transform: translate3d(0, -2px, 0);
+    box-shadow: var(--sh-sm);
+  }
+}
+
+/* Мягкий свет сверху при наведении: карточка «включается». */
+.feat::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  background: radial-gradient(16rem 16rem at 50% 0%, rgb(255 255 255 / 0.22), transparent 62%);
+  opacity: 0;
+  transition: opacity 0.35s var(--ease);
+  pointer-events: none;
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .feat:hover::after {
+    opacity: 1;
+  }
+}
+
+/* Первый экран: всё оживает по загрузке — он уже в кадре. */
+@media (prefers-reduced-motion: no-preference) {
+  .heroBento .ico svg :is(path, circle, rect, line, polyline, ellipse) {
+    stroke-dasharray: 240;
+    animation: iconDraw 620ms var(--ease) both;
+    animation-delay: calc(520ms + var(--i, 0) * 70ms);
+  }
+
+  .heroBento .check li {
+    animation: riseIn 520ms var(--ease) both;
+    animation-delay: calc(640ms + var(--i, 0) * 70ms);
+  }
+
+  .heroBento .check li svg {
+    stroke-dasharray: 60;
+    animation: iconDraw 520ms var(--ease) both;
+    animation-delay: calc(700ms + var(--i, 0) * 70ms);
+  }
+
+  .heroBento .check li:nth-child(2) svg {
+    animation-delay: calc(790ms + var(--i, 0) * 70ms);
+  }
+
+  .heroBento .check li:nth-child(3) svg {
+    animation-delay: calc(880ms + var(--i, 0) * 70ms);
+  }
+
+  /* Часы у несогласованного пункта идут: решение ещё ожидается. */
+  .heroBento [data-hero-tile="evidence"] .check li:last-child svg {
+    animation: tickHand 7s linear 1.4s infinite;
+    animation-timeline: auto;
+  }
+
+  /* Риск: знак впечатывается, от него расходится волна. */
+  .heroBento .big {
+    animation: stampIn 620ms var(--ease) both;
+    animation-delay: 640ms;
+  }
+
+  .heroBento .big::after {
+    animation: ringOut 900ms var(--ease) 900ms both;
+  }
+
+  /* Версии: пилюли всплывают по очереди, текущая дышит. */
+  .heroBento .vers b {
+    animation: chipPop 460ms var(--ease) both;
+  }
+
+  .heroBento .vers b:nth-child(1) {
+    animation-delay: 620ms;
+  }
+
+  .heroBento .vers b:nth-child(3) {
+    animation-delay: 700ms;
+  }
+
+  .heroBento .vers b:nth-child(5) {
+    animation-delay: 780ms;
+  }
+
+  .heroBento .vers .now {
+    animation:
+      chipPop 460ms var(--ease) 780ms both,
+      glowPulse 3.4s ease-in-out 1.6s infinite;
+  }
+
+  /* Публикация: самолётик уходит по дуге и возвращается — раз в четыре секунды. */
+  .heroBento [data-hero-tile="telegram"] .ico svg {
+    animation: planeArc 4.2s ease-in-out 1.4s infinite;
+  }
+
+  /* Чипы статусов под первым экраном тоже оживают по очереди. */
+  .heroChips .chip {
+    animation: chipPop 480ms var(--ease) both;
+  }
+
+  .heroChips .chip:nth-child(1) {
+    animation-delay: 520ms;
+  }
+
+  .heroChips .chip:nth-child(2) {
+    animation-delay: 600ms;
+  }
+
+  .heroChips .chip:nth-child(3) {
+    animation-delay: 680ms;
+  }
+}
+
+/* Остальные секции: то же самое, но по мере прокрутки. */
+@supports (animation-timeline: view()) {
+  @media (prefers-reduced-motion: no-preference) {
+    .sec .tile .ico svg :is(path, circle, rect, line, polyline, ellipse) {
+      stroke-dasharray: 240;
+      animation: iconDraw linear both;
+      animation-timeline: view();
+      animation-range: entry 8% entry 44%;
+    }
+
+    /* Галочки списков прочерчиваются каскадом: каждая следующая позже. */
+    .sec .check li svg {
+      stroke-dasharray: 60;
+      animation: iconDraw linear both;
+      animation-timeline: view();
+      animation-range: entry 12% entry 46%;
+    }
+
+    .sec .check li:nth-child(2) svg {
+      animation-range: entry 18% entry 52%;
+    }
+
+    .sec .check li:nth-child(3) svg {
+      animation-range: entry 24% entry 58%;
+    }
+
+    .sec .check li:nth-child(4) svg {
+      animation-range: entry 30% entry 64%;
+    }
+
+    .sec .check li:nth-child(5) svg {
+      animation-range: entry 36% entry 70%;
+    }
+
+    /* Крупный знак: печать ставится, когда карточка уже в кадре. */
+    .sec .big {
+      animation: stampIn linear both;
+      animation-timeline: view();
+      animation-range: entry 18% entry 52%;
+    }
+
+    .sec .big::after {
+      animation: ringOut linear both;
+      animation-timeline: view();
+      animation-range: entry 26% entry 62%;
+    }
+
+    /* Чипы и теги вспыхивают: сначала появление, потом цвет. */
+    .sec .tag,
+    .sec .status,
+    .sec .chip {
+      animation: chipPop linear both;
+      animation-timeline: view();
+      animation-range: entry 26% entry 62%;
+    }
+
+    /* Шаги: номер впечатывается, под ним растёт рельс прогресса. */
+    .sec .step .num {
+      animation: stampIn linear both;
+      animation-timeline: view();
+      animation-range: entry 10% entry 42%;
+    }
+
+    .sec .step::after {
+      content: "";
+      position: absolute;
+      inset-block-end: 0;
+      inset-inline: clamp(20px, 2.4vw, 28px);
+      height: 3px;
+      border-radius: 3px;
+      background: currentColor;
+      opacity: 0.35;
+      transform-origin: left center;
+      animation: growBar linear both;
+      animation-timeline: view();
+      animation-range: entry 20% entry 70%;
+    }
+
+    /* Образец проверки: сканирующая линия проходит один раз. */
+    .specScan {
+      position: absolute;
+      inset-block: 0;
+      inset-inline-start: 0;
+      width: 34%;
+      background: linear-gradient(90deg, transparent, rgb(90 60 240 / 0.16), transparent);
+      animation: sweepAcross linear both;
+      animation-timeline: view();
+      animation-range: entry 6% entry 70%;
+      pointer-events: none;
+    }
+
+    /* Метрики образца щёлкают по очереди. */
+    .sec [data-spec] {
+      animation: chipPop linear both;
+      animation-timeline: view();
+      animation-range: entry 10% entry 44%;
+    }
+
+    .sec [data-spec]:nth-child(2) {
+      animation-range: entry 15% entry 49%;
+    }
+
+    .sec [data-spec]:nth-child(3) {
+      animation-range: entry 20% entry 54%;
+    }
+
+    .sec [data-spec]:nth-child(4) {
+      animation-range: entry 25% entry 59%;
+    }
+
+    /* Сцены контуров: строки документа проявляются каскадом, как абзацы. */
+    .sec .sceneHead,
+    .sec .sceneRows > div,
+    .sec .sourceRows li,
+    .sec .versionList li {
+      animation: riseIn linear both;
+      animation-timeline: view();
+      animation-range: entry 14% entry 50%;
+    }
+
+    .sec .sceneRows > div:nth-child(2),
+    .sec .sourceRows li:nth-child(2),
+    .sec .versionList li:nth-child(2) {
+      animation-range: entry 20% entry 56%;
+    }
+
+    .sec .sceneRows > div:nth-child(3),
+    .sec .versionList li:nth-child(3) {
+      animation-range: entry 26% entry 62%;
+    }
+
+    .sec .sceneBadge,
+    .sec .sourceVerdict {
+      animation: chipPop linear both;
+      animation-timeline: view();
+      animation-range: entry 24% entry 60%;
+    }
+  }
+}
+
+/* Ожидающий канал мигает медленнее живого: разница состояний видна без чтения. */
+@media (prefers-reduced-motion: no-preference) {
+  .sec [data-integration="vk"] .tag {
+    animation: breathe 3.6s ease-in-out 1s infinite;
+  }
+
+  .sec [data-integration="other"] .ico svg {
+    transition: rotate 0.5s var(--ease);
+  }
+
+  @media (hover: hover) and (pointer: fine) {
+    .sec [data-integration="other"]:hover .ico svg {
+      rotate: 24deg;
+    }
+
+    .sec [data-integration="telegram"]:hover .ico svg {
+      animation: planeArc 1.6s ease-in-out infinite;
+    }
+  }
+
+  /* Круги финального блока дышат: тёмный аккорд не должен быть мёртвым. */
+  .cta::before {
+    animation: breathe 11s ease-in-out infinite;
+  }
+
+  .cta::after {
+    animation: breathe 14s ease-in-out -4s infinite reverse;
+  }
+}
+
+/* Вопросы: ответ проявляется, «плюс» поворачивается в крест. */
+@keyframes ansOpen {
+  from {
+    opacity: 0;
+    translate: 0 -6px;
+  }
+  to {
+    opacity: 1;
+    translate: 0 0;
+  }
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .faq details[open] .ans {
+    animation: ansOpen 320ms var(--ease) both;
+  }
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .faq summary {
+    transition: background-color 0.22s var(--ease);
+  }
+
+  .faq summary:hover {
+    background: rgb(90 60 240 / 0.05);
+  }
+
+  .faq summary:hover .qn {
+    background: var(--grape);
+    color: #fff;
+  }
+
+  .faq .qn {
+    transition: background-color 0.22s var(--ease), color 0.22s var(--ease);
   }
 }
 

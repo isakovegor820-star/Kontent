@@ -47,10 +47,12 @@ export function Product() {
             а не как ещё одна витрина возможностей. */}
         <article className={`${styles.tile} ${styles.cPaper} ${styles.s12} ${styles.reveal}`}>
           <span className={styles.specLabel}>Пример проверки материала</span>
+          {/* Сканирующая линия: проходит по образцу один раз, когда он попал в кадр. */}
+          <span className={styles.specScan} aria-hidden="true" />
 
           <div className={styles.specGrid}>
             {SPEC_FIELDS.map((field) => (
-              <div className={`${styles.tile} ${styles[field.tone]}`} key={field.label}>
+              <div className={`${styles.tile} ${styles[field.tone]}`} data-spec={field.label} key={field.label}>
                 <span className={styles.specLabel}>{field.label}</span>
                 <span className={styles.specValue}>{field.value}</span>
                 <span className={styles.specNote}>{field.note}</span>
@@ -59,13 +61,13 @@ export function Product() {
           </div>
 
           <div className={styles.specRow}>
-            <div className={`${styles.tile} ${styles.cPearl} ${styles.s8}`}>
+            <div className={`${styles.tile} ${styles.cPearl} ${styles.s8}`} data-spec-row="claim">
               <span className={styles.specLabel}>Утверждение</span>
               {/* Заголовок плитки, а не абзац: `.tile h3` — единственный кегль
                   системы около требуемых 19px, инлайн-стили здесь запрещены. */}
               <h3>«Формулировка должна точно отражать условия документа и не обещать результат.»</h3>
             </div>
-            <div className={`${styles.tile} ${styles.cGrape} ${styles.s4}`}>
+            <div className={`${styles.tile} ${styles.cGrape} ${styles.s4}`} data-spec-row="decision">
               <span className={styles.specLabel}>Решение редактора</span>
               <span className={styles.specValue}>Требует проверки</span>
               <span className={styles.specNote}>
