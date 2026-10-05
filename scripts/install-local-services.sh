@@ -83,6 +83,11 @@ install_service() {
     sleep 0.5
   done
 
+  # Задание могло остаться в базе отключённых (`launchctl disable`): тогда bootstrap
+  # падает с «Input/output error», хотя плист валиден. Именно так воркер числился
+  # disabled с 06.09.2026 и не поднимался, пока его не включили явно.
+  launchctl enable "${DOMAIN}/${label}" 2>/dev/null || true
+
   loaded=1
   for _ in $(seq 1 10); do
     if launchctl bootstrap "${DOMAIN}" "$target_plist" 2>/dev/null; then

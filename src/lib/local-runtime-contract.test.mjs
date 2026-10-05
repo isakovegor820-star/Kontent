@@ -230,8 +230,15 @@ describe("установка локальных сервисов", () => {
     expect(source).toMatch(/"\$code" = "200"/u);
   });
 
-  it("рабочий каталог сервиса совпадает с корнем репозитория", () => {
-    // Иначе next start не найдёт ни .next, ни node_modules.
-    expect(resolve(plistValue(webPlist, "WorkingDirectory"))).toBe(process.cwd());
+  it("все локальные сервисы работают из одного абсолютного каталога", () => {
+    // Пути в плистах привязаны к машине оператора, поэтому сверять их с process.cwd()
+    // нельзя: на раннере CI репозиторий лежит в другом месте. Проверяем то, что верно
+    // на любой машине: каталог абсолютный и одинаковый у всех трёх сервисов.
+    // Совпадение с конкретным репозиторием стережёт установщик (grep -qF "$REPO_ROOT").
+    const directories = [webPlist, workerPlist, healthPlist].map((source) =>
+      plistValue(source, "WorkingDirectory"),
+    );
+    expect(new Set(directories).size).toBe(1);
+    expect(directories[0].startsWith("/")).toBe(true);
   });
 });

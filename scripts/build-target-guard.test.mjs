@@ -13,11 +13,18 @@ import {
   resolveBuildDistDir,
 } from "./build-target-guard.mjs";
 
-const CWD = process.cwd();
 const WEB_LABEL = "ru.aurora.web";
 
 /** Реальные определения сервисов: тест ловит расхождение стража с deploy/launchd. */
 const servicePlists = readServicePlists();
+
+// Пути в плистах абсолютные и привязаны к машине оператора, поэтому каталог берём
+// ИЗ САМОГО ПЛИСТА, а не из process.cwd(): на раннере CI репозиторий лежит в другом
+// месте, и тест, сравнивающий с cwd, падал бы там всегда.
+const WEB_WORKING_DIRECTORY = parseServicePlist(
+  servicePlists.find((source) => source.includes(`<string>${WEB_LABEL}</string>`)) ?? "",
+).workingDirectory;
+const FOREIGN_DIRECTORY = `${WEB_WORKING_DIRECTORY}/elsewhere`;
 
 describe("resolveBuildDistDir", () => {
   it("по умолчанию собирает в общий .next", () => {
@@ -65,17 +72,17 @@ describe("nextServerLabels", () => {
   it("видит сервер сборки в реальном определении и не путает его с воркером и сторожем", () => {
     // Воркер и сторож работают в том же каталоге, но `.next` не отдают:
     // блокировать из-за них сборку было бы ложным срабатыванием.
-    const labels = nextServerLabels(servicePlists, CWD);
+    const labels = nextServerLabels(servicePlists, WEB_WORKING_DIRECTORY);
     expect(labels).toEqual([WEB_LABEL]);
   });
 
   it("игнорирует сервисы из чужого каталога", () => {
-    expect(nextServerLabels(servicePlists, "/somewhere/else")).toEqual([]);
+    expect(nextServerLabels(servicePlists, FOREIGN_DIRECTORY)).toEqual([]);
   });
 });
 
 describe("assertBuildTargetNotServed", () => {
-  const base = { cwd: CWD, plists: servicePlists, env: {} };
+  const base = { cwd: WEB_WORKING_DIRECTORY, plists: servicePlists, env: {} };
 
   it("пропускает сборку, когда сервис не запущен", () => {
     expect(() => assertBuildTargetNotServed({ ...base, runningLabels: [] })).not.toThrow();
