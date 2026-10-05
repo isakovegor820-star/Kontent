@@ -408,3 +408,74 @@ describe("провайдер поиска по умолчанию", () => {
       .rejects.toBeTruthy();
   });
 });
+
+describe("приоритет поискового API над бесплатными адаптерами", () => {
+  const okJson = (payload) => ({ ok: true, status: 200, json: async () => payload, headers: { get: () => "application/json" }, text: async () => JSON.stringify(payload) });
+
+  beforeEach(() => {
+    process.env.AURORA_SEARCH_API_URL = "https://api.example.com/v1/search";
+    process.env.AURORA_SEARCH_API_KEY = "test-key";
+  });
+
+  afterEach(() => {
+    delete process.env.AURORA_SEARCH_API_URL;
+    delete process.env.AURORA_SEARCH_API_KEY;
+  });
+
+  it("берёт кандидатов у сервиса с ключом и не трогает бесплатные адаптеры", async () => {
+    const seen = [];
+    const fetchImpl = async (url) => {
+      seen.push(String(url));
+      if (!String(url).includes("api.example.com")) throw new Error("бесплатные адаптеры не должны вызываться");
+      return okJson({ results: [{
+        url: "https://openai.com/index/gpt-6-astra",
+        title: "GPT-6 Astra — документация модели",
+        snippet: "Шестое поколение модели для анализа данных",
+        publishedAt: "2026-09-30T09:00:00Z",
+      }] });
+    };
+    const result = await runChatResearch(
+      { topic: "6 astra", categories: ["technology"], language: "ANY" },
+      { fetchImpl, readPage: async (url) => ({ url, html: PAGE_HTML }) },
+    );
+
+    expect(seen.length).toBeGreaterThan(0);
+    expect(seen.every((url) => url.includes("api.example.com"))).toBe(true);
+    expect(result.findings.length).toBeGreaterThan(0);
+    expect(result.sources[0].url).toBe("https://openai.com/index/gpt-6-astra");
+  });
+
+  it("падает обратно на бесплатные адаптеры, когда сервис ответил ошибкой", async () => {
+    const seen = [];
+    const fetchImpl = async (url) => {
+      const target = String(url);
+      seen.push(target);
+      if (target.includes("api.example.com")) return { ok: false, status: 503, json: async () => ({}), text: async () => "" };
+      // Радар: SearXNG не настроен, поэтому первым идёт Yahoo HTML.
+      return { ok: true, status: 200, headers: { get: () => "text/html" }, text: async () => "<html><body>выдача</body></html>" };
+    };
+    await runChatResearch(
+      { topic: "6 astra", categories: ["technology"], language: "ANY" },
+      { fetchImpl, readPage: async (url) => ({ url, html: PAGE_HTML }) },
+    );
+
+    expect(seen.some((url) => url.includes("api.example.com"))).toBe(true);
+    expect(seen.some((url) => !url.includes("api.example.com"))).toBe(true);
+  });
+
+  it("пустой ответ сервиса не выдаётся за отсутствие данных в интернете", async () => {
+    const seen = [];
+    const fetchImpl = async (url) => {
+      const target = String(url);
+      seen.push(target);
+      if (target.includes("api.example.com")) return okJson({ results: [] });
+      return { ok: true, status: 200, headers: { get: () => "text/html" }, text: async () => "<html><body>выдача</body></html>" };
+    };
+    await runChatResearch(
+      { topic: "6 astra", categories: ["technology"], language: "ANY" },
+      { fetchImpl, readPage: async (url) => ({ url, html: PAGE_HTML }) },
+    );
+
+    expect(seen.some((url) => !url.includes("api.example.com"))).toBe(true);
+  });
+});

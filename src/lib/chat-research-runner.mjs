@@ -17,6 +17,7 @@ import { planWebResearch, webResearchStems, scoreWebResearchCandidate, isWebRese
 // который иначе отбрасывал закон с официального портала как «нет даты».
 import { extractDateFromUrl, extractPublishedAt } from "./web-research-date.mjs";
 export { extractDateFromUrl, extractPublishedAt };
+import { createWebSearchApiProvider } from "./web-search-provider.mjs";
 import { resolveWebSource } from "./web-research-sources.mjs";
 
 /** Жёсткий бюджет: человек ждёт ответ, а не отчёт. */
@@ -171,6 +172,39 @@ export async function readChatResearchPage(url, timeoutMs = PAGE_TIMEOUT_MS, opt
 }
 
 /**
+ * Поиск с приоритетом: сначала настроенный поисковый API, потом бесплатные адаптеры.
+ *
+ * Порядок именно такой, потому что качество выдачи решает качество ответа. Когда
+ * сервис с ключом не настроен или не ответил, поведение прежнее — идут бесплатные
+ * адаптеры Радара. Пустой ответ сервиса тоже считается отказом: молчание поисковика
+ * нельзя выдавать за отсутствие данных в интернете.
+ */
+async function searchWithPriority(query, deps = {}) {
+  const env = deps.env || process.env;
+  const api = deps.api !== undefined
+    ? deps.api
+    : createWebSearchApiProvider({
+      endpoint: env.AURORA_SEARCH_API_URL,
+      apiKey: env.AURORA_SEARCH_API_KEY,
+      apiKeyHeader: env.AURORA_SEARCH_API_KEY_HEADER,
+      style: env.AURORA_SEARCH_API_STYLE,
+      maxResults: env.AURORA_SEARCH_MAX_RESULTS,
+      timeoutMs: env.AURORA_SEARCH_TIMEOUT_MS,
+      fetchImpl: deps.fetchImpl,
+    });
+  if (api) {
+    try {
+      const results = await api.search(query, { fetchImpl: deps.fetchImpl });
+      if (Array.isArray(results) && results.length) return results;
+    } catch {
+      // Ключ истёк, лимит исчерпан, сервис лежит — это не повод оставить пользователя
+      // без ответа: ниже идут бесплатные адаптеры.
+    }
+  }
+  return searchChatResearch(query, deps);
+}
+
+/**
  * Полный цикл: план → поиск → чтение → дословные фрагменты → ворота.
  *
  * Поиск и чтение приходят через `deps`, как в фоновом `runWebResearch`. Причина не в
@@ -181,7 +215,7 @@ export async function readChatResearchPage(url, timeoutMs = PAGE_TIMEOUT_MS, opt
  * @returns {{findings: Array<object>, sources: Array<{label: string, url: string, date: string|null, tier: string}>, queries: number, pages: number, rejectionCodes: string[]}}
  */
 export async function runChatResearch(input, deps = {}) {
-  const search = deps.search || ((query) => searchChatResearch(query, deps));
+  const search = deps.search || ((query) => searchWithPriority(query, deps));
   const readPage = deps.readPage || ((url, timeoutMs) => readChatResearchPage(url, timeoutMs, deps));
   const plan = planWebResearch(
     { topic: input?.topic, categories: input?.categories, language: input?.language || "ANY" },
