@@ -5,6 +5,7 @@ import {
   normalizeProviderResult,
   parseProviderPayload,
   resolveWebSearchProviders,
+  searchWithProviderPriority,
   webSearchApiConfigured,
 } from "./web-search-provider.mjs";
 
@@ -140,5 +141,58 @@ describe("конфигурация из окружения", () => {
     const resolved = resolveWebSearchProviders({});
     expect(resolved.api).toBeNull();
     expect(webSearchApiConfigured({})).toBe(false);
+  });
+});
+
+describe("приоритет сервиса над бесплатными адаптерами", () => {
+  const endpoint = "https://api.example.com/v1/search";
+
+  it("берёт результат сервиса и не зовёт резерв", async () => {
+    const fallback = vi.fn(async () => [{ url: "https://fallback.ru/1" }]);
+    const fetchImpl = async () => jsonResponse({ results: [{ url: "https://api.ru/1", title: "A" }] });
+    const results = await searchWithProviderPriority("q", {
+      env: { AURORA_SEARCH_API_URL: endpoint },
+      fetchImpl,
+      fallback,
+    });
+    expect(results[0].url).toBe("https://api.ru/1");
+    expect(fallback).not.toHaveBeenCalled();
+  });
+
+  it("уходит на резерв, когда сервис ответил ошибкой", async () => {
+    const fallback = vi.fn(async () => [{ url: "https://fallback.ru/1" }]);
+    const fetchImpl = async () => jsonResponse({}, false, 500);
+    const results = await searchWithProviderPriority("q", {
+      env: { AURORA_SEARCH_API_URL: endpoint },
+      fetchImpl,
+      fallback,
+    });
+    expect(results[0].url).toBe("https://fallback.ru/1");
+    expect(fallback).toHaveBeenCalledTimes(1);
+  });
+
+  it("уходит на резерв, когда сервис ответил пустым списком", async () => {
+    // Молчание сервиса нельзя выдавать за отсутствие данных в интернете.
+    const fallback = vi.fn(async () => [{ url: "https://fallback.ru/1" }]);
+    const fetchImpl = async () => jsonResponse({ results: [] });
+    const results = await searchWithProviderPriority("q", {
+      env: { AURORA_SEARCH_API_URL: endpoint },
+      fetchImpl,
+      fallback,
+    });
+    expect(results[0].url).toBe("https://fallback.ru/1");
+  });
+
+  it("без ключа сразу идёт на резерв", async () => {
+    const fallback = vi.fn(async () => [{ url: "https://fallback.ru/1" }]);
+    const results = await searchWithProviderPriority("q", { env: {}, fallback });
+    expect(results[0].url).toBe("https://fallback.ru/1");
+  });
+
+  it("без резерва сообщает об ошибке конфигурации, а не падает неясно", async () => {
+    await expect(searchWithProviderPriority("q", {
+      env: { AURORA_SEARCH_API_URL: endpoint },
+      fetchImpl: async () => jsonResponse({}, false, 500),
+    })).rejects.toThrow(/search_provider_fallback_missing/u);
   });
 });
