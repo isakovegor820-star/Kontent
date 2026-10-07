@@ -238,12 +238,21 @@ export async function runChatResearch(input, deps = {}) {
   const shortQuery = topicStems.slice(0, 2).join(" ");
   let relevant = candidates.filter((candidate) => isWebResearchCandidateRelevant(candidate, plan.topic));
 
-  // Если ни один кандидат не похож на тему, значит поиск не сработал. Причина почти
-  // всегда одна: по строке пользователя движок ищет не то. На «6 astra» Bing отдаёт
-  // «Sechs – Wikipedia» и «LOTTO 6aus49», а на «GPT-6 Astra» — страницу openai.com.
-  // Поэтому сначала спрашиваем Wikipedia, что это за сущность, и повторяем поиск
-  // каноническим именем, а не только короткой строкой из основ.
-  if (!relevant.length && candidates.length) {
+  // Если ни один кандидат не похож на тему, значит поиск сработал не по тому, что нужно.
+  // Причина зависит от длины темы, и различать их обязательно:
+  //
+  // - Короткая тема-имя («6 astra»): движок понял её буквально и отдал «Sechs – Wikipedia»
+  //   и «LOTTO 6aus49», а на «GPT-6 Astra» — страницу openai.com. Здесь помогает Wikipedia:
+  //   спрашиваем, что это за сущность, и повторяем поиск каноническим именем.
+  // - Длинная тема-описание («маркировку рекламы закон»): кандидатов много, и они по теме —
+  //   просто их отсеял фильтр релевантности. Спрашивать Wikipedia про такую строку вредно:
+  //   на «маркировку рекламы закон» она отвечает статьёй «Закон», и поиск уходит в сторону.
+  //
+  // Проверено вживую: без этого различения «маркировка рекламы» перестала находить
+  // КонсультантПлюс, хотя до подключения резолвера находила его первым.
+  const topicWords = String(plan.topic ?? "").split(/\s+/u).filter(Boolean);
+  const entityHelps = topicWords.length <= 2;
+  if (!relevant.length && candidates.length && entityHelps) {
     const entity = await withDeadline(
       resolveTopicEntity(plan.topic, { fetchImpl: deps.fetchImpl }),
       Math.max(1_000, Math.min(4_000, searchDeadline - Date.now())),
@@ -268,6 +277,17 @@ export async function runChatResearch(input, deps = {}) {
         }
       }
       if (relevant.length) break;
+    }
+  } else if (!relevant.length && shortQuery && shortQuery !== plan.topic) {
+    // Резолвер сущности здесь не помогает, но проверить самую короткую формулировку
+    // всё равно стоит: «маркировка рекламы» находит то, что теряет длинная строка.
+    const retry = await withDeadline(search(shortQuery), searchDeadline - Date.now());
+    retriedQueries += 1;
+    for (const item of Array.isArray(retry) ? retry : []) {
+      if (!item?.url || seen.has(item.url)) continue;
+      seen.add(item.url);
+      const candidate = { ...item, retried: true };
+      if (isWebResearchCandidateRelevant(candidate, plan.topic)) relevant.push(candidate);
     }
   }
   // Осмысленных кандидатов нет — честно сообщаем, что искать нечего, вместо
