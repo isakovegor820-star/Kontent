@@ -243,33 +243,42 @@ export function planWebResearch(input = {}, options = {}) {
     push(raw, sourceCategories[0], language === "EN" ? "EN" : "RU", false, 100);
   }
 
-  // Сначала — приоритетные `site:`-запросы: они дают первоисточник, а не пересказ.
-  if (includeScoped && topic) {
-    for (const category of sourceCategories) {
-      for (const domain of webResearchScopedDomains(category, language === "ANY" ? null : language).slice(0, 2)) {
-        const suffix = category === "law" ? "законопроект" : "";
-        push(`site:${domain} ${topic} ${suffix}`, category, language === "EN" ? "EN" : "RU", true, 90);
-      }
-    }
-  }
-
-  // Затем — тематические запросы без ограничения домена: находят то, чего нет в реестре.
+  // Сначала — тематические запросы, потому что именно они приносят практику и разборы.
+  // Суффикс подобран по замеру: бесплатные движки не поддерживают `site:` (на запрос
+  // `site:pravo.gov.ru маркировка рекламы` Bing RSS отдаёт «Google Sites» и «site.eu»),
+  // зато отраслевое слово в запросе приводит к первоисточнику. «маркировка рекламы»
+  // давала practicum.yandex.ru и bitrix24.ru, а «маркировка интернет-рекламы закон» —
+  // consultant.ru первым. Поэтому для нормы права суффикс — «закон», а не «законопроект
+  // изменения»: второе ищет проекты, а не действующее регулирование.
   if (topic) {
     for (const category of sourceCategories) {
       const suffix = {
-        law: "законопроект изменения",
+        law: "закон",
         benchmark: "benchmark результаты тест",
         market: "рынок объём исследование",
         statistics: "статистика данные исследование",
         technology: "технология исследование",
         society: "исследование данные",
       }[category] || "";
-      push(`${topic} ${suffix}`, category, language === "EN" ? "EN" : "RU", false, 80);
+      // Категория law получает приоритет выше: у платформы для юристов норма права
+      // важнее рыночной аналитики, и один из трёх запросов должен уйти именно за ней.
+      push(`${topic} ${suffix}`, category, language === "EN" ? "EN" : "RU", false, category === "law" ? 85 : 80);
     }
     if (language === "ANY") {
       push(`${topic} benchmark research report`, sourceCategories[0], "EN", false, 70);
     }
     push(`${topic} 2026`, sourceCategories[0], language === "EN" ? "EN" : "RU", false, 60);
+  }
+
+  // Приоритетные `site:`-запросы идут последними: они полезны на движках с поддержкой
+  // оператора, но на бесплатных адаптерах дают мусор, и тратить на них первые слоты
+  // бюджета нельзя. Для платного сервиса их можно включать явно.
+  if (includeScoped && topic) {
+    for (const category of sourceCategories) {
+      for (const domain of webResearchScopedDomains(category, language === "ANY" ? null : language).slice(0, 2)) {
+        push(`site:${domain} ${topic}`, category, language === "EN" ? "EN" : "RU", true, 50);
+      }
+    }
   }
 
   const limited = queries
